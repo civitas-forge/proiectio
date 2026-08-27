@@ -1,0 +1,12 @@
+# lexd runs against the whole tree, not staged files only: a staged-only pass
+# can lie about unstaged edits. The docs hook is staged-diff by design — it
+# reports on what the commit adds — except its link check, which is whole-tree.
+
+pre-commit:
+  commands:
+    docs:
+      priority: 1
+      run: .agents/hooks/pre-commit
+    lex:
+      priority: 2
+      run: git ls-files -z '*.lex' | xargs -0 lexd check

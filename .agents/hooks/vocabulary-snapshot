@@ -1,0 +1,17 @@
+#!/bin/sh
+# Regenerates .agents/vocabulary from the corpus. Uppercase identifiers are
+# dropped first: a word appearing only inside one is not prose vocabulary, and
+# licensing it would let an environment variable's name license the sentence
+# beside it.
+# Run it when a commit
+# introduces a word deliberately; the diff is the record that it was.
+set -e
+cd "$(git rev-parse --show-toplevel)"
+git ls-files -z '*.lex' '*.md' \
+    | xargs -0 cat \
+    | sed -E 's/[A-Z][A-Z0-9_]{2,}//g' \
+    | tr 'A-Z' 'a-z' \
+    | tr -cs 'a-z-' '\n' \
+    | grep -E '^[a-z][a-z-]{2,}$' \
+    | sort -u > .agents/vocabulary
+echo "$(wc -l < .agents/vocabulary | tr -d ' ') words"

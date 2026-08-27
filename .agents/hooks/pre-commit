@@ -1,0 +1,143 @@
+#!/bin/sh
+# Two hard blocks and two warnings.
+#
+# Blocks: an ISO date in any .lex, and a link that leaves this repo. There is
+# no exempt file: no history is carried here, so nothing needs a date. A
+# cross-repo link is never correct: either the fact is part of a contract and
+# is stated here in this repo's own terms, or this doc does not need it.
+#
+# Warns: word deltas, slop tells, and any word the corpus has not seen. A new
+# word is a new abstraction entering, and the decision is binary — a glossary
+# entry, or a rewrite. Regenerate the snapshot with
+# .agents/hooks/vocabulary-snapshot when the word is deliberate.
+
+ROOT=$(git rev-parse --show-toplevel)
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$STAGED" ] && exit 0
+
+added_lines() { git diff --cached -U0 -- "$1" | grep '^+' | grep -v '^+++' | sed 's/^+//'; }
+block=0
+
+# ── words added ───────────────────────────────────────────────────────
+report=""; total=0
+for f in $STAGED; do
+    case "$f" in *.lex|*.md) ;; *) continue ;; esac
+    a=$(added_lines "$f" | wc -w | tr -d ' ')
+    r=$(git diff --cached -U0 -- "$f" | grep '^-' | grep -v '^---' | sed 's/^-//' | wc -w | tr -d ' ')
+    total=$((total + a)); report="${report}  ${f}: +${a} -${r} words\n"
+done
+if [ -n "$report" ]; then
+    echo "── doc words added this commit ──"; printf "%b" "$report"; echo "  total added: ${total}"
+fi
+
+# ── slop tells (warn) ─────────────────────────────────────────────────
+TELLS='(^|[^[:alnum:]])(20[0-9][0-9]-[01][0-9]-[0-3][0-9]|as of|currently|previously|recently we|recently the|at the time|we (decided|chose|verified|settled|agreed)|this session|going forward|so far|was verified|verified live|now supports|no longer)([^[:alnum:]]|$)'
+warned=0
+for f in $STAGED; do
+    case "$f" in .agents/*) continue ;; esac
+    m=$(added_lines "$f" | grep -iE "$TELLS") || true
+    if [ -n "$m" ]; then
+        [ $warned -eq 0 ] && echo "── slop tells in added lines (warn only) ──" && warned=1
+        echo "$m" | sed "s|^|  ${f}: |"
+    fi
+done
+
+# ── new words (warn) ──────────────────────────────────────────────────
+# Matched whole, never as stems: a stem pattern reports "legible" for "leg",
+# and a check that cries wolf is a check that gets skipped.
+VOCAB="$ROOT/.agents/vocabulary"
+if [ -f "$VOCAB" ]; then
+    known=$(mktemp); cp "$VOCAB" "$known"
+    if [ -f "$ROOT/GLOSSARY.lex" ]; then
+        tr 'A-Z' 'a-z' < "$ROOT/GLOSSARY.lex" | tr -cs 'a-z-' '\n' \
+            | grep -E '^[a-z][a-z-]{2,}$' | sort -u | sort -m - "$VOCAB" | sort -u > "$known"
+    fi
+    for f in $STAGED; do
+        case "$f" in *.lex|*.md) ;; *) continue ;; esac
+        case "$f" in .agents/*|GLOSSARY.lex) continue ;; esac
+        new=$(added_lines "$f" | tr 'A-Z' 'a-z' | tr -cs 'a-z-' '\n' \
+              | grep -E '^[a-z][a-z-]{2,}$' | sort -u | comm -23 - "$known")
+        if [ -n "$new" ]; then
+            echo "── words this corpus has not used before, in ${f} ──"
+            echo "$new" | sed 's|^|  |'
+            echo "  Each is a domain term to define at first use in the doc, or a metaphor to rewrite."
+            echo "  Deliberate? .agents/hooks/vocabulary-snapshot"
+        fi
+    done
+    rm -f "$known"
+fi
+
+# ── BLOCK: dates in a design doc ──────────────────────────────────────
+for f in $STAGED; do
+    case "$f" in *.lex) ;; *) continue ;; esac
+    d=$(added_lines "$f" | grep -E '20[0-9][0-9]-[01][0-9]-[0-3][0-9]') || true
+    if [ -n "$d" ]; then
+        [ $block -eq 0 ] && echo "── BLOCKED: a date in a design doc; no history is carried here ──"
+        block=1; echo "$d" | sed "s|^|  ${f}: |"
+    fi
+done
+
+# ── BLOCK: a link that leaves this repo ───────────────────────────────
+bad=""
+for f in $(git ls-files '*.lex'); do
+    dir=$(dirname "$ROOT/$f")
+    for tgt in $(grep -o '\[\.\{1,2\}/[^]]*\]' "$ROOT/$f" | tr -d '[]'); do
+        abs=$(cd "$dir" 2>/dev/null && cd "$(dirname "$tgt")" 2>/dev/null && pwd)/$(basename "$tgt")
+        case "$abs" in
+            "$ROOT"/*) [ -e "$abs" ] || bad="${bad}  ${f}: ${tgt} does not resolve\n" ;;
+            *)         bad="${bad}  ${f}: ${tgt} leaves this repo\n" ;;
+        esac
+    done
+done
+if [ -n "$bad" ]; then
+    echo "── BLOCKED: links must resolve inside this repo ──"
+    printf "%b" "$bad"
+    echo "  A fact in another repo is either part of a contract — state it here in"
+    echo "  this repo's own terms — or is a fact this doc does not need."
+    block=1
+fi
+
+# ── BLOCK: a doc citing itself ────────────────────────────────────────
+# A self-link resolves, so the link check above never sees one. It is
+# always wrong: a section of this doc is cited [#N], never by file name.
+self=""
+for f in $(git ls-files '*.lex'); do
+    for tgt in $(grep -o '\[\.\{1,2\}/[^]]*\.lex\]' "$ROOT/$f" | tr -d '[]'); do
+        [ "$(basename "$tgt")" = "$(basename "$f")" ] && self="${self}  ${f}: cites itself as ${tgt}\n"
+    done
+done
+if [ -n "$self" ]; then
+    echo "── BLOCKED: a doc cites itself ──"; printf "%b" "$self"
+    echo "  Cite a section of this doc as [#N]. A file never names itself."
+    block=1
+fi
+
+# ── BLOCK: a doc losing a section, or shrinking sharply ───────────────
+# An edit that removes prose without meaning to leaves no other trace:
+# the result parses, the links resolve, and the missing paragraphs are
+# missing from nobody's view. ALLOW_SHRINK=1 for a deletion you intend.
+shrink=""
+for f in $STAGED; do
+    case "$f" in *.lex) ;; *) continue ;; esac
+    git cat-file -e "HEAD:$f" 2>/dev/null || continue
+    was=$(git show "HEAD:$f" | wc -w | tr -d ' ')
+    now=$(git show ":$f" | wc -w | tr -d ' ')
+    wsec=$(git show "HEAD:$f" | grep -cE '^[0-9]+\. ')
+    nsec=$(git show ":$f" | grep -cE '^[0-9]+\. ')
+    lost=$((was - now))
+    if [ "$nsec" -lt "$wsec" ]; then
+        shrink="${shrink}  ${f}: ${wsec} sections -> ${nsec}\n"
+    elif [ "$lost" -gt 250 ]; then
+        shrink="${shrink}  ${f}: ${was} -> ${now} words (-${lost})\n"
+    elif [ "$was" -gt 200 ] && [ $((lost * 100 / was)) -gt 30 ]; then
+        shrink="${shrink}  ${f}: ${was} -> ${now} words (-${lost}, over a third)\n"
+    fi
+done
+if [ -n "$shrink" ] && [ -z "$ALLOW_SHRINK" ]; then
+    echo "── BLOCKED: a doc lost a section or a large part of itself ──"; printf "%b" "$shrink"
+    echo "  Intended? ALLOW_SHRINK=1 git commit ..."
+    block=1
+fi
+
+[ $block -eq 1 ] && exit 1
+exit 0
