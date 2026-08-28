@@ -1,10 +1,13 @@
 //! The single-writer lock on the state directory
 //! (`docs/implementation.lex` section 7): two processes applying to one
 //! destination corrupt the manifest's read-modify-write — one loads the
-//! manifest, the other persists, the first persists over it — so a run
-//! takes [`StateLock::acquire`] before [`observe`](crate::observe) and
-//! holds the guard until [`apply`](crate::apply) has persisted the
-//! manifest.
+//! manifest, the other persists, the first persists over it — so a caller
+//! that can race another proiectio process takes [`StateLock::acquire`]
+//! before [`observe`](crate::observe) and holds the guard until
+//! [`apply`](crate::apply) has persisted the manifest. Nothing in the crate
+//! acquires the lock on the caller's behalf: [`apply`](crate::apply) and
+//! [`save_manifest`](crate::save_manifest) take plain `Dir` handles and
+//! write whether or not a guard is alive.
 //!
 //! The lock is an exclusive advisory `flock(2)` on [`LOCK_FILE_NAME`],
 //! beside the manifest in the state directory and opened through the same
@@ -15,6 +18,14 @@
 //! underlies cap-std in the dependency tree, and `flock` locks belong to
 //! the open file description — two opens contend even inside one process,
 //! so threads and processes behave identically.
+//!
+//! One lock covers one state directory, which is the resource section 7
+//! names: the manifest, and the recording of the destination paths that
+//! manifest owns. Two projections that share a target but keep separate
+//! state directories take separate locks and do not exclude each other —
+//! they are two independent recordings, and a lock file in the destination
+//! could not tell them apart either, besides landing an unowned file in the
+//! projected tree.
 
 use camino::Utf8Path;
 use cap_std::fs_utf8::{Dir, File, OpenOptions};

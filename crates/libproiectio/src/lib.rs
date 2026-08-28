@@ -10,10 +10,13 @@
 //! returns an [`ApplyReport`]; [`Status`] is the classification
 //! ([`classify`]) alone, with nothing written.
 //!
-//! A run holding state another writer could touch takes the single-writer
-//! [`StateLock`] on the state directory before [`observe`] and drops it
-//! after applying, so the manifest's read-modify-write is never interleaved
-//! (`docs/implementation.lex` section 7).
+//! Excluding a concurrent writer is the caller's to do: `StateLock` takes a
+//! single-writer advisory lock on the state directory, and a caller that
+//! can race another proiectio process acquires it before [`observe`] and
+//! holds the guard until the manifest has been persisted. The functions
+//! here take plain capability handles and never acquire it themselves, so
+//! the manifest's read-modify-write survives concurrent runs only when the
+//! caller brackets them that way (`docs/implementation.lex` section 7).
 //!
 //! The crate carries no consumer vocabulary: content arrives as bytes,
 //! owners are opaque strings, and nothing here names what the files are
@@ -37,7 +40,19 @@ mod containment;
 mod decide;
 mod entry;
 mod error;
-#[cfg(unix)]
+// Narrower than the `unix` the other I/O modules carry: `rustix::fs::flock`,
+// the lock's mechanism, is compiled out on the Unix targets named here
+// (Solaris has no `flock` at all), so `cfg(unix)` alone would select a module
+// that cannot build there.
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "espidf",
+        target_os = "horizon",
+        target_os = "solaris",
+        target_os = "vita"
+    ))
+))]
 mod lock;
 mod manifest;
 mod mapping;
@@ -55,7 +70,15 @@ pub use containment::*;
 pub use decide::*;
 pub use entry::*;
 pub use error::*;
-#[cfg(unix)]
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "espidf",
+        target_os = "horizon",
+        target_os = "solaris",
+        target_os = "vita"
+    ))
+))]
 pub use lock::*;
 pub use manifest::*;
 pub use mapping::*;
