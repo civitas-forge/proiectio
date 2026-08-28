@@ -257,6 +257,11 @@ Implementation Guidelines
     behind. The order stays deterministic: same plan, same
     destination, same sequence.
 
+    All of that is the refusing policy's, since it is the one with a
+    plan-time verdict to hold to. Under the external-target permission
+    a link neither re-grades nor waits: it is published where sorted
+    order puts it, which is the ordinary rule with no exception.
+
     What the run is still going to publish a link at is named by
     action key, so a symlink is the one entry the walk of section 3
     will not follow an owned link to reach: published anywhere but

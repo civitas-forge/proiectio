@@ -128,7 +128,11 @@ Security Model
     chain walked means every one of them is final by the time the
     link goes down. So the destination never holds a pointer out of
     dest that this run published — not between two actions, and not
-    after a run that failed partway.
+    after a run that failed partway. That is the guarantee of the
+    refusing policy, which is the one with a verdict to hold to. Under
+    the flag a link is published where sorted order puts it, so a run
+    replacing an escaping pivot can hold an escaping pointer partway
+    through — pointers out of dest are what the invoker permitted.
 
     A "." or empty component resolves away as it does on disk, and
     ".." pops what resolution walked — after a followed hop that is

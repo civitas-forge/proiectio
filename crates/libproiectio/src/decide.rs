@@ -109,8 +109,11 @@ pub fn classify(
 /// Two rules, both judged per admitted path.
 ///
 /// *Target grading* (`docs/security.lex` section 3). Every desired
-/// symlink's target is resolved once, here, from the link's parent
-/// directory and purely to classify it: a target landing inside the
+/// symlink's target is classified here, from the link's parent directory
+/// and purely to decide whether the plan may carry it — apply re-grades the
+/// same target against the live disk before publishing the link, since the
+/// destination this verdict was taken against can move underneath it. A
+/// target landing inside the
 /// destination is in-dest and always allowed — whether or not anything
 /// exists there, since a dangling pointer is a legal link — while one
 /// landing outside is external and refused as [`Refusal::ExternalTarget`]
