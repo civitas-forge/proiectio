@@ -263,41 +263,6 @@ fn two_entries_projecting_one_normalized_key_are_refused() {
     ));
 }
 
-/// A key nesting at the depth observe walks is accepted, and one past it
-/// fails naming the directory a level beyond — the same limit and the same
-/// error the destination walk raises, since what is at stake is the same
-/// thing: a path written here is a path a later run has to be able to read
-/// back.
-#[test]
-fn a_key_at_the_walk_depth_parses_and_one_past_it_is_named() {
-    let at_the_limit = ["d"; MAX_WALK_DEPTH].join("/");
-    let text = format!(
-        r#"
-        version = 1
-        [files."{at_the_limit}/leaf"]
-        contents = "x"
-    "#
-    );
-    assert_eq!(
-        parse_at(&text).unwrap(),
-        tree(&[(&format!("{at_the_limit}/leaf"), file("x", false))])
-    );
-
-    let past = ["d"; MAX_WALK_DEPTH + 1].join("/");
-    let text = format!(
-        r#"
-        version = 1
-        [links."{past}/leaf"]
-        target = "y"
-    "#
-    );
-    assert!(matches!(
-        parse_at(&text).unwrap_err(),
-        Error::DestinationTooDeep { path, limit }
-            if path == past && limit == MAX_WALK_DEPTH
-    ));
-}
-
 #[test]
 fn archive_entries_parse_structurally_but_are_not_yet_implemented() {
     let text = r#"

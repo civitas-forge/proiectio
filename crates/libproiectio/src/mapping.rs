@@ -5,7 +5,7 @@ use std::io::Read;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Deserialize;
 
-use crate::{Entry, Error, MAX_WALK_DEPTH, Result};
+use crate::{Entry, Error, Result};
 
 /// The mapping format version this crate accepts.
 pub const MAPPING_VERSION: u32 = 1;
@@ -31,11 +31,7 @@ pub const MAPPING_VERSION: u32 = 1;
 /// [`Error::Containment`] naming each key verbatim. Keys land in the
 /// returned tree lexically normalized (`a/../b` becomes `b`), so one
 /// on-disk location has one key; two entries claiming the same normalized
-/// key fail as [`Error::MappingDuplicate`]. A key placing a directory more
-/// than [`MAX_WALK_DEPTH`] levels below the destination fails as
-/// [`Error::DestinationTooDeep`]: [`observe`](crate::observe) descends only
-/// that far, so writing such a key would leave a destination no later run
-/// could read back.
+/// key fail as [`Error::MappingDuplicate`].
 ///
 /// A `source` resolves as a path join against the mapping file's own
 /// directory — never the current directory — so a mapping and its assets
@@ -140,12 +136,6 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
                 key: normalized.clone(),
             });
         }
-        if let Some(too_deep) = past_the_walk(normalized) {
-            return Err(Error::DestinationTooDeep {
-                path: too_deep,
-                limit: MAX_WALK_DEPTH,
-            });
-        }
     }
 
     // Resolve each file entry's `contents`/`source` choice before any read.
@@ -225,31 +215,6 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
 /// which is exactly the half `contained_normalize` carries.
 fn normalize_key(key: &Utf8Path) -> Option<Utf8PathBuf> {
     crate::containment::contained_normalize(key).ok()
-}
-
-/// The directory a normalized key would place one level past
-/// [`MAX_WALK_DEPTH`] below the destination, or `None` when the key stays
-/// inside it. Every component but the last is a directory the projection
-/// would have to create.
-///
-/// The mapping walks nothing, so this is not a stack bound the way
-/// [`load_tree`](crate::load_tree)'s is. It is the write side agreeing with
-/// the read side: [`observe`](crate::observe) descends only that far, so a
-/// deeper key names a path [`apply`](crate::apply) would create and no later
-/// run could observe — the destination then failing every run, the removal
-/// of what was written included. A mapping refused here is one that was
-/// never written; the projection declines it rather than wedging a
-/// destination with it.
-fn past_the_walk(normalized: &Utf8Path) -> Option<Utf8PathBuf> {
-    let directories = normalized.components().count() - 1;
-    if directories <= MAX_WALK_DEPTH {
-        return None;
-    }
-    let mut offender = Utf8PathBuf::new();
-    for component in normalized.components().take(MAX_WALK_DEPTH + 1) {
-        offender.push(component.as_str());
-    }
-    Some(offender)
 }
 
 /// Where a `[files]` entry's bytes come from, decided before any read.

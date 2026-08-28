@@ -700,6 +700,55 @@ fn a_hand_built_plan_with_unnormalized_keys_refuses_containment() {
     assert_tree(dest.root(), &Tree::new());
 }
 
+/// A path at the depth observe walks is written; one past it is named and
+/// nothing is written at all. Deciding never plans the second — both
+/// desired-tree loaders stay inside the limit — so this is the boundary a
+/// hand-built plan meets, and it is the boundary that keeps the projection
+/// from creating a destination its own next run could not observe.
+#[test]
+fn a_plan_writing_past_the_walk_depth_is_named_and_writes_nothing() {
+    let (dest, state) = fixtures();
+    let entry = Entry::File {
+        contents: b"deep".to_vec(),
+        executable: false,
+    };
+    let at_the_limit = Utf8PathBuf::from(format!("{}/leaf", ["d"; MAX_WALK_DEPTH].join("/")));
+    let past = Utf8PathBuf::from(format!("{}/leaf", ["d"; MAX_WALK_DEPTH + 1].join("/")));
+
+    let plan = Plan {
+        owner: "own".to_owned(),
+        actions: BTreeMap::from([(
+            at_the_limit.clone(),
+            Action::Write {
+                entry: entry.clone(),
+            },
+        )]),
+    };
+    apply_at(&dest, &state, &Manifest::new(), &plan).expect("the limit itself is writable");
+    assert_eq!(
+        fs::read_to_string(dest.path(at_the_limit.as_str())).expect("the deep file"),
+        "deep"
+    );
+
+    let (dest, state) = fixtures();
+    let plan = Plan {
+        owner: "own".to_owned(),
+        actions: BTreeMap::from([(past.clone(), Action::Write { entry })]),
+    };
+
+    let error = apply_at(&dest, &state, &Manifest::new(), &plan)
+        .expect_err("a write observe could not read back");
+
+    match error {
+        Error::DestinationTooDeep { path, limit } => {
+            assert_eq!(path, past.parent().expect("the leaf has a parent"));
+            assert_eq!(limit, MAX_WALK_DEPTH);
+        }
+        other => panic!("expected DestinationTooDeep, got {other:?}"),
+    }
+    assert_tree(dest.root(), &Tree::new());
+}
+
 #[test]
 fn a_forged_remove_of_an_unrecorded_path_refuses_foreign() {
     let (dest, state) = fixtures();

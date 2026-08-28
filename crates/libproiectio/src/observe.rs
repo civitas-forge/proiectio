@@ -153,12 +153,11 @@ pub enum Observation {
 /// any caller could report anything. Depth is an error and not a skipped
 /// subtree for the same reason an unreadable entry is.
 ///
-/// The limit is the one both desired-tree loaders bound their keys by —
-/// [`load_tree`](crate::load_tree) walking a source tree,
-/// [`load_mapping`](crate::load_mapping) judging the keys it is handed — so
-/// a destination holding what this projection wrote through either of them
-/// is inside it, and a destination fails this way over content the
-/// projection did not write: foreign nesting, or a mount loop.
+/// The limit is the one [`apply`](crate::apply) refuses to write past and
+/// the one [`load_tree`](crate::load_tree) walks a source tree by, so a
+/// destination holding what this projection wrote is inside it, and a
+/// destination fails this way over what the projection did not write:
+/// foreign nesting, or a mount loop.
 #[cfg(unix)]
 pub fn observe(dest: &Dir, manifest: &Manifest) -> Result<Observations> {
     let mut paths = BTreeMap::new();
