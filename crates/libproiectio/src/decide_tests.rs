@@ -79,14 +79,33 @@ fn observed(paths: &[(&str, Observation)]) -> Observations {
     }
 }
 
-/// [`decide`] for [`OWNER`] with no in-dest state prefix.
+/// [`decide`] for [`OWNER`] with no in-dest state prefix, under `policy`
+/// and the default (refusing) external-target policy.
 fn plan(
     desired: &BTreeMap<Utf8PathBuf, Entry>,
     manifest: &Manifest,
     observations: &Observations,
     policy: DriftPolicy,
 ) -> Plan {
-    decide(OWNER, desired, manifest, observations, None, policy)
+    plan_with(
+        desired,
+        manifest,
+        observations,
+        PlanOptions {
+            drift: policy,
+            ..PlanOptions::default()
+        },
+    )
+}
+
+/// [`plan`] under options the test chooses whole.
+fn plan_with(
+    desired: &BTreeMap<Utf8PathBuf, Entry>,
+    manifest: &Manifest,
+    observations: &Observations,
+    options: PlanOptions,
+) -> Plan {
+    decide(OWNER, desired, manifest, observations, None, options)
 }
 
 fn action<'plan>(plan: &'plan Plan, path: &str) -> &'plan Action {
@@ -958,7 +977,7 @@ fn a_desired_path_entering_the_state_dir_refuses_containment() {
         &Manifest::new(),
         &observed(&[]),
         Some(Utf8Path::new(".proiectio")),
-        DriftPolicy::Refuse,
+        PlanOptions::default(),
     );
 
     for refused in [".proiectio/manifest.json", ".proiectio"] {
@@ -999,7 +1018,7 @@ fn the_state_subtree_is_invisible_to_planning() {
         &manifest,
         &observations,
         Some(Utf8Path::new(".proiectio")),
-        DriftPolicy::Refuse,
+        PlanOptions::default(),
     );
 
     assert_eq!(
@@ -1008,11 +1027,249 @@ fn the_state_subtree_is_invisible_to_planning() {
     );
 }
 
+// --- symlink target grading (`docs/security.lex` section 3) ---
+
+/// The options permitting external targets, drift refused as usual.
+fn allowing_external() -> PlanOptions {
+    PlanOptions {
+        external_targets: ExternalTargetPolicy::Allow,
+        ..PlanOptions::default()
+    }
+}
+
+#[test]
+fn target_grading_admits_in_dest_targets_and_refuses_escaping_ones() {
+    // (link path, target, resolves in-dest). Grading is lexical, from the
+    // link's parent directory, and asks nothing of the filesystem.
+    let table = [
+        ("rc", "shared/rc", true),
+        ("rc", "./shared/rc", true),
+        ("nested/rc", "../shared/rc", true),
+        ("nested/deep/rc", "../../shared/rc", true),
+        ("rc", "sub/../shared/rc", true),
+        ("rc", "shared//rc", true),
+        ("rc", "shared/", true),
+        ("rc", ".", true),
+        ("rc", "not-there/yet", true),
+        ("rc", "..", false),
+        ("rc", "../outside", false),
+        ("nested/rc", "../../outside", false),
+        ("rc", "/etc/passwd", false),
+        ("rc", "/", false),
+        ("rc", "..\\..\\escape", false),
+    ];
+
+    for (path, target, in_dest) in table {
+        let entry = link(target);
+        let desired = tree(&[(path, &entry)]);
+
+        let refusing = plan(
+            &desired,
+            &Manifest::new(),
+            &observed(&[]),
+            DriftPolicy::Refuse,
+        );
+        let allowing = plan_with(
+            &desired,
+            &Manifest::new(),
+            &observed(&[]),
+            allowing_external(),
+        );
+
+        let expected = if in_dest {
+            Action::Write {
+                entry: entry.clone(),
+            }
+        } else {
+            Action::Refuse {
+                refusal: Refusal::ExternalTarget {
+                    target: target.to_owned(),
+                },
+            }
+        };
+        assert_eq!(
+            action(&refusing, path),
+            &expected,
+            "grading {path} -> {target}"
+        );
+        // The permission lifts exactly the external refusal; an in-dest
+        // target never needed it.
+        assert_eq!(
+            action(&allowing, path),
+            &Action::Write {
+                entry: entry.clone()
+            },
+            "permitted {path} -> {target}"
+        );
+    }
+}
+
+#[test]
+fn an_external_target_refuses_even_where_the_link_is_already_recorded_and_clean() {
+    // Nothing about the disk lifts the refusal: the permission is the
+    // invoker's, and it is the same link either way.
+    let entry = link("/opt/toolchain");
+    let manifest = manifest_of(&[("toolchain", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[("toolchain", on_disk(&entry))]);
+    let desired = tree(&[("toolchain", &entry)]);
+
+    let refusing = plan(&desired, &manifest, &observations, DriftPolicy::Refuse);
+    let forced = plan(&desired, &manifest, &observations, DriftPolicy::Overwrite);
+    let allowing = plan_with(&desired, &manifest, &observations, allowing_external());
+
+    for plan in [&refusing, &forced] {
+        assert_eq!(
+            action(plan, "toolchain"),
+            &Action::Refuse {
+                refusal: Refusal::ExternalTarget {
+                    target: "/opt/toolchain".to_owned(),
+                },
+            }
+        );
+    }
+    assert_eq!(
+        action(&allowing, "toolchain"),
+        &Action::Skip {
+            expected: signature(&entry),
+        }
+    );
+}
+
+#[test]
+fn a_recorded_external_link_the_tree_dropped_is_removed_without_permission() {
+    // Grading judges what the tree asks for. An orphan asks for nothing —
+    // removal unlinks the pointer and reads nothing through it.
+    let entry = link("/opt/toolchain");
+    let manifest = manifest_of(&[("toolchain", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[("toolchain", on_disk(&entry))]);
+
+    let plan = plan(&tree(&[]), &manifest, &observations, DriftPolicy::Refuse);
+
+    assert_eq!(
+        action(&plan, "toolchain"),
+        &Action::Remove {
+            expected: Some(signature(&entry)),
+        }
+    );
+}
+
+// --- the no-alias rule: no projected path resolves through a link ---
+
+#[test]
+fn a_desired_path_beneath_a_desired_link_refuses_both_as_a_tree_conflict() {
+    // The nesting is expressible on disk — apply would follow the link —
+    // but the write would land at a path the plan never names.
+    let plan = plan(
+        &tree(&[
+            ("logs", &link("real")),
+            ("logs/x.txt", &file("nested\n", false)),
+        ]),
+        &Manifest::new(),
+        &observed(&[]),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "logs"),
+        &Action::Refuse {
+            refusal: Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("logs/x.txt")]),
+            },
+        }
+    );
+    assert_eq!(
+        action(&plan, "logs/x.txt"),
+        &Action::Refuse {
+            refusal: Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("logs")]),
+            },
+        }
+    );
+}
+
+#[test]
+fn a_desired_path_beneath_a_surviving_on_disk_link_refuses_containment() {
+    // The link is on disk and stays there — recorded under another owner
+    // here, but an unowned one refuses the same way, since observation
+    // never descends either.
+    let held_elsewhere = manifest_of(&[("logs", recorded(&link("real"), &["other"]))]);
+    let observations = observed(&[
+        ("logs", on_disk(&link("real"))),
+        ("real", Observation::Directory),
+    ]);
+    let desired = tree(&[("logs/x.txt", &file("aliased\n", false))]);
+
+    for manifest in [&held_elsewhere, &Manifest::new()] {
+        let plan = plan(&desired, manifest, &observations, DriftPolicy::Refuse);
+
+        assert_eq!(
+            action(&plan, "logs/x.txt"),
+            &Action::Refuse {
+                refusal: Refusal::Containment,
+            }
+        );
+    }
+}
+
+#[test]
+fn a_desired_path_beneath_a_link_this_plan_removes_is_written() {
+    // The orphan removal runs first, so the link is not an ancestor the
+    // write will meet: the path plans as the ordinary directory write it
+    // becomes.
+    let entry = file("a real file\n", false);
+    let manifest = manifest_of(&[("logs", recorded(&link("real"), &[OWNER]))]);
+    let observations = observed(&[
+        ("logs", on_disk(&link("real"))),
+        ("real", Observation::Directory),
+    ]);
+
+    let plan = plan(
+        &tree(&[("logs/x.txt", &entry)]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "logs"),
+        &Action::Remove {
+            expected: Some(signature(&link("real"))),
+        }
+    );
+    assert_eq!(action(&plan, "logs/x.txt"), &Action::Write { entry });
+}
+
+#[test]
+fn a_desired_path_beneath_a_link_the_plan_only_releases_still_refuses() {
+    // A release leaves the link on disk for its other owner, so the path
+    // beneath it still resolves through a link.
+    let manifest = manifest_of(&[("logs", recorded(&link("real"), &[OWNER, "other"]))]);
+    let observations = observed(&[
+        ("logs", on_disk(&link("real"))),
+        ("real", Observation::Directory),
+    ]);
+
+    let plan = plan(
+        &tree(&[("logs/x.txt", &file("aliased\n", false))]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(action(&plan, "logs"), &Action::Release);
+    assert_eq!(
+        action(&plan, "logs/x.txt"),
+        &Action::Refuse {
+            refusal: Refusal::Containment,
+        }
+    );
+}
+
 // --- kind-agnostic comparison: symlinks through the generic table ---
 
 #[test]
 fn a_desired_link_matching_the_disk_target_skips() {
-    let entry = link("../shared/rc");
+    let entry = link("shared/rc");
     let manifest = manifest_of(&[("rc", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[("rc", on_disk(&entry))]);
 

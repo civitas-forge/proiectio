@@ -65,6 +65,55 @@ pub(crate) fn contained_normalize(rel: &Utf8Path) -> Result<Utf8PathBuf> {
     }
 }
 
+/// Resolves a symlink target the way a filesystem would — lexically, from
+/// the directory holding the link — and says where it lands: `Some` of the
+/// resolved path relative to the destination (empty for the destination
+/// itself), or `None` when the target lands outside it.
+///
+/// This is the grading of `docs/security.lex` section 3, and the sole
+/// judge of it: [`decide`](crate::decide) runs it over every desired link,
+/// and apply's no-follow walk runs it over the recorded link it meets, so
+/// a target graded in-dest by one is in-dest to the other. `parent` is the
+/// link's own parent directory relative to the destination — empty at the
+/// destination root — and `target` is the string as written.
+///
+/// Where [`contained_join`] judges a path the projection will *create*,
+/// this judges a pointer's content, so the two contracts differ where
+/// spelling rules have no bearing on where the target lands: a `.` or
+/// empty component resolves away as it does on disk, `..` pops, and a name
+/// Windows would resolve specially is an ordinary name in a pointer
+/// nothing joins onto an ambient path. Refused all the same, and graded
+/// external:
+///
+/// - absolute targets — the flag's headline case;
+/// - `..` climbing past the destination;
+/// - any backslash, which the containment rules never treat as a filename
+///   character: `..\..\escape` is a traversal on one host and a name on
+///   another, and a projection grades it identically everywhere.
+///
+/// No filesystem access: whether anything exists at the resolution is not
+/// asked, because a dangling pointer is a legal link.
+pub(crate) fn contained_target(parent: &Utf8Path, target: &str) -> Option<Utf8PathBuf> {
+    if target.contains('\\') || target.starts_with('/') {
+        return None;
+    }
+    let mut kept: Vec<&str> = parent
+        .as_str()
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect();
+    for component in target.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                kept.pop()?;
+            }
+            name => kept.push(name),
+        }
+    }
+    Some(Utf8PathBuf::from(kept.join("/")))
+}
+
 /// Lexical normalization of a relative tree path; `None` is a refusal.
 ///
 /// Hand-rolled rather than `path-absolutize`/`normpath`: both normalize

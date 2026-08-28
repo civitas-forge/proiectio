@@ -58,8 +58,9 @@ pub enum Error {
     /// refused by [`contained_join`](crate::contained_join) (absolute,
     /// climbing out via `..`, empty or `.` components, backslashes, and
     /// component shapes Windows resolves specially — its rustdoc is the
-    /// full list), writes through a symlinked ancestor, or paths entering
-    /// the projection's own state directory.
+    /// full list), paths resolving through a symlinked ancestor — refused
+    /// when the plan is decided and again when it is applied — and paths
+    /// entering the projection's own state directory.
     #[error("refusing paths that violate containment: {}", join(paths))]
     Containment {
         /// The offending paths as given by the desired tree.
@@ -78,8 +79,14 @@ pub enum Error {
         /// to the other owners holding it.
         conflicts: BTreeMap<Utf8PathBuf, BTreeSet<String>>,
     },
-    /// Refusal: symlinks whose targets resolve outside the destination.
-    /// Like [`Foreign`](Error::Foreign), no policy lifts this.
+    /// Refusal: desired symlinks whose targets, resolved from each link's
+    /// parent directory, land outside the destination — absolute targets
+    /// and relative ones climbing out (`docs/security.lex` section 3). The
+    /// caller lifts this per plan with
+    /// [`ExternalTargetPolicy::Allow`](crate::ExternalTargetPolicy::Allow)
+    /// (a CLI's `--allow-external-targets`), which writes each link with
+    /// its target verbatim. Nothing is ever written *through* such a link:
+    /// an external target is a pointer, and apply refuses to resolve one.
     #[error(
         "refusing symlinks with targets outside the destination: {}",
         join_links(links)
@@ -91,9 +98,9 @@ pub enum Error {
     },
     /// Refusal: desired keys claiming one on-disk location more than once
     /// — two keys normalizing to the same path, or one desired path lying
-    /// beneath another. No file or block entry can hold children; nesting
-    /// beneath a desired *symlink* is conservatively refused too until
-    /// symlink target grading lands
+    /// beneath another. No file or block entry can hold children, and a
+    /// path nesting beneath a desired *symlink* would land somewhere the
+    /// plan does not name
     /// ([`Refusal::TreeConflict`](crate::Refusal::TreeConflict) carries
     /// the rationale). Both sides of a conflict are
     /// refused: there is no deterministic entry to prefer.
@@ -196,20 +203,6 @@ pub enum Error {
         /// The `[archives]` keys, verbatim.
         keys: BTreeSet<Utf8PathBuf>,
     },
-    /// The plan writes a symlink, which [`apply`](crate::apply) cannot do
-    /// yet: link creation waits on symlink target grading (in-dest or
-    /// external, `docs/security.lex` section 3), and creating ungraded links
-    /// would plant escaping pointers without the opt-in that rule demands.
-    /// Not a refusal: the plan is well-formed — this crate cannot honor it
-    /// yet. Reported before anything is written.
-    #[error(
-        "plan writes symlinks, which apply does not implement yet: {}",
-        join(paths)
-    )]
-    ApplySymlinkUnimplemented {
-        /// The planned symlink paths, relative to the destination.
-        paths: BTreeSet<Utf8PathBuf>,
-    },
     /// The plan touches a [`Block`](crate::EntryKind::Block) entry —
     /// writing one, or re-checking a block signature — and block regions
     /// are not implemented in [`apply`](crate::apply) yet. Not a refusal:
@@ -250,7 +243,6 @@ impl Error {
             | Error::MappingContentsXorSource { .. }
             | Error::MappingDuplicate { .. }
             | Error::MappingArchiveUnimplemented { .. }
-            | Error::ApplySymlinkUnimplemented { .. }
             | Error::ApplyBlockUnimplemented { .. } => false,
         }
     }

@@ -18,7 +18,7 @@ use cap_std::fs_utf8::{Dir, MetadataExt};
 use cap_tempfile::TempFile;
 use serde::Deserialize;
 
-use crate::containment::contained_normalize;
+use crate::containment::{contained_normalize, contained_target};
 use crate::observe::{io_error, sha256_hex_of_reader};
 use crate::{
     Action, ApplyOutcome, ApplyReport, Entry, EntryKind, Error, MANIFEST_FILE_NAME,
@@ -92,7 +92,11 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// recording step, and enforces the no-follow ancestor walk below — so a
 /// hand-built or stale plan refuses rather than misfires. (The
 /// state-directory exclusion is the deciding stage's admission check; this
-/// function cannot see where `state` lives relative to `dest`.)
+/// function cannot see where `state` lives relative to `dest`. Neither is a
+/// symlink's target re-graded here: whether an external target is permitted
+/// is the caller's [`PlanOptions`](crate::PlanOptions) answer, given before
+/// this plan existed. What containment means at apply time is the walk
+/// below, which writes *through* no link it grades external.)
 ///
 /// # Up-front failures
 ///
@@ -110,11 +114,9 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 ///   variant reported first is fixed: [`Error::Containment`],
 ///   [`Error::TreeConflict`], [`Error::Foreign`], [`Error::Drift`],
 ///   [`Error::OwnerConflict`], then [`Error::ExternalTarget`];
-/// - a plan writing a symlink fails as [`Error::ApplySymlinkUnimplemented`]
-///   (creation waits on target grading — issue #8), and one touching a
-///   [`Block`](EntryKind::Block) entry as [`Error::ApplyBlockUnimplemented`]
-///   (issue #14). Removing or releasing a *recorded* symlink is
-///   implemented.
+/// - a plan touching a [`Block`](EntryKind::Block) entry — writing one, or
+///   re-checking a block signature — fails as
+///   [`Error::ApplyBlockUnimplemented`] (issue #14).
 ///
 /// # Execution
 ///
@@ -147,11 +149,23 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 ///   visited set: revisiting a link means an owned-link cycle, refused as
 ///   [`Error::Containment`] rather than looped.
 ///
+/// Deciding refuses to plan a write beneath a link that outlives the plan
+/// (its no-alias rule), so in a decided plan these arms judge what appeared
+/// in the gap between the two calls, and the followed arm carries removals
+/// of paths recorded beneath an owned link. A hand-built plan meets all
+/// four the same way.
+///
 /// File bytes go through a tempfile created inside the verified parent and
 /// renamed over the path, with permissions (the exec bit included) set on
 /// the open tempfile handle before the rename — a crash leaves the old
 /// file or the new one, never a torn write and never a visible file with a
-/// wrong mode. Before every overwrite, removal, and skip the target is
+/// wrong mode. A symlink is published the same way: created under a
+/// temporary name in the verified parent and renamed over the path, so a
+/// file becoming a link — or a link becoming a file — publishes in one
+/// rename, and the target string reaches disk verbatim, whatever it points
+/// at ([`decide`](crate::decide) graded it, and refused it there if the
+/// caller's options did not permit an external one). Before every
+/// overwrite, removal, and skip the target is
 /// re-checked against the action's expected signature — kind, hash,
 /// executable bit — and a mismatch refuses as [`Error::Drift`] carrying the
 /// path: the drift rule holds across the gap between plan and apply. A
@@ -204,7 +218,6 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
     let mut tree_conflict = BTreeSet::new();
     let mut owner_conflicts = BTreeMap::new();
     let mut external = BTreeMap::new();
-    let mut symlink_unimplemented = BTreeSet::new();
     let mut block_unimplemented = BTreeSet::new();
     for (path, action) in &plan.actions {
         // Refusals are keyed by the desired key verbatim — possibly a
@@ -254,19 +267,15 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
             continue;
         }
         match action {
-            Action::Write { entry } => entry_seam(
-                entry,
-                path,
-                &mut symlink_unimplemented,
-                &mut block_unimplemented,
-            ),
+            Action::Write { entry } => {
+                if matches!(entry, Entry::Block { .. }) {
+                    block_unimplemented.insert(path.clone());
+                }
+            }
             Action::Overwrite { entry, expected } => {
-                entry_seam(
-                    entry,
-                    path,
-                    &mut symlink_unimplemented,
-                    &mut block_unimplemented,
-                );
+                if matches!(entry, Entry::Block { .. }) {
+                    block_unimplemented.insert(path.clone());
+                }
                 // The re-check side too: check_leaf cannot honor a block
                 // signature, and finding that out mid-run would break the
                 // up-front promise.
@@ -313,31 +322,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
             paths: block_unimplemented,
         });
     }
-    if !symlink_unimplemented.is_empty() {
-        return Err(Error::ApplySymlinkUnimplemented {
-            paths: symlink_unimplemented,
-        });
-    }
     Ok(())
-}
-
-/// Sorts a written entry's kind into [`validate`]'s unimplemented-seam
-/// sets: symlink and block creation wait on issues #8 and #14.
-fn entry_seam(
-    entry: &Entry,
-    path: &Utf8Path,
-    symlink_unimplemented: &mut BTreeSet<Utf8PathBuf>,
-    block_unimplemented: &mut BTreeSet<Utf8PathBuf>,
-) {
-    match entry {
-        Entry::File { .. } => {}
-        Entry::Symlink { .. } => {
-            symlink_unimplemented.insert(path.to_owned());
-        }
-        Entry::Block { .. } => {
-            block_unimplemented.insert(path.to_owned());
-        }
-    }
 }
 
 /// Executes a validated plan's actions in the documented order, recording
@@ -487,13 +472,15 @@ fn prune(dest: &Dir, manifest: &Manifest, candidates: &BTreeSet<Utf8PathBuf>) ->
     Ok(())
 }
 
-/// Writes a planned entry at `path` through a tempfile in the verified
-/// parent, renamed over the leaf. `fresh` marks an [`Action::Write`], whose
-/// target must still be absent: a node found there refuses — [`Error::Drift`]
-/// when the path is recorded (it changed relative to the plan's view),
-/// [`Error::Foreign`] otherwise (something the projection never wrote
-/// appeared). Symlink and block entries were rejected by [`validate`];
-/// reaching one here is a bug, but still errors rather than panics.
+/// Writes a planned entry at `path` inside the verified parent, publishing
+/// it over the leaf in one rename — a tempfile for a file's bytes, a
+/// temporarily named link for a symlink. `fresh` marks an
+/// [`Action::Write`], whose target must still be absent: a node found there
+/// refuses — [`Error::Drift`] when the path is recorded (it changed
+/// relative to the plan's view), [`Error::Foreign`] otherwise (something
+/// the projection never wrote appeared). Block entries were rejected by
+/// [`validate`]; reaching one here is a bug, but still errors rather than
+/// panics.
 fn write(
     dest: &Dir,
     manifest: &Manifest,
@@ -501,17 +488,6 @@ fn write(
     entry: &Entry,
     fresh: bool,
 ) -> Result<()> {
-    let Entry::File {
-        contents,
-        executable,
-    } = entry
-    else {
-        let paths = BTreeSet::from([path.to_owned()]);
-        return Err(match entry {
-            Entry::Symlink { .. } => Error::ApplySymlinkUnimplemented { paths },
-            _ => Error::ApplyBlockUnimplemented { paths },
-        });
-    };
     let Some((parent, leaf, _)) = verified_parent(dest, manifest, path, true)? else {
         unreachable!("a creating walk opens or creates every ancestor");
     };
@@ -530,7 +506,16 @@ fn write(
             Err(e) => return Err(io_error(path)(e)),
         }
     }
-    persist(&parent, &leaf, path, contents, *executable)
+    match entry {
+        Entry::File {
+            contents,
+            executable,
+        } => persist(&parent, &leaf, path, contents, *executable),
+        Entry::Symlink { target } => publish_link(&parent, &leaf, path, target),
+        Entry::Block { .. } => Err(Error::ApplyBlockUnimplemented {
+            paths: BTreeSet::from([path.to_owned()]),
+        }),
+    }
 }
 
 /// Publishes `contents` at `leaf` inside `dir` atomically: tempfile,
@@ -553,6 +538,55 @@ fn persist(
         .set_permissions(permissions)
         .map_err(io_error(path))?;
     temp.replace(leaf).map_err(io_error(path))
+}
+
+/// Publishes the symlink `leaf -> target` inside `dir` atomically: the link
+/// is created under a temporary name in that same verified directory and
+/// renamed over the leaf, so the path holds the old node or the finished
+/// link and never nothing — and because rename replaces whatever the leaf
+/// was, a file becoming a link and a link becoming a link both publish in
+/// that one step. A rename that fails unlinks the temporary link: `dir` is
+/// never littered.
+///
+/// `target` reaches disk verbatim, through the plain-`Dir` view's
+/// `symlink_contents`, which writes any target string — an absolute one
+/// included, where `symlink` would refuse
+/// (`docs/implementation.lex` section 3). Grading a target is the deciding
+/// stage's job and happened before this plan existed; nothing here rewrites
+/// what a link points at. Nothing is written *through* the link either: the
+/// no-follow walk that verified `dir` never resolves an external target.
+fn publish_link(dir: &Dir, leaf: &str, path: &Utf8Path, target: &str) -> Result<()> {
+    let dir = dir.as_cap_std();
+    let temp = temp_link_name();
+    dir.symlink_contents(target, &temp)
+        .map_err(io_error(path))?;
+    match dir.rename(&temp, dir, leaf) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = dir.remove_file(&temp);
+            Err(io_error(path)(e))
+        }
+    }
+}
+
+/// A name for the temporary link [`publish_link`] renames from: the
+/// process id, a per-call counter, and the clock, so two links published at
+/// once — by this process or another — never collide, and neither does a
+/// name left behind by a crashed run of a process whose id was reused. A
+/// name that somehow *is* taken fails the create with `EEXIST` rather than
+/// publishing over anything.
+fn temp_link_name() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.subsec_nanos());
+    format!(
+        ".proiectio-link-{}-{}-{nanos}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// Records what a write or overwrite placed at `path`: the entry's
@@ -748,11 +782,10 @@ fn verified_parent(
                     // followed.
                     return Err(containment(path));
                 };
-                // Arm three: grade the target from the link's parent; only
-                // an in-dest resolution may be followed. `join` on an
-                // absolute target yields an absolute path, which the
-                // gateway refuses like any escaping one.
-                let Ok(resolved) = contained_normalize(&prefix.join(target)) else {
+                // Arm three: grade the target from the link's parent, by
+                // the same call deciding grades desired links with; only an
+                // in-dest resolution may be followed.
+                let Some(resolved) = contained_target(&prefix, target) else {
                     return Err(containment(path));
                 };
                 if !visited.insert(here) {

@@ -134,3 +134,63 @@ fn escaping_paths_are_refused_with_the_path_verbatim() {
         }
     }
 }
+
+#[test]
+fn in_dest_targets_resolve_from_the_links_parent() {
+    // (the link's parent, the target as written, where it lands).
+    let cases: &[(&str, &str, &str)] = &[
+        ("", "shared/rc", "shared/rc"),
+        ("nested", "../shared/rc", "shared/rc"),
+        ("nested/deep", "../../shared/rc", "shared/rc"),
+        ("nested", "sibling", "nested/sibling"),
+        ("nested", "sub/../sibling", "nested/sibling"),
+        // Spellings a filesystem resolves away — the pointer is content,
+        // not a path the projection creates.
+        ("", "./shared/rc", "shared/rc"),
+        ("", "shared//rc", "shared/rc"),
+        ("", "shared/", "shared"),
+        ("nested", ".", "nested"),
+        ("", "NUL", "NUL"),
+        ("", "a:b", "a:b"),
+        // Nothing needs to exist at the far end: a dangling pointer is a
+        // legal link.
+        ("", "not-there/yet", "not-there/yet"),
+        // The destination itself.
+        ("", ".", ""),
+        ("nested", "..", ""),
+    ];
+
+    for (parent, target, landing) in cases {
+        assert_eq!(
+            contained_target(Utf8Path::new(parent), target),
+            Some(Utf8PathBuf::from(*landing)),
+            "{parent:?} -> {target:?}"
+        );
+    }
+}
+
+#[test]
+fn escaping_targets_grade_external() {
+    let cases: &[(&str, &str)] = &[
+        ("", "/etc/passwd"),
+        ("", "/"),
+        ("nested", "/etc/passwd"),
+        ("", ".."),
+        ("", "../outside"),
+        ("nested", "../../outside"),
+        ("nested/deep", "../../../outside"),
+        ("", "a/../../outside"),
+        // Backslashes are a separator on one host and a name on another;
+        // a projection grades them the same way everywhere.
+        ("", "..\\..\\escape"),
+        ("", "a\\b"),
+    ];
+
+    for (parent, target) in cases {
+        assert_eq!(
+            contained_target(Utf8Path::new(parent), target),
+            None,
+            "{parent:?} -> {target:?}"
+        );
+    }
+}
