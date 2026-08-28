@@ -637,44 +637,33 @@ fn regrade(
 /// answers from the desired tree and the observation snapshot, answered here
 /// from the plan and the live disk.
 ///
-/// The plan answers for every path it writes or removes, the disk for
-/// everything it leaves alone. Reading the plan rather than the disk at
-/// those paths is what keeps the two verdicts from disagreeing over apply's
-/// own execution order: a run replacing `pivot -> /etc` with an in-dest link
-/// writes `evil -> pivot/x` before it reaches `pivot`, and grading that
-/// pointer against the half-applied destination would refuse a plan whose
-/// finished destination holds nothing external. A plan carrying any
-/// [`Action::Refuse`] applies nothing, so either every planned entry lands
-/// or none does.
-fn planned_hop(dest: &Dir, plan: &Plan, path: &Utf8Path) -> Result<Hop> {
-    match plan.actions.get(path) {
-        Some(Action::Write { entry } | Action::Overwrite { entry, .. }) => {
-            return Ok(match entry {
-                Entry::Symlink { target } => Hop::Link(target.clone()),
-                Entry::File { .. } | Entry::Block { .. } => Hop::Terminal,
-            });
-        }
-        Some(Action::Remove { .. }) => return Ok(Hop::Terminal),
-        Some(Action::Skip { .. } | Action::Release | Action::Refuse { .. }) | None => {}
-    }
-    hop_on_disk(dest, path)
-}
-
-/// What stands at one destination-relative path on disk, for the paths
-/// [`planned_hop`] leaves the filesystem to answer for: each ancestor
-/// component is opened from the `dest` handle with `open_dir_nofollow`, so
-/// the lstat of the final component is reached without following anything.
+/// The plan answers for every path it writes or removes — the leaf and its
+/// ancestors alike — and the disk for everything the run leaves alone. Each
+/// ancestor the disk answers for is opened from the `dest` handle with
+/// `open_dir_nofollow`, so the lstat of the final component is reached
+/// without following anything.
+///
+/// Reading the plan rather than the disk at those paths is what keeps the
+/// two stages from grading different destinations, because apply publishes
+/// in path order and half a run is not the destination anything was graded
+/// against: a run replacing `pivot -> /etc` with an in-dest link reaches
+/// `evil -> pivot/x` first, and a run replacing a link with a file reaches a
+/// pointer beneath it first. Both finish with nothing external, and both
+/// would refuse if the pointer were graded against the disk alone. A plan
+/// carrying any [`Action::Refuse`] applies nothing, so either every planned
+/// entry lands or none does.
 ///
 /// Only a symlink continues a chain. A missing path, or one whose ancestry
-/// is missing or not a directory, is [`Terminal`](Hop::Terminal) — a
-/// pointer into nothing stays a pointer inside the destination. Two shapes
-/// are [`Unresolvable`](Hop::Unresolvable), and both grade the chain
+/// is missing or is anything but a directory, is [`Terminal`](Hop::Terminal)
+/// — a pointer into nothing stays a pointer inside the destination. Two
+/// shapes are [`Unresolvable`](Hop::Unresolvable), and both grade the chain
 /// external: a target that is not UTF-8, which nothing can say the landing
-/// of, and an ancestor that is a symlink — the walk verified that ancestor
-/// as an ordinary directory a moment ago, so meeting a link there means the
-/// destination is being rewritten underneath this run, and a chain resolved
-/// through it would vouch for nothing.
-fn hop_on_disk(dest: &Dir, path: &Utf8Path) -> Result<Hop> {
+/// of, and an ancestor the disk still holds a symlink at — the chain
+/// established that ancestor as an ordinary directory a moment ago and the
+/// plan does not name it, so meeting a link there means the destination is
+/// being rewritten underneath this run, and a chain resolved through it
+/// would vouch for nothing.
+fn planned_hop(dest: &Dir, plan: &Plan, path: &Utf8Path) -> Result<Hop> {
     let mut components: VecDeque<String> = path
         .components()
         .map(|component| component.as_str().to_owned())
@@ -686,6 +675,15 @@ fn hop_on_disk(dest: &Dir, path: &Utf8Path) -> Result<Hop> {
     let mut prefix = Utf8PathBuf::new();
     for component in components {
         let here = prefix.join(&component);
+        if let Some(planned) = planned_node(plan, &here) {
+            // The run leaves a non-directory here, so nothing lives beneath
+            // it. A link would have been followed before the chain asked
+            // about anything under it.
+            return Ok(match planned {
+                Hop::Link(_) => Hop::Unresolvable,
+                terminal => terminal,
+            });
+        }
         let meta = match dir.symlink_metadata(&component) {
             Ok(meta) => meta,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Hop::Terminal),
@@ -699,6 +697,9 @@ fn hop_on_disk(dest: &Dir, path: &Utf8Path) -> Result<Hop> {
         }
         dir = open_nofollow(&dir, &component).map_err(io_error(&here))?;
         prefix = here;
+    }
+    if let Some(planned) = planned_node(plan, path) {
+        return Ok(planned);
     }
     match dir.symlink_metadata(&leaf) {
         Ok(meta) if meta.file_type().is_symlink() => {
@@ -715,6 +716,20 @@ fn hop_on_disk(dest: &Dir, path: &Utf8Path) -> Result<Hop> {
         Ok(_) => Ok(Hop::Terminal),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Hop::Terminal),
         Err(e) => Err(io_error(path)(e)),
+    }
+}
+
+/// What `plan` leaves at one destination-relative path, or `None` where it
+/// names the path but leaves what stands there alone — a skip, a release, or
+/// a refusal, all of which the disk answers for.
+fn planned_node(plan: &Plan, path: &Utf8Path) -> Option<Hop> {
+    match plan.actions.get(path)? {
+        Action::Write { entry } | Action::Overwrite { entry, .. } => Some(match entry {
+            Entry::Symlink { target } => Hop::Link(target.clone()),
+            Entry::File { .. } | Entry::Block { .. } => Hop::Terminal,
+        }),
+        Action::Remove { .. } => Some(Hop::Terminal),
+        Action::Skip { .. } | Action::Release | Action::Refuse { .. } => None,
     }
 }
 

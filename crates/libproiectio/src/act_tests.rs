@@ -1341,6 +1341,41 @@ fn a_pointer_through_a_pivot_this_run_replaces_lands_without_the_permission() {
     );
 }
 
+// The plan answers for its own ancestors too. "d" is a link on disk and a
+// file in the tree, so nothing lives beneath it once the run finishes and
+// the chain ends there — which the re-grade has to read off the plan, since
+// apply reaches "a" before it has replaced "d".
+#[test]
+fn a_pointer_under_a_link_this_run_replaces_with_a_file_lands_without_the_permission() {
+    let (dest, state) = fixtures();
+    pipeline_with(
+        &dest,
+        &state,
+        "own",
+        &Tree::new().symlink("d", "/etc").entries(),
+        PlanOptions {
+            external_targets: ExternalTargetPolicy::Allow,
+            ..PlanOptions::default()
+        },
+    )
+    .expect("the permitted external link lands");
+
+    let desired = Tree::new()
+        .file("d", "no longer a link\n")
+        .symlink("a", "d/x")
+        .entries();
+
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
+        .expect("the run replaces the link with a file");
+
+    assert_tree(
+        dest.root(),
+        &Tree::new()
+            .file("d", "no longer a link\n")
+            .symlink("a", "d/x"),
+    );
+}
+
 // The no-alias rule end to end: a path resolving through a link the plan
 // leaves standing is refused, so nothing lands where the plan does not name.
 #[test]
