@@ -28,7 +28,7 @@ Proiectio
 
     The paths and their contents can be defined in two ways: either via a mapping file (a TOML file) or via a directory tree.
 
-    In the former, the file's content can either be inlined as a string or referenced from a file path. In that form, file metadata follows the file system's defaults, and can be overriden.
+    In the former, the file's content can either be inlined as a string or referenced from a file path. Inlined content gets the platform's default metadata; referenced files copy theirs from the source file. Either way it can be overriden per entry.
 
     If specifying from a directory tree, metadata is copied from the source files.
 

@@ -11,7 +11,8 @@
 //!
 //! The crate carries no consumer vocabulary: content arrives as bytes,
 //! owners are opaque strings, and nothing here names what the files are
-//! for.
+//! for. A caller computes the desired tree itself or loads one from a TOML
+//! mapping file with [`load_mapping`].
 //!
 //! # Exit contract
 //!
@@ -27,6 +28,7 @@ mod containment;
 mod entry;
 mod error;
 mod manifest;
+mod mapping;
 mod observe;
 mod plan;
 mod projection;
@@ -39,6 +41,7 @@ pub use containment::*;
 pub use entry::*;
 pub use error::*;
 pub use manifest::*;
+pub use mapping::*;
 pub use observe::*;
 pub use plan::*;
 pub use projection::*;

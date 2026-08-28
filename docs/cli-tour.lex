@@ -110,10 +110,10 @@ The CLI
 5. The Mapping File
 
     A TOML file. Keys are projected paths — relative, and confined to
-    the destination after normalization. contents and source are
-    mutually exclusive; relative source paths resolve against the
-    mapping file's own directory, so a mapping and its assets travel
-    together. Metadata is the executable bit — from the source file,
+    the destination after normalization. Every file entry carries
+    exactly one of contents and source; relative source paths resolve
+    against the mapping file's own directory, so a mapping and its
+    assets travel together. Metadata is the executable bit — from the source file,
     or platform default for inline contents, overridable per entry.
 
     version = 1

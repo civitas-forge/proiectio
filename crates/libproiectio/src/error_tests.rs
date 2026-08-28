@@ -42,6 +42,27 @@ fn every_variant() -> Vec<Error> {
             found: 9,
             supported: crate::MANIFEST_VERSION,
         },
+        Error::MappingFormat {
+            path: Utf8PathBuf::from("deploy.toml"),
+            source: toml::from_str::<crate::Manifest>("not toml").expect_err("parse failure"),
+        },
+        Error::MappingVersion {
+            path: Utf8PathBuf::from("deploy.toml"),
+            found: 9,
+            supported: crate::MAPPING_VERSION,
+        },
+        Error::MappingContentsXorSource {
+            path: Utf8PathBuf::from("deploy.toml"),
+            key: Utf8PathBuf::from("bin/tool"),
+        },
+        Error::MappingDuplicate {
+            path: Utf8PathBuf::from("deploy.toml"),
+            key: Utf8PathBuf::from("bin/tool"),
+        },
+        Error::MappingArchiveUnimplemented {
+            path: Utf8PathBuf::from("deploy.toml"),
+            keys: paths(&["vendor/"]),
+        },
     ]
 }
 
@@ -61,7 +82,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    assert_eq!(codes, vec![2, 2, 2, 2, 2, 1, 1, 1]);
+    assert_eq!(codes, vec![2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1]);
     assert_eq!(exit_code(Ok(())), 0);
 }
 
