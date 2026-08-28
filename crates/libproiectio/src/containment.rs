@@ -1,4 +1,5 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
+use std::convert::Infallible;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
@@ -70,42 +71,62 @@ pub(crate) fn contained_normalize(rel: &Utf8Path) -> Result<Utf8PathBuf> {
     }
 }
 
-/// Resolves a symlink target lexically, from the directory holding the
-/// link, and says where the *string* points: `Some` of the resolved path
-/// relative to the destination (empty for the destination itself), or
-/// `None` when it points outside.
+/// What the chain resolution finds at one component of a target's path —
+/// the single question [`contained_target_chain`] asks about the
+/// destination, so the rule itself reads no disk and holds no snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Hop {
+    /// Nothing that continues the chain: no node, a file, a directory, or
+    /// a kind the projection never writes. Resolution walks on through the
+    /// name.
+    Terminal,
+    /// A symlink pointing at this target string. Resolution continues
+    /// through it, from the link's own parent directory.
+    Link(String),
+    /// Nothing that can say where the chain continues: a symlink whose
+    /// on-disk target is not UTF-8, or — for a reader consulting a
+    /// destination being written — a path whose own ancestry turned into a
+    /// symlink under the reader. Graded external: a hop nobody can follow
+    /// is one nobody can vouch for.
+    Unresolvable,
+}
+
+/// Resolves a symlink target from the directory holding the link,
+/// following the destination's own links on the way, and says where the
+/// pointer lands: `Some` of the resolved path relative to the destination
+/// (empty for the destination itself), or `None` when it lands outside.
 ///
-/// This is the grading of `docs/security.lex` section 3, and the sole
-/// judge of it: [`decide`](crate::decide) runs it over every desired link,
-/// and apply's no-follow walk runs it over the recorded link it meets, so
-/// a target graded in-dest by one is in-dest to the other. `parent` is the
-/// link's own parent directory relative to the destination — empty at the
-/// destination root — and `target` is the string as written.
+/// This is the grading of `docs/security.lex` section 3 whole.
+/// [`contained_target`] is this function with a destination that holds no
+/// links at all. `parent` is the link's own parent directory relative to
+/// the destination — empty at the destination root — `target` is the string
+/// as written, and `hop` answers what stands at one destination-relative
+/// path. [`decide`](crate::decide) answers from the desired tree and the
+/// plan-time [`Observations`](crate::Observations), so it grades against
+/// the destination the run leaves; apply answers from the live disk alone,
+/// and holds a link back rather than publishing it while the run still has
+/// a link to write where the chain walked. Neither the rule nor its callers
+/// rewrite a target; what reaches disk is the string verbatim.
 ///
-/// Lexical is the whole contract, and it is narrower than what a
-/// filesystem does. No disk is read, so a component of the target that is
-/// itself a symlink is not seen through: `pivot/passwd` grades in-dest
-/// whatever `pivot` turns out to be. Where the destination already holds
-/// an escaping link, a tree can therefore plant a pointer that dereferences
-/// outside without the external-target permission — bounded by the
-/// projection's inability to create that escaping hop itself, since an
-/// absolute or climbing target is graded external and needs the permission.
-/// Nothing is written *through* either link: apply's no-follow walk
-/// enforces that, and it does read the disk.
+/// # Resolution
 ///
-/// Where [`contained_join`] judges a path the projection will *create*,
-/// this judges a pointer's content, so the two contracts differ where
-/// spelling rules have no bearing on where the target lands: a `.` or
-/// empty component resolves away as it does on disk, `..` pops, and a name
-/// the gateway refuses for how Windows *joins* it is an ordinary name in a
-/// pointer nothing joins onto an ambient path — `victim:stream` addresses
-/// a stream of a sibling under the destination, `NUL` a device, and both
-/// stay in-dest here.
+/// Components are consumed left to right against a walked prefix that
+/// starts at `parent`, the way a kernel resolves a path:
 ///
-/// Graded external, on the other hand:
+/// - `.` and empty components resolve away, as they do on disk;
+/// - `..` pops the walked prefix, and popping past the destination root is
+///   the escape — so `..` after a followed link pops the *link's* parent,
+///   not the spelling the target was written with;
+/// - a name asks `hop`. A [`Terminal`](Hop::Terminal) hop extends the
+///   walked prefix; a [`Link`](Hop::Link) splices the link's own target
+///   into the components still to consume, leaving the walked prefix at
+///   that link's parent; an [`Unresolvable`](Hop::Unresolvable) hop ends
+///   the resolution outside.
 ///
-/// - absolute targets — the flag's headline case;
-/// - `..` climbing past the destination;
+/// Refused outright — for the target as written and for every followed
+/// link's target alike, since each is resolved by the same rules:
+///
+/// - absolute targets — the external-target permission's headline case;
 /// - a leading Windows drive designator — an ASCII letter and a colon,
 ///   with a slash (`C:/escape`) or without (`C:escape`, `c:`). Windows
 ///   resolves such a target against that drive rather than against the
@@ -115,30 +136,111 @@ pub(crate) fn contained_normalize(rel: &Utf8Path) -> Result<Utf8PathBuf> {
 ///   character: `..\..\escape` is a traversal on one host and a name on
 ///   another, and a projection grades it identically everywhere.
 ///
-/// The last two are judged on every host, so a tree gets one verdict
-/// everywhere.
+/// The last two are judged on every host, so those two spellings get one
+/// verdict everywhere. The rest of a verdict now depends on the
+/// destination: `pivot/passwd` lands in-dest where `pivot` is an ordinary
+/// directory and outside where `pivot` is a link to `/etc`, so the same
+/// tree can need the permission in one destination and not in another
+/// (`docs/security.lex` section 3 states the contract; tree *paths* keep
+/// their host-independent lexical verdict).
 ///
-/// No filesystem access: whether anything exists at the resolution is not
-/// asked, because a dangling pointer is a legal link.
-pub(crate) fn contained_target(parent: &Utf8Path, target: &str) -> Option<Utf8PathBuf> {
-    if target.contains('\\') || target.starts_with('/') || starts_with_drive(target) {
-        return None;
-    }
-    let mut kept: Vec<&str> = parent
+/// # Cycles
+///
+/// Following carries a visited set of the links followed, keyed by their
+/// destination-relative paths, and a link met twice ends the resolution
+/// outside rather than looping — the guard apply's no-follow walk carries,
+/// in the same shape. It is a cycle guard, not a hop limit: a legitimate
+/// chain may be arbitrarily long. It is also blunter than a kernel's
+/// `ELOOP` counter, since a target that legitimately traverses one link
+/// twice grades external too; refusing a pointer nobody has to write beats
+/// resolving one forever.
+///
+/// # Where [`contained_join`] differs
+///
+/// That gateway judges a path the projection will *create*, this a
+/// pointer's content, so the contracts part where spelling rules have no
+/// bearing on where the target lands: a name the gateway refuses for how
+/// Windows *joins* it is an ordinary name in a pointer nothing joins onto
+/// an ambient path — `victim:stream` addresses a stream of a sibling under
+/// the destination, `NUL` a device, and both stay in-dest here.
+///
+/// Whether anything exists at the landing is never asked: a dangling
+/// pointer is a legal link, and so is one whose chain runs out partway.
+pub(crate) fn contained_target_chain<E>(
+    parent: &Utf8Path,
+    target: &str,
+    mut hop: impl FnMut(&Utf8Path) -> std::result::Result<Hop, E>,
+) -> std::result::Result<Option<Utf8PathBuf>, E> {
+    let mut walked: Vec<String> = parent
         .as_str()
         .split('/')
         .filter(|component| !component.is_empty())
+        .map(str::to_owned)
         .collect();
-    for component in target.split('/') {
-        match component {
-            "" | "." => {}
+    let mut visited: BTreeSet<Utf8PathBuf> = BTreeSet::new();
+    let Some(mut remaining) = split_target(target) else {
+        return Ok(None);
+    };
+    while let Some(component) = remaining.pop_front() {
+        match component.as_str() {
+            "" | "." => continue,
             ".." => {
-                kept.pop()?;
+                if walked.pop().is_none() {
+                    return Ok(None);
+                }
+                continue;
             }
-            name => kept.push(name),
+            _ => {}
+        }
+        walked.push(component);
+        let here = Utf8PathBuf::from(walked.join("/"));
+        match hop(&here)? {
+            Hop::Terminal => {}
+            Hop::Unresolvable => return Ok(None),
+            Hop::Link(target) => {
+                // The chain continues from the link's own parent, so the
+                // link's name comes back off the walked prefix before its
+                // target's components go on the front of the queue.
+                walked.pop();
+                if !visited.insert(here) {
+                    return Ok(None);
+                }
+                let Some(mut spliced) = split_target(&target) else {
+                    return Ok(None);
+                };
+                spliced.append(&mut remaining);
+                remaining = spliced;
+            }
         }
     }
-    Some(Utf8PathBuf::from(kept.join("/")))
+    Ok(Some(Utf8PathBuf::from(walked.join("/"))))
+}
+
+/// The components of a target string, or `None` for the three spellings
+/// that land outside the destination whatever follows them: an absolute
+/// target, a leading Windows drive designator, and a backslash anywhere.
+fn split_target(target: &str) -> Option<VecDeque<String>> {
+    if target.contains('\\') || target.starts_with('/') || starts_with_drive(target) {
+        return None;
+    }
+    Some(target.split('/').map(str::to_owned).collect())
+}
+
+/// [`contained_target_chain`] over a destination holding no links: the
+/// purely lexical resolution of `target` from `parent`, reading nothing and
+/// seeing through nothing.
+///
+/// This is what apply's no-follow walk grades an ancestor link with, one
+/// hop at a time. The walk is itself the chain resolution against the live
+/// disk — it restarts from the destination root along each followed
+/// target and carries the same visited set — so grading one hop lexically
+/// there resolves the whole chain, against a disk fresher than any
+/// snapshot.
+pub(crate) fn contained_target(parent: &Utf8Path, target: &str) -> Option<Utf8PathBuf> {
+    match contained_target_chain(parent, target, |_| Ok::<Hop, Infallible>(Hop::Terminal)) {
+        Ok(landing) => landing,
+        Err(never) => match never {},
+    }
 }
 
 /// Whether `target` is a pathname at all — the question that comes before

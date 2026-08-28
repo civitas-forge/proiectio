@@ -29,9 +29,11 @@ Implementation Guidelines
     One deliberate exception to "verbatim": before each destructive
     action — overwrite or removal — act re-checks the target against
     the signature the plan expects — kind, hash, executable bit — and
-    refuses if it changed since observation. plan and apply are
-    separate calls in the library, so the gap between them is real
-    even where the CLI closes it to milliseconds.
+    refuses if it changed since observation. A link's target grading
+    is re-checked the same way, against the disk rather than the
+    snapshot it was decided from ([./security.lex] section 3). plan
+    and apply are separate calls in the library, so the gap between
+    them is real even where the CLI closes it to milliseconds.
 
 2. Testing
 
@@ -166,12 +168,16 @@ Implementation Guidelines
     tolerates in-dest "..", and at link creation refuses only an
     absolute target — an escaping relative target writes fine and
     fails only when traversed — so grading targets in-dest or
-    external stays ours, in the same module: contained_target, the
-    lexical resolution of a target from the link's parent
-    ([./security.lex] section 3). One function, two callers — decide
-    grades every desired link with it, act's walk grades the recorded
-    link it meets — so a target one calls in-dest is one the other
-    may follow. The structured Containment refusal, with paths, names
+    external stays ours, in the same module: contained_target_chain,
+    the resolution of a target from the link's parent, following the
+    links dest holds ([./security.lex] section 3). One rule, three
+    callers — decide reads the desired tree and the observation
+    snapshot, so it grades against the destination the run leaves;
+    act re-grades against the live disk before publishing a link, and
+    act's no-follow walk grades the recorded ancestor link it meets
+    one lexical hop at a time, being itself that same resolution
+    against the live disk — so a target one calls in-dest is one the
+    others may follow. The structured Containment refusal, with paths, names
     its producers: decide — the lexical rules, paths entering the
     projection's own state directory, and desired paths lying beneath
     a link the plan leaves standing ([./design.lex] section 2)
@@ -235,6 +241,33 @@ Implementation Guidelines
     executes in sorted order, parents before children, removals in
     reverse. Plans are diffable, output is stable, failures are
     reproducible.
+
+    Symlinks are the one exception, and grading is why: a link's
+    target is graded against the destination as it stands
+    ([./security.lex] section 3), so it cannot be published before
+    the run has put whatever its target resolves through in place.
+    They run after everything else, and one is published only when it
+    grades in-dest against the disk *and* the chain that graded it
+    walked through no path the run is still going to publish a link
+    at — otherwise it is held, the pass repeating over what it held
+    until one publishes nothing, which refuses every link still
+    waiting. Every path a published link resolves through is
+    therefore already final, so no later publication moves where it
+    lands, and a run that fails partway leaves no pointer out of dest
+    behind. The order stays deterministic: same plan, same
+    destination, same sequence.
+
+    All of that is the refusing policy's, since it is the one with a
+    plan-time verdict to hold to. Under the external-target permission
+    a link neither re-grades nor waits: it is published where sorted
+    order puts it, which is the ordinary rule with no exception.
+
+    What the run is still going to publish a link at is named by
+    action key, so a symlink is the one entry the walk of section 3
+    will not follow an owned link to reach: published anywhere but
+    its key, it would be a link no other link's chain waits for.
+    Deciding's no-alias rule refuses to plan such a link, and a
+    hand-built plan carrying one is refused at apply.
 
 7. Concurrency
 

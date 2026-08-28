@@ -51,7 +51,8 @@ pub const MAPPING_VERSION: u32 = 1;
 /// source would borrow the mapping's drive, as path joins do there. Link
 /// targets are carried
 /// verbatim and unjudged: grading a target in-dest or external needs the
-/// destination and happens at plan time.
+/// destination, so it happens when planning and again before apply
+/// publishes the link.
 ///
 /// The executable bit: for `contents` entries the platform default (not
 /// executable), for `source` entries the source file's own bit; an explicit

@@ -10,7 +10,7 @@ use camino::Utf8Path;
 #[cfg(unix)]
 use cap_std::fs_utf8::{Dir, MetadataExt};
 
-use crate::{Error, Manifest, Result};
+use crate::{Error, MAX_WALK_DEPTH, Manifest, Result};
 
 /// Lowercase hex SHA-256 of `bytes` — the one hash convention, everywhere a
 /// hash is recorded or compared ([`ManifestEntry::hash`]): a file hashes
@@ -141,10 +141,27 @@ pub enum Observation {
 /// destination (`.` for the destination itself); an unreadable entry is an
 /// error, not a skip, because a snapshot that silently omitted paths would
 /// let a later stage mistake unreadable for absent.
+///
+/// One shape of destination fails the observation rather than being read:
+/// one nesting more than [`MAX_WALK_DEPTH`] directories below `dest`, which
+/// is [`Error::DestinationTooDeep`] naming the directory a level past that —
+/// a failure, not a refusal, since no path is being declined. The walk
+/// spends a stack frame per level and the destination chooses the depth — a
+/// mount loop under it has no bottom, and every level of one is a real
+/// directory no symlink check would stop at — so unbounded, a deep enough
+/// destination would run the stack off its end and abort the process before
+/// any caller could report anything. Depth is an error and not a skipped
+/// subtree for the same reason an unreadable entry is.
+///
+/// The limit is the one [`apply`](crate::apply) refuses to write past and
+/// the one [`load_tree`](crate::load_tree) walks a source tree by, so a
+/// destination holding what this projection wrote is inside it, and a
+/// destination fails this way over what the projection did not write:
+/// foreign nesting, or a mount loop.
 #[cfg(unix)]
 pub fn observe(dest: &Dir, manifest: &Manifest) -> Result<Observations> {
     let mut paths = BTreeMap::new();
-    walk(dest, Utf8Path::new(""), &mut paths)?;
+    walk(dest, Utf8Path::new(""), 0, &mut paths)?;
     for path in manifest.entries.keys() {
         paths.entry(path.clone()).or_insert(Observation::Absent);
     }
@@ -152,16 +169,32 @@ pub fn observe(dest: &Dir, manifest: &Manifest) -> Result<Observations> {
 }
 
 /// Observes every entry of `dir` — the destination subdirectory at
-/// `prefix` — into `into`, recursing into real subdirectories via handles
-/// opened from `dir`, so every open stays anchored to the destination
-/// handle and no path is resolved from the ambient filesystem.
+/// `prefix`, `depth` directory levels below the destination root — into
+/// `into`, recursing into real subdirectories via handles opened from `dir`,
+/// so every open stays anchored to the destination handle and no path is
+/// resolved from the ambient filesystem.
+///
+/// Past [`MAX_WALK_DEPTH`] levels the walk stops and names the directory it
+/// stopped at: the recursion's frames are this process's stack, and the
+/// destination is free to nest without end.
 #[cfg(unix)]
-fn walk(dir: &Dir, prefix: &Utf8Path, into: &mut BTreeMap<Utf8PathBuf, Observation>) -> Result<()> {
+fn walk(
+    dir: &Dir,
+    prefix: &Utf8Path,
+    depth: usize,
+    into: &mut BTreeMap<Utf8PathBuf, Observation>,
+) -> Result<()> {
     let dir_path = if prefix.as_str().is_empty() {
         Utf8Path::new(".")
     } else {
         prefix
     };
+    if depth > MAX_WALK_DEPTH {
+        return Err(Error::DestinationTooDeep {
+            path: dir_path.to_owned(),
+            limit: MAX_WALK_DEPTH,
+        });
+    }
     let entries = dir.entries().map_err(io_error(dir_path))?;
     for entry in entries {
         let entry = entry.map_err(io_error(dir_path))?;
@@ -189,7 +222,7 @@ fn walk(dir: &Dir, prefix: &Utf8Path, into: &mut BTreeMap<Utf8PathBuf, Observati
         } else if file_type.is_dir() {
             let sub = entry.open_dir().map_err(io_error(&rel))?;
             into.insert(rel.clone(), Observation::Directory);
-            walk(&sub, &rel, into)?;
+            walk(&sub, &rel, depth + 1, into)?;
             continue;
         } else if file_type.is_file() {
             let file = entry.open().map_err(io_error(&rel))?;

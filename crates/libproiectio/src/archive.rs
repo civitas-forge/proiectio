@@ -71,7 +71,7 @@ const MAX_MEMBERS: usize = 50_000;
 /// recursion would otherwise run off the end of; expansion is iterative and
 /// has no such wall, so this limit buys the agreement rather than the
 /// safety — and, incidentally, caps the length of a single key.
-const MAX_MEMBER_DEPTH: usize = crate::tree::MAX_DEPTH;
+const MAX_MEMBER_DEPTH: usize = crate::MAX_WALK_DEPTH;
 
 /// The archive formats an archive source may be spelled in, each picked
 /// from a filename extension by [`ArchiveFormat::for_path`].
