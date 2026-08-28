@@ -44,12 +44,14 @@ mod decide;
 mod entry;
 mod error;
 // Narrower than the `unix` the other I/O modules carry: `rustix::fs::flock`,
-// the lock's mechanism, is compiled out on the Unix targets named here
-// (Solaris has no `flock` at all), so `cfg(unix)` alone would select a module
-// that cannot build there. The list is rustix's, minus the non-Unix `wasi`,
-// and has to follow `rustix::fs::flock`'s own `cfg` when that dependency
-// moves; the re-export below repeats it, and disagreeing copies fail to
-// compile rather than drift.
+// the lock's mechanism, is compiled out on the targets named here (Solaris
+// has no `flock` at all), so `cfg(unix)` alone would select a module that
+// cannot build there. The list is rustix's own, minus the non-Unix `wasi`,
+// and has to follow `rustix::fs::flock`'s `cfg` when that dependency moves —
+// nothing checks the two against each other. The re-export below repeats the
+// gate because a `use` of a module a `cfg` removed does not compile; the
+// reverse slip, a module built but not re-exported, leaves `StateLock`
+// unreachable and so dead code, which the `-D warnings` clippy run rejects.
 #[cfg(all(
     unix,
     not(any(

@@ -26,10 +26,13 @@
 //! One lock covers one state directory, which is the resource section 7
 //! names: the manifest, and the recording of the destination paths that
 //! manifest owns. Two projections that share a target but keep separate
-//! state directories take separate locks and do not exclude each other —
-//! they are two independent recordings, and a lock file in the destination
-//! could not tell them apart either, besides landing an unowned file in the
-//! projected tree.
+//! state directories therefore do not exclude each other — separate
+//! manifests, separate locks — and this lock is not what makes that
+//! configuration safe: their writes to a shared path race, and whoever set
+//! up two recordings over one destination owns that, as with any other
+//! writer in the destination. The lock file stays in the state directory
+//! because §7's resource is the manifest; a lock file in the destination
+//! would land as an unowned file inside the projected tree.
 
 use camino::Utf8Path;
 use cap_std::fs_utf8::{Dir, File, OpenOptions};
