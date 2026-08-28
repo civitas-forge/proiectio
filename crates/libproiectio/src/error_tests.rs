@@ -87,6 +87,10 @@ fn every_variant() -> Vec<Error> {
             path: Utf8PathBuf::from("/srv/skeleton/a/b/c"),
             limit: 64,
         },
+        Error::DestinationTooDeep {
+            path: Utf8PathBuf::from("vendor/a/b/c"),
+            limit: 64,
+        },
         Error::ApplyBlockUnimplemented {
             paths: paths(&["shared/.zshrc"]),
         },
@@ -112,7 +116,7 @@ fn refusals_exit_2_and_failures_exit_1() {
     assert_eq!(
         codes,
         vec![
-            2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
+            2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
         ]
     );
     assert_eq!(exit_code(Ok(())), 0);
@@ -219,6 +223,24 @@ fn tree_source_messages_name_the_node_and_exit_1() {
         deep.to_string(),
         "tree directory /srv/skeleton/a/b/c nests deeper than the 64 levels \
          a source tree may carry"
+    );
+}
+
+/// The destination's depth error is the source tree's bound applied to the
+/// other tree, and it says so: same limit, different tree, and a path spelled
+/// relative to the destination rather than absolutely. Both are exit-1
+/// failures — nothing is being declined, the walk cannot be taken at all.
+#[test]
+fn a_destination_too_deep_names_the_directory_and_exits_1() {
+    let deep = Error::DestinationTooDeep {
+        path: Utf8PathBuf::from("vendor/a/b/c"),
+        limit: crate::MAX_WALK_DEPTH,
+    };
+    assert!(!deep.is_refusal());
+    assert_eq!(
+        deep.to_string(),
+        "destination directory vendor/a/b/c nests deeper than the 64 levels \
+         a destination may carry"
     );
 }
 

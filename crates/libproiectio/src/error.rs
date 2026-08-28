@@ -6,6 +6,71 @@ use thiserror::Error;
 /// The crate-wide result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// How deep below its root a directory walk descends, counted in
+/// directories: [`load_tree`](crate::load_tree) below the source root, and
+/// [`observe`](crate::observe) below the destination. A tree nesting past it
+/// fails the walk — [`Error::TreeTooDeep`] on the source side,
+/// [`Error::DestinationTooDeep`] on the destination side — rather than being
+/// walked further.
+///
+/// [`apply`](crate::apply) bounds by the same number the paths it writes,
+/// though it walks nothing: a plan writing past it names a path apply would
+/// create and observe could then never read back, leaving every later run
+/// of that destination behind a walk that cannot complete — including the
+/// run that would remove what was written. It reports the same
+/// [`Error::DestinationTooDeep`] over the same path, before the write
+/// instead of after.
+///
+/// Both walks spend a stack frame per directory level, and neither of them
+/// picks the depth: every lookup is relative to an open directory handle, so
+/// a filesystem holds trees far deeper than any path naming them could be
+/// spelled, and a bind mount making a directory its own ancestor gives a
+/// tree no bottom at all — no symlink check sees that one, because every
+/// level of it is a real directory. Unbounded, a deep enough tree runs the
+/// stack off its end and aborts the process: no error, no exit code, nothing
+/// the caller can report, where `docs/implementation.lex` section 5 keeps
+/// every failure visible on the 0/1/2 exit contract.
+///
+/// # One number for both walks
+///
+/// The bound is on one resource — this process's stack — and one walk's
+/// frame is no cheaper than the other's, so a second number would be a
+/// second thing to measure and keep true without bounding anything the first
+/// does not.
+///
+/// The number is what the recursion affords, not what a filesystem allows.
+/// Measured on a debug build, a walk exhausts a 2 MiB stack — Rust's default
+/// for a spawned thread, and what a test thread gets — somewhere past 200
+/// levels, so the limit sits far enough below that to leave the stack to the
+/// caller. It is also far past any real tree: the deepest sit in the tens of
+/// levels, and nothing this projection wrote is past it, since apply
+/// declines to write there — a plan built by hand as much as a decided one.
+///
+/// # Two errors, though
+///
+/// What the two walks report is not one thing said twice. A source tree is
+/// what the invoker assembled and pointed the projection at, named by
+/// absolute path; the destination is where the projection writes, named
+/// relative to it, and depth there may be foreign content or a mount loop
+/// rather than anything the invoker wrote. The remedies differ, so the
+/// messages do, and a single variant would have to word itself vaguely
+/// enough to cover both trees and leave unsaid which root its path is
+/// spelled against.
+///
+/// # Why a bound and not a worklist
+///
+/// An explicit worklist would move the frontier from the stack to the heap
+/// and so need no depth limit — but it needs the limit for the other reason
+/// the limit exists. A directory that is its own ancestor feeds a worklist
+/// forever, and the tree or snapshot being built grows with it until memory
+/// runs out: the same abort, later, and still with no path named. Bounding
+/// the depth answers both, and answers them with a path.
+///
+/// [`apply`](crate::apply)'s no-follow walk is iterative for a different
+/// reason: it walks the components of one path the plan already names, so
+/// its length is the plan's and never the disk's.
+pub const MAX_WALK_DEPTH: usize = 64;
+
 /// Everything the engine can fail with.
 ///
 /// Variants split into *refusals* — the projection declining to touch a
@@ -295,12 +360,44 @@ pub enum Error {
     /// naming them could be spelled, and a directory made its own ancestor
     /// by a bind mount has no bottom at all. The bound is what turns both
     /// into this error instead of a stack the walk runs off the end of.
+    /// [`MAX_WALK_DEPTH`] is that bound and carries the reasoning, this
+    /// variant's separateness from
+    /// [`DestinationTooDeep`](Error::DestinationTooDeep) included.
     #[error("tree directory {path} nests deeper than the {limit} levels a source tree may carry")]
     TreeTooDeep {
         /// The absolute path of the directory one level past the limit.
         path: Utf8PathBuf,
         /// The deepest nesting the walk accepts, counted in directories
-        /// below the source root.
+        /// below the source root — [`MAX_WALK_DEPTH`].
+        limit: usize,
+    },
+    /// The destination nests deeper than [`observe`](crate::observe) walks.
+    /// Not a refusal: no destination path is being declined — the
+    /// observation cannot be taken at all, and every later stage reads the
+    /// snapshot rather than the disk.
+    ///
+    /// The same bound as [`TreeTooDeep`](Error::TreeTooDeep), for the same
+    /// stack ([`MAX_WALK_DEPTH`]), against a directory nobody curated: the
+    /// destination holds foreign content as well as the projection's, and a
+    /// mount loop under it has no bottom. Depth is an error here rather than
+    /// a subtree observe skips, for the reason an unreadable entry is: a
+    /// snapshot silently missing paths would let the deciding stage read
+    /// occupied ones as absent.
+    ///
+    /// [`apply`](crate::apply) raises it too, up front, over a plan writing
+    /// a path past the same depth: the projection does not write what it
+    /// would not be able to observe afterwards. The path there is the
+    /// written path's ancestor a level past the limit, spelled in the same
+    /// destination-relative frame.
+    #[error(
+        "destination directory {path} nests deeper than the {limit} levels a destination may carry"
+    )]
+    DestinationTooDeep {
+        /// The path of the directory one level past the limit, relative to
+        /// the destination — the frame every observation is keyed in.
+        path: Utf8PathBuf,
+        /// The deepest nesting the walk accepts, counted in directories
+        /// below the destination root — [`MAX_WALK_DEPTH`].
         limit: usize,
     },
     /// A source tree holds a node of a kind the projection never writes — a
@@ -367,6 +464,7 @@ impl Error {
             | Error::TreeNameNotUtf8 { .. }
             | Error::TreeTargetNotUtf8 { .. }
             | Error::TreeTooDeep { .. }
+            | Error::DestinationTooDeep { .. }
             | Error::TreeNodeKind { .. }
             | Error::ApplyBlockUnimplemented { .. } => false,
         }

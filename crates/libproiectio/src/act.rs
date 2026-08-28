@@ -24,8 +24,8 @@ use crate::containment::{
 use crate::observe::{io_error, sha256_hex_of_reader};
 use crate::{
     Action, ApplyOutcome, ApplyReport, Entry, EntryKind, Error, ExternalTargetPolicy,
-    MANIFEST_FILE_NAME, MANIFEST_VERSION, Manifest, ManifestEntry, NodeSignature, Plan, Refusal,
-    Result, sha256_hex,
+    MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature,
+    Plan, Refusal, Result, sha256_hex,
 };
 
 /// Loads the manifest from `state`'s [`MANIFEST_FILE_NAME`]; a state
@@ -127,6 +127,19 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 ///   back an error partway through the run, which is the one thing this
 ///   check exists to prevent; a target the filesystem rejects for its
 ///   *length* still surfaces mid-run, since nothing lexical foresees that;
+/// - a plan writing or overwriting a path more than [`MAX_WALK_DEPTH`]
+///   directories below `dest` fails as [`Error::DestinationTooDeep`],
+///   naming the directory a level past the limit. That is the depth
+///   [`observe`](crate::observe) descends, so a node written deeper would
+///   leave every later run unable to observe the destination at all — the
+///   run that would remove it included. The key is judged here, and the
+///   directory the walk below is about to create is judged again there:
+///   an owned-link restart resolves a key to a path of another depth, and
+///   only the walk knows which. Deciding judges neither, because its
+///   verdicts are refusals and this is a failure — nothing is being
+///   declined, the projection simply cannot write what it could not read
+///   back. Removals are exempt, since they add no directory and are the
+///   way back from a destination already too deep;
 /// - a plan touching a [`Block`](EntryKind::Block) entry — writing one, or
 ///   re-checking a block signature — fails as
 ///   [`Error::ApplyBlockUnimplemented`] (issue #14).
@@ -162,6 +175,14 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 ///   `dest` root along the resolved path. Restarts carry a per-walk
 ///   visited set: revisiting a link means an owned-link cycle, refused as
 ///   [`Error::Containment`] rather than looped.
+///
+/// A creating walk stops at [`MAX_WALK_DEPTH`] directories as well,
+/// wherever a restart has taken it, failing as
+/// [`Error::DestinationTooDeep`] before it creates the directory past the
+/// limit. Unlike the up-front check on the key, this one can fire with
+/// shallower directories already created, the way any mid-run failure can:
+/// the depth an owned link resolves to is not knowable before the walk,
+/// just as drift is not.
 ///
 /// Deciding refuses to plan a write beneath a link that outlives the plan
 /// (its no-alias rule), so in a decided plan these arms judge what appeared
@@ -239,6 +260,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
     let mut external = BTreeMap::new();
     let mut invalid = BTreeMap::new();
     let mut block_unimplemented = BTreeSet::new();
+    let mut too_deep = None;
     for (path, action) in &plan.actions {
         // Refusals are keyed by the desired key verbatim — possibly a
         // spelling the gateway rejects, which is often why they refused —
@@ -303,6 +325,28 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                 continue;
             }
         }
+        // A path this run would put a node at must be one the next
+        // observation can read back: `observe` descends `MAX_WALK_DEPTH`
+        // directories below the destination, so anything written deeper
+        // would leave every later run failing to observe the destination at
+        // all — the run that would remove what was written included. The
+        // walk-shaped errors name the first offender rather than aggregate,
+        // and the plan is sorted, so the first one found is the one named.
+        // Removals are exempt: they add no directory, and this is the only
+        // route left to a destination that was already too deep.
+        if matches!(action, Action::Write { .. } | Action::Overwrite { .. })
+            && too_deep.is_none()
+            && path.components().count() - 1 > MAX_WALK_DEPTH
+        {
+            let mut offender = Vec::new();
+            for component in path.components().take(MAX_WALK_DEPTH + 1) {
+                offender.push(component.as_str());
+            }
+            // Joined with `/` rather than pushed onto a path: a
+            // destination-relative path is spelled the same on every host,
+            // as `contained_normalize` spells the keys this one prefixes.
+            too_deep = Some(Utf8PathBuf::from(offender.join("/")));
+        }
         match action {
             Action::Write { entry } => {
                 if matches!(entry, Entry::Block { .. }) {
@@ -356,6 +400,12 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
     }
     if !invalid.is_empty() {
         return Err(Error::InvalidTarget { links: invalid });
+    }
+    if let Some(path) = too_deep {
+        return Err(Error::DestinationTooDeep {
+            path,
+            limit: MAX_WALK_DEPTH,
+        });
     }
     if !block_unimplemented.is_empty() {
         return Err(Error::ApplyBlockUnimplemented {
@@ -1108,6 +1158,11 @@ fn link_target_hash(parent: &Dir, leaf: &str, path: &Utf8Path) -> Result<String>
 /// parent and restarting the walk from the `dest` root, with a per-walk
 /// visited set refusing cycles.
 ///
+/// A creating walk also stops at [`MAX_WALK_DEPTH`] directories below
+/// `dest`, failing as [`Error::DestinationTooDeep`]: the depth is measured
+/// on the walked prefix, so a restart through an owned link is measured
+/// where it landed rather than where the key was spelled.
+///
 /// `create` says what a missing ancestor means: a creating walk (a write
 /// placing a file) creates the directory and continues — so it always
 /// returns a parent — while a non-creating walk (re-checks, removals,
@@ -1134,6 +1189,21 @@ fn verified_parent(
     let mut visited: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     while let Some(component) = components.pop_front() {
         let here = prefix.join(&component);
+        // The depth being walked, which is not the depth `path` spells: an
+        // owned-link restart replaces the prefix with the link's resolved
+        // target, so a short key can arrive at a deep directory (and a long
+        // one at a shallow directory). [`observe`](crate::observe) descends
+        // `MAX_WALK_DEPTH` directories and no further, so a creating walk
+        // stops rather than put a node where the next observation cannot
+        // reach it. Non-creating walks — removals, re-checks, prunes — add
+        // nothing and are the way back from a destination already too deep,
+        // so they walk on.
+        if create && here.components().count() > MAX_WALK_DEPTH {
+            return Err(Error::DestinationTooDeep {
+                path: here,
+                limit: MAX_WALK_DEPTH,
+            });
+        }
         let meta = match dir.symlink_metadata(&component) {
             Ok(meta) => Some(meta),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
