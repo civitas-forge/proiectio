@@ -110,8 +110,8 @@ Implementation Guidelines
       applied to the target joined from the link's parent — and
       restarts the no-follow walk from the dest root along the
       resolved path. Restarts carry a per-walk
-      visited set: revisiting a component means an owned-link
-      cycle, and refuses rather than loops.
+      visited set of the links followed: revisiting a link means
+      an owned-link cycle, and refuses rather than loops.
       One boundary the handles do not close: a directory handle
       follows its object, so a process renaming a verified ancestor
       out of dest carries the handle with it. That actor holds

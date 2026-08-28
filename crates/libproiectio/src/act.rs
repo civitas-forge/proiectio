@@ -709,9 +709,14 @@ fn verified_parent(
                 }
                 match dir.create_dir(&component) {
                     Ok(()) => {}
-                    // Lost a benign race with a concurrent creator; the
-                    // no-follow open below still verifies what is there.
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    // Lost a benign race with a concurrent creator: re-judge
+                    // what appeared through the ordinary arms, so a raced
+                    // symlink or non-directory gets the same verdict as one
+                    // that was there all along, not a bare open failure.
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        components.push_front(component);
+                        continue;
+                    }
                     Err(e) => return Err(io_error(&here)(e)),
                 }
                 dir = open_nofollow(&dir, &component).map_err(io_error(&here))?;
