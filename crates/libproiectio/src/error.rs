@@ -86,10 +86,12 @@ pub enum Error {
         conflicts: BTreeMap<Utf8PathBuf, BTreeSet<String>>,
     },
     /// Refusal: desired symlinks whose targets, resolved from each link's
-    /// parent directory, land outside the destination — absolute targets,
-    /// ones climbing out, and the spellings graded external on every host
-    /// (`docs/security.lex` section 3 carries the whole rule). The
-    /// caller lifts this per plan with
+    /// parent directory through the destination's own links, land outside
+    /// the destination — absolute targets, ones climbing out, ones reaching
+    /// outside through a link the destination holds, and the spellings
+    /// graded external on every host (`docs/security.lex` section 3 carries
+    /// the whole rule). Apply raises it again where a link's target has
+    /// become escaping since the plan. The caller lifts this per plan with
     /// [`ExternalTargetPolicy::Allow`](crate::ExternalTargetPolicy::Allow)
     /// (a CLI's `--allow-external-targets`), which writes each link with
     /// its target verbatim. Nothing is ever written *through* such a link:

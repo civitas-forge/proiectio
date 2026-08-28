@@ -1183,6 +1183,198 @@ fn a_recorded_external_link_the_tree_dropped_is_removed_without_permission() {
     );
 }
 
+// --- grading through the destination's own links (issue #29) ---
+
+#[test]
+fn a_target_reaching_outside_through_a_link_in_the_destination_grades_external() {
+    // The pivot case: the destination already holds `pivot -> /etc`, so
+    // the pointer `evil -> pivot/passwd` dereferences to /etc/passwd. The
+    // projection could not have created that hop — `pivot` itself would
+    // have needed the permission — but it may not plant a pointer through
+    // one either.
+    let evil = link("pivot/passwd");
+    let observations = observed(&[("pivot", on_disk(&link("/etc")))]);
+    let desired = tree(&[("evil", &evil)]);
+
+    let refusing = plan(
+        &desired,
+        &Manifest::new(),
+        &observations,
+        DriftPolicy::Refuse,
+    );
+    let allowing = plan_with(
+        &desired,
+        &Manifest::new(),
+        &observations,
+        allowing_external(),
+    );
+
+    assert_eq!(
+        action(&refusing, "evil"),
+        &Action::Refuse {
+            refusal: Refusal::ExternalTarget {
+                target: "pivot/passwd".to_owned(),
+            },
+        }
+    );
+    assert_eq!(
+        action(&allowing, "evil"),
+        &Action::Write {
+            entry: evil.clone()
+        }
+    );
+}
+
+#[test]
+fn an_ordinary_in_dest_chain_needs_no_permission() {
+    // `shared -> real` is an in-dest link like any other, so `rc`
+    // pointing through it lands in-dest and is written under the default
+    // policy. Refusing every target with a symlink ancestor would break
+    // exactly this shape.
+    let rc = link("shared/rc");
+    let observations = observed(&[
+        ("real", Observation::Directory),
+        ("shared", on_disk(&link("real"))),
+    ]);
+
+    let plan = plan(
+        &tree(&[("rc", &rc)]),
+        &Manifest::new(),
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(action(&plan, "rc"), &Action::Write { entry: rc.clone() });
+}
+
+#[test]
+fn a_hop_pointing_at_nothing_keeps_the_chain_in_dest() {
+    // The chain runs out at a link pointing nowhere. A pointer to nothing
+    // is still a pointer inside the destination, so no permission is
+    // needed — the same reading that makes a dangling target legal.
+    let rc = link("shared/rc");
+    let observations = observed(&[("shared", on_disk(&link("gone")))]);
+
+    let plan = plan(
+        &tree(&[("rc", &rc)]),
+        &Manifest::new(),
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(action(&plan, "rc"), &Action::Write { entry: rc.clone() });
+}
+
+#[test]
+fn a_target_chaining_into_a_cycle_refuses_rather_than_looping() {
+    // Deciding terminates: the visited set ends the resolution at the
+    // second visit to a link, and a chain that never lands grades
+    // external.
+    let rc = link("l1");
+    let observations = observed(&[("l1", on_disk(&link("l2"))), ("l2", on_disk(&link("l1")))]);
+
+    let plan = plan(
+        &tree(&[("rc", &rc)]),
+        &Manifest::new(),
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "rc"),
+        &Action::Refuse {
+            refusal: Refusal::ExternalTarget {
+                target: "l1".to_owned(),
+            },
+        }
+    );
+}
+
+#[test]
+fn a_hop_whose_on_disk_target_is_not_utf8_grades_the_chain_external() {
+    // Nothing can say where such a link points, so nothing can say the
+    // chain through it stays inside — the same conservatism apply's walk
+    // applies when it refuses to follow one.
+    let rc = link("pivot/rc");
+    let observations = observed(&[(
+        "pivot",
+        Observation::Symlink {
+            hash: sha256_hex(&[0xff]),
+            target: None,
+        },
+    )]);
+
+    let plan = plan(
+        &tree(&[("rc", &rc)]),
+        &Manifest::new(),
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "rc"),
+        &Action::Refuse {
+            refusal: Refusal::ExternalTarget {
+                target: "pivot/rc".to_owned(),
+            },
+        }
+    );
+}
+
+#[test]
+fn a_link_this_plan_removes_is_not_a_hop_the_chain_resolves_through() {
+    // Removals run before anything is written, so by the time the pointer
+    // is published the pivot is gone and the chain ends at an absent
+    // path. Grading reads the destination the run will leave, exactly as
+    // the no-alias rule does for an ancestor the plan unlinks.
+    let pivot = link("/etc");
+    let evil = link("pivot/passwd");
+    let manifest = manifest_of(&[("pivot", recorded(&pivot, &[OWNER]))]);
+    let observations = observed(&[("pivot", on_disk(&pivot))]);
+
+    let plan = plan(
+        &tree(&[("evil", &evil)]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "pivot"),
+        &Action::Remove {
+            expected: Some(signature(&pivot)),
+        }
+    );
+    assert_eq!(
+        action(&plan, "evil"),
+        &Action::Write {
+            entry: evil.clone()
+        }
+    );
+}
+
+#[test]
+fn a_plan_carries_the_external_target_permission_it_was_decided_under() {
+    // Apply reads it to know whether a re-graded target has a plan-time
+    // verdict to be held to.
+    let desired = tree(&[]);
+    let refusing = plan(
+        &desired,
+        &Manifest::new(),
+        &observed(&[]),
+        DriftPolicy::Refuse,
+    );
+    let allowing = plan_with(
+        &desired,
+        &Manifest::new(),
+        &observed(&[]),
+        allowing_external(),
+    );
+
+    assert_eq!(refusing.external_targets, ExternalTargetPolicy::Refuse);
+    assert_eq!(allowing.external_targets, ExternalTargetPolicy::Allow);
+}
+
 // --- the no-alias rule: no projected path resolves through a link ---
 
 #[test]

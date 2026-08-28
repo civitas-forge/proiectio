@@ -510,6 +510,7 @@ fn a_hand_built_plan_with_unnormalized_keys_refuses_containment() {
     };
     let plan = Plan {
         owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([
             (
                 "../escape".into(),
@@ -541,6 +542,7 @@ fn a_forged_remove_of_an_unrecorded_path_refuses_foreign() {
         .write_under(dest.root());
     let plan = Plan {
         owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "victim.txt".into(),
             Action::Remove {
@@ -571,6 +573,7 @@ fn a_forged_skip_of_an_unrecorded_path_refuses_instead_of_adopting() {
         .write_under(dest.root());
     let plan = Plan {
         owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "theirs.txt".into(),
             Action::Skip {
@@ -612,6 +615,7 @@ fn an_overwrite_expecting_a_block_signature_fails_up_front_and_writes_nothing() 
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([
             (
                 "a.txt".into(),
@@ -671,6 +675,7 @@ fn a_recorded_link_whose_matching_target_is_not_utf8_refuses_containment() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "logs/x.txt".into(),
             Action::Write {
@@ -709,6 +714,7 @@ fn an_owned_matching_in_dest_symlink_ancestor_is_followed() {
     // arm still has to do the right thing.
     let plan = Plan {
         owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "logs/x.txt".into(),
             Action::Write {
@@ -760,6 +766,7 @@ fn a_removal_through_an_owned_link_prunes_the_resolved_directory() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "logs/x.txt".into(),
             Action::Remove {
@@ -836,6 +843,7 @@ fn a_recorded_symlink_ancestor_with_a_changed_target_refuses_drift() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "logs/x.txt".into(),
             Action::Write {
@@ -868,6 +876,7 @@ fn a_recorded_symlink_ancestor_with_an_external_target_refuses_containment() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "logs/x.txt".into(),
             Action::Write {
@@ -908,6 +917,7 @@ fn an_owned_link_cycle_refuses_instead_of_looping() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "l1/x.txt".into(),
             Action::Write {
@@ -963,6 +973,7 @@ fn a_target_that_is_not_a_pathname_fails_up_front_and_writes_nothing() {
     let (dest, state) = fixtures();
     let plan = Plan {
         owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([
             (
                 "a.txt".into(),
@@ -1165,6 +1176,108 @@ fn nothing_is_written_through_a_permitted_external_link() {
         other => panic!("expected TreeConflict, got {other:?}"),
     }
     assert_tree(dest.root(), &link);
+}
+
+// Definition of done (issue #29): a target reaching outside through a link
+// the destination already holds needs the permission like any other
+// external target.
+#[test]
+fn a_target_escaping_through_a_pivot_link_refuses_without_the_permission() {
+    let (dest, state) = fixtures();
+    let pivot = Tree::new().symlink("pivot", "/etc");
+    pivot.write_under(dest.root());
+    let desired = Tree::new().symlink("evil", "pivot/passwd").entries();
+
+    let error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
+        .expect_err("a pointer through a pivot reaches /etc/passwd");
+
+    match error {
+        Error::ExternalTarget { links } => assert_eq!(
+            links,
+            BTreeMap::from([(Utf8PathBuf::from("evil"), "pivot/passwd".to_owned())])
+        ),
+        other => panic!("expected ExternalTarget, got {other:?}"),
+    }
+    assert_tree(dest.root(), &pivot);
+
+    // With the permission the target lands verbatim — and the apply-time
+    // re-grade stands down, since a caller who permitted external targets
+    // permitted them whatever the destination holds.
+    let landed = Tree::new()
+        .symlink("pivot", "/etc")
+        .symlink("evil", "pivot/passwd");
+    pipeline_with(
+        &dest,
+        &state,
+        "own",
+        &desired,
+        PlanOptions {
+            external_targets: ExternalTargetPolicy::Allow,
+            ..PlanOptions::default()
+        },
+    )
+    .expect("permitted targets land whatever they chain through");
+
+    assert_tree(dest.root(), &landed);
+}
+
+#[test]
+fn an_ordinary_in_dest_chain_lands_without_the_permission() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .dir("real")
+        .symlink("shared", "real")
+        .write_under(dest.root());
+    let desired = Tree::new().symlink("rc", "shared/rc").entries();
+
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
+        .expect("an in-dest chain is an in-dest target");
+
+    assert_tree(
+        dest.root(),
+        &Tree::new()
+            .dir("real")
+            .symlink("shared", "real")
+            .symlink("rc", "shared/rc"),
+    );
+}
+
+// The changed-since-plan re-check for a link's target: the plan graded the
+// pointer against a pivot that pointed inside, and the pivot moved before
+// apply reached the link.
+#[test]
+fn a_pivot_swapped_after_the_plan_refuses_instead_of_publishing_the_pointer() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .dir("real")
+        .symlink("pivot", "real")
+        .write_under(dest.root());
+    let desired = Tree::new().symlink("rc", "pivot/rc").entries();
+
+    let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
+    assert!(
+        matches!(plan.actions[Utf8Path::new("rc")], Action::Write { .. }),
+        "the plan graded the target in-dest"
+    );
+
+    // The gap between the two calls: the pivot now points outside.
+    Tree::new()
+        .symlink("pivot", "/etc")
+        .write_under(dest.root());
+    let error = apply_at(&dest, &state, &manifest, &plan)
+        .expect_err("the plan-time verdict no longer holds");
+
+    match error {
+        Error::ExternalTarget { links } => assert_eq!(
+            links,
+            BTreeMap::from([(Utf8PathBuf::from("rc"), "pivot/rc".to_owned())])
+        ),
+        other => panic!("expected ExternalTarget, got {other:?}"),
+    }
+    assert_tree(
+        dest.root(),
+        &Tree::new().dir("real").symlink("pivot", "/etc"),
+    );
 }
 
 // The no-alias rule end to end: a path resolving through a link the plan
