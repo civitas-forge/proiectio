@@ -142,18 +142,23 @@ pub enum Observation {
 /// error, not a skip, because a snapshot that silently omitted paths would
 /// let a later stage mistake unreadable for absent.
 ///
-/// One shape of destination is refused outright rather than read: one
-/// nesting more than [`MAX_WALK_DEPTH`] directories below `dest`, which is
-/// [`Error::DestinationTooDeep`] naming the directory a level past that. The
-/// walk spends a stack frame per level and the destination chooses the depth
-/// — a mount loop under it has no bottom, and every level of one is a real
+/// One shape of destination fails the observation rather than being read:
+/// one nesting more than [`MAX_WALK_DEPTH`] directories below `dest`, which
+/// is [`Error::DestinationTooDeep`] naming the directory a level past that —
+/// a failure, not a refusal, since no path is being declined. The walk
+/// spends a stack frame per level and the destination chooses the depth — a
+/// mount loop under it has no bottom, and every level of one is a real
 /// directory no symlink check would stop at — so unbounded, a deep enough
 /// destination would run the stack off its end and abort the process before
 /// any caller could report anything. Depth is an error and not a skipped
-/// subtree for the same reason an unreadable entry is. The limit is the one
-/// [`load_tree`](crate::load_tree) walks a source tree by, so a destination
-/// holding only what this projection wrote is always inside it; foreign
-/// content nested past it fails the observation.
+/// subtree for the same reason an unreadable entry is.
+///
+/// The limit is the one both desired-tree loaders bound their keys by —
+/// [`load_tree`](crate::load_tree) walking a source tree,
+/// [`load_mapping`](crate::load_mapping) judging the keys it is handed — so
+/// a destination holding what this projection wrote through either of them
+/// is inside it, and a destination fails this way over content the
+/// projection did not write: foreign nesting, or a mount loop.
 #[cfg(unix)]
 pub fn observe(dest: &Dir, manifest: &Manifest) -> Result<Observations> {
     let mut paths = BTreeMap::new();

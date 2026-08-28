@@ -13,6 +13,14 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// [`Error::DestinationTooDeep`] on the destination side — rather than being
 /// walked further.
 ///
+/// [`load_mapping`](crate::load_mapping) bounds by the same number the keys
+/// it hands the deciding stage, though it walks nothing: a key nesting past
+/// it names a path [`apply`](crate::apply) would create and `observe` could
+/// then never read back, wedging every later run of that destination behind
+/// a walk that cannot complete — including the run that would remove it. It
+/// reports [`Error::DestinationTooDeep`], the same failure observe would
+/// raise over the same path, raised before the write instead of after.
+///
 /// Both walks spend a stack frame per directory level, and neither of them
 /// picks the depth: every lookup is relative to an open directory handle, so
 /// a filesystem holds trees far deeper than any path naming them could be
@@ -35,8 +43,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// for a spawned thread, and what a test thread gets — somewhere past 200
 /// levels, so the limit sits far enough below that to leave the stack to the
 /// caller. It is also far past any real tree: the deepest sit in the tens of
-/// levels, and a destination the projection itself wrote can only be as deep
-/// as the source tree it came from, which this same limit bounds.
+/// levels, and a destination this projection wrote through either loader is
+/// as deep as the keys that loader admitted, which this same number bounds.
+/// A desired tree a caller assembles itself, passing neither loader, is that
+/// caller's to keep inside the limit — the same latitude the invoker already
+/// has in choosing a destination.
 ///
 /// # Two errors, though
 ///
@@ -373,6 +384,12 @@ pub enum Error {
     /// a subtree observe skips, for the reason an unreadable entry is: a
     /// snapshot silently missing paths would let the deciding stage read
     /// occupied ones as absent.
+    ///
+    /// [`load_mapping`](crate::load_mapping) raises it too, over a mapping
+    /// key that would place a directory past the same depth: the projection
+    /// declines to write what it would not be able to observe afterwards.
+    /// The path there is the offending key's ancestor a level past the
+    /// limit, spelled in the same destination-relative frame.
     #[error(
         "destination directory {path} nests deeper than the {limit} levels a destination may carry"
     )]
