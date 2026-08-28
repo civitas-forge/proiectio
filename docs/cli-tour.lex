@@ -146,14 +146,18 @@ The CLI
     :: toml ::
 
     An archive entry is a tree constructor, not a node type: at plan
-    time its members expand into ordinary file, directory, and
-    symlink entries, hashed and tracked individually — status reports
-    drift per member, rm removes per member, and nothing downstream
-    remembers an archive existed. Members are confined like any other
-    tree content ([./security.lex]). An archive that appears *inside*
-    a source tree is just a file and is copied verbatim; extraction
-    happens only where it is explicitly requested — an [archives.]
-    entry, or --tree pointed at the archive itself.
+    time its members expand into ordinary file and symlink entries,
+    hashed and tracked individually — status reports drift per
+    member, rm removes per member, and nothing downstream remembers
+    an archive existed. Directory members carry no entry of their
+    own, as a walked directory does not: a projected tree implies its
+    directories from its files' parent components, so an archive
+    whose only content is an empty directory projects nothing.
+    Members are confined like any other tree content
+    ([./security.lex]). An archive that appears *inside* a source
+    tree is just a file and is copied verbatim; extraction happens
+    only where it is explicitly requested — an [archives.] entry, or
+    --tree pointed at the archive itself.
 
 6. Options
 

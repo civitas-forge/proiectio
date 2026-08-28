@@ -254,7 +254,14 @@ pub(crate) const ARCHIVE_EXTENSIONS: &str = ".tar, .tar.gz, .tgz, .tar.zst, .zip
 ///   projection refuses instead, as it refuses two mapping keys claiming
 ///   one location ([`Error::MappingDuplicate`]) and two desired keys
 ///   claiming one ([`Refusal::TreeConflict`](crate::Refusal::TreeConflict))
-///   for the same reason: there is no deterministic entry to prefer;
+///   for the same reason: there is no deterministic entry to prefer.
+///   One zip shape escapes it: `ZipArchive` keys its members by name and
+///   keeps the last, so two members whose names are **byte-identical** have
+///   already become one before this expansion sees an index, and it is
+///   handed a single member with nothing to compare. That collapse is the
+///   one every extractor performs — `unzip` writes both in order and the
+///   last stands — so a zip projects what extracting it would produce,
+///   while every duplicate whose names *differ* is refused;
 /// - a file or symlink member `strip` erases —
 ///   [`Error::ArchiveMemberStripped`];
 /// - a member that, after `strip`, still nests more than 64 directories
@@ -304,6 +311,7 @@ pub(crate) fn new_budget() -> Rc<Budget> {
 /// `[archives]`. Joining a normalized prefix onto a normalized member yields
 /// a contained path by construction — both are sequences of ordinary
 /// components — so the join needs no second verdict.
+///
 /// `budget` is what the whole load may still allocate — [`new_budget`] says
 /// why it is the caller's rather than this function's.
 pub(crate) fn expand(
@@ -350,7 +358,18 @@ pub(crate) fn expand(
             expansion.read_tar(Budgeted::new(decoder, Rc::clone(budget)))?;
         }
         ArchiveFormat::TarZst => {
-            let decoder = zstd::stream::read::Decoder::new(reader)
+            let mut decoder = zstd::stream::read::Decoder::new(reader)
+                .map_err(|e| decode_error(source, format, e))?;
+            // A zstd frame header names the window the decoder must hold,
+            // and that buffer is allocated inside the decoder — bytes no
+            // `Budgeted` reader ever sees, from a header a few dozen bytes
+            // long. The reference library's own default would let a small
+            // archive ask for 128 MiB, twice what the whole load may spend,
+            // so the window is capped at the byte bound instead. A frame
+            // asking for more is `ArchiveDecode`: it could not have fit in
+            // the budget anyway.
+            decoder
+                .window_log_max(MAX_EXPANDED_BYTES.trailing_zeros())
                 .map_err(|e| decode_error(source, format, e))?;
             expansion.read_tar(Budgeted::new(decoder, Rc::clone(budget)))?;
         }
@@ -486,7 +505,7 @@ impl Expansion<'_> {
             self.count_member()?;
             let raw = entry.path_bytes().into_owned();
             let is_dir = entry_type.is_dir();
-            let Some(member) = self.admit(&raw, is_dir)? else {
+            let Some(member) = self.admit(self.utf8_name(&raw)?, is_dir)? else {
                 continue;
             };
             if is_dir {
@@ -534,6 +553,18 @@ impl Expansion<'_> {
     /// the gateway refuses costs nothing to skip and is charged nothing.
     fn read_zip(&mut self, reader: impl Read + Seek) -> Result<()> {
         let mut archive = zip::ZipArchive::new(reader).map_err(|e| self.decode(e.into()))?;
+        // Answered before any member is read rather than on the fifty
+        // thousand and first pass of the loop. It does not prevent the
+        // reader's own allocation — `ZipArchive::new` has already parsed the
+        // central directory — but that directory is stored uncompressed, so
+        // it costs bytes proportional to the file the invoker already has on
+        // disk, with none of the amplification a compressed stream carries.
+        if archive.len() > MAX_MEMBERS {
+            return Err(Error::ArchiveTooManyMembers {
+                path: self.source.to_owned(),
+                limit: MAX_MEMBERS,
+            });
+        }
         for index in 0..archive.len() {
             self.count_member()?;
             let mut file = archive.by_index(index).map_err(|e| self.decode(e.into()))?;
@@ -542,35 +573,45 @@ impl Expansion<'_> {
             // archive never carried. A name this crate cannot spell in UTF-8
             // is an error, not a transliteration.
             let raw = file.name_raw().to_vec();
+            let name = self.utf8_name(&raw)?;
             let is_dir = file.is_dir();
-            let Some(member) = self.admit(&raw, is_dir)? else {
-                continue;
-            };
-            // A zip spells "directory" two ways that need not agree: the
-            // trailing `/` the specification asks for, which is all
-            // `ZipFile::is_dir` reads, and the file-type bits of a Unix
-            // mode. The kind is judged before the name decides anything, so
-            // a fifo, socket, or device node named `evil/` is refused as the
-            // kind it is rather than skipped as the directory it claims to
-            // be, and a member the mode calls a directory without the
-            // trailing slash is refused rather than placed as a file.
             let mode = file.unix_mode();
+            // A zip spells a member's kind twice and the two need not agree:
+            // the trailing `/` the specification asks for, which is all
+            // `ZipFile::is_dir` reads, and the file-type bits of a Unix
+            // mode. Judged here, before the name reaches the gateway or
+            // `strip`, because both can make a member vanish: a symlink
+            // named `wrapper/` under `--strip 1` strips to nothing, and a
+            // directory that strips to nothing is dropped on purpose. So
+            // the disagreement has to be caught while the member is still
+            // whole, and it is named as the archive spells it, trailing
+            // slash included.
             let kind = mode.map(|mode| mode & S_IFMT);
-            let consistent = match kind {
+            let agrees = match kind {
                 // No mode, or one carrying no file-type bits, says nothing
                 // about the kind; the name is then the only spelling there
                 // is.
                 None | Some(0) => true,
                 Some(S_IFDIR) => is_dir,
                 Some(S_IFREG | S_IFLNK) => !is_dir,
-                Some(_) => false,
+                // Anything else is a kind the projection never writes — a
+                // fifo, a socket, a device node.
+                Some(_) => {
+                    return Err(Error::ArchiveMemberKind {
+                        path: self.source.to_owned(),
+                        member: Utf8PathBuf::from(name),
+                    });
+                }
             };
-            if !consistent {
-                return Err(Error::ArchiveMemberKind {
+            if !agrees {
+                return Err(Error::ArchiveMemberKindDisagrees {
                     path: self.source.to_owned(),
-                    member,
+                    member: Utf8PathBuf::from(name),
                 });
             }
+            let Some(member) = self.admit(name, is_dir)? else {
+                continue;
+            };
             if is_dir {
                 continue;
             }
@@ -593,15 +634,21 @@ impl Expansion<'_> {
         Ok(())
     }
 
+    /// A member's name as a `str`, which is all a desired-tree key can be
+    /// built from — the first thing asked of every member, since nothing
+    /// else can name it in an error.
+    fn utf8_name<'a>(&self, raw: &'a [u8]) -> Result<&'a str> {
+        std::str::from_utf8(raw).map_err(|_| Error::ArchiveMemberNameNotUtf8 {
+            path: self.source.to_owned(),
+            name: String::from_utf8_lossy(raw).into_owned(),
+        })
+    }
+
     /// Judges one member name and returns the path it projects to, relative
     /// to the prefix: `None` means the member contributes nothing — either
     /// containment refused it (recorded for the aggregated
     /// [`Error::Containment`]) or `strip` erased a directory.
-    fn admit(&mut self, raw: &[u8], is_dir: bool) -> Result<Option<Utf8PathBuf>> {
-        let name = std::str::from_utf8(raw).map_err(|_| Error::ArchiveMemberNameNotUtf8 {
-            path: self.source.to_owned(),
-            name: String::from_utf8_lossy(raw).into_owned(),
-        })?;
+    fn admit(&mut self, name: &str, is_dir: bool) -> Result<Option<Utf8PathBuf>> {
         // A directory member conventionally ends in `/`, which the gateway
         // would read as an empty trailing component. The slash is how the
         // format spells "directory", not part of the name — the kind came

@@ -298,6 +298,16 @@ fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
          directory, or symlink"
     );
 
+    let disagrees = Error::ArchiveMemberKindDisagrees {
+        path: Utf8PathBuf::from("/assets/vendor.zip"),
+        member: Utf8PathBuf::from("logs/"),
+    };
+    assert!(!disagrees.is_refusal());
+    assert_eq!(
+        disagrees.to_string(),
+        "archive /assets/vendor.zip: member logs/ is one kind by name and another by mode"
+    );
+
     let duplicate = Error::ArchiveMemberDuplicate {
         path: Utf8PathBuf::from("/assets/vendor.zip"),
         member: Utf8PathBuf::from("lib/tool"),

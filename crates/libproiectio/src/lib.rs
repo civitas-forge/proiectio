@@ -44,7 +44,8 @@
 //! An archive is a tree constructor, not a node type. [`load_archive`] and
 //! a mapping's `[archives."prefix/"]` entries expand tar, tar.gz, tar.zst,
 //! and zip members into **ordinary** entries, hashed and tracked one per
-//! member, so nothing past the expansion is archive-aware.
+//! file and symlink member, so nothing past the expansion is archive-aware.
+//! Directory members carry no entry, as walked directories do not.
 //!
 //! # Exit contract
 //!

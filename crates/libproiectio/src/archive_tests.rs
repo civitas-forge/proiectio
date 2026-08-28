@@ -524,6 +524,29 @@ fn a_tar_split_across_gzip_members_expands_whole() {
     );
 }
 
+/// A zstd frame header names the window the decoder must hold, and that
+/// buffer is allocated inside the decoder, where no budget can meter it. A
+/// few bytes of header can ask for more than the whole load may spend, so
+/// the window is capped at the byte bound and a frame asking for more
+/// fails to decode.
+#[test]
+fn a_zstd_frame_asking_for_too_large_a_window_fails_to_decode() {
+    // A frame header and nothing else: magic, a descriptor claiming no
+    // content size and no dictionary, and a window descriptor whose
+    // exponent asks for 2^27 — twice the byte bound.
+    let exponent = MAX_EXPANDED_BYTES.trailing_zeros() - 10 + 1;
+    let mut bytes = vec![0x28, 0xB5, 0x2F, 0xFD, 0x00];
+    bytes.push(u8::try_from(exponent << 3).unwrap());
+    let error = expand_bytes("wide.tar.zst", &bytes, 0).unwrap_err();
+    assert!(
+        matches!(&error, Error::ArchiveDecode { format, .. } if *format == ArchiveFormat::TarZst),
+        "{error}"
+    );
+    // Named so the test cannot pass on some other decode failure: the
+    // decoder refuses the *window*, not the truncated frame behind it.
+    assert!(error.to_string().contains("too much memory"), "{error}");
+}
+
 /// The zstd counterpart: frames concatenate the same way.
 #[test]
 fn a_tar_split_across_zstd_frames_expands_whole() {
@@ -594,17 +617,30 @@ fn a_zip_with_windows_separators_is_refused_by_name() {
     assert_eq!(named, vec!["..\\..\\escape", "dir\\file"]);
 }
 
-/// A zip spells "directory" two ways that need not agree: the trailing `/`
-/// the specification asks for, and the file-type bits of a Unix mode. A
-/// symlink named as a directory is refused as the symlink its mode says it
-/// is — skipping it as the directory its name claims would drop a member
-/// the projection never reported.
+/// A zip spells a member's kind twice — the trailing `/` the specification
+/// asks a directory to carry, and the file-type bits of a Unix mode — and
+/// the two need not agree. A member described both ways is refused as the
+/// disagreement it is, named as the archive spells it.
 #[test]
 fn a_zip_member_whose_name_and_mode_disagree_is_refused() {
     let members = vec![zip_symlink("evil/", "/etc")];
     assert!(matches!(
         expand_bytes("disagree.zip", &zip(&members), 0).unwrap_err(),
-        Error::ArchiveMemberKind { member, .. } if member == "evil"
+        Error::ArchiveMemberKindDisagrees { member, .. } if member == "evil/"
+    ));
+}
+
+/// The disagreement is judged before the name reaches `strip`, which can
+/// erase it: a symlink named `wrapper/` under `--strip 1` strips to nothing,
+/// and a member that strips to nothing and calls itself a directory is
+/// dropped on purpose. Judged after, the symlink would vanish with no error
+/// at all.
+#[test]
+fn a_zip_member_strip_would_erase_is_still_judged_for_its_kind() {
+    let members = vec![zip_symlink("wrapper/", "/etc")];
+    assert!(matches!(
+        expand_bytes("disagree.zip", &zip(&members), 1).unwrap_err(),
+        Error::ArchiveMemberKindDisagrees { member, .. } if member == "wrapper/"
     ));
 }
 
@@ -719,6 +755,49 @@ fn duplicate_members_are_refused_by_name() {
         expand_bytes("dupe.tar", &tar(&members), 0).unwrap_err(),
         Error::ArchiveMemberDuplicate { member, .. } if member == "lib/tool"
     ));
+}
+
+/// The one duplicate shape a zip hides from the expansion: two members whose
+/// names are **byte-identical**. `ZipArchive` keys its members by name and
+/// keeps the last, so the second has already replaced the first by the time
+/// `read_zip` sees an index — the expansion is handed one member and has
+/// nothing to compare. This test pins that, so a dependency that stops
+/// collapsing them is noticed rather than quietly changing what a zip means.
+///
+/// What survives to be refused is every duplicate the *names* differ in:
+/// two names normalizing alike, and two `strip` collapses onto one path.
+/// And the collapse the reader does is the one every extractor performs —
+/// `unzip` writes both in order and the last one stands — so the archive
+/// projects what extracting it would produce.
+#[test]
+fn a_zip_hides_byte_identical_duplicate_names_from_the_expansion() {
+    let members = vec![
+        zip_file("a/tool", "the one you scanned\n"),
+        zip_file("b/tool", "the one you extracted\n"),
+    ];
+    let mut bytes = zip(&members);
+    // The writer refuses to produce a duplicate name, so the second member
+    // is renamed in the bytes afterwards — same length, and no header
+    // checksum covers a name.
+    let mut at = 0;
+    while let Some(found) = bytes[at..]
+        .windows(6)
+        .position(|window| window == b"b/tool")
+    {
+        let start = at + found;
+        bytes[start..start + 6].copy_from_slice(b"a/tool");
+        at = start + 6;
+    }
+
+    let tree = expand_bytes("dupe.zip", &bytes, 0).expect("expand");
+    assert_eq!(
+        tree.get(Utf8Path::new("a/tool")),
+        Some(&Entry::File {
+            contents: b"the one you extracted\n".to_vec(),
+            executable: false,
+        })
+    );
+    assert_eq!(tree.len(), 1);
 }
 
 /// `strip` can collapse two distinct members onto one path, which is the

@@ -222,9 +222,13 @@ pub enum Error {
         /// The offending entry's key, verbatim.
         key: Utf8PathBuf,
     },
-    /// One projected path is claimed by more than one mapping entry: two
-    /// entries — under `[files]`, `[links]`, or one of each — whose keys
-    /// lexically normalize to the same path. Not a refusal.
+    /// One projected path is claimed by more than one mapping entry. Not a
+    /// refusal. Three shapes reach it: two entries under `[files]`,
+    /// `[links]`, or one of each, whose keys lexically normalize to the same
+    /// path; two `[archives]` tables whose prefixes do (`"v/"` and `"v"` are
+    /// distinct TOML keys and one prefix); and an expanded archive member
+    /// landing on a path another entry already claimed, an archive's or a
+    /// table's.
     #[error("mapping {path}: \"{key}\" is projected by more than one entry")]
     MappingDuplicate {
         /// The mapping file's location.
@@ -298,6 +302,24 @@ pub enum Error {
         /// prefix.
         member: Utf8PathBuf,
     },
+    /// A zip member's two spellings of its kind disagree: the trailing `/`
+    /// the specification asks a directory to carry, and the file-type bits
+    /// of the Unix mode it may also record. A symlink named `logs/`, or a
+    /// directory named without the slash, is one member described two ways,
+    /// and there is no reading of it that is not a guess about which
+    /// spelling the archive meant. Not a refusal.
+    ///
+    /// Separate from [`ArchiveMemberKind`](Error::ArchiveMemberKind), which
+    /// says a kind is one the projection never writes: here both spellings
+    /// name kinds it does write, and the defect is that they are different.
+    #[error("archive {path}: member {member} is one kind by name and another by mode")]
+    ArchiveMemberKindDisagrees {
+        /// The archive's location.
+        path: Utf8PathBuf,
+        /// The offending member, as the archive spells it — trailing slash
+        /// included, since the slash is half of what disagrees.
+        member: Utf8PathBuf,
+    },
     /// Two members of one archive claim the same projected path — duplicate
     /// names, which zip permits outright and tar permits by convention, or
     /// two distinct members `strip` collapses onto one path. Not a refusal.
@@ -310,6 +332,13 @@ pub enum Error {
     /// ([`MappingDuplicate`](Error::MappingDuplicate)) and two desired keys
     /// claiming one ([`TreeConflict`](Error::TreeConflict)): there is no
     /// deterministic entry to prefer.
+    ///
+    /// One zip shape never reaches this error: the zip reader keys its
+    /// members by name and keeps the last, so two members whose names are
+    /// byte-identical are already one before expansion sees them
+    /// ([`load_archive`](crate::load_archive) says what that means). Every
+    /// duplicate whose names differ — normalizing alike, or collapsed by
+    /// `strip` — is refused here.
     #[error("archive {path}: more than one member projects to {member}")]
     ArchiveMemberDuplicate {
         /// The archive's location.
@@ -497,6 +526,7 @@ impl Error {
             | Error::ArchiveMemberNameNotUtf8 { .. }
             | Error::ArchiveMemberTargetNotUtf8 { .. }
             | Error::ArchiveMemberKind { .. }
+            | Error::ArchiveMemberKindDisagrees { .. }
             | Error::ArchiveMemberDuplicate { .. }
             | Error::ArchiveMemberStripped { .. }
             | Error::ArchiveMemberTooDeep { .. }
