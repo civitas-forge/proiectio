@@ -102,6 +102,40 @@ fn tree_diff_reports_undeclared_paths() {
 }
 
 #[test]
+#[should_panic(expected = "free of `.`/`..` components")]
+fn tree_rejects_dot_dot_components() {
+    let _ = Tree::new().file("../escape.txt", "outside");
+}
+
+#[test]
+#[should_panic(expected = "nodes may only sit under directories")]
+fn tree_rejects_nodes_nested_under_a_symlink() {
+    // A file under a declared symlink would write through the link —
+    // potentially outside the fixture — so the builder refuses the shape.
+    let _ = Tree::new()
+        .symlink("escape", "../outside")
+        .file("escape/x", "boom");
+}
+
+#[test]
+#[should_panic(expected = "nodes may only sit under directories")]
+fn tree_rejects_declaring_an_ancestor_file_after_its_descendant() {
+    let _ = Tree::new().file("a/b.txt", "inner").file("a", "now a file");
+}
+
+#[test]
+fn write_under_clears_a_stale_exec_bit() {
+    let fixture = Tree::new()
+        .executable("bin/run", "#!/bin/sh\n")
+        .materialize();
+
+    let plain = Tree::new().file("bin/run", "just data");
+    plain.write_under(fixture.root());
+
+    assert_tree(fixture.root(), &plain);
+}
+
+#[test]
 fn dropping_the_fixture_deletes_the_directory() {
     let fixture = Tree::new().file("a.txt", "alpha").materialize();
     let root = fixture.root().to_owned();

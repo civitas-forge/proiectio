@@ -21,6 +21,13 @@
 //! Teardown is RAII: dropping the [`Fixture`] drops the underlying `TempDir`,
 //! which deletes the directory. No shared state, no ordering, no cleanup code
 //! in tests.
+//!
+//! The scaffolding defends its own isolation promise: tree paths admit only
+//! normal components (no `..`, no `.`, no absolute paths, no empty segments),
+//! and no node may sit under a declared file or symlink — so a declared tree
+//! cannot reach outside the fixture directory, by dot-dot or by writing
+//! through a declared link. This module is Unix-only (`cfg(unix)` at the
+//! declaration site): exec bits and symlinks are the behavior under test.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -118,10 +125,33 @@ impl Tree {
 
     fn insert(mut self, path: impl AsRef<str>, node: Node) -> Self {
         let path = Utf8PathBuf::from(path.as_ref());
-        assert!(
-            !path.as_str().is_empty() && path.is_relative(),
-            "tree paths are non-empty and relative, got {path:?}"
-        );
+        assert_normal_relative(&path);
+        for ancestor in path.ancestors().skip(1) {
+            if ancestor.as_str().is_empty() {
+                continue;
+            }
+            if let Some(existing) = self.nodes.get(ancestor) {
+                assert!(
+                    matches!(existing, Node::Dir),
+                    "{path:?} nests under {ancestor:?}, which is a {} — \
+                     nodes may only sit under directories",
+                    kind_of(existing)
+                );
+            }
+        }
+        if !matches!(node, Node::Dir) {
+            if let Some(descendant) = self
+                .nodes
+                .keys()
+                .find(|k| k.as_path() != path && k.starts_with(&path))
+            {
+                panic!(
+                    "{descendant:?} nests under {path:?}, which is a {} — \
+                     nodes may only sit under directories",
+                    kind_of(&node)
+                );
+            }
+        }
         let previous = self.nodes.insert(path.clone(), node);
         assert!(previous.is_none(), "duplicate tree path {path:?}");
         self
@@ -181,10 +211,12 @@ impl Tree {
                     executable,
                 } => {
                     fs::write(&abs, contents).unwrap_or_else(|e| panic!("write {abs:?}: {e}"));
-                    if *executable {
-                        fs::set_permissions(&abs, fs::Permissions::from_mode(0o755))
-                            .unwrap_or_else(|e| panic!("chmod {abs:?}: {e}"));
-                    }
+                    // Set the mode unconditionally: `fs::write` over an
+                    // existing file keeps its permissions, so a declared
+                    // non-executable must also *clear* a stale exec bit.
+                    let mode = if *executable { 0o755 } else { 0o644 };
+                    fs::set_permissions(&abs, fs::Permissions::from_mode(mode))
+                        .unwrap_or_else(|e| panic!("chmod {abs:?}: {e}"));
                 }
                 Node::Symlink { target } => {
                     std::os::unix::fs::symlink(target, &abs)
@@ -218,9 +250,22 @@ impl Fixture {
     /// The absolute path of `rel` inside the fixture.
     pub(crate) fn path(&self, rel: impl AsRef<Utf8Path>) -> Utf8PathBuf {
         let rel = rel.as_ref();
-        assert!(rel.is_relative(), "Fixture::path takes a relative path");
+        assert_normal_relative(rel);
         self.root.join(rel)
     }
+}
+
+/// Asserts `path` is relative and made only of normal components — no `..`,
+/// no `.`, no root, no empty string — so joining it under a fixture root can
+/// never resolve outside the root.
+fn assert_normal_relative(path: &Utf8Path) {
+    assert!(
+        !path.as_str().is_empty()
+            && path
+                .components()
+                .all(|c| matches!(c, camino::Utf8Component::Normal(_))),
+        "tree paths are non-empty, relative, and free of `.`/`..` components, got {path:?}"
+    );
 }
 
 /// Diffs the directory at `root` against `expected`, returning one line per

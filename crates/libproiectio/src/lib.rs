@@ -30,7 +30,7 @@ mod plan;
 mod projection;
 mod report;
 mod status;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod test_support;
 
 pub use entry::*;
