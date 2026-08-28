@@ -256,8 +256,16 @@ pub enum Error {
     TreeNameNotUtf8 {
         /// The absolute path of the directory holding the entry.
         path: Utf8PathBuf,
-        /// The name as the filesystem gave it, lossily decoded — the bytes
-        /// are not UTF-8, so this is what can be shown of them.
+        /// The name as the filesystem gave it, lossily decoded. It is what
+        /// can be *shown* of bytes that have no UTF-8 spelling, not those
+        /// bytes: every invalid sequence renders as `U+FFFD`, so two names
+        /// differing only there render alike, and a name that genuinely
+        /// carries `U+FFFD` renders like one that does not. A `String` is
+        /// the whole vocabulary this crate has for a path — desired and
+        /// recorded paths are [`Utf8PathBuf`] by construction — and a name
+        /// it cannot spell is one it can never project, so what the field
+        /// carries is the message's, not a caller's to act on. `path` names
+        /// the directory to look in.
         name: String,
     },
     /// A source tree holds a symlink whose target is not UTF-8, which
@@ -268,15 +276,22 @@ pub enum Error {
     TreeTargetNotUtf8 {
         /// The link's absolute path.
         path: Utf8PathBuf,
-        /// The target as the filesystem gave it, lossily decoded.
+        /// The target as the filesystem gave it, lossily decoded, and what
+        /// can be shown of it rather than the bytes themselves — the same
+        /// terms as [`TreeNameNotUtf8::name`](Error::TreeNameNotUtf8).
         target: String,
     },
     /// A source tree holds a node of a kind the projection never writes — a
     /// FIFO, a socket, or a device node. Not a refusal: the load cannot
-    /// produce a desired tree at all. The node is never opened, since
-    /// reading a FIFO with no writer would block forever. This also names a
-    /// file whose kind changed between the `lstat` that classified it and
-    /// the open that would have read it.
+    /// produce a desired tree at all. A node the walk's `lstat` found to be
+    /// one of those is never opened, since reading a FIFO with no writer
+    /// would block forever.
+    ///
+    /// A name that became one of those kinds *after* that `lstat` reaches
+    /// this variant only when the walk's open succeeded and the handle
+    /// turned out not to hold a regular file. An open that fails outright —
+    /// a name that has become a symlink, which the walk will not follow, or
+    /// a socket, which has no reader — is [`Io`](Error::Io) instead.
     #[error("tree node {path} is not a file, directory, or symlink")]
     TreeNodeKind {
         /// The node's absolute path.

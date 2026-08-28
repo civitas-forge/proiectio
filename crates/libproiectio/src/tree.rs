@@ -78,12 +78,13 @@ use crate::{Entry, Error, Result};
 /// what a walked key can offend on is the rest of the contract: a backslash
 /// in a name, a colon, a trailing dot or space, and the Windows reserved
 /// device names — all ordinary names on Unix, none of them a path the
-/// projection may create. Nothing is read for a refused key, and a refused
-/// *directory* is refused whole: every key under it would carry the refused
-/// name as a component, so the walk names the directory and never opens it.
-/// That holds however little it contains — a directory the gateway refuses
-/// fails the load even when it is empty, where an empty directory bearing
-/// an ordinary name simply projects nothing.
+/// projection may create. The verdict is lexical and comes before any
+/// syscall, so a refused key is neither stat-ed nor opened nor read, and a
+/// refused *directory* is refused whole: every key under it would carry the
+/// refused name as a component, so the walk names the directory and never
+/// enters it. That holds however little it contains — a directory the
+/// gateway refuses fails the load even when it is empty, where an empty
+/// directory bearing an ordinary name simply projects nothing.
 ///
 /// The two collision refusals a desired tree can otherwise carry cannot
 /// arise here. Two walked keys never name one location: names within a
@@ -104,12 +105,21 @@ use crate::{Entry, Error, Result};
 ///   [`Entry::Symlink`] carries a `String`, so such a pointer has no
 ///   representation in a desired tree;
 /// - a node of a kind the projection never writes — a FIFO, a socket, or a
-///   device node — [`Error::TreeNodeKind`] naming it. It is never opened:
-///   reading a FIFO with no writer blocks forever, which is why observation
-///   records such nodes without opening them either. The same error names a
-///   file whose kind changed between its `lstat` and its open;
+///   device node — [`Error::TreeNodeKind`] naming it. A node the `lstat`
+///   found to be one of those is never opened: reading a FIFO with no
+///   writer blocks forever, which is why observation records such nodes
+///   without opening them either;
 /// - anything the filesystem refuses — [`Error::Io`], carrying the absolute
 ///   path of what could not be read.
+///
+/// A name that changed kind between its `lstat` and its open lands in
+/// whichever of those two the open produced, and the walk does not
+/// second-guess it. Where the open itself refuses — a name that has become
+/// a symlink, which `O_NOFOLLOW` will not open, or a socket, which has no
+/// reader to open — the OS error is reported as [`Error::Io`]. Where the
+/// open succeeds and the handle turns out to hold something other than a
+/// regular file — a FIFO, a directory — that is [`Error::TreeNodeKind`],
+/// the same answer the `lstat` would have given had it seen it first.
 ///
 /// [`contained_join`]: crate::contained_join
 ///
@@ -168,6 +178,17 @@ impl Walk<'_> {
                     name: raw.to_string_lossy().into_owned(),
                 })?;
             let rel = prefix.join(&name);
+            // Containment first: the verdict is lexical, so a refused name
+            // costs no syscall at all and cannot come back as an I/O error
+            // about a name the walk was never going to project. A directory
+            // is refused here too, and refusing it settles its whole
+            // subtree: every key below carries the refused name as a
+            // component, so none of them could be projected either. The
+            // refusal names the directory rather than the descendants it
+            // would have produced, and the walk never enters it.
+            let Some(key) = self.admit(&rel) else {
+                continue;
+            };
             // `metadata` and not `file_type`: cap-std reads the latter from
             // the directory stream, and where the filesystem leaves that
             // field unset — XFS without `ftype`, some network filesystems —
@@ -177,15 +198,6 @@ impl Walk<'_> {
             // symlink is described by itself, never by what it points at.
             let meta = entry.metadata().map_err(io_at(self.absolute(&rel)))?;
             let file_type = meta.file_type();
-            let Some(key) = self.admit(&rel) else {
-                // Refused by containment. A directory is refused here too,
-                // and refusing it settles its whole subtree: every key below
-                // carries the refused name as a component, so none of them
-                // could be projected either. The directory is never opened
-                // and nothing under it is read — the refusal names it rather
-                // than the descendants it would have produced.
-                continue;
-            };
             let node = if file_type.is_symlink() {
                 // The target string, verbatim — grading it needs the
                 // destination and belongs to `decide`. `read_link_contents`
