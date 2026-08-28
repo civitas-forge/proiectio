@@ -24,13 +24,14 @@ pub enum DriftPolicy {
 /// never the desired tree — because each action carries what executing it
 /// needs: the [`Entry`] to write, and for destructive and recording
 /// actions the [`NodeSignature`] the disk must still match. Plans are
-/// plain data, not capabilities: apply re-validates containment and
-/// re-checks the disk against each action's `expected` signature before
-/// touching anything — the manifest enters only for the recording an
-/// action performs, never as the re-check baseline, since `expected` may
-/// deliberately differ from the recorded entry (an agreement skip, a
-/// lifted drift) — so a hand-built or stale plan refuses rather than
-/// misfires. `BTreeMap`
+/// plain data, not capabilities: apply re-validates containment, refuses
+/// an [`Overwrite`](Action::Overwrite), [`Skip`](Action::Skip),
+/// [`Remove`](Action::Remove), or [`Release`](Action::Release) keyed by a
+/// path the manifest does not record, and re-checks the disk against each
+/// action's `expected` signature before touching anything — the recorded
+/// entry itself is never the signature baseline, since `expected` may
+/// deliberately differ from it (an agreement skip, a lifted drift) — so a
+/// hand-built or stale plan refuses rather than misfires. `BTreeMap`
 /// keeps plans sorted, diffable, and deterministic; apply derives execution
 /// order from it (parents before children, removals in reverse).
 ///

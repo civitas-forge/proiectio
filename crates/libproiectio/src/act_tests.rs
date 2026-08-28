@@ -501,6 +501,164 @@ fn a_hand_built_plan_with_unnormalized_keys_refuses_containment() {
 }
 
 #[test]
+fn a_forged_remove_of_an_unrecorded_path_refuses_foreign() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("victim.txt", "precious")
+        .write_under(dest.root());
+    let plan = Plan {
+        owner: "own".to_owned(),
+        actions: BTreeMap::from([(
+            "victim.txt".into(),
+            Action::Remove {
+                expected: Some(NodeSignature {
+                    kind: EntryKind::File,
+                    hash: sha256_hex(b"precious"),
+                    executable: false,
+                }),
+            },
+        )]),
+    };
+
+    let error = apply_at(&dest, &state, &Manifest::new(), &plan)
+        .expect_err("a matching signature is not authorization");
+
+    match error {
+        Error::Foreign { paths } => assert_eq!(paths, BTreeSet::from(["victim.txt".into()])),
+        other => panic!("expected Foreign, got {other:?}"),
+    }
+    assert_tree(dest.root(), &Tree::new().file("victim.txt", "precious"));
+}
+
+#[test]
+fn a_forged_skip_of_an_unrecorded_path_refuses_instead_of_adopting() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("theirs.txt", "same bytes")
+        .write_under(dest.root());
+    let plan = Plan {
+        owner: "own".to_owned(),
+        actions: BTreeMap::from([(
+            "theirs.txt".into(),
+            Action::Skip {
+                expected: NodeSignature {
+                    kind: EntryKind::File,
+                    hash: sha256_hex(b"same bytes"),
+                    executable: false,
+                },
+            },
+        )]),
+    };
+
+    let error = apply_at(&dest, &state, &Manifest::new(), &plan)
+        .expect_err("adoption would put a foreign file on the removal path");
+
+    match error {
+        Error::Foreign { paths } => assert_eq!(paths, BTreeSet::from(["theirs.txt".into()])),
+        other => panic!("expected Foreign, got {other:?}"),
+    }
+    // Never adopted: the state dir records nothing.
+    assert_eq!(persisted(&state), Manifest::new());
+}
+
+#[test]
+fn an_overwrite_expecting_a_block_signature_fails_up_front_and_writes_nothing() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("a.txt", "old")
+        .file("conf", "anything")
+        .write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "a.txt".into(),
+        recorded(EntryKind::File, sha256_hex(b"old"), &["own"]),
+    );
+    manifest.entries.insert(
+        "conf".into(),
+        recorded(EntryKind::Block, sha256_hex(b"body"), &["own"]),
+    );
+    let plan = Plan {
+        owner: "own".to_owned(),
+        actions: BTreeMap::from([
+            (
+                "a.txt".into(),
+                Action::Remove {
+                    expected: Some(NodeSignature {
+                        kind: EntryKind::File,
+                        hash: sha256_hex(b"old"),
+                        executable: false,
+                    }),
+                },
+            ),
+            (
+                "conf".into(),
+                Action::Overwrite {
+                    entry: Entry::File {
+                        contents: b"new".to_vec(),
+                        executable: false,
+                    },
+                    expected: NodeSignature {
+                        kind: EntryKind::Block,
+                        hash: sha256_hex(b"body"),
+                        executable: false,
+                    },
+                },
+            ),
+        ]),
+    };
+
+    let error =
+        apply_at(&dest, &state, &manifest, &plan).expect_err("the block seam reports up front");
+
+    match error {
+        Error::ApplyBlockUnimplemented { paths } => {
+            assert_eq!(paths, BTreeSet::from(["conf".into()]))
+        }
+        other => panic!("expected ApplyBlockUnimplemented, got {other:?}"),
+    }
+    // Up front means up front: the removal half of the plan did not run.
+    assert_tree(
+        dest.root(),
+        &Tree::new().file("a.txt", "old").file("conf", "anything"),
+    );
+}
+
+#[test]
+fn a_recorded_link_whose_matching_target_is_not_utf8_refuses_containment() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let (dest, state) = fixtures();
+    let target_bytes: &[u8] = b"re\xffal";
+    std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(target_bytes), dest.path("logs"))
+        .expect("plant a link with a non-UTF-8 target");
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "logs".into(),
+        recorded(EntryKind::Symlink, sha256_hex(target_bytes), &["own"]),
+    );
+    let plan = Plan {
+        owner: "own".to_owned(),
+        actions: BTreeMap::from([(
+            "logs/x.txt".into(),
+            Action::Write {
+                entry: Entry::File {
+                    contents: b"x".to_vec(),
+                    executable: false,
+                },
+            },
+        )]),
+    };
+
+    let error = apply_at(&dest, &state, &manifest, &plan)
+        .expect_err("an ungradable target is never followed");
+
+    match error {
+        Error::Containment { paths } => assert_eq!(paths, BTreeSet::from(["logs/x.txt".into()])),
+        other => panic!("expected Containment, got {other:?}"),
+    }
+}
+
+#[test]
 fn an_owned_matching_in_dest_symlink_ancestor_is_followed() {
     let (dest, state) = fixtures();
     Tree::new()

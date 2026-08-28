@@ -101,8 +101,13 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// - a plan carrying any [`Action::Refuse`] fails with the matching refusal
 ///   variant of [`Error`], aggregating every refused path — as does an
 ///   action key the containment gateway rejects or one not in normalized
-///   form. Where refusals of several kinds appear in one plan, the variant
-///   reported first is fixed: [`Error::Containment`],
+///   form, and an [`Overwrite`](Action::Overwrite), [`Skip`](Action::Skip),
+///   [`Remove`](Action::Remove), or [`Release`](Action::Release) keyed by a
+///   path `manifest` does not record, which refuses as [`Error::Foreign`]:
+///   the deciding stage plans those actions only for recorded paths, so on
+///   an unrecorded one they would touch — or adopt — what the projection
+///   never wrote. Where refusals of several kinds appear in one plan, the
+///   variant reported first is fixed: [`Error::Containment`],
 ///   [`Error::TreeConflict`], [`Error::Foreign`], [`Error::Drift`],
 ///   [`Error::OwnerConflict`], then [`Error::ExternalTarget`];
 /// - a plan writing a symlink fails as [`Error::ApplySymlinkUnimplemented`]
@@ -167,7 +172,7 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// truth about the run.) A failed write's tempfile is removed on drop —
 /// `dest` is never littered with temp files.
 pub fn apply(dest: &Dir, state: &Dir, manifest: &Manifest, plan: &Plan) -> Result<ApplyReport> {
-    validate(plan)?;
+    validate(manifest, plan)?;
     let mut manifest = manifest.clone();
     let mut outcomes = BTreeMap::new();
     match run(dest, &mut manifest, plan, &mut outcomes) {
@@ -189,9 +194,10 @@ pub fn apply(dest: &Dir, state: &Dir, manifest: &Manifest, plan: &Plan) -> Resul
 
 /// The up-front whole-plan check behind [`apply`]'s "nothing is written"
 /// promise: aggregates every planned refusal, every action key the lexical
-/// containment gateway rejects, and every entry apply cannot honor yet
+/// containment gateway rejects, every recorded-path action keyed by a path
+/// `manifest` does not record, and every entry apply cannot honor yet
 /// into the single error the rustdoc's fixed precedence names.
-fn validate(plan: &Plan) -> Result<()> {
+fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
     let mut drift = BTreeSet::new();
     let mut foreign = BTreeSet::new();
     let mut containment = BTreeSet::new();
@@ -238,16 +244,36 @@ fn validate(plan: &Plan) -> Result<()> {
                 continue;
             }
         }
+        // Deciding plans Overwrite, Skip, Remove, and Release only for
+        // recorded paths; a hand-built or stale plan keying one by a path
+        // the manifest does not record would remove or overwrite a foreign
+        // node whose signature happens to match — or, for Skip, adopt one
+        // into the manifest and so onto the removal path. Foreign, always.
+        if !matches!(action, Action::Write { .. }) && !manifest.entries.contains_key(path) {
+            foreign.insert(path.clone());
+            continue;
+        }
         match action {
-            Action::Write { entry } | Action::Overwrite { entry, .. } => match entry {
-                Entry::File { .. } => {}
-                Entry::Symlink { .. } => {
-                    symlink_unimplemented.insert(path.clone());
-                }
-                Entry::Block { .. } => {
+            Action::Write { entry } => entry_seam(
+                entry,
+                path,
+                &mut symlink_unimplemented,
+                &mut block_unimplemented,
+            ),
+            Action::Overwrite { entry, expected } => {
+                entry_seam(
+                    entry,
+                    path,
+                    &mut symlink_unimplemented,
+                    &mut block_unimplemented,
+                );
+                // The re-check side too: check_leaf cannot honor a block
+                // signature, and finding that out mid-run would break the
+                // up-front promise.
+                if expected.kind == EntryKind::Block {
                     block_unimplemented.insert(path.clone());
                 }
-            },
+            }
             Action::Skip { expected }
             | Action::Remove {
                 expected: Some(expected),
@@ -293,6 +319,25 @@ fn validate(plan: &Plan) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// Sorts a written entry's kind into [`validate`]'s unimplemented-seam
+/// sets: symlink and block creation wait on issues #8 and #14.
+fn entry_seam(
+    entry: &Entry,
+    path: &Utf8Path,
+    symlink_unimplemented: &mut BTreeSet<Utf8PathBuf>,
+    block_unimplemented: &mut BTreeSet<Utf8PathBuf>,
+) {
+    match entry {
+        Entry::File { .. } => {}
+        Entry::Symlink { .. } => {
+            symlink_unimplemented.insert(path.to_owned());
+        }
+        Entry::Block { .. } => {
+            block_unimplemented.insert(path.to_owned());
+        }
+    }
 }
 
 /// Executes a validated plan's actions in the documented order, recording
@@ -681,8 +726,13 @@ fn verified_parent(
                     // the same drift refusal every stale plan gets.
                     return Err(drift(&here));
                 }
-                let target = std::str::from_utf8(bytes)
-                    .expect("a target hashing to a recorded string is the recorded UTF-8 string");
+                let Ok(target) = std::str::from_utf8(bytes) else {
+                    // A matching hash proves agreement with the record, not
+                    // UTF-8: a manifest this crate never writes can record
+                    // the hash of raw bytes. What cannot be graded is never
+                    // followed.
+                    return Err(containment(path));
+                };
                 // Arm three: grade the target from the link's parent; only
                 // an in-dest resolution may be followed. `join` on an
                 // absolute target yields an absolute path, which the
