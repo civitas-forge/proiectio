@@ -20,7 +20,9 @@ use crate::{Error, Result};
 /// Refused, each as [`Error::Containment`] carrying `rel` verbatim:
 ///
 /// - absolute paths — a leading `/`, and Windows forms (`C:...`, `\\server`)
-///   judged lexically so the verdict is identical on every platform;
+///   judged lexically so the verdict is identical on every platform; a drive
+///   prefix is refused in *any* component (`a/C:evil`), because on Windows
+///   `Path::push` replaces the accumulated path when handed one;
 /// - any backslash: `\` is a separator on Windows and would smuggle
 ///   components (`..\..\x`) past a `/`-only split, so it never counts as a
 ///   filename character in a projected tree;
@@ -53,7 +55,7 @@ pub fn contained_join(dest: &Utf8Path, rel: &Utf8Path) -> Result<Utf8PathBuf> {
 /// while this split over `/` gives the same verdict everywhere.
 fn normalize(rel: &Utf8Path) -> Option<Utf8PathBuf> {
     let raw = rel.as_str();
-    if raw.contains('\\') || rel.is_absolute() || has_windows_drive_prefix(raw) {
+    if raw.contains('\\') || raw.starts_with('/') {
         return None;
     }
     let mut kept: Vec<&str> = Vec::new();
@@ -63,6 +65,7 @@ fn normalize(rel: &Utf8Path) -> Option<Utf8PathBuf> {
             ".." => {
                 kept.pop()?;
             }
+            name if has_windows_drive_prefix(name) => return None,
             name => kept.push(name),
         }
     }
@@ -73,11 +76,13 @@ fn normalize(rel: &Utf8Path) -> Option<Utf8PathBuf> {
 }
 
 /// `C:...` — an ASCII drive letter followed by a colon — which Windows
-/// resolves outside any destination. Detected lexically so a tree authored
-/// for Windows is refused on every platform. An empty `raw` never matches;
-/// it is refused as normalizing to nothing.
-fn has_windows_drive_prefix(raw: &str) -> bool {
-    let mut chars = raw.chars();
+/// resolves outside any destination. Checked against every component, not
+/// just the first: on Windows, `Path::push` *replaces* the accumulated path
+/// when handed a drive-prefixed component, so `a/C:evil` would escape `dest`
+/// there if `C:evil` survived the split. Detected lexically so a tree
+/// authored for Windows is refused on every platform.
+fn has_windows_drive_prefix(component: &str) -> bool {
+    let mut chars = component.chars();
     matches!(
         (chars.next(), chars.next()),
         (Some(letter), Some(':')) if letter.is_ascii_alphabetic()

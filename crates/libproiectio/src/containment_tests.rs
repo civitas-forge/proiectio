@@ -22,6 +22,8 @@ fn accepted_paths_join_lexically_normalized() {
         ("a/b/../c", "a/c"),
         ("a/b/../../c", "c"),
         ("a/b/c/../../d/../e", "a/e"),
+        // A colon that is not a drive prefix is an ordinary character.
+        ("ab:c/d", "ab:c/d"),
         // Dots inside names are names, not traversal.
         ("..a/b..", "..a/b.."),
         ("...", "..."),
@@ -34,7 +36,11 @@ fn accepted_paths_join_lexically_normalized() {
     for (rel, joined) in cases {
         let got = contained_join(dest(), Utf8Path::new(rel))
             .unwrap_or_else(|error| panic!("{rel}: expected acceptance, got {error}"));
-        assert_eq!(got, Utf8PathBuf::from(format!("{DEST}/{joined}")), "{rel}");
+        // Built by pushing components, exactly as the join does, so the
+        // expectation holds under Windows separators too.
+        let mut want = Utf8PathBuf::from(DEST);
+        want.extend(joined.split('/'));
+        assert_eq!(got, want, "{rel}");
     }
 }
 
@@ -49,7 +55,14 @@ fn escaping_paths_are_refused_with_the_path_verbatim() {
         "C:/evil",
         "C:\\evil",
         "c:",
+        "C:evil",
         "\\\\server\\share",
+        // Drive prefix in a later component: on Windows `Path::push`
+        // replaces the accumulated path when handed one of these.
+        "a/C:evil",
+        "a/../C:/evil",
+        "x/c:/y",
+        "a/C:",
         // Backslash anywhere: never a separator we honor, never a filename.
         "..\\..\\escape",
         "a\\b",

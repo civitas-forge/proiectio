@@ -25,8 +25,11 @@ Security Model
 
     Every path in the desired tree must be relative, and must still
     lie inside the destination after normalization. Refused
-    outright: absolute paths, paths that climb out via "..", and
-    empty or "." components.
+    outright: absolute paths, paths that climb out via "..", empty
+    or "." components, any backslash, and Windows drive or UNC
+    forms (C:..., \\server) in any component — all judged
+    lexically, so a Windows-authored tree gets the same verdict on
+    every host.
 
     Normalization alone does not close the hole. A projected symlink
     "logs -> /etc" followed by a projected file "logs/x" is a write
