@@ -274,7 +274,9 @@ pub enum Error {
     /// A source tree holds a node of a kind the projection never writes — a
     /// FIFO, a socket, or a device node. Not a refusal: the load cannot
     /// produce a desired tree at all. The node is never opened, since
-    /// reading a FIFO with no writer would block forever.
+    /// reading a FIFO with no writer would block forever. This also names a
+    /// file whose kind changed between the `lstat` that classified it and
+    /// the open that would have read it.
     #[error("tree node {path} is not a file, directory, or symlink")]
     TreeNodeKind {
         /// The node's absolute path.

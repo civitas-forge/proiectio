@@ -256,6 +256,38 @@ fn names_the_containment_gateway_refuses_are_reported_together_verbatim() {
 }
 
 #[test]
+fn a_directory_the_gateway_refuses_is_named_instead_of_its_descendants() {
+    // Every key under `COM1` would carry it as a component, so the whole
+    // subtree is unprojectable and the refusal says so once, naming the
+    // directory. Nothing under it is opened or read.
+    let source = Tree::new()
+        .file("COM1/a.txt", "a")
+        .file("COM1/deeper/b.txt", "b")
+        .file("kept", "fine")
+        .materialize();
+
+    let want: BTreeSet<Utf8PathBuf> = BTreeSet::from([Utf8PathBuf::from("COM1")]);
+    assert!(matches!(
+        load_tree(source.root()).unwrap_err(),
+        Error::Containment { paths } if paths == want
+    ));
+}
+
+#[test]
+fn a_refused_directory_holding_nothing_is_still_refused() {
+    // An empty directory bearing an ordinary name projects nothing; one the
+    // gateway refuses fails the load, because the caller named a path the
+    // projection may not create.
+    let source = Tree::new().dir("weird:name").materialize();
+
+    let want: BTreeSet<Utf8PathBuf> = BTreeSet::from([Utf8PathBuf::from("weird:name")]);
+    assert!(matches!(
+        load_tree(source.root()).unwrap_err(),
+        Error::Containment { paths } if paths == want
+    ));
+}
+
+#[test]
 fn a_node_kind_the_projection_never_writes_is_named_and_never_opened() {
     let source = Tree::new().file("keep.txt", "a").materialize();
     let socket = source.path("sock");
