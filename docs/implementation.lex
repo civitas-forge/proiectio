@@ -21,8 +21,10 @@ Implementation Guidelines
     - act: write I/O. Execute the plan verbatim.
 
     Dry runs are observe + decide with act skipped; removal is decide
-    against an empty desired tree. The engine enforces the split: act
-    takes only a Plan, never the mapping or the disk directly.
+    against an empty desired tree, over everything the owner holds or
+    over the recorded paths a caller names ([./design.lex] sections 2
+    and 3). The engine enforces the split: act takes only a Plan,
+    never the mapping or the disk directly.
 
     One deliberate exception to "verbatim": before each destructive
     action — overwrite or removal — act re-checks the target against

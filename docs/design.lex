@@ -127,11 +127,17 @@ Proiectio Design
     caller permitted external targets.
 
     Removal is a plan against an empty desired tree — same
-    classification, same drift refusals — and status runs the
-    classification and writes nothing. Proiectio has no notion of
-    git: a caller that wants owned paths excluded from version
-    control reads the owned-path list off the manifest and maintains
-    the exclusion itself.
+    classification, same drift refusals — over everything the owner
+    holds, or over the recorded paths a caller names instead: a subset
+    admits its paths through the same containment gateway, and a named
+    path the owner does not hold plans nothing, so a removal re-run
+    stays a no-op. Status runs the classification and writes nothing;
+    a state directory that does not exist and one holding no manifest
+    both read as the empty manifest, so a destination nothing was ever
+    projected into reports rather than failing. Proiectio has no
+    notion of git: a caller that wants owned paths excluded from
+    version control reads the owned-path list off the manifest and
+    maintains the exclusion itself.
 
 3. API
 
@@ -142,17 +148,41 @@ Proiectio Design
     pub external_targets: ExternalTargetPolicy,
     }
 
+    pub enum RemovalScope<'a> {
+    Everything,
+    Paths(&'a BTreeSet<Utf8PathBuf>),
+    }
+
     pub struct Projection { target: Utf8PathBuf, state_dir: Utf8PathBuf }
     impl Projection {
     /// Pure: every write, overwrite, removal, and refusal
     /// apply would perform. An empty tree plans a removal.
     pub fn plan(&self, owner: &str, tree: &BTreeMap<Utf8PathBuf, Entry>,
     options: PlanOptions) -> Result<Plan>;
+    /// The removal on its own terms: everything this owner
+    /// holds, or the recorded paths named. Clearing the owner
+    /// and naming no path are separate spellings, never an
+    /// empty list.
+    pub fn plan_removal(&self, owner: &str, scope: RemovalScope<'_>,
+    options: PlanOptions) -> Result<Plan>;
     pub fn apply(&self, plan: &Plan) -> Result<ApplyReport>;
     pub fn status(&self) -> Result<Status>;
     }
 
     :: rust ::
+
+    Those four methods are the shape the stages take once one value
+    holds both paths, and none of them exists yet. What the library
+    ships is the stages themselves, as free functions over directory
+    handles the caller opened — decide, decide_removal, apply,
+    status — because nothing in the crate opens an ambient path
+    itself ([./implementation.lex] section 3). Where Projection would
+    answer from its two paths, status takes a StateDir naming the
+    state handle together with where that directory sits relative to
+    the destination — the two travel as one value, since a handle and
+    a path that disagree would produce a confident, wrong report and
+    nothing can check one against the other. The methods land over
+    those functions when the CLI has a caller for them.
 
     Dependencies: serde, serde_json, thiserror, camino now; sha2
     and cap-std arrive with observe, cap-tempfile and

@@ -1771,6 +1771,272 @@ fn a_desired_block_over_nothing_writes() {
     assert_eq!(action(&plan, "conf"), &Action::Write { entry });
 }
 
+// --- removal: whole owner, or a subset by path ---
+
+/// [`decide_removal`] for [`OWNER`] with no in-dest state prefix, under
+/// `policy` and the default (refusing) external-target policy.
+fn removal(
+    scope: RemovalScope<'_>,
+    manifest: &Manifest,
+    observations: &Observations,
+    policy: DriftPolicy,
+) -> Plan {
+    decide_removal(
+        OWNER,
+        scope,
+        manifest,
+        observations,
+        None,
+        PlanOptions {
+            drift: policy,
+            ..PlanOptions::default()
+        },
+    )
+}
+
+fn requested(paths: &[&str]) -> BTreeSet<Utf8PathBuf> {
+    paths.iter().map(Utf8PathBuf::from).collect()
+}
+
+#[test]
+fn removing_a_whole_owner_is_deciding_against_an_empty_tree() {
+    let entry = file("alpha\n", false);
+    let manifest = manifest_of(&[
+        ("a.txt", recorded(&entry, &[OWNER])),
+        ("b/c.txt", recorded(&entry, &[OWNER])),
+        ("shared.txt", recorded(&entry, &[OWNER, "other"])),
+        ("theirs.txt", recorded(&entry, &["other"])),
+    ]);
+    let observations = observed(&[
+        ("a.txt", on_disk(&entry)),
+        ("b/c.txt", on_disk(&entry)),
+        ("shared.txt", on_disk(&entry)),
+        ("theirs.txt", on_disk(&entry)),
+    ]);
+
+    let removal = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        removal,
+        plan(&tree(&[]), &manifest, &observations, DriftPolicy::Refuse)
+    );
+    assert_eq!(
+        removal.actions,
+        BTreeMap::from([
+            (
+                "a.txt".into(),
+                Action::Remove {
+                    expected: Some(signature(&entry)),
+                },
+            ),
+            (
+                "b/c.txt".into(),
+                Action::Remove {
+                    expected: Some(signature(&entry)),
+                },
+            ),
+            // Another owner still holds it: the disk is left alone.
+            ("shared.txt".into(), Action::Release),
+        ])
+    );
+}
+
+#[test]
+fn a_subset_removal_names_the_only_paths_it_judges() {
+    let entry = file("alpha\n", false);
+    let manifest = manifest_of(&[
+        ("a.txt", recorded(&entry, &[OWNER])),
+        ("b/c.txt", recorded(&entry, &[OWNER])),
+        ("shared.txt", recorded(&entry, &[OWNER, "other"])),
+    ]);
+    let observations = observed(&[
+        ("a.txt", on_disk(&entry)),
+        ("b/c.txt", on_disk(&entry)),
+        ("shared.txt", on_disk(&entry)),
+    ]);
+
+    let plan = removal(
+        RemovalScope::Paths(&requested(&["b/c.txt", "shared.txt"])),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    // a.txt is not named: no action at all, so its entry and its node
+    // both survive the run.
+    assert_eq!(
+        plan.actions,
+        BTreeMap::from([
+            (
+                "b/c.txt".into(),
+                Action::Remove {
+                    expected: Some(signature(&entry)),
+                },
+            ),
+            ("shared.txt".into(), Action::Release),
+        ])
+    );
+}
+
+#[test]
+fn a_subset_removal_naming_no_path_plans_nothing() {
+    let entry = file("alpha\n", false);
+    let manifest = manifest_of(&[("a.txt", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[("a.txt", on_disk(&entry))]);
+
+    // Clearing the owner is `Everything`, never an empty list: a caller
+    // passing along a path list that came up empty removes nothing.
+    let plan = removal(
+        RemovalScope::Paths(&BTreeSet::new()),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(plan.actions, BTreeMap::new());
+}
+
+#[test]
+fn a_subset_removal_matches_the_manifest_on_normalized_paths() {
+    let entry = file("alpha\n", false);
+    let manifest = manifest_of(&[("b/c.txt", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[("b/c.txt", on_disk(&entry))]);
+
+    let plan = removal(
+        RemovalScope::Paths(&requested(&["b/x/../c.txt"])),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "b/c.txt"),
+        &Action::Remove {
+            expected: Some(signature(&entry)),
+        }
+    );
+}
+
+#[test]
+fn requested_paths_pass_the_same_containment_gateway_as_desired_keys() {
+    let entry = file("alpha\n", false);
+    let manifest = manifest_of(&[("a.txt", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[("a.txt", on_disk(&entry))]);
+
+    let plan = decide_removal(
+        OWNER,
+        RemovalScope::Paths(&requested(&[
+            "../escape",
+            "/etc/passwd",
+            "a\\b",
+            ".proiectio/manifest.json",
+            "a.txt",
+        ])),
+        &manifest,
+        &observations,
+        Some(Utf8Path::new(".proiectio")),
+        PlanOptions::default(),
+    );
+
+    // Refusals are keyed by the request verbatim, exactly as a refused
+    // desired key is.
+    for path in [
+        "../escape",
+        "/etc/passwd",
+        "a\\b",
+        ".proiectio/manifest.json",
+    ] {
+        assert_eq!(
+            action(&plan, path),
+            &Action::Refuse {
+                refusal: Refusal::Containment,
+            },
+            "expected {path} refused"
+        );
+    }
+    assert_eq!(
+        action(&plan, "a.txt"),
+        &Action::Remove {
+            expected: Some(signature(&entry)),
+        }
+    );
+}
+
+#[test]
+fn naming_a_path_this_owner_does_not_hold_plans_nothing() {
+    let entry = file("alpha\n", false);
+    let manifest = manifest_of(&[("theirs.txt", recorded(&entry, &["other"]))]);
+    let observations = observed(&[
+        ("theirs.txt", on_disk(&entry)),
+        ("foreign.txt", on_disk(&entry)),
+    ]);
+
+    // Never recorded, recorded under another owner alone, and a directory
+    // (which the manifest never records): a removal owes nothing at any of
+    // them, so re-running one that already succeeded stays a no-op.
+    let plan = removal(
+        RemovalScope::Paths(&requested(&["gone.txt", "foreign.txt", "theirs.txt", "b"])),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(plan.actions, BTreeMap::new());
+}
+
+#[test]
+fn removing_a_drifted_path_refuses_and_the_policy_lifts_it() {
+    let entry = file("alpha\n", false);
+    let drifted = file("edited by hand\n", false);
+    let manifest = manifest_of(&[("a.txt", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[("a.txt", on_disk(&drifted))]);
+    let named = requested(&["a.txt"]);
+
+    for scope in [RemovalScope::Everything, RemovalScope::Paths(&named)] {
+        assert_eq!(
+            action(
+                &removal(scope, &manifest, &observations, DriftPolicy::Refuse),
+                "a.txt"
+            ),
+            &Action::Refuse {
+                refusal: Refusal::Drift,
+            }
+        );
+        // Overwrite lifts it to a removal expecting the *drifted* node, so
+        // apply still refuses if the file changes again after the plan.
+        assert_eq!(
+            action(
+                &removal(scope, &manifest, &observations, DriftPolicy::Overwrite),
+                "a.txt"
+            ),
+            &Action::Remove {
+                expected: Some(signature(&drifted)),
+            }
+        );
+    }
+}
+
+#[test]
+fn removing_an_already_gone_path_drops_the_entry_alone() {
+    let entry = file("alpha\n", false);
+    let manifest = manifest_of(&[("a.txt", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[("a.txt", Observation::Absent)]);
+
+    let plan = removal(
+        RemovalScope::Paths(&requested(&["a.txt"])),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(action(&plan, "a.txt"), &Action::Remove { expected: None });
+}
+
 // --- determinism ---
 
 #[test]
