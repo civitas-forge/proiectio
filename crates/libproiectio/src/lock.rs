@@ -3,9 +3,13 @@
 //! destination corrupt the manifest's read-modify-write — one loads the
 //! manifest, the other persists, the first persists over it — so a caller
 //! that can race another proiectio process takes [`StateLock::acquire`]
-//! before [`observe`](crate::observe) and holds the guard until
-//! [`apply`](crate::apply) has persisted the manifest. Nothing in the crate
-//! acquires the lock on the caller's behalf: [`apply`](crate::apply) and
+//! before [`load_manifest`](crate::load_manifest), the read that opens the
+//! cycle, and holds the guard until [`apply`](crate::apply) has persisted
+//! it. Acquiring later — after the load, before
+//! [`observe`](crate::observe) — leaves the read outside the guard: a
+//! writer that finished in between is already recorded on disk, and this
+//! run's persist drops what it recorded. Nothing in the crate acquires the
+//! lock on the caller's behalf: [`apply`](crate::apply) and
 //! [`save_manifest`](crate::save_manifest) take plain `Dir` handles and
 //! write whether or not a guard is alive.
 //!
@@ -31,22 +35,15 @@ use camino::Utf8Path;
 use cap_std::fs_utf8::{Dir, File, OpenOptions};
 
 use crate::observe::io_error;
-use crate::{Error, Result};
-
-/// The lock file's name inside the state directory, beside
-/// [`MANIFEST_FILE_NAME`](crate::MANIFEST_FILE_NAME). Created on first
-/// acquire and never removed: unlinking on release would let a late writer
-/// lock a fresh inode while an earlier one still holds the unlinked file,
-/// and an empty leftover file is harmless.
-pub const LOCK_FILE_NAME: &str = "proiectio.lock";
+use crate::{Error, LOCK_FILE_NAME, Result};
 
 /// The single-writer guard on a state directory: while a `StateLock` is
 /// alive, no other [`acquire`](StateLock::acquire) on the same state
 /// directory — thread or process — succeeds.
 ///
-/// A caller takes the guard before [`observe`](crate::observe) and keeps it
-/// until [`apply`](crate::apply) returns, so the manifest another writer
-/// could change never moves between load and persist. Dropping the guard
+/// A caller takes the guard before [`load_manifest`](crate::load_manifest)
+/// and keeps it until [`apply`](crate::apply) returns, so the manifest
+/// never moves between this run's load and its persist. Dropping the guard
 /// releases the lock (closing the file description releases its `flock`);
 /// [`release`](StateLock::release) names the same drop explicitly.
 #[derive(Debug)]
@@ -57,11 +54,17 @@ pub struct StateLock {
 }
 
 impl StateLock {
-    /// Takes the exclusive advisory lock on `state`'s [`LOCK_FILE_NAME`],
-    /// creating the file if absent — try-lock semantics: a lock held by
-    /// another writer reports [`Error::LockHeld`] immediately, never
-    /// blocks. `LockHeld` is not a refusal ([`Error::is_refusal`] is
-    /// `false`), so a CLI maps it to exit 1.
+    /// Takes the exclusive advisory lock on `state`'s
+    /// [`LOCK_FILE_NAME`](crate::LOCK_FILE_NAME), creating the file if
+    /// absent — try-lock semantics: a lock held by another writer reports
+    /// [`Error::LockHeld`] immediately, never blocks. `LockHeld` is not a
+    /// refusal ([`Error::is_refusal`] is `false`), so a CLI maps it to
+    /// exit 1.
+    ///
+    /// The file outlives the guard: release never unlinks it, since
+    /// unlinking would let a late writer create and lock a fresh inode
+    /// while an earlier writer still holds the unlinked one. An empty
+    /// leftover file costs nothing.
     pub fn acquire(state: &Dir) -> Result<StateLock> {
         let path = Utf8Path::new(LOCK_FILE_NAME);
         let file = state

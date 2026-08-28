@@ -46,7 +46,7 @@ fn every_variant() -> Vec<Error> {
             supported: crate::MANIFEST_VERSION,
         },
         Error::LockHeld {
-            path: Utf8PathBuf::from("proiectio.lock"),
+            path: Utf8PathBuf::from(crate::LOCK_FILE_NAME),
         },
         Error::MappingFormat {
             path: Utf8PathBuf::from("deploy.toml"),
@@ -156,12 +156,12 @@ fn io_messages_keep_the_os_error_visible() {
 #[test]
 fn lock_held_exits_1_and_names_the_lock_path() {
     let error = Error::LockHeld {
-        path: Utf8PathBuf::from("proiectio.lock"),
+        path: Utf8PathBuf::from(crate::LOCK_FILE_NAME),
     };
     assert!(!error.is_refusal());
     assert_eq!(exit_code(Err(error)), 1);
     let error = Error::LockHeld {
-        path: Utf8PathBuf::from("proiectio.lock"),
+        path: Utf8PathBuf::from(crate::LOCK_FILE_NAME),
     };
     assert_eq!(
         error.to_string(),

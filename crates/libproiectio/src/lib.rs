@@ -12,11 +12,14 @@
 //!
 //! Excluding a concurrent writer is the caller's to do: `StateLock` takes a
 //! single-writer advisory lock on the state directory, and a caller that
-//! can race another proiectio process acquires it before [`observe`] and
-//! holds the guard until the manifest has been persisted. The functions
-//! here take plain capability handles and never acquire it themselves, so
-//! the manifest's read-modify-write survives concurrent runs only when the
+//! can race another proiectio process acquires it before
+//! `load_manifest` — the read the whole cycle hangs off — and holds the
+//! guard until the manifest has been persisted. The functions here take
+//! plain capability handles and never acquire it themselves, so the
+//! manifest's read-modify-write survives concurrent runs only when the
 //! caller brackets them that way (`docs/implementation.lex` section 7).
+//! `StateLock` is built where `flock(2)` is; [`LOCK_FILE_NAME`] is spelled
+//! on every target, so a caller elsewhere can coordinate on the same file.
 //!
 //! The crate carries no consumer vocabulary: content arrives as bytes,
 //! owners are opaque strings, and nothing here names what the files are
@@ -43,7 +46,10 @@ mod error;
 // Narrower than the `unix` the other I/O modules carry: `rustix::fs::flock`,
 // the lock's mechanism, is compiled out on the Unix targets named here
 // (Solaris has no `flock` at all), so `cfg(unix)` alone would select a module
-// that cannot build there.
+// that cannot build there. The list is rustix's, minus the non-Unix `wasi`,
+// and has to follow `rustix::fs::flock`'s own `cfg` when that dependency
+// moves; the re-export below repeats it, and disagreeing copies fail to
+// compile rather than drift.
 #[cfg(all(
     unix,
     not(any(

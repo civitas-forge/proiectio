@@ -153,7 +153,7 @@ pub enum Error {
     #[error("state lock {path} is held by another writer")]
     LockHeld {
         /// The lock file's path, relative to the state directory —
-        /// `LOCK_FILE_NAME`.
+        /// [`LOCK_FILE_NAME`](crate::LOCK_FILE_NAME).
         path: Utf8PathBuf,
     },
     /// The mapping file does not parse as mapping TOML — a syntax error, a
