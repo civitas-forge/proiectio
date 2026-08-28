@@ -305,8 +305,7 @@ fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
     assert!(!duplicate.is_refusal());
     assert_eq!(
         duplicate.to_string(),
-        "archive /assets/vendor.zip: member lib/tool is claimed by more than \
-         one member"
+        "archive /assets/vendor.zip: more than one member projects to lib/tool"
     );
 
     let large = Error::ArchiveTooLarge {

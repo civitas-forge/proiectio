@@ -27,7 +27,7 @@ use crate::{Entry, Error, Result};
 /// past 200 levels, so the limit sits far enough below that to leave the
 /// stack to the caller. It is also far past any real source tree: the
 /// deepest sit in the tens of levels.
-const MAX_DEPTH: usize = 64;
+pub(crate) const MAX_DEPTH: usize = 64;
 
 /// Walks a source directory into the desired tree [`decide`](crate::decide)
 /// takes — the second desired-tree source beside

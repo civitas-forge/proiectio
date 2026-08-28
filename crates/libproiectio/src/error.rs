@@ -310,7 +310,7 @@ pub enum Error {
     /// ([`MappingDuplicate`](Error::MappingDuplicate)) and two desired keys
     /// claiming one ([`TreeConflict`](Error::TreeConflict)): there is no
     /// deterministic entry to prefer.
-    #[error("archive {path}: member {member} is claimed by more than one member")]
+    #[error("archive {path}: more than one member projects to {member}")]
     ArchiveMemberDuplicate {
         /// The archive's location.
         path: Utf8PathBuf,
@@ -348,7 +348,7 @@ pub enum Error {
         /// The offending member's path, relative to any prefix.
         member: Utf8PathBuf,
         /// The deepest nesting an expansion accepts, counted in directories
-        /// below the archive root.
+        /// above the member as it projects — after `strip`.
         limit: usize,
     },
     /// An archive expands to more bytes than one may allocate. Not a

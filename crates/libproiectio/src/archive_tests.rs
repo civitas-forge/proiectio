@@ -6,7 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs_utf8::Dir as Utf8Dir;
 
 use super::*;
-use crate::test_support::{Tree, assert_tree};
+use crate::test_support::{Fixture, Tree, assert_tree};
 use crate::{Manifest, PlanOptions, Refusal, apply, decide, load_manifest, observe};
 
 // ---------------------------------------------------------------------------
@@ -503,6 +503,44 @@ fn a_truncated_stream_reports_the_decoders_own_error() {
     ));
 }
 
+/// gzip streams concatenate, and one tar stream may be written through
+/// several gzip members — `gzip -d` and `tar tzf` read that as one archive.
+/// A decoder that stopped at the first member would expand a prefix of the
+/// archive and report success, projecting fewer files than the archive
+/// carries and saying nothing about the rest.
+#[test]
+fn a_tar_split_across_gzip_members_expands_whole() {
+    let whole = tar(&[
+        Member::file("a.txt", "first\n"),
+        Member::file("b.txt", "second\n"),
+    ]);
+    let (head, tail) = whole.split_at(1024);
+    let mut bytes = gzip(head);
+    bytes.extend_from_slice(&gzip(tail));
+    let tree = expand_bytes("both.tar.gz", &bytes, 0).expect("expand both gzip members");
+    assert_eq!(
+        tree.keys().map(|key| key.as_str()).collect::<Vec<_>>(),
+        ["a.txt", "b.txt"]
+    );
+}
+
+/// The zstd counterpart: frames concatenate the same way.
+#[test]
+fn a_tar_split_across_zstd_frames_expands_whole() {
+    let whole = tar(&[
+        Member::file("a.txt", "first\n"),
+        Member::file("b.txt", "second\n"),
+    ]);
+    let (head, tail) = whole.split_at(1024);
+    let mut bytes = zstd_compress(head);
+    bytes.extend_from_slice(&zstd_compress(tail));
+    let tree = expand_bytes("both.tar.zst", &bytes, 0).expect("expand both zstd frames");
+    assert_eq!(
+        tree.keys().map(|key| key.as_str()).collect::<Vec<_>>(),
+        ["a.txt", "b.txt"]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The malicious corpus
 // ---------------------------------------------------------------------------
@@ -554,6 +592,37 @@ fn a_zip_with_windows_separators_is_refused_by_name() {
     };
     let named: Vec<&str> = refused.iter().map(|path| path.as_str()).collect();
     assert_eq!(named, vec!["..\\..\\escape", "dir\\file"]);
+}
+
+/// A zip spells "directory" two ways that need not agree: the trailing `/`
+/// the specification asks for, and the file-type bits of a Unix mode. A
+/// symlink named as a directory is refused as the symlink its mode says it
+/// is — skipping it as the directory its name claims would drop a member
+/// the projection never reported.
+#[test]
+fn a_zip_member_whose_name_and_mode_disagree_is_refused() {
+    let members = vec![zip_symlink("evil/", "/etc")];
+    assert!(matches!(
+        expand_bytes("disagree.zip", &zip(&members), 0).unwrap_err(),
+        Error::ArchiveMemberKind { member, .. } if member == "evil"
+    ));
+}
+
+/// A zip member name may carry a NUL, which no host accepts in a pathname.
+/// The gateway refuses it, so the refusal arrives at plan time rather than
+/// from the OS partway through an apply that had already called the path
+/// writable.
+#[test]
+fn a_member_name_carrying_a_nul_is_refused() {
+    let members = vec![zip_file("a\u{0}b", "x\n"), zip_file("ok", "kept\n")];
+    let refused = match expand_bytes("nul.zip", &zip(&members), 0).unwrap_err() {
+        Error::Containment { paths } => paths,
+        other => panic!("expected a containment refusal, got {other}"),
+    };
+    assert_eq!(
+        refused.iter().map(|path| path.as_str()).collect::<Vec<_>>(),
+        vec!["a\u{0}b"]
+    );
 }
 
 #[test]
@@ -715,64 +784,95 @@ fn a_member_nesting_past_the_depth_limit_fails_the_load() {
 /// so the memory it wanted is never taken.
 #[test]
 fn an_archive_expanding_past_the_byte_bound_fails_the_load() {
-    let fixture = Tree::new().materialize();
-    let path = fixture.path("bomb.tar.gz");
-    let size = MAX_EXPANDED_BYTES + 1;
-    {
-        let file = fs::File::create(&path).expect("create the bomb");
-        let mut encoder =
-            flate2::write::GzEncoder::new(BufWriter::new(file), flate2::Compression::fast());
-        write_header(&mut encoder, b"big", REGULAR, 0o644, "", size);
-        let chunk = vec![0u8; 1 << 20];
-        let mut written = 0u64;
-        while written < size {
-            let take = chunk.len().min((size - written) as usize);
-            encoder.write_all(&chunk[..take]).expect("write the bomb");
-            written += take as u64;
-        }
-        let padding = (512 - size % 512) % 512;
-        encoder
-            .write_all(&vec![0u8; padding as usize])
-            .expect("pad the bomb");
-        write_end(&mut encoder);
-        encoder.finish().expect("finish the bomb");
-    }
+    let bomb = bomb_at("bomb.tar.gz", b"big", REGULAR, "");
     assert!(matches!(
-        load_archive(&path, 0).unwrap_err(),
+        load_archive(&bomb.path("bomb.tar.gz"), 0).unwrap_err(),
         Error::ArchiveTooLarge { limit, .. } if limit == MAX_EXPANDED_BYTES
     ));
 }
 
 /// A member the gateway refuses still has to be read past on a stream, and
-/// on a compressed stream that means decompressing it. Its declared size is
-/// charged to the same budget, so an archive cannot buy unbounded
-/// decompression with members it knows will be declined.
+/// on a compressed stream that means decompressing it. Those bytes spend the
+/// same budget, so an archive cannot buy unbounded decompression with members
+/// it knows will be declined.
 #[test]
-fn a_declined_members_declared_size_spends_the_budget_too() {
-    let member = Member::new("/etc/passwd", REGULAR).declaring(MAX_EXPANDED_BYTES + 1);
-    let mut bytes = Vec::new();
-    write_member(&mut bytes, &member);
-    write_end(&mut bytes);
+fn a_declined_members_bytes_spend_the_budget_too() {
+    let bomb = bomb_at("declined.tar.gz", b"/etc/passwd", REGULAR, "");
     assert!(matches!(
-        expand_bytes("declared.tar", &bytes, 0).unwrap_err(),
-        Error::ArchiveTooLarge { .. }
+        load_archive(&bomb.path("declined.tar.gz"), 0).unwrap_err(),
+        Error::ArchiveTooLarge { limit, .. } if limit == MAX_EXPANDED_BYTES
     ));
 }
 
-/// The same charge covers a member the expansion *keeps* without reading:
-/// a symlink header claiming a body still makes the reader skip that many
-/// bytes to reach the next member.
+/// The same holds for a member the expansion *keeps* without reading: a
+/// symlink header claiming a body makes the reader skip that many bytes to
+/// reach the next member.
 #[test]
 fn a_symlink_header_claiming_a_body_spends_the_budget_too() {
-    let mut member = Member::symlink("current", "releases/1.2.3");
-    member.declared = Some(MAX_EXPANDED_BYTES + 1);
+    let bomb = bomb_at("claimed.tar.gz", b"current", SYMLINK, "releases/1.2.3");
+    assert!(matches!(
+        load_archive(&bomb.path("claimed.tar.gz"), 0).unwrap_err(),
+        Error::ArchiveTooLarge { limit, .. } if limit == MAX_EXPANDED_BYTES
+    ));
+}
+
+/// `tar` resolves a GNU long-name header — and a GNU long-link or a pax
+/// record — into memory while producing the entry that carries it, so those
+/// bytes are spent before the expansion is handed a member at all. Charging
+/// the stream rather than the member is what catches them: a long-name
+/// header claiming sixty-five megabytes is a few hundred kilobytes of gzip.
+#[test]
+fn a_long_name_header_cannot_outspend_the_budget() {
+    const GNU_LONGNAME: u8 = b'L';
+    let bomb = bomb_at("longname.tar.gz", b"././@LongLink", GNU_LONGNAME, "");
+    assert!(matches!(
+        load_archive(&bomb.path("longname.tar.gz"), 0).unwrap_err(),
+        Error::ArchiveTooLarge { limit, .. } if limit == MAX_EXPANDED_BYTES
+    ));
+}
+
+/// A header may declare more than the stream holds — the bytes it promises
+/// are what the parser goes looking for, and running out of them is the
+/// decoder's own error rather than a budget the archive never actually
+/// spent.
+#[test]
+fn a_header_claiming_more_than_the_stream_holds_fails_to_decode() {
+    let member = Member::new("short", REGULAR).declaring(MAX_EXPANDED_BYTES + 1);
     let mut bytes = Vec::new();
     write_member(&mut bytes, &member);
     write_end(&mut bytes);
     assert!(matches!(
-        expand_bytes("claimed.tar", &bytes, 0).unwrap_err(),
-        Error::ArchiveTooLarge { .. }
+        expand_bytes("truncated.tar", &bytes, 0).unwrap_err(),
+        Error::ArchiveDecode { .. }
     ));
+}
+
+/// Writes a gzipped tar into a fresh fixture under `file`: one member of
+/// kind `kind` named `name`, whose body really carries
+/// `MAX_EXPANDED_BYTES + 1` bytes. The bytes are zeros, so what lands on
+/// disk is a few hundred kilobytes — which is the whole point of the bound.
+fn bomb_at(file: &str, name: &[u8], kind: u8, link: &str) -> Fixture {
+    let fixture = Tree::new().materialize();
+    let path = fixture.path(file);
+    let size = MAX_EXPANDED_BYTES + 1;
+    let file = fs::File::create(&path).expect("create the bomb");
+    let mut encoder =
+        flate2::write::GzEncoder::new(BufWriter::new(file), flate2::Compression::fast());
+    write_header(&mut encoder, name, kind, 0o644, link, size);
+    let chunk = vec![0u8; 1 << 20];
+    let mut written = 0u64;
+    while written < size {
+        let take = chunk.len().min((size - written) as usize);
+        encoder.write_all(&chunk[..take]).expect("write the bomb");
+        written += take as u64;
+    }
+    let padding = (512 - size % 512) % 512;
+    encoder
+        .write_all(&vec![0u8; padding as usize])
+        .expect("pad the bomb");
+    write_end(&mut encoder);
+    encoder.finish().expect("finish the bomb");
+    fixture
 }
 
 /// The byte bound does not see a million empty members: they expand to no

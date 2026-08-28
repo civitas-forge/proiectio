@@ -1,7 +1,9 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek};
+use std::io::{self, BufReader, Read, Seek};
+use std::rc::Rc;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
@@ -34,6 +36,16 @@ use crate::{Entry, Error, Result};
 /// punishes exactly the content archives are good at — a tarball of text
 /// compresses 10:1 honestly — while a bomb built from many small,
 /// poorly-compressed members slips under it.
+///
+/// On a tar the bound is spent on every decompressed byte the parser
+/// consumes, not only on the member bodies this module keeps: headers,
+/// block padding, the bodies of members it skips past, and the GNU
+/// long-name, GNU long-link, and pax records `tar` reads into memory
+/// *before* it hands over the member they describe. Those last are the
+/// reason the accounting sits in the reader rather than in the loop below
+/// — a long-name header declaring eight gigabytes is a few hundred
+/// kilobytes of gzip, and a budget checked per member would be consulted
+/// only after the eight gigabytes had been read.
 const MAX_EXPANDED_BYTES: u64 = 64 << 20;
 
 /// How many members one archive may carry.
@@ -45,10 +57,12 @@ const MAX_EXPANDED_BYTES: u64 = 64 << 20;
 /// megabytes.
 const MAX_MEMBERS: usize = 50_000;
 
-/// How deep below the archive root a member may nest, counted in
-/// directories — the number [`load_tree`](crate::load_tree) bounds a source
-/// tree's directory nesting at, deliberately.
+/// How deep a member may nest once it is projected, counted in directories
+/// above it — measured after `strip`, since that is the shape the
+/// destination receives.
 ///
+/// This is [`load_tree`](crate::load_tree)'s bound, and it is the same
+/// constant rather than the same number so the two cannot drift apart.
 /// `--tree` takes a directory or an archive (`docs/cli-tour.lex` section
 /// 1), so the two spellings of one source should agree about what is
 /// projectable: a tarball of a directory tree must expand to the tree that
@@ -56,7 +70,7 @@ const MAX_MEMBERS: usize = 50_000;
 /// recursion would otherwise run off the end of; expansion is iterative and
 /// has no such wall, so this limit buys the agreement rather than the
 /// safety — and, incidentally, caps the length of a single key.
-const MAX_MEMBER_DEPTH: usize = 64;
+const MAX_MEMBER_DEPTH: usize = crate::tree::MAX_DEPTH;
 
 /// The archive formats an archive source may be spelled in, each picked
 /// from a filename extension by [`ArchiveFormat::for_path`].
@@ -242,7 +256,8 @@ pub(crate) const ARCHIVE_EXTENSIONS: &str = ".tar, .tar.gz, .tgz, .tar.zst, .zip
 ///   for the same reason: there is no deterministic entry to prefer;
 /// - a file or symlink member `strip` erases —
 ///   [`Error::ArchiveMemberStripped`];
-/// - a member nesting more than 64 directories below the archive root —
+/// - a member that, after `strip`, still nests more than 64 directories
+///   deep —
 ///   [`Error::ArchiveMemberTooDeep`];
 /// - an archive expanding past the memory bounds above —
 ///   [`Error::ArchiveTooLarge`] and [`Error::ArchiveTooManyMembers`];
@@ -292,6 +307,7 @@ pub(crate) fn expand(
     })?;
     let reader = BufReader::new(file);
 
+    let budget = Budget::new(MAX_EXPANDED_BYTES);
     let mut expansion = Expansion {
         source,
         format,
@@ -300,15 +316,26 @@ pub(crate) fn expand(
         tree: BTreeMap::new(),
         refused: BTreeSet::new(),
         members: 0,
-        budget: MAX_EXPANDED_BYTES,
+        budget: Rc::clone(&budget),
     };
     match format {
-        ArchiveFormat::Tar => expansion.read_tar(reader)?,
-        ArchiveFormat::TarGz => expansion.read_tar(flate2::read::GzDecoder::new(reader))?,
+        ArchiveFormat::Tar => expansion.read_tar(Budgeted::new(reader, budget))?,
+        // `MultiGzDecoder`, not `GzDecoder`: gzip streams concatenate, and
+        // one tar stream written through several gzip members is a single
+        // archive to `gzip -d` and to `tar tzf`. A decoder that stopped at
+        // the first member would expand a prefix of the archive and report
+        // success — the projection would place fewer files than the archive
+        // carries, silently, which is the divergence between what a reader
+        // shows and what an extractor writes that this module refuses
+        // everywhere else.
+        ArchiveFormat::TarGz => {
+            let decoder = flate2::read::MultiGzDecoder::new(reader);
+            expansion.read_tar(Budgeted::new(decoder, budget))?;
+        }
         ArchiveFormat::TarZst => {
             let decoder = zstd::stream::read::Decoder::new(reader)
                 .map_err(|e| decode_error(source, format, e))?;
-            expansion.read_tar(decoder)?;
+            expansion.read_tar(Budgeted::new(decoder, budget))?;
         }
         ArchiveFormat::Zip => expansion.read_zip(reader)?,
     }
@@ -318,6 +345,81 @@ pub(crate) fn expand(
         });
     }
     Ok(expansion.tree)
+}
+
+/// What is left of [`MAX_EXPANDED_BYTES`], and whether something ran it out.
+///
+/// Shared between the [`Expansion`] and the reader wrapped around a tar's
+/// decompressed stream, because on a tar the two spend the same budget: the
+/// parser reads bytes the expansion never sees, and a bound the expansion
+/// alone held would be consulted after they had already been allocated.
+struct Budget {
+    remaining: Cell<u64>,
+    /// Set the moment a spend does not fit, so the failure a reader can only
+    /// report as an [`io::Error`] comes back as [`Error::ArchiveTooLarge`]
+    /// rather than as a decode failure.
+    exhausted: Cell<bool>,
+}
+
+impl Budget {
+    fn new(bytes: u64) -> Rc<Self> {
+        Rc::new(Self {
+            remaining: Cell::new(bytes),
+            exhausted: Cell::new(false),
+        })
+    }
+
+    /// Spends `bytes`, or records the budget as exhausted and answers false.
+    fn spend(&self, bytes: u64) -> bool {
+        match self.remaining.get().checked_sub(bytes) {
+            Some(left) => {
+                self.remaining.set(left);
+                true
+            }
+            None => {
+                self.exhausted.set(true);
+                false
+            }
+        }
+    }
+}
+
+/// A tar's decompressed stream, spending the [`Budget`] on every byte the
+/// parser takes from it and never handing over one past the budget.
+///
+/// This is where a tar's byte bound lives, rather than around each member
+/// body, because `tar` reads a member's GNU long-name, GNU long-link, and
+/// pax records into memory while producing the entry that carries them —
+/// work that has finished by the time the expansion sees a member at all.
+/// A header declaring a gigabyte of long name is a few hundred kilobytes of
+/// gzip, and the loop below would meet the gigabyte already allocated.
+struct Budgeted<R> {
+    inner: R,
+    budget: Rc<Budget>,
+}
+
+impl<R> Budgeted<R> {
+    fn new(inner: R, budget: Rc<Budget>) -> Self {
+        Self { inner, budget }
+    }
+}
+
+impl<R: Read> Read for Budgeted<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // One byte past what remains, so an overrun is what the next read
+        // reports rather than something a caller has to notice afterwards.
+        let headroom = self.budget.remaining.get().saturating_add(1);
+        let end = buf
+            .len()
+            .min(usize::try_from(headroom).unwrap_or(usize::MAX));
+        let read = self.inner.read(&mut buf[..end])?;
+        if !self.budget.spend(read as u64) {
+            return Err(io::Error::other(
+                "archive expands past the bytes an archive may allocate",
+            ));
+        }
+        Ok(read)
+    }
 }
 
 /// One [`expand`] run: the tree built so far, the member names containment
@@ -338,13 +440,21 @@ struct Expansion<'a> {
     /// Members seen so far, against [`MAX_MEMBERS`].
     members: usize,
     /// Bytes the expansion may still allocate, from [`MAX_EXPANDED_BYTES`].
-    budget: u64,
+    /// On a tar this is the same budget [`Budgeted`] spends.
+    budget: Rc<Budget>,
 }
 
 impl Expansion<'_> {
     /// Reads a tar stream — the same code for all three tar spellings, which
     /// differ only in the decompressor wrapped around the file.
-    fn read_tar(&mut self, reader: impl Read) -> Result<()> {
+    ///
+    /// `reader` is always a [`Budgeted`], and every byte the parser takes
+    /// from it is charged there: the headers, the block padding, the bodies
+    /// of members this loop skips past (a tar is a stream, so skipping one
+    /// still reads — and on a compressed stream decompresses — it), and the
+    /// extension records `tar` resolves before yielding the member they
+    /// describe. Nothing below charges the budget a second time.
+    fn read_tar(&mut self, reader: Budgeted<impl Read>) -> Result<()> {
         let mut archive = tar::Archive::new(reader);
         let entries = archive.entries().map_err(|e| self.decode(e))?;
         for entry in entries {
@@ -359,31 +469,27 @@ impl Expansion<'_> {
             self.count_member()?;
             let raw = entry.path_bytes().into_owned();
             let is_dir = entry_type.is_dir();
-            // A tar is a stream: every member the expansion does not read is
-            // still read *past*, and on a compressed stream that means
-            // decompressing it. The size such a member declares is charged to
-            // the same budget, so an archive cannot buy unbounded
-            // decompression with members it knows will not be read — a
-            // declined one, or a symlink whose header claims a body.
-            let declared = entry.size();
             let Some(member) = self.admit(&raw, is_dir)? else {
-                self.charge(declared)?;
                 continue;
             };
             if is_dir {
-                self.charge(declared)?;
                 continue;
             }
             match entry_type {
                 tar::EntryType::Symlink => {
-                    self.charge(declared)?;
                     let raw_target = entry.link_name_bytes().unwrap_or_default().into_owned();
                     let target = self.utf8_target(&member, &raw_target)?;
                     self.insert(member, Entry::Symlink { target })?;
                 }
                 tar::EntryType::Regular | tar::EntryType::Continuous => {
                     let mode = entry.header().mode().map_err(|e| self.decode(e))?;
-                    let contents = self.read_bounded(&mut entry)?;
+                    // Unbounded here only in form: the entry reads through
+                    // the `Budgeted` stream, which stops one byte past what
+                    // the budget has left.
+                    let mut contents = Vec::new();
+                    entry
+                        .read_to_end(&mut contents)
+                        .map_err(|e| self.decode(e))?;
                     self.insert(
                         member,
                         Entry::File {
@@ -423,20 +529,33 @@ impl Expansion<'_> {
             let Some(member) = self.admit(&raw, is_dir)? else {
                 continue;
             };
-            if is_dir {
-                continue;
-            }
+            // A zip spells "directory" two ways that need not agree: the
+            // trailing `/` the specification asks for, which is all
+            // `ZipFile::is_dir` reads, and the file-type bits of a Unix
+            // mode. The kind is judged before the name decides anything, so
+            // a fifo, socket, or device node named `evil/` is refused as the
+            // kind it is rather than skipped as the directory it claims to
+            // be, and a member the mode calls a directory without the
+            // trailing slash is refused rather than placed as a file.
             let mode = file.unix_mode();
-            if mode.is_some_and(|mode| !matches!(mode & S_IFMT, 0 | S_IFREG | S_IFLNK)) {
-                // A zip may carry a Unix mode, and a mode says which kind:
-                // a fifo, socket, or device node member is refused as one.
-                // A directory bit here means a member spelled as a
-                // directory without the trailing `/` zip uses for it, which
-                // is not a member this expansion can place either.
+            let kind = mode.map(|mode| mode & S_IFMT);
+            let consistent = match kind {
+                // No mode, or one carrying no file-type bits, says nothing
+                // about the kind; the name is then the only spelling there
+                // is.
+                None | Some(0) => true,
+                Some(S_IFDIR) => is_dir,
+                Some(S_IFREG | S_IFLNK) => !is_dir,
+                Some(_) => false,
+            };
+            if !consistent {
                 return Err(Error::ArchiveMemberKind {
                     path: self.source.to_owned(),
                     member,
                 });
+            }
+            if is_dir {
+                continue;
             }
             if file.is_symlink() {
                 // A zip symlink's body *is* its target string.
@@ -496,8 +615,10 @@ impl Expansion<'_> {
                 strip: self.strip as u32,
             });
         }
-        // Directories below the archive root, counted as `load_tree`'s walk
-        // counts them: the member's own name is not a level.
+        // Directories above the member once it is projected — after
+        // `strip`, since that is the shape the destination receives —
+        // counted as `load_tree`'s walk counts them: the member's own name
+        // is not a level.
         if kept.len() - 1 > MAX_MEMBER_DEPTH {
             return Err(Error::ArchiveMemberTooDeep {
                 path: self.source.to_owned(),
@@ -541,7 +662,9 @@ impl Expansion<'_> {
         Ok(())
     }
 
-    /// Reads one member's body, spending the expansion budget as it goes.
+    /// Reads one zip member's body, spending the expansion budget as it
+    /// goes. A tar's bodies are charged by [`Budgeted`] instead, which is
+    /// wrapped around the whole stream.
     ///
     /// Bounded *while* reading rather than checked after: a bomb that has
     /// already been decompressed into a `Vec` has already cost the memory
@@ -552,7 +675,7 @@ impl Expansion<'_> {
     fn read_bounded(&mut self, reader: &mut impl Read) -> Result<Vec<u8>> {
         let mut contents = Vec::new();
         let read = reader
-            .take(self.budget.saturating_add(1))
+            .take(self.budget.remaining.get().saturating_add(1))
             .read_to_end(&mut contents)
             .map_err(|e| self.decode(e))?;
         self.charge(read as u64)?;
@@ -561,14 +684,13 @@ impl Expansion<'_> {
 
     /// Spends `bytes` of the expansion budget.
     fn charge(&mut self, bytes: u64) -> Result<()> {
-        if bytes > self.budget {
-            return Err(Error::ArchiveTooLarge {
-                path: self.source.to_owned(),
-                limit: MAX_EXPANDED_BYTES,
-            });
+        if self.budget.spend(bytes) {
+            return Ok(());
         }
-        self.budget -= bytes;
-        Ok(())
+        Err(Error::ArchiveTooLarge {
+            path: self.source.to_owned(),
+            limit: MAX_EXPANDED_BYTES,
+        })
     }
 
     /// A symlink member's target as a `String`, which is all
@@ -586,14 +708,26 @@ impl Expansion<'_> {
     /// Wraps a decoder or stream error as [`Error::ArchiveDecode`], naming
     /// the format the extension picked. The underlying error stays visible
     /// (`docs/implementation.lex` section 5).
-    fn decode(&self, source: std::io::Error) -> Error {
+    ///
+    /// A [`Budgeted`] stream can only report an overrun as an
+    /// [`io::Error`], and it reaches this function through the tar parser
+    /// looking like any other stream failure. The budget records that it
+    /// ran out, so the archive is named for what it did rather than for how
+    /// the failure travelled.
+    fn decode(&self, source: io::Error) -> Error {
+        if self.budget.exhausted.get() {
+            return Error::ArchiveTooLarge {
+                path: self.source.to_owned(),
+                limit: MAX_EXPANDED_BYTES,
+            };
+        }
         decode_error(self.source, self.format, source)
     }
 }
 
 /// [`Expansion::decode`] for the one decoder built before the expansion
 /// exists.
-fn decode_error(path: &Utf8Path, format: ArchiveFormat, source: std::io::Error) -> Error {
+fn decode_error(path: &Utf8Path, format: ArchiveFormat, source: io::Error) -> Error {
     Error::ArchiveDecode {
         path: path.to_owned(),
         format,
@@ -606,6 +740,7 @@ fn decode_error(path: &Utf8Path, format: ArchiveFormat, source: std::io::Error) 
 /// not depend on, and read on every target because the mode comes out of the
 /// archive rather than off a filesystem.
 const S_IFMT: u32 = 0o170_000;
+const S_IFDIR: u32 = 0o040_000;
 const S_IFREG: u32 = 0o100_000;
 const S_IFLNK: u32 = 0o120_000;
 
