@@ -43,14 +43,15 @@ Proiectio Design
 
 2. Classification and Apply
 
-    Each path in the union of the desired tree, the manifest, and the
-    directory gets one state:
+    Each path in the union of the manifest and the directory gets one
+    state; the desired tree enters only when plan compares this
+    classification against it to choose actions:
 
-    | State   | Meaning                                           |
-    | Clean   | disk matches the recorded hash                    |
-    | Drifted | disk differs from the recorded hash — a user edit |
-    | Missing | recorded, but gone from disk                      |
-    | Foreign | on disk, absent from the manifest                 |
+    | State   | Meaning                                            |
+    | Clean   | disk matches the recorded entry: bytes, kind, mode |
+    | Drifted | disk differs from the recorded entry — a user edit |
+    | Missing | recorded, but gone from disk                       |
+    | Foreign | on disk, absent from the manifest                  |
 
     plan turns states into actions, per path:
 
@@ -66,7 +67,9 @@ Proiectio Design
     - Recorded under this owner but absent from the desired tree: an
       orphan, removed when disk still matches the recorded hash and
       refused as drifted otherwise; directories emptied by removal
-      are pruned.
+      are pruned. When another owner still holds the path, the
+      departing owner is released from the entry and the disk is
+      left alone.
 
     Block entries carry a delimited managed region inside a file the
     caller does not own whole: apply locates proiectio's delimiter
@@ -96,12 +99,13 @@ Proiectio Design
     /// apply would perform. An empty tree plans a removal.
     pub fn plan(&self, owner: &str, tree: &BTreeMap<Utf8PathBuf, Entry>,
     policy: DriftPolicy) -> Result<Plan>;
-    pub fn apply(&self, plan: &Plan) -> Result<Manifest>;
+    pub fn apply(&self, plan: &Plan) -> Result<ApplyReport>;
     pub fn status(&self) -> Result<Status>;
     }
 
     :: rust ::
 
-    Dependencies: serde_json, sha2, tempfile, camino. The whole crate
+    Dependencies: serde, serde_json, thiserror, camino now; sha2 and
+    tempfile arrive with apply. The whole crate
     is a few hundred lines plus tests; the tests run against real
     temp directories, since atomic rename is the behavior under test.
