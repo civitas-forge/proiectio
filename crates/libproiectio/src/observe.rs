@@ -20,11 +20,36 @@ use crate::{Error, Manifest, Result};
 ///
 /// [`ManifestEntry::hash`]: crate::ManifestEntry::hash
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hex = String::with_capacity(64);
-    for byte in Sha256::digest(bytes) {
+    to_hex(&Sha256::digest(bytes))
+}
+
+/// Lowercase hex of a digest.
+fn to_hex(digest: &[u8]) -> String {
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
         write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
     }
     hex
+}
+
+/// [`sha256_hex`] of everything `reader` yields, streamed through a
+/// fixed-size buffer — peak memory stays at the copy buffer no matter how
+/// large the file, so observing a destination that happens to hold a huge
+/// foreign file never materializes it.
+#[cfg(unix)]
+fn sha256_hex_of_reader(mut reader: impl std::io::Read) -> std::io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        hasher.update(&buffer[..read]);
+    }
+    Ok(to_hex(&hasher.finalize()))
 }
 
 /// What observe saw at every path in the union of the destination directory
@@ -96,7 +121,8 @@ pub enum Observation {
 ///   [`Observation::Absent`] rather than being read through the link;
 /// - hashes every regular file it can name, recorded or not — observe
 ///   never sees the desired tree, so it cannot know which paths deciding
-///   will need to compare;
+///   will need to compare — streaming each file through the hasher, so
+///   peak memory never scales with file size;
 /// - skips entries whose names are not UTF-8: desired and recorded paths
 ///   are `Utf8PathBuf` by construction, so such an entry can never match a
 ///   row of the classification and stays invisible to it;
@@ -166,9 +192,9 @@ fn walk(dir: &Dir, prefix: &Utf8Path, into: &mut BTreeMap<Utf8PathBuf, Observati
             walk(&sub, &rel, into)?;
             continue;
         } else if file_type.is_file() {
-            let contents = dir.read(&name).map_err(io_error(&rel))?;
+            let file = entry.open().map_err(io_error(&rel))?;
             Observation::File {
-                hash: sha256_hex(&contents),
+                hash: sha256_hex_of_reader(file).map_err(io_error(&rel))?,
                 executable: meta.mode() & 0o100 != 0,
             }
         } else {

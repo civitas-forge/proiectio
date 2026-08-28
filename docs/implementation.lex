@@ -11,8 +11,10 @@ Implementation Guidelines
     hashing recorded paths to detect drift. So the engine is three
     stages, not two:
 
-    - observe: read-only I/O. Walk the destination, hash recorded
-      paths, snapshot into plain data.
+    - observe: read-only I/O. Walk the destination, hash every file
+      it can name — it never sees the desired tree, so it cannot
+      know which paths decide will compare — snapshot into plain
+      data.
     - decide: pure. (desired, manifest, observations) -> Plan,
       deterministic, no file system. All the interesting logic —
       classification, drift, containment, orphans — lives here.

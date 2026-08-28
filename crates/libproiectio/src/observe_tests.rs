@@ -118,6 +118,25 @@ fn drifted_file_hashes_as_the_disk_bytes_not_the_recorded_ones() {
 }
 
 #[test]
+fn a_file_spanning_many_hasher_chunks_hashes_as_its_whole_contents() {
+    // 1 MiB of patterned bytes: far past any single read of the streaming
+    // hash, so the chunk-boundary accumulation is what this exercises.
+    let contents: Vec<u8> = (0..1_048_576u32).map(|i| (i % 251) as u8).collect();
+    let fixture = Tree::new().materialize();
+    fs::write(fixture.path("big.bin").as_std_path(), &contents).expect("write big file");
+
+    let paths = observed(&fixture, &Manifest::new());
+
+    assert_eq!(
+        paths.get(Utf8Path::new("big.bin")),
+        Some(&Observation::File {
+            hash: sha256_hex(&contents),
+            executable: false,
+        })
+    );
+}
+
+#[test]
 fn foreign_file_is_surfaced() {
     let fixture = Tree::new().file("stray.txt", "not ours").materialize();
 
