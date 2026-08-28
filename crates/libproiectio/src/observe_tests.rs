@@ -260,6 +260,43 @@ fn non_utf8_entry_name_is_skipped_not_an_error() {
     assert_eq!(paths, expected);
 }
 
+/// Nests `depth` directories under `root` and returns the deepest one's
+/// path relative to `root`. `create_dir_all` spells the whole chain in one
+/// path, which stays well inside the host's path limit at these depths — the
+/// walk itself is bound by no such limit, which is the point of
+/// `MAX_WALK_DEPTH`.
+fn nest(root: &Utf8Path, depth: usize) -> Utf8PathBuf {
+    let rel = Utf8PathBuf::from(vec!["d"; depth].join("/"));
+    fs::create_dir_all(root.join(&rel)).expect("nest directories");
+    rel
+}
+
+#[test]
+fn a_destination_at_the_depth_limit_observes_and_one_past_it_is_named() {
+    // The walk spends a stack frame per level and the destination picks the
+    // depth — foreign content and mount loops included — so a destination
+    // nested past the limit has to come back as an error a caller can
+    // report, not as a stack the walk runs off the end of.
+    let fixture = Tree::new().materialize();
+    let deepest = nest(fixture.root(), MAX_WALK_DEPTH);
+    fs::write(fixture.root().join(&deepest).join("marker"), "deep").expect("write a deep file");
+
+    let paths = observed(&fixture, &Manifest::new());
+    assert_eq!(
+        paths.get(&deepest.join("marker")),
+        Some(&Observation::File {
+            hash: sha256_hex(b"deep"),
+            executable: false,
+        })
+    );
+
+    let past = nest(fixture.root(), MAX_WALK_DEPTH + 1);
+    assert!(matches!(
+        observe(&dest(&fixture), &Manifest::new()).unwrap_err(),
+        Error::DestinationTooDeep { path, limit } if path == past && limit == MAX_WALK_DEPTH
+    ));
+}
+
 #[test]
 fn non_utf8_link_target_observes_as_hash_only() {
     let fixture = Tree::new().materialize();

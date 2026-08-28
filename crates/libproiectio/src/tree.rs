@@ -8,26 +8,7 @@ use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
-use crate::{Entry, Error, Result};
-
-/// How deep below the source root [`load_tree`] walks, counted in
-/// directories.
-///
-/// The walk spends a stack frame per level and the source tree chooses the
-/// depth — every lookup is relative to an open directory handle, so a
-/// filesystem holds trees far deeper than any path naming them could be
-/// spelled, and a bind mount making a directory its own ancestor gives a
-/// tree no bottom at all. Unbounded, a deep enough source runs the stack
-/// off its end and aborts the process; bounded, it comes back as
-/// [`Error::TreeTooDeep`].
-///
-/// The number is what this recursion affords, not what a filesystem allows.
-/// Measured on a debug build, the walk exhausts a 2 MiB stack — Rust's
-/// default for a spawned thread, and what a test thread gets — somewhere
-/// past 200 levels, so the limit sits far enough below that to leave the
-/// stack to the caller. It is also far past any real source tree: the
-/// deepest sit in the tens of levels.
-const MAX_DEPTH: usize = 64;
+use crate::{Entry, Error, MAX_WALK_DEPTH, Result};
 
 /// Walks a source directory into the desired tree [`decide`](crate::decide)
 /// takes — the second desired-tree source beside
@@ -146,15 +127,15 @@ const MAX_DEPTH: usize = 64;
 /// [`Error::TreeNodeKind`], the same answer the `lstat` would have given
 /// had it seen it first.
 ///
-/// One more shape fails the load: a source tree nesting more than 64
-/// directories below `source` — [`Error::TreeTooDeep`], naming the
-/// directory a level past that. The walk spends a stack frame per level and
-/// the source tree chooses the depth, so a tree deep enough would run the
-/// stack off its end; a bind mount making a directory its own ancestor
-/// gives the tree no bottom at all, and no symlink check sees that, because
-/// every level of it is a real directory. The limit is far past any real
-/// source tree — the deepest sit in the tens of levels — and far short of
-/// what the recursion can afford.
+/// One more shape fails the load: a source tree nesting more than
+/// [`MAX_WALK_DEPTH`] directories below `source` — [`Error::TreeTooDeep`],
+/// naming the directory a level past that. The walk spends a stack frame
+/// per level and the source tree chooses the depth, so a tree deep enough
+/// would run the stack off its end; a bind mount making a directory its own
+/// ancestor gives the tree no bottom at all, and no symlink check sees that,
+/// because every level of it is a real directory. [`observe`](crate::observe)
+/// bounds its destination walk by the same constant, which carries the
+/// measurement behind the number.
 ///
 /// [`contained_join`]: crate::contained_join
 ///
@@ -203,10 +184,10 @@ impl Walk<'_> {
     /// recursing into real subdirectories through handles opened from
     /// `dir`, so every open stays anchored to the source handle.
     fn descend(&mut self, dir: &Dir, prefix: &Utf8Path, depth: usize) -> Result<()> {
-        if depth > MAX_DEPTH {
+        if depth > MAX_WALK_DEPTH {
             return Err(Error::TreeTooDeep {
                 path: self.absolute(prefix),
-                limit: MAX_DEPTH,
+                limit: MAX_WALK_DEPTH,
             });
         }
         let entries = dir.entries().map_err(io_at(self.absolute(prefix)))?;
