@@ -68,9 +68,48 @@ fn every_variant() -> Vec<Error> {
             path: Utf8PathBuf::from("deploy.toml"),
             key: Utf8PathBuf::from("bin/tool"),
         },
-        Error::MappingArchiveUnimplemented {
-            path: Utf8PathBuf::from("deploy.toml"),
-            keys: paths(&["vendor/"]),
+        Error::ArchiveFormatUnknown {
+            path: Utf8PathBuf::from("/assets/vendor.rar"),
+        },
+        Error::ArchiveDecode {
+            path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+            format: crate::ArchiveFormat::TarGz,
+            source: std::io::Error::other("invalid gzip header"),
+        },
+        Error::ArchiveMemberNameNotUtf8 {
+            path: Utf8PathBuf::from("/assets/vendor.tar"),
+            name: "lib/tool\u{fffd}".to_owned(),
+        },
+        Error::ArchiveMemberTargetNotUtf8 {
+            path: Utf8PathBuf::from("/assets/vendor.tar"),
+            member: Utf8PathBuf::from("current"),
+            target: "releases/\u{fffd}".to_owned(),
+        },
+        Error::ArchiveMemberKind {
+            path: Utf8PathBuf::from("/assets/vendor.tar"),
+            member: Utf8PathBuf::from("lib/alias"),
+        },
+        Error::ArchiveMemberDuplicate {
+            path: Utf8PathBuf::from("/assets/vendor.zip"),
+            member: Utf8PathBuf::from("lib/tool"),
+        },
+        Error::ArchiveMemberStripped {
+            path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+            member: Utf8PathBuf::from("README"),
+            strip: 1,
+        },
+        Error::ArchiveMemberTooDeep {
+            path: Utf8PathBuf::from("/assets/vendor.tar"),
+            member: Utf8PathBuf::from("a/b/c"),
+            limit: 64,
+        },
+        Error::ArchiveTooLarge {
+            path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+            limit: 67_108_864,
+        },
+        Error::ArchiveTooManyMembers {
+            path: Utf8PathBuf::from("/assets/vendor.zip"),
+            limit: 50_000,
         },
         Error::TreeNameNotUtf8 {
             path: Utf8PathBuf::from("/srv/skeleton/bin"),
@@ -109,12 +148,10 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    assert_eq!(
-        codes,
-        vec![
-            2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
-        ]
-    );
+    let (refusals, failures) = (7, 23);
+    assert_eq!(codes.len(), refusals + failures);
+    assert!(codes[..refusals].iter().all(|&code| code == 2));
+    assert!(codes[refusals..].iter().all(|&code| code == 1));
     assert_eq!(exit_code(Ok(())), 0);
 }
 
@@ -219,6 +256,68 @@ fn tree_source_messages_name_the_node_and_exit_1() {
         deep.to_string(),
         "tree directory /srv/skeleton/a/b/c nests deeper than the 64 levels \
          a source tree may carry"
+    );
+}
+
+/// An archive carrying something a desired tree cannot express fails the
+/// load the same way a source tree does — exit 1, and the message names both
+/// the archive and the member, since a member path alone says nothing about
+/// which archive to open.
+#[test]
+fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
+    let unknown = Error::ArchiveFormatUnknown {
+        path: Utf8PathBuf::from("/assets/vendor.rar"),
+    };
+    assert!(!unknown.is_refusal());
+    assert_eq!(
+        unknown.to_string(),
+        "archive /assets/vendor.rar: no decoder for this name; \
+         expected one of .tar, .tar.gz, .tgz, .tar.zst, .zip"
+    );
+
+    let decode = Error::ArchiveDecode {
+        path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+        format: crate::ArchiveFormat::TarGz,
+        source: std::io::Error::other("invalid gzip header"),
+    };
+    assert!(!decode.is_refusal());
+    assert_eq!(
+        decode.to_string(),
+        "archive /assets/vendor.tar.gz does not decode as a gzip-compressed \
+         tar archive: invalid gzip header"
+    );
+
+    let kind = Error::ArchiveMemberKind {
+        path: Utf8PathBuf::from("/assets/vendor.tar"),
+        member: Utf8PathBuf::from("lib/alias"),
+    };
+    assert!(!kind.is_refusal());
+    assert_eq!(
+        kind.to_string(),
+        "archive /assets/vendor.tar: member lib/alias is not a file, \
+         directory, or symlink"
+    );
+
+    let duplicate = Error::ArchiveMemberDuplicate {
+        path: Utf8PathBuf::from("/assets/vendor.zip"),
+        member: Utf8PathBuf::from("lib/tool"),
+    };
+    assert!(!duplicate.is_refusal());
+    assert_eq!(
+        duplicate.to_string(),
+        "archive /assets/vendor.zip: member lib/tool is claimed by more than \
+         one member"
+    );
+
+    let large = Error::ArchiveTooLarge {
+        path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+        limit: 67_108_864,
+    };
+    assert!(!large.is_refusal());
+    assert_eq!(
+        large.to_string(),
+        "archive /assets/vendor.tar.gz expands past the 67108864 bytes an \
+         archive may allocate"
     );
 }
 

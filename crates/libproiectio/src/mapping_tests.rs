@@ -263,8 +263,49 @@ fn two_entries_projecting_one_normalized_key_are_refused() {
     ));
 }
 
+/// A well-formed gzipped tar of `(name, contents, executable)` members.
+/// Mapping tests need only legitimate archives — the hostile corpus lives
+/// beside the expansion it exercises — so the `tar` writer builds them.
+#[cfg(unix)]
+fn targz(members: &[(&str, &str, bool)]) -> Vec<u8> {
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    let mut builder = tar::Builder::new(encoder);
+    for (name, body, executable) in members {
+        let mut header = tar::Header::new_ustar();
+        header.set_size(body.len() as u64);
+        header.set_mode(if *executable { 0o755 } else { 0o644 });
+        header.set_entry_type(tar::EntryType::Regular);
+        builder
+            .append_data(&mut header, name, body.as_bytes())
+            .expect("append a tar member");
+    }
+    builder
+        .into_inner()
+        .expect("finish the tar")
+        .finish()
+        .expect("finish the gzip stream")
+}
+
+/// A zip carrying one member under the name given, verbatim — the writer
+/// does not sanitize what it is handed, which is what lets a mapping test
+/// spell a member that climbs out of its prefix.
+#[cfg(unix)]
+fn zip_named(name: &str, body: &str) -> Vec<u8> {
+    use std::io::Write;
+
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    writer
+        .start_file(name, zip::write::SimpleFileOptions::default())
+        .expect("start a zip member");
+    writer
+        .write_all(body.as_bytes())
+        .expect("write a zip member");
+    writer.finish().expect("finish the zip").into_inner()
+}
+
 #[test]
-fn archive_entries_parse_structurally_but_are_not_yet_implemented() {
+#[cfg(unix)]
+fn archive_members_expand_under_their_prefix_as_ordinary_entries() {
     let text = r#"
         version = 1
         [archives."vendor/"]
@@ -273,15 +314,91 @@ fn archive_entries_parse_structurally_but_are_not_yet_implemented() {
         [archives."plugins/"]
         source = "./assets/plugins.zip"
     "#;
+    let vendor = targz(&[
+        ("vendor-1.0/lib/tool.so", "so\n", false),
+        ("vendor-1.0/bin/run", "#!/bin/sh\n", true),
+    ]);
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .file("assets/vendor.tar.gz", vendor)
+        .file("assets/plugins.zip", zip_named("hello.lua", "print()\n"))
+        .materialize();
 
-    let want: BTreeSet<Utf8PathBuf> = ["vendor/", "plugins/"]
-        .into_iter()
-        .map(Utf8PathBuf::from)
-        .collect();
+    assert_eq!(
+        load_mapping(&fixture.path("deploy.toml")).unwrap(),
+        tree(&[
+            ("plugins/hello.lua", file("print()\n", false)),
+            ("vendor/bin/run", file("#!/bin/sh\n", true)),
+            ("vendor/lib/tool.so", file("so\n", false)),
+        ])
+    );
+}
+
+/// A member is judged before the prefix is joined, so a prefix confines
+/// rather than absorbs: joined first, `../escape` under `vendor/` would have
+/// normalized to `escape` — a projected path outside the prefix the mapping
+/// wrote, refused by nothing.
+#[test]
+#[cfg(unix)]
+fn an_archive_member_climbing_out_of_its_prefix_is_refused_by_name() {
+    let text = r#"
+        version = 1
+        [archives."vendor/"]
+        source = "./assets/vendor.zip"
+    "#;
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .file("assets/vendor.zip", zip_named("../escape", "out\n"))
+        .materialize();
+
+    assert!(matches!(
+        load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
+        Error::Containment { paths }
+            if paths == BTreeSet::from([Utf8PathBuf::from("../escape")])
+    ));
+}
+
+/// An expanded member is an ordinary projected path, so one colliding with
+/// another entry's key is the same double claim two `[files]` keys would be.
+#[test]
+#[cfg(unix)]
+fn an_archive_member_colliding_with_another_entry_is_a_duplicate() {
+    let text = r#"
+        version = 1
+        [files."vendor/lib/tool.so"]
+        contents = "mine\n"
+        [archives."vendor/"]
+        source = "./assets/vendor.tar.gz"
+    "#;
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .file(
+            "assets/vendor.tar.gz",
+            targz(&[("lib/tool.so", "theirs\n", false)]),
+        )
+        .materialize();
+
+    assert!(matches!(
+        load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
+        Error::MappingDuplicate { key, .. } if key == "vendor/lib/tool.so"
+    ));
+}
+
+/// Two archive tables naming one prefix would merge into one location with
+/// no rule for which member wins where they overlap.
+#[test]
+fn two_archive_tables_naming_one_prefix_are_a_duplicate() {
+    let text = r#"
+        version = 1
+        [archives."vendor/"]
+        source = "./a.tar"
+        [archives."vendor"]
+        source = "./b.tar"
+    "#;
+
     assert!(matches!(
         parse_at(text).unwrap_err(),
-        Error::MappingArchiveUnimplemented { path, keys }
-            if path == MAPPING && keys == want
+        Error::MappingDuplicate { path, key } if path == MAPPING && key == "vendor"
     ));
 }
 
@@ -315,28 +432,21 @@ strip = 1
 "#;
 
 #[test]
-fn the_cli_tour_example_fails_only_on_its_archive_entry() {
-    // Everything before the archives check passes; the entry itself is the
-    // not-yet-implemented boundary (and no source file is read on the way).
-    assert!(matches!(
-        parse_at(CLI_TOUR_EXAMPLE).unwrap_err(),
-        Error::MappingArchiveUnimplemented { keys, .. }
-            if keys == BTreeSet::from([Utf8PathBuf::from("vendor/")])
-    ));
-}
-
-#[test]
 #[cfg(unix)]
-fn the_cli_tour_example_minus_archives_parses_to_its_tree() {
-    let (text, _) = CLI_TOUR_EXAMPLE
-        .split_once("# extracted under")
-        .expect("the example carries its archive comment");
+fn the_cli_tour_example_parses_to_its_tree_archive_included() {
     let tool = "#!/bin/sh\necho tool\n";
+    let vendor = targz(&[
+        ("vendor-1.0/lib/libv.so", "elf\n", false),
+        ("vendor-1.0/bin/vendor", "#!/bin/sh\n", true),
+    ]);
     let fixture = crate::test_support::Tree::new()
-        .file("deploy.toml", text)
+        .file("deploy.toml", CLI_TOUR_EXAMPLE)
         .file("assets/tool.sh", tool)
+        .file("assets/vendor.tar.gz", vendor)
         .materialize();
 
+    // The archive's members are ordinary entries beside the mapping's own,
+    // keyed under the table's prefix with the wrapper directory stripped.
     assert_eq!(
         load_mapping(&fixture.path("deploy.toml")).unwrap(),
         tree(&[
@@ -344,6 +454,8 @@ fn the_cli_tour_example_minus_archives_parses_to_its_tree() {
             ("bin/tool", file(tool, true)),
             ("current", link("releases/1.2.3")),
             ("toolchain", link("/opt/toolchains/rust-1.80")),
+            ("vendor/bin/vendor", file("#!/bin/sh\n", true)),
+            ("vendor/lib/libv.so", file("elf\n", false)),
         ])
     );
 }
