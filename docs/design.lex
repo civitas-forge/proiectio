@@ -19,17 +19,17 @@ Proiectio Design
     The manifest, one JSON file in a caller-chosen directory, written
     atomically and after every other write:
 
-        pub struct Manifest {
-            pub version: u32,
-            pub entries: BTreeMap<Utf8PathBuf, ManifestEntry>,
-        }
-        pub struct ManifestEntry {
-            pub kind: EntryKind,          // File | Symlink | Block
-            pub hash: String,             // sha256 of written bytes;
-                                          //   Block: of the body
-            pub executable: bool,
-            pub owners: BTreeSet<String>, // opaque strings
-        }
+    pub struct Manifest {
+    pub version: u32,
+    pub entries: BTreeMap<Utf8PathBuf, ManifestEntry>,
+    }
+    pub struct ManifestEntry {
+    pub kind: EntryKind,          // File | Symlink | Block
+    pub hash: String,             // sha256 of written bytes;
+      //   Block: of the body
+    pub executable: bool,
+    pub owners: BTreeSet<String>, // opaque strings
+    }
 
     :: rust ::
 
@@ -43,11 +43,11 @@ Proiectio Design
     Each path in the union of the desired tree, the manifest, and the
     directory gets one state:
 
-        | State   | Meaning                                           |
-        | Clean   | disk matches the recorded hash                    |
-        | Drifted | disk differs from the recorded hash — a user edit |
-        | Missing | recorded, but gone from disk                      |
-        | Foreign | on disk, absent from the manifest                 |
+    | State   | Meaning                                           |
+    | Clean   | disk matches the recorded hash                    |
+    | Drifted | disk differs from the recorded hash — a user edit |
+    | Missing | recorded, but gone from disk                      |
+    | Foreign | on disk, absent from the manifest                 |
 
     plan turns states into actions, per path:
 
@@ -81,17 +81,17 @@ Proiectio Design
 
 3. API
 
-        pub enum DriftPolicy { Refuse, Overwrite }
+    pub enum DriftPolicy { Refuse, Overwrite }
 
-        pub struct Projection { target: Utf8PathBuf, state_dir: Utf8PathBuf }
-        impl Projection {
-            /// Pure: every write, overwrite, removal, and refusal
-            /// apply would perform. An empty tree plans a removal.
-            pub fn plan(&self, owner: &str, tree: &BTreeMap<Utf8PathBuf, Entry>,
-                policy: DriftPolicy) -> Result<Plan>;
-            pub fn apply(&self, plan: &Plan) -> Result<Manifest>;
-            pub fn status(&self) -> Result<Status>;
-        }
+    pub struct Projection { target: Utf8PathBuf, state_dir: Utf8PathBuf }
+    impl Projection {
+    /// Pure: every write, overwrite, removal, and refusal
+    /// apply would perform. An empty tree plans a removal.
+    pub fn plan(&self, owner: &str, tree: &BTreeMap<Utf8PathBuf, Entry>,
+    policy: DriftPolicy) -> Result<Plan>;
+    pub fn apply(&self, plan: &Plan) -> Result<Manifest>;
+    pub fn status(&self) -> Result<Status>;
+    }
 
     :: rust ::
 

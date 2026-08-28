@@ -1,10 +1,6 @@
 Proiectio
 
-    Proiectio is a Rust library that projects a computed set of files onto a
-    directory: it writes the files, records what it wrote in a manifest, and
-    on a later run makes the directory match the caller's new tree — updating
-    what changed, removing what is no longer wanted, and refusing to touch
-    what it did not write.
+    Proiectio is a Rust library and cli that injects(projects)  a set of files onto a directory: it writes the files, records what it wrote in a manifest, and on a later run makes the directory match the caller's new tree — updating what changed, removing what is no longer wanted, and refusing to touch what it did not write.
 
     It exists for tools that render managed files into a directory owned by
     someone else — a harness placing skills and hooks into a checkout, an
@@ -12,26 +8,29 @@ Proiectio
     computes the desired files; proiectio owns the mechanics that make
     repeated application safe.
 
-1. What A Projection Guarantees
+    It keeps track of what paths it wrote, and digests of their content, hence allowing it to safely keep files with additional changes and otherwise remove it's injected content.
 
-    - Re-applying an unchanged tree writes nothing, so mtimes survive.
-    - A user's edit to a projected file is drift: refused and named, never
-      silently overwritten.
-    - A file on disk the manifest does not list is foreign: never touched.
-    - Removal is exact — what the manifest records for an owner, and nothing
-      else — and directories emptied by it are pruned.
-    - Every write lands through a tempfile persisted over the path: a crash
-      leaves the old file or the new one, never a torn write.
-    - A delimited managed region inside a shared file is replaced body-only,
-      so an edit elsewhere in that file never reads as drift.
+1. Node Types
 
-2. What It Does Not Know
+    1.1. File's Content
 
-    Proiectio carries no consumer vocabulary: content arrives as bytes,
-    owners are opaque strings, and nothing in the crate names what the files
-    are for. It has no notion of git either; a caller that wants projected
-    paths kept out of version control reads the owned-path list from the
-    manifest and writes the exclusion itself.
+        Contents are opaque to proiectio, all it knows is the digest of the content.
+
+    1.2. Symlinks
+
+        Proiectio supports both injecting regular directories, files and symlinks, as well symlinks to projected files or dirs.
+
+    1.3 Directories
+
+        By default, proiectio will merge existing directories with the desired tree, preserving any additional changes, as long as the rules for not overwriting pre existing files is violated.
+
+2. Content Definitions
+
+    The paths and their contents can be defined in two ways: either via a mapping file (a TOML file) or via a directory tree.
+
+    In the former, the file's content can either be inlined as a string or referenced from a file path. In that form, file metadata follows the file system's defaults, and can be overriden.
+
+    If specifying from a directory tree, metadata is copied from the source files.
 
 3. The Docs
 
