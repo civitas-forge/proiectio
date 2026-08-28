@@ -67,13 +67,34 @@ Implementation Guidelines
     - The check that matters most — no symlinked ancestor at write
       time — is ours to enforce regardless of crate.
 
-    Worth a spike before act is written: cap-std, whose Dir handle
-    rooted at dest makes the OS itself refuse ".." and symlink
-    escapes at open time — kernel-enforced containment for observe
-    and act, closing the plan-to-apply race structurally rather than
-    by string checks. The open question is how it coexists with
-    --allow-external-targets, where we deliberately create a link
-    pointing out of dest.
+    Spiked and decided (issue #3): adopt cap-std. Observe and act do
+    their I/O through a cap_std::fs_utf8::Dir rooted at dest —
+    camino-typed, and every open refuses ".." and symlink escapes at
+    the handle itself [2]. Escapes fail no matter when a hostile
+    link appears, so the plan-to-apply race is closed structurally,
+    not by string checks. What the spike verified:
+
+    - A write through an escaping symlinked ancestor — "logs ->
+      ../outside", or an absolute target — fails at open time. The
+      other half of the [./security.lex] rule stays ours: an in-dest
+      symlinked ancestor is followed silently, so refusing links
+      proiectio does not own is still our check.
+    - --allow-external-targets coexists: symlink() refuses absolute
+      targets, but symlink_contents() writes any target string
+      verbatim — act uses it for flag-permitted links — and reads
+      through such a link still fail, which is the model exactly: an
+      external target is a pointer, never written through.
+      read_link_contents() hands observe the string back untouched.
+    - Tempfile-persist works inside a Dir: cap-tempfile's
+      TempFile::new(&dir) plus replace(name) renames over the path
+      atomically, replaces existing files, and cleans up on drop;
+      the exec bit is a set_permissions after replace.
+
+    contained_join stays the plan-time gateway regardless: cap-std
+    tolerates in-dest ".." and validates nothing at link creation,
+    so only the lexical rules produce the structured Containment
+    refusal, with paths, at decide time. A Dir refusal during act
+    means a race or a bug and surfaces as the I/O error it is.
 
 4. Standout
 
@@ -137,12 +158,20 @@ Implementation Guidelines
     use case makes concurrent invocations plausible enough to decide
     this now rather than discover it later.
 
-Notes:
+Notes
 
-[1] Candidate crates: path-absolutize and normpath (lexical
-    normalization, dot-component cleanup without canonicalizing);
-    relative-path (portable, strictly relative path types); camino
-    (UTF-8 paths, already in the design); strict-path (validates
-    untrusted paths against traversal and symlink escape — young,
-    evaluate rather than assume); cap-std (capability-based Dir
-    rooted at dest, OS-enforced — see the spike in section 3).
+    :: notes ::
+
+    1. Decided at the I/O layer: cap-std (capability-based Dir
+        rooted at dest, OS-enforced) and cap-tempfile — the
+        section 3 spike. Candidates for the lexical side of
+        contained_join, which that decision does not cover:
+        path-absolutize and normpath (dot-component cleanup without
+        canonicalizing); relative-path (portable, strictly relative
+        path types); camino (UTF-8 paths, already in the design).
+        strict-path is superseded by cap-std.
+    2. openat2 with RESOLVE_BENEATH on Linux 5.6 and newer, openat
+        with O_RESOLVE_BENEATH on FreeBSD 13 and newer — a single
+        kernel-enforced call — and a per-component fd walk on macOS
+        and Windows: userspace, but anchored to the directory fd, so
+        still no string checks and no dependence on the cwd.
