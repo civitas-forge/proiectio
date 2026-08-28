@@ -245,6 +245,80 @@ pub enum Error {
         /// The `[archives]` keys, verbatim.
         keys: BTreeSet<Utf8PathBuf>,
     },
+    /// A source tree holds an entry whose name is not UTF-8, so
+    /// [`load_tree`](crate::load_tree) cannot key it. Not a refusal: no
+    /// destination path is being declined — the source carries content this
+    /// crate cannot name. Observation *skips* such a name, because it can
+    /// never match a desired or recorded path; a source tree's names are
+    /// content the caller asked to project, so skipping one would drop it
+    /// silently.
+    #[error("tree entry name under {path} is not UTF-8: {name:?}")]
+    TreeNameNotUtf8 {
+        /// The absolute path of the directory holding the entry.
+        path: Utf8PathBuf,
+        /// The name as the filesystem gave it, lossily decoded. It is what
+        /// can be *shown* of bytes that have no UTF-8 spelling, not those
+        /// bytes: every invalid sequence renders as `U+FFFD`, so two names
+        /// differing only there render alike, and a name that genuinely
+        /// carries `U+FFFD` renders like one that does not. A `String` is
+        /// the whole vocabulary this crate has for a path — desired and
+        /// recorded paths are [`Utf8PathBuf`] by construction — and a name
+        /// it cannot spell is one it can never project, so what the field
+        /// carries is the message's, not a caller's to act on. `path` names
+        /// the directory to look in.
+        name: String,
+    },
+    /// A source tree holds a symlink whose target is not UTF-8, which
+    /// [`Entry::Symlink`](crate::Entry::Symlink) — a `String` — cannot
+    /// carry. Not a refusal, for the same reason as
+    /// [`TreeNameNotUtf8`](Error::TreeNameNotUtf8).
+    #[error("tree symlink {path} has a target that is not UTF-8: {target:?}")]
+    TreeTargetNotUtf8 {
+        /// The link's absolute path.
+        path: Utf8PathBuf,
+        /// The target as the filesystem gave it, lossily decoded, and what
+        /// can be shown of it rather than the bytes themselves — the same
+        /// terms as [`TreeNameNotUtf8::name`](Error::TreeNameNotUtf8).
+        target: String,
+    },
+    /// A source tree nests deeper than [`load_tree`](crate::load_tree)
+    /// walks. Not a refusal, for the same reason as
+    /// [`TreeNameNotUtf8`](Error::TreeNameNotUtf8): the source carries a
+    /// shape the load cannot take, and no destination path is being
+    /// declined.
+    ///
+    /// The walk spends a stack frame per directory level, and depth is the
+    /// source tree's to choose — every lookup is relative to an open
+    /// directory handle, so a filesystem holds trees far deeper than a path
+    /// naming them could be spelled, and a directory made its own ancestor
+    /// by a bind mount has no bottom at all. The bound is what turns both
+    /// into this error instead of a stack the walk runs off the end of.
+    #[error("tree directory {path} nests deeper than the {limit} levels a source tree may carry")]
+    TreeTooDeep {
+        /// The absolute path of the directory one level past the limit.
+        path: Utf8PathBuf,
+        /// The deepest nesting the walk accepts, counted in directories
+        /// below the source root.
+        limit: usize,
+    },
+    /// A source tree holds a node of a kind the projection never writes — a
+    /// FIFO, a socket, or a device node. Not a refusal: the load cannot
+    /// produce a desired tree at all. A node the walk's `lstat` found to be
+    /// one of those is never opened, since reading a FIFO with no writer
+    /// would block forever.
+    ///
+    /// A name that became one of those kinds *after* that `lstat` reaches
+    /// this variant only when the walk's open succeeded and the handle
+    /// turned out not to hold a regular file — a FIFO, which opens for
+    /// reading without waiting, or a directory. An open that fails outright
+    /// is [`Io`](Error::Io) instead: a name that has become a symlink, which
+    /// the walk will not follow, or a socket, which the OS declines to open
+    /// through the filesystem at all.
+    #[error("tree node {path} is not a file, directory, or symlink")]
+    TreeNodeKind {
+        /// The node's absolute path.
+        path: Utf8PathBuf,
+    },
     /// The plan touches a [`Block`](crate::EntryKind::Block) entry —
     /// writing one, or re-checking a block signature — and block regions
     /// are not implemented in [`apply`](crate::apply) yet. Not a refusal:
@@ -288,6 +362,10 @@ impl Error {
             | Error::MappingContentsXorSource { .. }
             | Error::MappingDuplicate { .. }
             | Error::MappingArchiveUnimplemented { .. }
+            | Error::TreeNameNotUtf8 { .. }
+            | Error::TreeTargetNotUtf8 { .. }
+            | Error::TreeTooDeep { .. }
+            | Error::TreeNodeKind { .. }
             | Error::ApplyBlockUnimplemented { .. } => false,
         }
     }
