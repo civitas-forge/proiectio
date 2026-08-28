@@ -169,6 +169,24 @@ fn write_under_replaces_a_symlink_leaf_instead_of_writing_through_it() {
 }
 
 #[test]
+fn write_under_replaces_a_file_instead_of_truncating_its_inode() {
+    let fixture = Tree::new().file("a.txt", "original").materialize();
+    // A hard link shares a.txt's inode; truncating in place would mutate it.
+    fs::hard_link(fixture.path("a.txt"), fixture.path("b.txt")).expect("hard link");
+
+    Tree::new().file("a.txt", "new").write_under(fixture.root());
+
+    assert_eq!(
+        fs::read(fixture.path("b.txt")).expect("read hard link"),
+        b"original"
+    );
+    assert_eq!(
+        fs::read(fixture.path("a.txt")).expect("read overlay"),
+        b"new"
+    );
+}
+
+#[test]
 fn write_under_clears_a_stale_exec_bit() {
     let fixture = Tree::new()
         .executable("bin/run", "#!/bin/sh\n")

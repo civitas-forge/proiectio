@@ -5,6 +5,9 @@
 //! expression. The same value serves both sides of a scenario: [`Tree::entries`]
 //! produces the desired-tree map `plan` takes, and [`Tree::materialize`] writes
 //! the nodes into a fresh [`tempfile::TempDir`], returned as a [`Fixture`].
+//! The one exception is `Entry::Block`, which has no [`Node`] counterpart: a
+//! block scenario declares its container as an ordinary file and injects the
+//! block entry into the map by hand.
 //! [`assert_tree`] diffs a directory against an expected tree — contents, exec
 //! bit, link targets — and panics with every divergence listed.
 //!
@@ -303,18 +306,23 @@ fn assert_no_symlink_ancestor(root: &Utf8Path, parent: &Utf8Path) {
     }
 }
 
-/// Unlinks an existing path at `abs` when it cannot simply be overwritten in
-/// place by `node`: a declared file over an existing symlink must replace the
-/// link, not write through it, and a declared symlink or directory over a
-/// different kind would otherwise fail with `EEXIST`/`ENOTDIR`. Never follows
-/// the existing path.
+/// Unlinks an existing path at `abs` before `node` is written, so the write
+/// lands on a fresh inode and never reaches anything else: a declared file
+/// over an existing symlink must replace the link, not write through it; over
+/// an existing regular file it must not truncate in place, because a
+/// hard-linked inode is shared and truncation would mutate every other name
+/// for it; and a declared symlink or directory over a different kind would
+/// otherwise fail with `EEXIST`/`ENOTDIR`. Only a directory over a directory
+/// is left in place. Never follows the existing path.
 fn unlink_mismatched_leaf(abs: &Utf8Path, node: &Node) {
     let Ok(meta) = fs::symlink_metadata(abs) else {
         return;
     };
     let file_type = meta.file_type();
     let overwritable_in_place = match node {
-        Node::File { .. } => file_type.is_file(),
+        // `fs::write` would truncate the existing inode; unlink so a
+        // hard-linked sibling keeps its bytes.
+        Node::File { .. } => false,
         // `symlink(2)` refuses any existing path, same-kind included.
         Node::Symlink { .. } => false,
         Node::Dir => file_type.is_dir(),
