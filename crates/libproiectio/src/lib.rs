@@ -30,6 +30,8 @@ mod plan;
 mod projection;
 mod report;
 mod status;
+#[cfg(test)]
+mod test_support;
 
 pub use entry::*;
 pub use error::*;
