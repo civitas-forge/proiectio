@@ -22,12 +22,15 @@ fn accepted_paths_join_lexically_normalized() {
         ("a/b/../c", "a/c"),
         ("a/b/../../c", "c"),
         ("a/b/c/../../d/../e", "a/e"),
-        // A colon that is not a drive prefix is an ordinary character.
-        ("ab:c/d", "ab:c/d"),
-        // Dots inside names are names, not traversal.
-        ("..a/b..", "..a/b.."),
-        ("...", "..."),
+        // Dots inside or leading a name are names, not traversal.
+        ("..a/b", "..a/b"),
         ("a.b/.hidden", "a.b/.hidden"),
+        // Device-name lookalikes that Windows does not reserve.
+        ("common/config", "common/config"),
+        ("nulled", "nulled"),
+        ("com0", "com0"),
+        ("lpt10", "lpt10"),
+        ("aux2.c", "aux2.c"),
         // The state-dir default name is an ordinary component here; keeping
         // desired paths out of the state dir is plan's job, not this one's.
         (".proiectio/manifest.json", ".proiectio/manifest.json"),
@@ -63,6 +66,28 @@ fn escaping_paths_are_refused_with_the_path_verbatim() {
         "a/../C:/evil",
         "x/c:/y",
         "a/C:",
+        // Any colon: an NTFS alternate data stream addresses another
+        // file's stream, not a file of this name.
+        "victim:stream",
+        "ab:c/d",
+        // Trailing dot or space: Windows strips them before resolving,
+        // so `".. "` kept as a name would climb out there.
+        ".. /escape",
+        "a/.. ",
+        "b..",
+        "...",
+        "a./b",
+        "a /b",
+        "name.",
+        "name ",
+        // Reserved device names, with or without an extension.
+        "NUL",
+        "nul.txt",
+        "a/CON/b",
+        "com1",
+        "LPT9.log",
+        "prn",
+        "AUX.c",
         // Backslash anywhere: never a separator we honor, never a filename.
         "..\\..\\escape",
         "a\\b",

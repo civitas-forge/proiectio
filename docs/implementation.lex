@@ -57,8 +57,9 @@ Implementation Guidelines
     :: rust ::
 
     the sole gateway enforcing the containment rules of
-    [./security.lex] — no absolute paths, no ".." escapes, no empty
-    components. Crates are implementation details inside it [1], and
+    [./security.lex] section 2 — that section's refusal list, not
+    any paraphrase elsewhere, is the contract. Crates are
+    implementation details inside it [1], and
     two constraints bound the choice:
 
     - Containment wants *lexical* normalization — never

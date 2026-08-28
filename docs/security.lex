@@ -26,10 +26,13 @@ Security Model
     Every path in the desired tree must be relative, and must still
     lie inside the destination after normalization. Refused
     outright: absolute paths, paths that climb out via "..", empty
-    or "." components, any backslash, and Windows drive or UNC
-    forms (C:..., \\server) in any component — all judged
-    lexically, so a Windows-authored tree gets the same verdict on
-    every host.
+    or "." components, any backslash, and — in any component —
+    shapes Windows resolves somewhere other than an ordinary file
+    under the destination: drive and UNC forms (C:..., \\server),
+    colons (NTFS alternate data streams), trailing dots or spaces
+    (Windows strips them before resolving, so ".. " climbs), and
+    reserved device names (NUL, CON, and kin). All judged
+    lexically, so a tree gets the same verdict on every host.
 
     Normalization alone does not close the hole. A projected symlink
     "logs -> /etc" followed by a projected file "logs/x" is a write
