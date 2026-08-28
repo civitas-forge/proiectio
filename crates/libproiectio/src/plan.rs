@@ -24,7 +24,8 @@ pub enum DriftPolicy {
 /// never the desired tree — because each action carries what executing it
 /// needs: the [`Entry`] to write, and for destructive actions the hash the
 /// disk must still match. Plans are plain data, not capabilities: apply
-/// re-validates containment and re-hashes targets before touching anything,
+/// re-validates containment, re-hashes targets, and re-checks the recorded
+/// kind and executable bit against the manifest before touching anything,
 /// so a hand-built or stale plan refuses rather than misfires. `BTreeMap`
 /// keeps plans sorted, diffable, and deterministic; apply derives execution
 /// order from it (parents before children, removals in reverse).
@@ -70,8 +71,9 @@ pub enum Action {
     /// Disk already equals desired: nothing is written and the mtime
     /// survives. Apply still records this plan's owner on the path's
     /// manifest entry — how an owner joins a path another owner already
-    /// holds with identical bytes — after re-hashing the target and
-    /// refusing if the disk no longer matches `expected_hash`.
+    /// holds with an identical entry: bytes, kind, and executable bit —
+    /// after re-hashing the target and refusing if the disk no longer
+    /// matches `expected_hash`.
     Skip {
         /// The hash of the bytes on disk at plan time, which equal the
         /// desired bytes; the disk must still carry it at apply time.
@@ -115,16 +117,18 @@ pub enum Refusal {
     /// The path is on disk but absent from the manifest; see
     /// [`Error::Foreign`](crate::Error::Foreign). No policy lifts this.
     Foreign,
-    /// The desired bytes differ from what another owner holds at this
-    /// path; see [`Error::OwnerConflict`](crate::Error::OwnerConflict).
-    /// No policy lifts this.
+    /// The desired entry — bytes, kind, or executable bit — differs from
+    /// what another owner holds at this path; see
+    /// [`Error::OwnerConflict`](crate::Error::OwnerConflict). No policy
+    /// lifts this.
     OwnerConflict {
         /// The other owners holding the path.
         owners: BTreeSet<String>,
     },
-    /// The path escapes the destination — absolute, climbing out via
-    /// `..`, containing empty or `.` components, or writing through a
-    /// symlinked ancestor; see
+    /// The projection may not write the path — it escapes the destination
+    /// (absolute, climbing out via `..`, or containing empty or `.`
+    /// components), writes through a symlinked ancestor, or enters the
+    /// projection's own state directory; see
     /// [`Error::Containment`](crate::Error::Containment).
     Containment,
     /// A symlink whose target resolves outside the destination; see

@@ -93,7 +93,7 @@ fn refusal_messages_name_the_offending_paths() {
     };
     assert_eq!(
         conflict.to_string(),
-        "refusing paths whose desired bytes conflict with another owner's: \
+        "refusing paths whose desired entries conflict with another owner's: \
          shared/.zshrc (held by dotfiles+site)"
     );
 }

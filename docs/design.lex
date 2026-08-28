@@ -47,11 +47,11 @@ Proiectio Design
     state; the desired tree enters only when plan compares this
     classification against it to choose actions:
 
-    | State   | Meaning                                           |
-    | Clean   | disk matches the recorded hash                    |
-    | Drifted | disk differs from the recorded hash — a user edit |
-    | Missing | recorded, but gone from disk                      |
-    | Foreign | on disk, absent from the manifest                 |
+    | State   | Meaning                                            |
+    | Clean   | disk matches the recorded entry: bytes, kind, mode |
+    | Drifted | disk differs from the recorded entry — a user edit |
+    | Missing | recorded, but gone from disk                       |
+    | Foreign | on disk, absent from the manifest                  |
 
     plan turns states into actions, per path:
 

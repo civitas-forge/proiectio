@@ -19,7 +19,11 @@ pub enum PathState {
     Drifted,
     /// Recorded, but gone from disk.
     Missing,
-    /// On disk, absent from the manifest. Never touched.
+    /// On disk, absent from the manifest. Planning refuses to touch it —
+    /// except where a desired [`Block`](crate::EntryKind::Block) entry
+    /// owns only the delimited region inside it, in which case the
+    /// container stays foreign as a file while the region is a write
+    /// target.
     Foreign,
 }
 

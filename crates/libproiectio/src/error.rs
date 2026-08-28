@@ -50,20 +50,21 @@ pub enum Error {
         /// The foreign paths, relative to the destination.
         paths: BTreeSet<Utf8PathBuf>,
     },
-    /// Refusal: desired-tree paths that escape the destination — absolute
-    /// paths, paths climbing out via `..`, or empty or `.` components —
-    /// or writes through a symlinked ancestor.
+    /// Refusal: desired-tree paths the projection may not write — paths
+    /// that escape the destination (absolute paths, paths climbing out via
+    /// `..`, or empty or `.` components), writes through a symlinked
+    /// ancestor, or paths entering the projection's own state directory.
     #[error("refusing paths that escape the destination: {}", join(paths))]
     Containment {
         /// The offending paths as given by the desired tree.
         paths: BTreeSet<Utf8PathBuf>,
     },
-    /// Refusal: desired bytes for a path differ from what another owner
-    /// holds there. Two owners may hold one path only while writing
-    /// identical bytes; the hash check enforces it. No policy lifts this:
-    /// the owners' trees must agree first.
+    /// Refusal: the desired entry for a path — bytes, kind, or executable
+    /// bit — differs from what another owner holds there. Two owners may
+    /// hold one path only while writing identical entries. No policy lifts
+    /// this: the owners' trees must agree first.
     #[error(
-        "refusing paths whose desired bytes conflict with another owner's: {}",
+        "refusing paths whose desired entries conflict with another owner's: {}",
         join_conflicts(conflicts)
     )]
     OwnerConflict {
@@ -101,7 +102,9 @@ pub enum Error {
         source: serde_json::Error,
     },
     /// The manifest parses but declares a version this crate does not
-    /// support. Not a refusal.
+    /// support. Not a refusal. Load reads the declared version before
+    /// strictly decoding the rest, so an unsupported future format
+    /// reports this rather than [`ManifestFormat`](Error::ManifestFormat).
     #[error("manifest {path} has version {found}; this crate supports version {supported}")]
     ManifestVersion {
         /// The manifest file's location.
@@ -122,14 +125,16 @@ impl Error {
     /// operation failing. A CLI maps refusals to exit 2 and everything
     /// else to exit 1.
     pub fn is_refusal(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Error::Drift { .. }
-                | Error::Foreign { .. }
-                | Error::Containment { .. }
-                | Error::OwnerConflict { .. }
-                | Error::ExternalTarget { .. }
-        )
+            | Error::Foreign { .. }
+            | Error::Containment { .. }
+            | Error::OwnerConflict { .. }
+            | Error::ExternalTarget { .. } => true,
+            Error::Io { .. } | Error::ManifestFormat { .. } | Error::ManifestVersion { .. } => {
+                false
+            }
+        }
     }
 }
 

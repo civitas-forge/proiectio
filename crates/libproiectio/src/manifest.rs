@@ -8,6 +8,9 @@ use crate::EntryKind;
 /// The manifest format version this crate writes and accepts.
 pub const MANIFEST_VERSION: u32 = 1;
 
+/// The manifest's file name inside the caller-chosen state directory.
+pub const MANIFEST_FILE_NAME: &str = "manifest.json";
+
 /// The recorded state of a projection: one JSON file in a caller-chosen
 /// state directory, mapping each projected path to what was last written
 /// there.

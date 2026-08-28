@@ -6,6 +6,11 @@ use camino::{Utf8Path, Utf8PathBuf};
 /// This is the engine's handle: `plan`, `apply`, and `status` land on it as
 /// the observe/decide/act stages are implemented. Both paths are absolute
 /// and caller-chosen; the crate never consults the current directory.
+///
+/// `state_dir` may lie inside `target`. The projection's own state subtree
+/// is excluded from classification — the manifest never reads as foreign —
+/// and a desired path entering it is refused as
+/// [`Containment`](crate::Error::Containment).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Projection {
     target: Utf8PathBuf,
