@@ -164,6 +164,16 @@ Proiectio Design
 
     :: rust ::
 
+    Those four methods are the shape the stages take once one value
+    holds both paths, and none of them exists yet. What the library
+    ships is the stages themselves, as free functions over directory
+    handles the caller opened — decide, decide_removal, apply,
+    status — because nothing in the crate opens an ambient path
+    itself ([./implementation.lex] section 3): status takes the state
+    handle and the in-dest state prefix beside it, where Projection
+    would derive the second from the first. The methods land over
+    those functions when the CLI has a caller for them.
+
     Dependencies: serde, serde_json, thiserror, camino now; sha2
     and cap-std arrive with observe, cap-tempfile and
     cap-primitives with apply ([./implementation.lex] section 3).

@@ -105,10 +105,12 @@ pub struct Status {
 /// the walk meets is unrecorded — including the parents a past
 /// [`apply`](crate::apply) created for the owned files inside them, which
 /// report [`Clean`](PathState::Clean) beneath a
-/// [`Foreign`](PathState::Foreign) parent. A caller rendering a report for
-/// a person can drop the directory rows; planning is unaffected, since a
-/// desired path only meets a foreign refusal where the tree names that
-/// exact location.
+/// [`Foreign`](PathState::Foreign) parent. A row carries that relationship
+/// and nothing else — not the kind of node standing there — so nothing in
+/// the report separates a foreign directory from a foreign file, and a
+/// caller that wants to render them differently needs a kind [`Status`]
+/// does not yet carry. Planning is unaffected either way: a desired path
+/// meets a foreign refusal only where the tree names that exact location.
 ///
 /// No lock is taken. A concurrent [`apply`](crate::apply) can move the disk
 /// under the walk, so a report is what the destination looked like, not a
