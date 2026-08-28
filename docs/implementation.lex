@@ -244,13 +244,16 @@ Implementation Guidelines
     target is graded against the destination as it stands
     ([./security.lex] section 3), so it cannot be published before
     the run has put whatever its target resolves through in place.
-    They run after everything else, and a link that does not grade
-    in-dest yet is held rather than refused, the pass repeating over
-    what it held until one publishes nothing — which refuses every
-    link still waiting. So the run only ever publishes a link that
-    grades in-dest against the disk at that moment, and a run that
-    fails partway leaves no pointer out of dest behind. The order
-    stays deterministic: same plan, same destination, same sequence.
+    They run after everything else, and one is published only when it
+    grades in-dest against the disk *and* the chain that graded it
+    walked through no path the run is still going to publish a link
+    at — otherwise it is held, the pass repeating over what it held
+    until one publishes nothing, which refuses every link still
+    waiting. Every path a published link resolves through is
+    therefore already final, so no later publication moves where it
+    lands, and a run that fails partway leaves no pointer out of dest
+    behind. The order stays deterministic: same plan, same
+    destination, same sequence.
 
 7. Concurrency
 

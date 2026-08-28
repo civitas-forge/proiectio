@@ -1414,6 +1414,84 @@ fn a_held_link_is_not_published_when_the_pivot_it_waits_for_refuses() {
     assert_tree(dest.root(), &Tree::new().symlink("pivot", "/tmp"));
 }
 
+// The destination for the two tests below: "dir" is an ordinary directory,
+// and the run owns "b -> dir" and "c/c -> .." from an earlier projection.
+fn pivot_chain_fixtures() -> (Fixture, Fixture) {
+    let (dest, state) = fixtures();
+    Tree::new().dir("dir").write_under(dest.root());
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &Tree::new()
+            .symlink("b", "dir")
+            .symlink("c/c", "..")
+            .entries(),
+        DriftPolicy::Refuse,
+    )
+    .expect("both links land in dest");
+    (dest, state)
+}
+
+// Grading a link in-dest at the moment it is published is not enough:
+// publishing a later link can move where an earlier one lands. Here "a"
+// grades in-dest through the old "b -> dir", and republishing "b" at "c/c"
+// — still pointing at the destination root — would put "a" outside without
+// either grading ever saying so. So a link also waits for every path its own
+// resolution walked through that the run is still going to publish at.
+#[test]
+fn a_link_waits_for_every_link_the_run_will_still_publish_under_it() {
+    let (dest, state) = pivot_chain_fixtures();
+    let desired = Tree::new()
+        .symlink("a", "b/../escape")
+        .symlink("b", "c/c")
+        .symlink("c/c", "../dir")
+        .entries();
+
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
+        .expect("the finished destination holds nothing external");
+
+    assert_tree(
+        dest.root(),
+        &Tree::new()
+            .dir("dir")
+            .symlink("a", "b/../escape")
+            .symlink("b", "c/c")
+            .symlink("c/c", "../dir"),
+    );
+}
+
+#[test]
+fn a_link_waiting_on_a_pivot_that_refuses_is_never_published() {
+    let (dest, state) = pivot_chain_fixtures();
+    let desired = Tree::new()
+        .symlink("a", "b/../escape")
+        .symlink("b", "c/c")
+        .symlink("c/c", "../dir")
+        .entries();
+    let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
+
+    // The gap between the two calls: the pivot at the bottom of the chain
+    // is edited, so its overwrite refuses the signature the plan expects.
+    Tree::new()
+        .symlink("c/c", "../elsewhere")
+        .write_under(dest.root());
+    let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the deepest pivot drifted");
+
+    match error {
+        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from([Utf8PathBuf::from("c/c")])),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+    // Neither link above it moved, so nothing points out of the destination.
+    assert_tree(
+        dest.root(),
+        &Tree::new()
+            .dir("dir")
+            .symlink("b", "dir")
+            .symlink("c/c", "../elsewhere"),
+    );
+}
+
 // A link the run leaves in place is held to its plan-time verdict too: the
 // run publishes nothing for a skip, but the pivot under it moved, and a
 // fresh plan over the same disk would refuse.

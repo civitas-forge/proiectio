@@ -113,12 +113,22 @@ Security Model
     Re-grading against the disk is what makes the order links are
     published in matter, since a run may be putting the pivot its own
     pointer resolves through in place. Links go last, after
-    everything else the run writes, and one that does not grade
-    in-dest yet is held rather than refused, until a pass publishes
-    nothing and every link still waiting is refused
-    ([./implementation.lex] section 6). So the destination never
-    holds a pointer out of dest that this run published — not even
-    between two actions, and not after a run that failed partway.
+    everything else the run writes, and one is published only when
+    two things hold at once: it grades in-dest against the disk, and
+    the chain that graded it walked through no path the run is still
+    going to publish a link at. Otherwise it is held rather than
+    refused, until a pass publishes nothing and every link still
+    waiting is refused ([./implementation.lex] section 6).
+
+    Grading in-dest at the moment of publishing is not enough on its
+    own, which is what the second condition is for: publish "a ->
+    b/../escape" against a "b" that still points at a directory, then
+    republish "b" at the destination root, and "a" reaches outside
+    without either grading ever saying so. Waiting on the paths a
+    chain walked means every one of them is final by the time the
+    link goes down. So the destination never holds a pointer out of
+    dest that this run published — not between two actions, and not
+    after a run that failed partway.
 
     A "." or empty component resolves away as it does on disk, and
     ".." pops what resolution walked — after a followed hop that is

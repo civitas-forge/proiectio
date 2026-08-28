@@ -1039,8 +1039,9 @@ fn allowing_external() -> PlanOptions {
 
 #[test]
 fn target_grading_admits_in_dest_targets_and_refuses_escaping_ones() {
-    // (link path, target, resolves in-dest). Grading is lexical, from the
-    // link's parent directory, and asks nothing of the filesystem.
+    // (link path, target, resolves in-dest). The destination here holds
+    // nothing, so the chain has no hop to follow and every verdict is the
+    // one pure lexical resolution from the link's parent gives.
     let table = [
         ("rc", "shared/rc", true),
         ("rc", "./shared/rc", true),

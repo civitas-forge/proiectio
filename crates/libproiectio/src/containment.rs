@@ -95,12 +95,13 @@ pub(crate) enum Hop {
 /// [`contained_target`] is this function with a destination that holds no
 /// links at all. `parent` is the link's own parent directory relative to
 /// the destination — empty at the destination root — `target` is the string
-/// as written, and `hop` answers what will stand at one destination-relative
-/// path once the run finishes: [`decide`](crate::decide) answers from the
-/// desired tree and the plan-time
-/// [`Observations`](crate::Observations), apply from the plan and the disk
-/// it is about to publish onto. Neither the rule nor its callers rewrite a
-/// target; what reaches disk is the string verbatim.
+/// as written, and `hop` answers what stands at one destination-relative
+/// path. [`decide`](crate::decide) answers from the desired tree and the
+/// plan-time [`Observations`](crate::Observations), so it grades against
+/// the destination the run leaves; apply answers from the live disk alone,
+/// and holds a link back rather than publishing it while the run still has
+/// a link to write where the chain walked. Neither the rule nor its callers
+/// rewrite a target; what reaches disk is the string verbatim.
 ///
 /// # Resolution
 ///

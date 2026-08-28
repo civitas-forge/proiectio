@@ -401,25 +401,35 @@ fn run(
     // as it stands, so it waits for whatever the run is still going to put
     // where its target resolves through ([`settle_links`]).
     let mut links: Vec<(&Utf8PathBuf, &Action)> = Vec::new();
+    let mut unpublished: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, action) in &plan.actions {
         match action {
-            Action::Remove { .. } | Action::Refuse { .. } => {}
             Action::Write { entry } | Action::Overwrite { entry, .. }
                 if matches!(entry, Entry::Symlink { .. }) =>
             {
                 links.push((path, action));
+                unpublished.insert(path.clone());
             }
             Action::Skip { expected } if expected.kind == EntryKind::Symlink => {
                 links.push((path, action));
             }
+            _ => {}
+        }
+    }
+    for (path, action) in &plan.actions {
+        match action {
+            Action::Remove { .. } | Action::Refuse { .. } => {}
+            Action::Write { entry } | Action::Overwrite { entry, .. }
+                if matches!(entry, Entry::Symlink { .. }) => {}
+            Action::Skip { expected } if expected.kind == EntryKind::Symlink => {}
             Action::Write { entry } => {
-                write(dest, manifest, path, entry, true, plan)?;
+                write(dest, manifest, path, entry, true, plan, &unpublished)?;
                 record(manifest, path, entry, &plan.owner);
                 outcomes.insert(path.clone(), ApplyOutcome::Written);
             }
             Action::Overwrite { entry, expected } => {
                 check_expected(dest, manifest, path, expected)?;
-                write(dest, manifest, path, entry, false, plan)?;
+                write(dest, manifest, path, entry, false, plan, &unpublished)?;
                 record(manifest, path, entry, &plan.owner);
                 outcomes.insert(path.clone(), ApplyOutcome::Overwritten);
             }
@@ -442,7 +452,7 @@ fn run(
             }
         }
     }
-    settle_links(dest, manifest, plan, outcomes, links)
+    settle_links(dest, manifest, plan, outcomes, links, unpublished)
 }
 
 /// Records `path` in `manifest` under `owner` with the signature the plan
@@ -476,13 +486,27 @@ fn skip(manifest: &mut Manifest, path: &Utf8Path, expected: &NodeSignature, owne
 /// link where sorted order happens to place it would refuse a run whose
 /// finished destination holds nothing external.
 ///
-/// So a link whose target does not grade in-dest yet is *held*, not
-/// refused, and the pass repeats over what it held. Each pass either
-/// publishes something or the destination will never satisfy the rest, so a
-/// pass that publishes nothing refuses every link still waiting as
-/// [`Error::ExternalTarget`]. The run only ever publishes a link that grades
-/// in-dest against the disk at that moment, so a run that fails partway
-/// leaves no pointer out of the destination behind.
+/// So a link is published only when two things hold at once: its target
+/// grades in-dest against the disk, and the chain that graded it walked
+/// through no path this run is still going to publish a link at. Otherwise
+/// the link is *held*, not refused, and the pass repeats over what it held.
+/// The second condition is what keeps a published link in-dest afterwards:
+/// every path its own resolution passed through is already final, so no
+/// later publication can move where it lands. Grading in-dest at the moment
+/// of publishing is not enough on its own — publish `a -> b/../escape`
+/// against a `b` that still points at a directory, then republish `b` at the
+/// destination root, and `a` reaches outside without either grading ever
+/// saying so.
+///
+/// Each pass either publishes something or the destination will never
+/// satisfy the rest, so a pass that publishes nothing refuses every link
+/// still waiting as [`Error::ExternalTarget`] — which is also how a plan
+/// whose links wait on each other in a cycle ends, though deciding refuses
+/// such a tree before apply sees it. The run therefore never holds a pointer
+/// out of the destination that it published, not between two actions and not
+/// after a run that failed partway. The cost is a pass per step of the
+/// longest chain a tree's own links form, which is one pass for every tree
+/// that does not point through a link it is itself writing.
 ///
 /// Symlink skips come last, once the destination is finished: nothing is
 /// published for them, but a plan-time in-dest verdict is still a verdict,
@@ -494,6 +518,7 @@ fn settle_links(
     plan: &Plan,
     outcomes: &mut BTreeMap<Utf8PathBuf, ApplyOutcome>,
     links: Vec<(&Utf8PathBuf, &Action)>,
+    mut unpublished: BTreeSet<Utf8PathBuf>,
 ) -> Result<()> {
     let (mut pending, skips): (Vec<_>, Vec<_>) = links
         .into_iter()
@@ -501,6 +526,7 @@ fn settle_links(
     while !pending.is_empty() {
         let before = pending.len();
         let mut held: Vec<(&Utf8PathBuf, &Action)> = Vec::new();
+        let mut escaping: BTreeMap<Utf8PathBuf, String> = BTreeMap::new();
         for (path, action) in pending {
             let (entry, fresh, outcome) = match action {
                 Action::Write { entry } => (entry, true, ApplyOutcome::Written),
@@ -510,21 +536,23 @@ fn settle_links(
                 }
                 _ => unreachable!("only writes and overwrites are pending here"),
             };
-            match write(dest, manifest, path, entry, fresh, plan)? {
+            match write(dest, manifest, path, entry, fresh, plan, &unpublished)? {
                 Written::Published => {
+                    unpublished.remove(path);
                     record(manifest, path, entry, &plan.owner);
                     outcomes.insert(path.clone(), outcome);
                 }
-                Written::Held => held.push((path, action)),
+                Written::Held => {
+                    let Entry::Symlink { target } = entry else {
+                        unreachable!("only a symlink is ever held");
+                    };
+                    escaping.insert(path.clone(), target.clone());
+                    held.push((path, action));
+                }
             }
         }
         if held.len() == before {
-            return Err(Error::ExternalTarget {
-                links: held
-                    .iter()
-                    .map(|(path, action)| ((*path).clone(), planned_target(action)))
-                    .collect(),
-            });
+            return Err(Error::ExternalTarget { links: escaping });
         }
         pending = held;
     }
@@ -538,21 +566,6 @@ fn settle_links(
         outcomes.insert(path.clone(), ApplyOutcome::Skipped);
     }
     Ok(())
-}
-
-/// The target string of the symlink a write or overwrite carries — what
-/// [`settle_links`] names a held link by when it refuses it.
-fn planned_target(action: &Action) -> String {
-    match action {
-        Action::Write {
-            entry: Entry::Symlink { target },
-        }
-        | Action::Overwrite {
-            entry: Entry::Symlink { target },
-            ..
-        } => target.clone(),
-        _ => unreachable!("only symlink writes and overwrites are held"),
-    }
 }
 
 /// Grades the target of the link already on disk at `path`, for an
@@ -587,7 +600,7 @@ fn regrade_recorded_link(
     let Ok(target) = std::str::from_utf8(bytes) else {
         return Err(containment(path));
     };
-    if target_lands_in_dest(dest, plan, &resolved_parent, target)? {
+    if link_settles(dest, plan, &BTreeSet::new(), &resolved_parent, target)? {
         return Ok(());
     }
     Err(Error::ExternalTarget {
@@ -682,6 +695,7 @@ fn write(
     entry: &Entry,
     fresh: bool,
     plan: &Plan,
+    unpublished: &BTreeSet<Utf8PathBuf>,
 ) -> Result<Written> {
     let Some((parent, leaf, resolved_parent)) = verified_parent(dest, manifest, path, true)? else {
         unreachable!("a creating walk opens or creates every ancestor");
@@ -707,7 +721,7 @@ fn write(
             executable,
         } => persist(&parent, &leaf, path, contents, *executable)?,
         Entry::Symlink { target } => {
-            if !target_lands_in_dest(dest, plan, &resolved_parent, target)? {
+            if !link_settles(dest, plan, unpublished, &resolved_parent, target)? {
                 return Ok(Written::Held);
             }
             publish_link(&parent, &leaf, path, target)?;
@@ -766,24 +780,41 @@ fn persist(
 /// into one that escapes. Every other destructive action re-checks its
 /// expectation before it proceeds ([`check_expected`]); this is that
 /// re-check for the one part of a link the plan cannot express as a
-/// [`NodeSignature`] — where its pointer lands. Because it reads the disk
-/// and nothing else, a `false` here can also mean the run has not yet put
-/// the target's own pivot in place, which is why the caller holds the link
-/// rather than refusing it ([`settle_links`]).
+/// [`NodeSignature`] — where its pointer lands.
+///
+/// `true` means the link may be published: the chain lands inside the
+/// destination *and* it walked through no path in `unpublished`, the paths
+/// this run is still going to publish a link at. Both halves are needed —
+/// the first because a pivot swapped since the plan must not be pointed
+/// through, the second because a path the run will still change is a
+/// landing that can move after the fact. So `false` does not mean external
+/// on its own, which is why [`settle_links`] holds the link and asks again
+/// rather than refusing on the spot.
 ///
 /// [`ExternalTargetPolicy::Allow`] answers `true` outright: the caller
 /// permitted pointers out of the destination before this plan existed, so
 /// there is no plan-time verdict for the destination to have invalidated,
 /// and the target lands verbatim as it always would have.
-fn target_lands_in_dest(dest: &Dir, plan: &Plan, parent: &Utf8Path, target: &str) -> Result<bool> {
+fn link_settles(
+    dest: &Dir,
+    plan: &Plan,
+    unpublished: &BTreeSet<Utf8PathBuf>,
+    parent: &Utf8Path,
+    target: &str,
+) -> Result<bool> {
     if plan.external_targets == ExternalTargetPolicy::Allow {
         return Ok(true);
     }
-    Ok(contained_target_chain(parent, target, |hop| hop_on_disk(dest, hop))?.is_some())
+    let mut waiting = false;
+    let landing = contained_target_chain(parent, target, |hop| {
+        waiting |= unpublished.contains(hop);
+        hop_on_disk(dest, hop)
+    })?;
+    Ok(!waiting && landing.is_some())
 }
 
 /// What stands at one destination-relative path on disk, read for
-/// [`target_lands_in_dest`]'s chain resolution: each ancestor component is
+/// [`link_settles`]'s chain resolution: each ancestor component is
 /// opened from the `dest` handle with `open_dir_nofollow`, so the lstat of
 /// the final component is reached without following anything.
 ///
@@ -852,7 +883,7 @@ fn hop_on_disk(dest: &Dir, path: &Utf8Path) -> Result<Hop> {
 /// `symlink_contents`, which writes any target string — an absolute one
 /// included, where `symlink` would refuse
 /// (`docs/implementation.lex` section 3). Grading happened twice by now —
-/// in the deciding stage and again in [`target_lands_in_dest`] — and
+/// in the deciding stage and again in [`link_settles`] — and
 /// neither rewrites
 /// what a link points at. Nothing is written *through* the link either: the
 /// no-follow walk that verified `dir` never resolves an external target.
