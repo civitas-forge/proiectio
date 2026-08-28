@@ -72,6 +72,17 @@ fn every_variant() -> Vec<Error> {
             path: Utf8PathBuf::from("deploy.toml"),
             keys: paths(&["vendor/"]),
         },
+        Error::TreeNameNotUtf8 {
+            path: Utf8PathBuf::from("/srv/skeleton/bin"),
+            name: "tool\u{fffd}".to_owned(),
+        },
+        Error::TreeTargetNotUtf8 {
+            path: Utf8PathBuf::from("/srv/skeleton/current"),
+            target: "releases/\u{fffd}".to_owned(),
+        },
+        Error::TreeNodeKind {
+            path: Utf8PathBuf::from("/srv/skeleton/run.sock"),
+        },
         Error::ApplyBlockUnimplemented {
             paths: paths(&["shared/.zshrc"]),
         },
@@ -96,7 +107,7 @@ fn refusals_exit_2_and_failures_exit_1() {
 
     assert_eq!(
         codes,
-        vec![2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+        vec![2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
     );
     assert_eq!(exit_code(Ok(())), 0);
 }
@@ -151,6 +162,44 @@ fn refusal_messages_name_the_offending_paths() {
     assert_eq!(
         tree_conflict.to_string(),
         "refusing desired paths that claim overlapping locations: a, a/b"
+    );
+}
+
+/// A source tree carrying something a desired tree cannot express fails the
+/// load rather than declining a destination path, so these are exit-1
+/// failures — and each names where in the source the trouble sits. The
+/// undecodable pieces are quoted, because a lossy rendering is otherwise
+/// indistinguishable from a name that really holds a replacement character.
+#[test]
+fn tree_source_messages_name_the_node_and_exit_1() {
+    let name = Error::TreeNameNotUtf8 {
+        path: Utf8PathBuf::from("/srv/skeleton/bin"),
+        name: "tool\u{fffd}".to_owned(),
+    };
+    assert!(!name.is_refusal());
+    assert_eq!(
+        name.to_string(),
+        "tree entry name under /srv/skeleton/bin is not UTF-8: \"tool\u{fffd}\""
+    );
+
+    let target = Error::TreeTargetNotUtf8 {
+        path: Utf8PathBuf::from("/srv/skeleton/current"),
+        target: "releases/\u{fffd}".to_owned(),
+    };
+    assert!(!target.is_refusal());
+    assert_eq!(
+        target.to_string(),
+        "tree symlink /srv/skeleton/current has a target that is not UTF-8: \
+         \"releases/\u{fffd}\""
+    );
+
+    let kind = Error::TreeNodeKind {
+        path: Utf8PathBuf::from("/srv/skeleton/run.sock"),
+    };
+    assert!(!kind.is_refusal());
+    assert_eq!(
+        kind.to_string(),
+        "tree node /srv/skeleton/run.sock is not a file, directory, or symlink"
     );
 }
 

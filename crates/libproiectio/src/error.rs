@@ -245,6 +245,41 @@ pub enum Error {
         /// The `[archives]` keys, verbatim.
         keys: BTreeSet<Utf8PathBuf>,
     },
+    /// A source tree holds an entry whose name is not UTF-8, so
+    /// [`load_tree`](crate::load_tree) cannot key it. Not a refusal: no
+    /// destination path is being declined — the source carries content this
+    /// crate cannot name. Observation *skips* such a name, because it can
+    /// never match a desired or recorded path; a source tree's names are
+    /// content the caller asked to project, so skipping one would drop it
+    /// silently.
+    #[error("tree entry name under {path} is not UTF-8: {name:?}")]
+    TreeNameNotUtf8 {
+        /// The absolute path of the directory holding the entry.
+        path: Utf8PathBuf,
+        /// The name as the filesystem gave it, lossily decoded — the bytes
+        /// are not UTF-8, so this is what can be shown of them.
+        name: String,
+    },
+    /// A source tree holds a symlink whose target is not UTF-8, which
+    /// [`Entry::Symlink`](crate::Entry::Symlink) — a `String` — cannot
+    /// carry. Not a refusal, for the same reason as
+    /// [`TreeNameNotUtf8`](Error::TreeNameNotUtf8).
+    #[error("tree symlink {path} has a target that is not UTF-8: {target:?}")]
+    TreeTargetNotUtf8 {
+        /// The link's absolute path.
+        path: Utf8PathBuf,
+        /// The target as the filesystem gave it, lossily decoded.
+        target: String,
+    },
+    /// A source tree holds a node of a kind the projection never writes — a
+    /// FIFO, a socket, or a device node. Not a refusal: the load cannot
+    /// produce a desired tree at all. The node is never opened, since
+    /// reading a FIFO with no writer would block forever.
+    #[error("tree node {path} is not a file, directory, or symlink")]
+    TreeNodeKind {
+        /// The node's absolute path.
+        path: Utf8PathBuf,
+    },
     /// The plan touches a [`Block`](crate::EntryKind::Block) entry —
     /// writing one, or re-checking a block signature — and block regions
     /// are not implemented in [`apply`](crate::apply) yet. Not a refusal:
@@ -288,6 +323,9 @@ impl Error {
             | Error::MappingContentsXorSource { .. }
             | Error::MappingDuplicate { .. }
             | Error::MappingArchiveUnimplemented { .. }
+            | Error::TreeNameNotUtf8 { .. }
+            | Error::TreeTargetNotUtf8 { .. }
+            | Error::TreeNodeKind { .. }
             | Error::ApplyBlockUnimplemented { .. } => false,
         }
     }

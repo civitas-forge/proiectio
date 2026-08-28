@@ -32,8 +32,10 @@
 //!
 //! The crate carries no consumer vocabulary: content arrives as bytes,
 //! owners are opaque strings, and nothing here names what the files are
-//! for. A caller computes the desired tree itself or loads one from a TOML
-//! mapping file with [`load_mapping`].
+//! for. A caller computes the desired tree itself, loads one from a TOML
+//! mapping file with [`load_mapping`], or walks a source directory into one
+//! with [`load_tree`], which copies the tree verbatim — bytes, executable
+//! bits, and symlink targets as written.
 //!
 //! # Exit contract
 //!
@@ -80,6 +82,8 @@ mod report;
 mod status;
 #[cfg(all(test, unix))]
 mod test_support;
+#[cfg(unix)]
+mod tree;
 
 #[cfg(unix)]
 pub use act::*;
@@ -104,3 +108,5 @@ pub use plan::*;
 pub use projection::*;
 pub use report::*;
 pub use status::*;
+#[cfg(unix)]
+pub use tree::*;
