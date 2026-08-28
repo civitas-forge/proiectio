@@ -701,10 +701,12 @@ fn a_hand_built_plan_with_unnormalized_keys_refuses_containment() {
 }
 
 /// A path at the depth observe walks is written; one past it is named and
-/// nothing is written at all. Deciding never plans the second — both
-/// desired-tree loaders stay inside the limit — so this is the boundary a
-/// hand-built plan meets, and it is the boundary that keeps the projection
-/// from creating a destination its own next run could not observe.
+/// nothing is written at all. `load_tree` cannot produce the second — its
+/// own walk stops at the same limit — but `load_mapping` can, since it
+/// judges keys for containment and never for depth, so this check is what
+/// the deep mapping key and the hand-built plan both meet. It is what keeps
+/// the projection from creating a destination its own next run could not
+/// observe.
 #[test]
 fn a_plan_writing_past_the_walk_depth_is_named_and_writes_nothing() {
     let (dest, state) = fixtures();
@@ -747,6 +749,54 @@ fn a_plan_writing_past_the_walk_depth_is_named_and_writes_nothing() {
         other => panic!("expected DestinationTooDeep, got {other:?}"),
     }
     assert_tree(dest.root(), &Tree::new());
+}
+
+/// A key two directories long that lands 65 deep. Following an owned link
+/// restarts the walk at the link's target, so the depth the plan spells is
+/// not the depth the walk reaches — and it is the walk's depth that decides
+/// whether the next observation can read the node back. The check on the
+/// key cannot see this one; the walk names the directory it stopped at.
+#[test]
+fn a_write_landing_past_the_walk_depth_through_an_owned_link_is_named() {
+    let (dest, state) = fixtures();
+    let at_the_limit = ["d"; MAX_WALK_DEPTH].join("/");
+    Tree::new()
+        .dir(&at_the_limit)
+        .symlink("deep", &at_the_limit)
+        .write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "deep".into(),
+        recorded(
+            EntryKind::Symlink,
+            sha256_hex(at_the_limit.as_bytes()),
+            &["own"],
+        ),
+    );
+    let plan = Plan {
+        owner: "own".to_owned(),
+        actions: BTreeMap::from([(
+            "deep/one-more/leaf".into(),
+            Action::Write {
+                entry: Entry::File {
+                    contents: b"past the walk".to_vec(),
+                    executable: false,
+                },
+            },
+        )]),
+    };
+
+    let error =
+        apply_at(&dest, &state, &manifest, &plan).expect_err("the resolved path is past the limit");
+
+    match error {
+        Error::DestinationTooDeep { path, limit } => {
+            assert_eq!(path, Utf8PathBuf::from(format!("{at_the_limit}/one-more")));
+            assert_eq!(limit, MAX_WALK_DEPTH);
+        }
+        other => panic!("expected DestinationTooDeep, got {other:?}"),
+    }
+    assert!(!dest.path(&at_the_limit).join("one-more").exists());
 }
 
 #[test]

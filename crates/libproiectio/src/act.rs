@@ -130,8 +130,11 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 ///   naming the directory a level past the limit. That is the depth
 ///   [`observe`](crate::observe) descends, so a node written deeper would
 ///   leave every later run unable to observe the destination at all — the
-///   run that would remove it included. Deciding does not judge depth:
-///   its verdicts are refusals, and this is a failure — nothing is being
+///   run that would remove it included. The key is judged here, and the
+///   directory the walk below is about to create is judged again there:
+///   an owned-link restart resolves a key to a path of another depth, and
+///   only the walk knows which. Deciding judges neither, because its
+///   verdicts are refusals and this is a failure — nothing is being
 ///   declined, the projection simply cannot write what it could not read
 ///   back. Removals are exempt, since they add no directory and are the
 ///   way back from a destination already too deep;
@@ -169,6 +172,14 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 ///   `dest` root along the resolved path. Restarts carry a per-walk
 ///   visited set: revisiting a link means an owned-link cycle, refused as
 ///   [`Error::Containment`] rather than looped.
+///
+/// A creating walk stops at [`MAX_WALK_DEPTH`] directories as well,
+/// wherever a restart has taken it, failing as
+/// [`Error::DestinationTooDeep`] before it creates the directory past the
+/// limit. Unlike the up-front check on the key, this one can fire with
+/// shallower directories already created, the way any mid-run failure can:
+/// the depth an owned link resolves to is not knowable before the walk,
+/// just as drift is not.
 ///
 /// Deciding refuses to plan a write beneath a link that outlives the plan
 /// (its no-alias rule), so in a decided plan these arms judge what appeared
@@ -808,6 +819,11 @@ fn link_target_hash(parent: &Dir, leaf: &str, path: &Utf8Path) -> Result<String>
 /// parent and restarting the walk from the `dest` root, with a per-walk
 /// visited set refusing cycles.
 ///
+/// A creating walk also stops at [`MAX_WALK_DEPTH`] directories below
+/// `dest`, failing as [`Error::DestinationTooDeep`]: the depth is measured
+/// on the walked prefix, so a restart through an owned link is measured
+/// where it landed rather than where the key was spelled.
+///
 /// `create` says what a missing ancestor means: a creating walk (a write
 /// placing a file) creates the directory and continues — so it always
 /// returns a parent — while a non-creating walk (re-checks, removals,
@@ -834,6 +850,21 @@ fn verified_parent(
     let mut visited: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     while let Some(component) = components.pop_front() {
         let here = prefix.join(&component);
+        // The depth being walked, which is not the depth `path` spells: an
+        // owned-link restart replaces the prefix with the link's resolved
+        // target, so a short key can arrive at a deep directory (and a long
+        // one at a shallow directory). [`observe`](crate::observe) descends
+        // `MAX_WALK_DEPTH` directories and no further, so a creating walk
+        // stops rather than put a node where the next observation cannot
+        // reach it. Non-creating walks — removals, re-checks, prunes — add
+        // nothing and are the way back from a destination already too deep,
+        // so they walk on.
+        if create && here.components().count() > MAX_WALK_DEPTH {
+            return Err(Error::DestinationTooDeep {
+                path: here,
+                limit: MAX_WALK_DEPTH,
+            });
+        }
         let meta = match dir.symlink_metadata(&component) {
             Ok(meta) => Some(meta),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
