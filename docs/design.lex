@@ -45,7 +45,11 @@ Proiectio Design
 
     Each path in the union of the manifest and the directory gets one
     state; the desired tree enters only when plan compares this
-    classification against it to choose actions:
+    classification against it to choose actions. Classification
+    covers what UTF-8 can name: a non-UTF-8 entry on disk can never
+    match a desired or recorded path, so it stays outside the table
+    — never overwritten, never removed, and a directory holding one
+    is never pruned ([./implementation.lex] section 3):
 
     | State   | Meaning                                            |
     | Clean   | disk matches the recorded entry: bytes, kind, mode |
@@ -105,7 +109,9 @@ Proiectio Design
 
     :: rust ::
 
-    Dependencies: serde, serde_json, thiserror, camino now; sha2 and
-    tempfile arrive with apply. The whole crate
+    Dependencies: serde, serde_json, thiserror, camino now; sha2
+    and cap-std arrive with observe, cap-tempfile and
+    cap-primitives with apply ([./implementation.lex] section 3).
+    The whole crate
     is a few hundred lines plus tests; the tests run against real
     temp directories, since atomic rename is the behavior under test.
