@@ -75,8 +75,10 @@ Proiectio Design
     - A desired symlink whose target grades external
       ([./security.lex] section 3): refused and named with its
       target, unless the caller permits external targets (the CLI's
-      --allow-external-targets). Grading is per link and lexical;
-      what apply writes is the target string verbatim. A target that
+      --allow-external-targets). Grading is per link and resolves
+      through the links dest already holds, so a target reaching
+      outside through one is external too; what apply writes is the
+      target string verbatim. A target that
       is not a pathname on any host — empty, or carrying a NUL — is
       refused before grading and under either policy: it lands
       nowhere to grade, and there is no pointer to permit.

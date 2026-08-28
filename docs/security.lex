@@ -52,42 +52,64 @@ Security Model
 
     | in-dest   | relative target resolving inside dest —      |
     |           | always allowed                               |
-    | external  | absolute, relative escaping dest, or one of  |
+    | external  | absolute, relative escaping dest, reaching   |
+    |           | outside through a link dest holds, or one of |
     |           | the two spellings below — refused unless     |
     |           | --allow-external-targets                     |
     | not a     | empty, or carrying a NUL — refused under     |
     | path      | either policy                                |
 
-    Resolution is lexical — the target string is resolved from the
-    link's parent directory, by string alone — and happens once, at
-    plan time, purely to classify. Lexical is the whole contract, and
-    it is narrower than what a filesystem does: grading reads no
-    disk, so it does not see through a component of the target that
-    is itself a symlink. A target "pivot/passwd" grades in-dest
-    whatever "pivot" turns out to be, so where dest already holds an
-    escaping link the projection can plant a pointer that reaches
-    outside without the flag. What bounds that: the projection cannot
-    create the escaping hop itself — an absolute or climbing target
-    is graded external and needs the flag — so the hop must already
-    be in dest, foreign or flag-permitted. Nothing is written
-    *through* either link; the apply-time walk of section 2 is what
-    enforces that, and it does read the disk. A "." or empty
-    component resolves
-    away as it does on disk and ".." pops, since the question is
-    where the target lands, not how a path the projection creates may
-    be spelled. Two spellings are graded external outright, on every
-    host, so a tree gets the same verdict everywhere: a backslash
-    anywhere in the target, which is a separator on one host and a
-    name on another; and a leading Windows drive designator — a
-    letter and a colon, with a slash (C:/escape) or without
-    (C:escape) — which Windows resolves against that drive rather
-    than against the link's parent. Other colon shapes stay names: a
-    target "victim:stream" addresses a sibling's NTFS stream, under
-    the destination, not a place outside it. What reaches disk is the
-    target string verbatim; proiectio never rewrites it. A link
-    projected from a source tree therefore keeps working when it
-    stayed relative and in-tree, because the layout around it is
-    preserved.
+    Resolution happens once, at plan time, purely to classify, and it
+    follows the destination's own links: the target string is
+    resolved from the link's parent directory, and a component that
+    is itself a symlink is followed to where it points, hop by hop,
+    out of the observation snapshot. So "pivot/passwd" grades in-dest
+    where "pivot" is an ordinary directory and external where dest
+    holds "pivot -> /etc". The flag is about whether a pointer
+    reaches outside dest, and that is a question about the
+    filesystem: a rule answering it by string arithmetic alone
+    answers a different question. An ordinary chain is unaffected —
+    "shared -> real" under "rc -> shared/rc" lands in dest and needs
+    no flag. Following carries a visited set of the links it
+    followed, so a cycle ends the resolution rather than looping, and
+    a hop whose on-disk target is not UTF-8 ends it too: a hop nobody
+    can follow is one nobody can vouch for. Both end it outside — a
+    chain that never lands cannot be said to land in dest.
+
+    The price is stated rather than hidden: a target's verdict now
+    depends on what the destination holds, so the same tree may need
+    the flag in one destination and not in another. Tree *paths* keep
+    the host-independent lexical verdict of section 2. Two bounds
+    still hold. The projection cannot create the escaping hop itself
+    — a desired link is graded before it may be written — so a pivot
+    is either foreign or flag-permitted. And nothing is written
+    *through* any of these links; the apply-time walk of section 2 is
+    what enforces that.
+
+    A plan-time verdict is about a destination that can move under
+    it, so apply re-grades a link's target against the disk before
+    publishing the link, and refuses it as an external target rather
+    than publish a pointer whose pivot was swapped in the gap between
+    the two calls — the same shape as the drift re-check of section
+    5. Under the flag there is no verdict to re-check: the invoker
+    permitted pointers out of dest whatever the destination holds.
+
+    A "." or empty component resolves away as it does on disk, and
+    ".." pops what resolution walked — after a followed hop that is
+    the hop's own parent, not the directory the target was spelled
+    from. Two spellings are graded external outright, on every host,
+    for the target as written and for every followed hop alike: a
+    backslash anywhere in the target, which is a separator on one
+    host and a name on another; and a leading Windows drive
+    designator — a letter and a colon, with a slash (C:/escape) or
+    without (C:escape) — which Windows resolves against that drive
+    rather than against the link's parent. Other colon shapes stay
+    names: a target "victim:stream" addresses a sibling's NTFS
+    stream, under the destination, not a place outside it. What
+    reaches disk is the target string verbatim; proiectio never
+    rewrites it. A link projected from a source tree therefore keeps
+    working when it stayed relative and in-tree, because the layout
+    around it is preserved.
 
     Placement carries one more rule, and it is the plan-time half of
     section 2's apply-time check rather than the same rule: no

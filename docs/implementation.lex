@@ -27,9 +27,11 @@ Implementation Guidelines
     One deliberate exception to "verbatim": before each destructive
     action — overwrite or removal — act re-checks the target against
     the signature the plan expects — kind, hash, executable bit — and
-    refuses if it changed since observation. plan and apply are
-    separate calls in the library, so the gap between them is real
-    even where the CLI closes it to milliseconds.
+    refuses if it changed since observation. A link's target grading
+    is re-checked the same way, against the disk rather than the
+    snapshot it was decided from ([./security.lex] section 3). plan
+    and apply are separate calls in the library, so the gap between
+    them is real even where the CLI closes it to milliseconds.
 
 2. Testing
 
@@ -164,12 +166,15 @@ Implementation Guidelines
     tolerates in-dest "..", and at link creation refuses only an
     absolute target — an escaping relative target writes fine and
     fails only when traversed — so grading targets in-dest or
-    external stays ours, in the same module: contained_target, the
-    lexical resolution of a target from the link's parent
-    ([./security.lex] section 3). One function, two callers — decide
-    grades every desired link with it, act's walk grades the recorded
-    link it meets — so a target one calls in-dest is one the other
-    may follow. The structured Containment refusal, with paths, names
+    external stays ours, in the same module: contained_target_chain,
+    the resolution of a target from the link's parent, following the
+    links dest holds ([./security.lex] section 3). One rule, three
+    callers — decide resolves it against the observation snapshot,
+    act re-grades against the disk before publishing a link, and
+    act's no-follow walk grades the recorded ancestor link it meets
+    one lexical hop at a time, being itself that same resolution
+    against the live disk — so a target one calls in-dest is one the
+    others may follow. The structured Containment refusal, with paths, names
     its producers: decide — the lexical rules, paths entering the
     projection's own state directory, and desired paths lying beneath
     a link the plan leaves standing ([./design.lex] section 2)
