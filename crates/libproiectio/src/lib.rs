@@ -4,10 +4,11 @@
 //!
 //! The model compares three trees pairwise: the *desired* tree the caller
 //! passes ([`Entry`] values keyed by relative path), the *recorded* state in
-//! the [`Manifest`], and the files on disk. Planning turns the comparison
+//! the [`Manifest`], and the files on disk — read once by [`observe`] into
+//! an [`Observations`] snapshot. Planning ([`decide`]) turns the comparison
 //! into a [`Plan`] of per-path actions; applying executes the plan and
-//! returns an [`ApplyReport`]; [`Status`] is the classification alone, with
-//! nothing written.
+//! returns an [`ApplyReport`]; [`Status`] is the classification
+//! ([`classify`]) alone, with nothing written.
 //!
 //! The crate carries no consumer vocabulary: content arrives as bytes,
 //! owners are opaque strings, and nothing here names what the files are
@@ -25,6 +26,7 @@
 #![forbid(unsafe_code)]
 
 mod containment;
+mod decide;
 mod entry;
 mod error;
 mod manifest;
@@ -38,6 +40,7 @@ mod status;
 mod test_support;
 
 pub use containment::*;
+pub use decide::*;
 pub use entry::*;
 pub use error::*;
 pub use manifest::*;

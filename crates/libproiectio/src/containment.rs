@@ -46,8 +46,17 @@ use crate::{Error, Result};
 /// containment — no write through a symlinked ancestor — is a check against
 /// the disk and belongs to apply, not to this function.
 pub fn contained_join(dest: &Utf8Path, rel: &Utf8Path) -> Result<Utf8PathBuf> {
+    Ok(dest.join(contained_normalize(rel)?))
+}
+
+/// The lexical half of [`contained_join`]: judges `rel` by the full
+/// containment contract above and returns it normalized, without joining it
+/// onto a destination. Deciding admits every desired-tree key through this —
+/// same gateway, same verdicts — because a [`Plan`](crate::Plan) keys its
+/// actions relative to the destination and needs no absolute join.
+pub(crate) fn contained_normalize(rel: &Utf8Path) -> Result<Utf8PathBuf> {
     match normalize(rel) {
-        Some(normalized) => Ok(dest.join(normalized)),
+        Some(normalized) => Ok(normalized),
         None => Err(Error::Containment {
             paths: BTreeSet::from([rel.to_owned()]),
         }),

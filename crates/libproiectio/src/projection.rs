@@ -47,6 +47,24 @@ impl Projection {
     pub fn state_dir(&self) -> &Utf8Path {
         &self.state_dir
     }
+
+    /// The state directory's path relative to the target, when it lies
+    /// inside the target — the in-dest state prefix that
+    /// [`decide`](crate::decide) and [`classify`](crate::classify) take:
+    /// the subtree under it never classifies, and a desired path entering
+    /// it refuses as [`Containment`](crate::Error::Containment).
+    ///
+    /// `None` when the state directory lives outside the target — nothing
+    /// in the destination is the projection's own state, so nothing is
+    /// excluded. A state directory *equal* to the target also yields
+    /// `None`: there is no proper subtree to exclude, and excluding the
+    /// whole destination would classify nothing at all.
+    pub fn state_prefix(&self) -> Option<&Utf8Path> {
+        match self.state_dir.strip_prefix(&self.target) {
+            Ok(prefix) if !prefix.as_str().is_empty() => Some(prefix),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
