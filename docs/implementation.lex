@@ -82,11 +82,28 @@ Implementation Guidelines
       other half of the [./security.lex] rule stays ours: an in-dest
       symlinked ancestor is followed silently, so refusing links
       proiectio does not own is still our check — and act enforces
-      it through the handle, not beside it: each ancestor component
-      is opened no-follow from the previously verified handle and
+      it through the handle, not beside it. Each ancestor component
+      is opened with cap-primitives' open_dir_nofollow — public
+      there, not on Dir itself, so cap-primitives joins the
+      dependency list — from the previously verified handle, and
       the final mutation happens relative to that parent, so a
       component swapped for a symlink after the check cannot
       redirect a write to an in-dest path the plan never named.
+      When a no-follow open does report a symlink: unowned means
+      the structured refusal below; owned by the manifest with an
+      in-dest target means act reads the link through the parent
+      handle (read_link_contents), resolves the target with
+      contained_join, and restarts the no-follow walk from the dest
+      root along the resolved path.
+    - Non-UTF-8 names cannot collide with the projection. Desired
+      and manifest paths are Utf8PathBuf by construction, and a
+      differently-spelled on-disk name is a different entry, so a
+      non-UTF-8 entry can only ever be foreign — never overwritten,
+      never removed. fs_utf8's file_name() fails per entry, so the
+      walk skips what it cannot name; the classification contract
+      of [./design.lex] is scoped to UTF-8 paths, and prune treats
+      a not-actually-empty directory (ENOTEMPTY — perhaps holding a
+      skipped entry) as kept, not as an error.
     - --allow-external-targets coexists: symlink() refuses absolute
       targets, but symlink_contents() writes any target string
       verbatim — act uses it for flag-permitted links — and reads
@@ -99,11 +116,13 @@ Implementation Guidelines
       infer one. Nothing here targets Windows; if that changes, the
       desired-tree symlink entry grows a kind first.
     - Tempfile-persist works inside a Dir: cap-tempfile's
-      TempFile::new(&dir) plus replace(name) renames over the path
-      atomically, replaces existing files, and cleans up on drop.
-      Permissions, the exec bit included, go on the open tempfile
-      handle before replace, so bytes and mode publish together in
-      the one rename — never a visible file with a wrong mode.
+      TempFile::new(dir.as_cap_std()) — its signature takes the
+      plain cap_std::fs::Dir, so the fs_utf8 handle converts at the
+      call — plus replace(name) renames over the path atomically,
+      replaces existing files, and cleans up on drop. Permissions,
+      the exec bit included, go on the open tempfile handle before
+      replace, so bytes and mode publish together in the one rename
+      — never a visible file with a wrong mode.
 
     Two Dirs, because a capability follows the tree it guards: the
     dest Dir covers the destination tree, while the manifest and
@@ -112,14 +131,17 @@ Implementation Guidelines
     under a second Dir rooted there.
 
     contained_join stays the plan-time gateway regardless: cap-std
-    tolerates in-dest ".." and validates nothing at link creation,
-    so only the lexical rules produce the structured Containment
-    refusal, with paths, at decide time. At act time the split
-    holds: an unowned symlinked ancestor found by act's own
-    no-follow walk is the [./security.lex] refusal — structured,
-    path-carrying, exit-mapped as a refusal like every other — while
-    a Dir escape refusal underneath it means a bug or a race that
-    walk already guards, and surfaces as the I/O error it is.
+    tolerates in-dest "..", and at link creation refuses only an
+    absolute target — an escaping relative target writes fine and
+    fails only when traversed — so grading targets in-dest or
+    external stays contained_join's job. The structured Containment
+    refusal, with paths, comes from two places and nowhere else:
+    decide, for the lexical rules, and act's no-follow walk, when
+    an ancestor turns out to be a symlink proiectio does not own —
+    the same refusal variant, because [./security.lex] states one
+    rule for both. A Dir escape refusal past that walk means a bug
+    in the walk itself — defense in depth — and surfaces as the I/O
+    error it is.
 
 4. Standout
 
@@ -197,6 +219,7 @@ Notes
         its escape-refusal role is cap-std's at the I/O layer.
     2. openat2 with RESOLVE_BENEATH on Linux 5.6 and newer, openat
         with O_RESOLVE_BENEATH on FreeBSD 13 and newer — a single
-        kernel-enforced call — and a per-component fd walk on macOS
-        and Windows: userspace, but anchored to the directory fd, so
-        still no string checks and no dependence on the cwd.
+        kernel-enforced call — and a per-component walk on macOS
+        and Windows: userspace, but every open anchored to the
+        directory handle, so still no string checks and no
+        dependence on the cwd.
