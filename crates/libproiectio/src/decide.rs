@@ -4,8 +4,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::containment::contained_normalize;
 use crate::{
-    Action, DriftPolicy, Entry, EntryKind, Manifest, ManifestEntry, Observation, Observations,
-    PathState, Plan, Refusal, Status, sha256_hex,
+    Action, DriftPolicy, Entry, EntryKind, Manifest, ManifestEntry, NodeSignature, Observation,
+    Observations, PathState, Plan, Refusal, Status, sha256_hex,
 };
 
 /// The pure classification: one [`PathState`] per path in the union of the
@@ -106,11 +106,11 @@ pub fn classify(
 ///   clean or was edited into agreement; this is also how an owner joins a
 ///   path another owner holds identically;
 /// - [`Clean`](PathState::Clean) with desired differing —
-///   [`Overwrite`](Action::Overwrite) expecting the recorded hash;
+///   [`Overwrite`](Action::Overwrite) expecting the recorded signature;
 /// - [`Drifted`](PathState::Drifted) with desired differing —
 ///   [`Refusal::Drift`], unless `policy` is [`DriftPolicy::Overwrite`],
-///   which plans an [`Overwrite`](Action::Overwrite) expecting the hash of
-///   the *drifted* bytes observed at plan time;
+///   which plans an [`Overwrite`](Action::Overwrite) expecting the
+///   *drifted* node's signature observed at plan time;
 /// - [`Foreign`](PathState::Foreign) — [`Refusal::Foreign`], always: no
 ///   policy lifts it, identical bytes included — adopting a file the
 ///   projection did not write would put it on the removal path;
@@ -123,18 +123,18 @@ pub fn classify(
 /// - held by other owners too — [`Release`](Action::Release): the departing
 ///   owner drops from the entry, the disk is untouched;
 /// - held by this owner alone — an orphan: [`Remove`](Action::Remove)
-///   expecting the recorded hash when [`Clean`](PathState::Clean) or
+///   expecting the recorded signature when [`Clean`](PathState::Clean) or
 ///   [`Missing`](PathState::Missing) (apply drops an already-gone path from
 ///   the manifest alone), [`Refusal::Drift`] when
 ///   [`Drifted`](PathState::Drifted) unless `policy` lifts it to a
-///   [`Remove`](Action::Remove) expecting the drifted hash;
+///   [`Remove`](Action::Remove) expecting the drifted node's signature;
 /// - held only by other owners — not this plan's business: no action.
 ///
 /// [`DriftPolicy::Overwrite`] lifts a drift refusal only where the drifted
-/// node carries a hash for apply's changed-since-plan re-check — a file or
-/// a symlink. A path whose kind drifted to a directory or to a node the
-/// projection never writes stays refused under either policy: no
-/// `expected_hash` could express what apply must re-verify.
+/// node carries a [`NodeSignature`] for apply's changed-since-plan
+/// re-check — a file or a symlink. A path whose kind drifted to a
+/// directory or to a node the projection never writes stays refused under
+/// either policy: no signature could express what apply must re-verify.
 ///
 /// An empty desired tree plans a removal: everything this owner alone holds
 /// removes, everything it shares releases.
@@ -236,9 +236,12 @@ pub fn decide(
         actions.insert(path.clone(), action);
     }
 
-    // Recorded paths the desired tree no longer names.
+    // Recorded paths the desired tree no longer names. Named means
+    // *claimed*, not admitted: a recorded location under a tree-conflict
+    // refusal is still named by the desired tree, and planning its removal
+    // would overwrite the refusal.
     for (path, recorded) in &manifest.entries {
-        if admitted.contains_key(path)
+        if claims.contains_key(path)
             || in_state(path, state_prefix)
             || !recorded.owners.contains(owner)
         {
@@ -308,7 +311,7 @@ fn desired_action(
             } else {
                 Action::Overwrite {
                     entry: entry.clone(),
-                    expected_hash: recorded.hash.clone(),
+                    expected: recorded_signature(recorded),
                 }
             }
         }
@@ -318,9 +321,9 @@ fn desired_action(
                 // Edited into agreement: disk already equals desired.
                 skip(entry)
             } else {
-                lift_or_refuse_drift(observation, policy, |drifted_hash| Action::Overwrite {
+                lift_or_refuse_drift(observation, policy, |drifted| Action::Overwrite {
                     entry: entry.clone(),
-                    expected_hash: drifted_hash,
+                    expected: drifted,
                 })
             }
         }
@@ -340,12 +343,12 @@ fn orphan_action(
         // Missing removes too: apply drops an already-gone path from the
         // manifest alone (`Action::Remove`).
         PathState::Clean | PathState::Missing => Action::Remove {
-            expected_hash: recorded.hash.clone(),
+            expected: recorded_signature(recorded),
         },
         PathState::Drifted => {
             let observation = observation.expect("a drifted path was observed");
-            lift_or_refuse_drift(observation, policy, |drifted_hash| Action::Remove {
-                expected_hash: drifted_hash,
+            lift_or_refuse_drift(observation, policy, |drifted| Action::Remove {
+                expected: drifted,
             })
         }
         PathState::Foreign => unreachable!("recorded paths are never foreign"),
@@ -353,19 +356,20 @@ fn orphan_action(
 }
 
 /// Resolves a drifted path under `policy`: refuse, or — when the policy
-/// overwrites and the drifted node carries a hash for apply's
+/// overwrites and the drifted node carries a signature for apply's
 /// changed-since-plan re-check — the destructive action built by `lift`
-/// expecting the drifted hash. A node without a hash (a directory, or a
-/// kind the projection never writes) stays refused under either policy.
+/// expecting the drifted node. A node without a signature (a directory,
+/// or a kind the projection never writes) stays refused under either
+/// policy.
 fn lift_or_refuse_drift(
     observation: &Observation,
     policy: DriftPolicy,
-    lift: impl FnOnce(String) -> Action,
+    lift: impl FnOnce(NodeSignature) -> Action,
 ) -> Action {
     match policy {
         DriftPolicy::Refuse => refuse(Refusal::Drift),
-        DriftPolicy::Overwrite => match observed_hash(observation) {
-            Some(drifted_hash) => lift(drifted_hash.to_owned()),
+        DriftPolicy::Overwrite => match observed_signature(observation) {
+            Some(drifted) => lift(drifted),
             None => refuse(Refusal::Drift),
         },
     }
@@ -376,15 +380,52 @@ fn refuse(refusal: Refusal) -> Action {
 }
 
 /// The skip for a path whose disk node already equals the desired `entry`:
-/// the action carries the full desired signature — kind, hash, executable
-/// bit — because apply re-checks it against the disk and records it in the
-/// manifest, where the recorded entry may differ in any field (a drifted
-/// path edited into agreement, or an owner joining a shared path).
+/// the action carries the full desired signature because apply re-checks
+/// it against the disk and records it in the manifest, where the recorded
+/// entry may differ in any field (a drifted path edited into agreement, or
+/// an owner joining a shared path).
 fn skip(entry: &Entry) -> Action {
     Action::Skip {
+        expected: desired_signature(entry),
+    }
+}
+
+/// The signature the manifest records for `recorded` — what the disk must
+/// still hold for a clean path's destructive action to proceed at apply
+/// time.
+fn recorded_signature(recorded: &ManifestEntry) -> NodeSignature {
+    NodeSignature {
+        kind: recorded.kind,
+        hash: recorded.hash.clone(),
+        executable: recorded.executable,
+    }
+}
+
+/// The signature the manifest would record for a desired entry.
+fn desired_signature(entry: &Entry) -> NodeSignature {
+    NodeSignature {
         kind: entry.kind(),
-        expected_hash: desired_hash(entry),
+        hash: desired_hash(entry),
         executable: desired_executable(entry),
+    }
+}
+
+/// The observed node's signature, where it has one: files and symlinks.
+/// `None` for absent paths, directories, and nodes the projection never
+/// writes — nothing apply could re-check before a destructive action.
+fn observed_signature(observation: &Observation) -> Option<NodeSignature> {
+    match observation {
+        Observation::File { hash, executable } => Some(NodeSignature {
+            kind: EntryKind::File,
+            hash: hash.clone(),
+            executable: *executable,
+        }),
+        Observation::Symlink { hash, .. } => Some(NodeSignature {
+            kind: EntryKind::Symlink,
+            hash: hash.clone(),
+            executable: false,
+        }),
+        Observation::Absent | Observation::Directory | Observation::Other => None,
     }
 }
 
@@ -447,16 +488,6 @@ fn desired_executable(entry: &Entry) -> bool {
     match entry {
         Entry::File { executable, .. } => *executable,
         Entry::Symlink { .. } | Entry::Block { .. } => false,
-    }
-}
-
-/// The observed node's hash, where it has one: files and symlinks. `None`
-/// for absent paths, directories, and nodes the projection never writes —
-/// nothing apply could re-check before a destructive action.
-fn observed_hash(observation: &Observation) -> Option<&str> {
-    match observation {
-        Observation::File { hash, .. } | Observation::Symlink { hash, .. } => Some(hash),
-        Observation::Absent | Observation::Directory | Observation::Other => None,
     }
 }
 

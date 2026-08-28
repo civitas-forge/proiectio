@@ -52,13 +52,17 @@ Implementation Guidelines
 
 3. Centralized Path Resolution
 
-    Every untrusted path enters through one function:
+    Every untrusted path enters through one gateway:
 
     contained_join(dest, rel) -> Result<Utf8PathBuf>
 
     :: rust ::
 
-    the sole lexical gateway enforcing the containment rules of
+    with a crate-internal normalize-only half, contained_normalize,
+    applying the same rules without the join — decide admits desired
+    keys through it, since a Plan keys actions relative to the
+    destination — the sole lexical gateway enforcing the containment
+    rules of
     [./security.lex] section 2 — that section's refusal list, not
     any paraphrase elsewhere, is the contract; act's no-follow walk
     below is the apply-time half of the same rule. Crates are

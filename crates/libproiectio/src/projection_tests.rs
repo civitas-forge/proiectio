@@ -59,3 +59,25 @@ fn a_relative_target_is_rejected() {
 fn a_relative_state_dir_is_rejected() {
     Projection::new(Utf8PathBuf::from("/srv/site"), Utf8PathBuf::from("state"));
 }
+
+#[test]
+#[should_panic(expected = "target must not carry `..` components")]
+fn a_target_with_parent_components_is_rejected() {
+    // The type reasons about the paths lexically; a `..` in the target
+    // would defeat the prefix check a nested state directory relies on.
+    Projection::new(
+        Utf8PathBuf::from("/srv/www/../site"),
+        Utf8PathBuf::from("/srv/site/.proiectio"),
+    );
+}
+
+#[test]
+#[should_panic(expected = "state_dir must not carry `..` components")]
+fn a_state_dir_with_parent_components_is_rejected() {
+    // `/srv/site/cache/..` spells the target itself; refusing the
+    // spelling keeps the equality and prefix checks honest.
+    Projection::new(
+        Utf8PathBuf::from("/srv/site"),
+        Utf8PathBuf::from("/srv/site/cache/.."),
+    );
+}

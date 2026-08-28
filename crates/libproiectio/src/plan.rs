@@ -22,8 +22,9 @@ pub enum DriftPolicy {
 ///
 /// A plan is complete: apply's inputs are the projection and the plan —
 /// never the desired tree — because each action carries what executing it
-/// needs: the [`Entry`] to write, and for destructive actions the hash the
-/// disk must still match. Plans are plain data, not capabilities: apply
+/// needs: the [`Entry`] to write, and for destructive and recording
+/// actions the [`NodeSignature`] the disk must still match. Plans are
+/// plain data, not capabilities: apply
 /// re-validates containment, re-hashes targets, and re-checks the recorded
 /// kind and executable bit against the manifest before touching anything,
 /// so a hand-built or stale plan refuses rather than misfires. `BTreeMap`
@@ -60,48 +61,42 @@ pub enum Action {
         entry: Entry,
     },
     /// Replace a recorded path whose desired content changed. Apply
-    /// re-hashes the target first and refuses if the disk no longer
-    /// matches `expected_hash`.
+    /// re-checks the target against `expected` first and refuses if the
+    /// disk no longer matches.
     Overwrite {
         /// What to write.
         entry: Entry,
-        /// The hash the disk must still carry at apply time: the recorded
-        /// hash for a clean path, or — when [`DriftPolicy::Overwrite`]
-        /// lifted a drift refusal — the hash of the drifted bytes observed
-        /// at plan time.
-        expected_hash: String,
+        /// The node the disk must still hold at apply time: the recorded
+        /// signature for a clean path, or — when [`DriftPolicy::Overwrite`]
+        /// lifted a drift refusal — the drifted node observed at plan
+        /// time.
+        expected: NodeSignature,
     },
     /// Disk already equals desired: nothing is written and the mtime
-    /// survives. Apply re-checks the whole signature — kind, hash, and
-    /// executable bit — against the disk, refuses if any of it changed
-    /// since the plan, and records the signature with this plan's owner on
-    /// the path's manifest entry. That recording is how an owner joins a
-    /// path another owner already holds identically, and how the manifest
-    /// catches up when a drifted path was edited into agreement with the
-    /// desired tree — the recorded entry may differ from this signature in
-    /// any field, so the action carries all of them.
+    /// survives. Apply re-checks the disk against `expected` — the desired
+    /// node's signature, which the disk matched at plan time — refuses if
+    /// anything changed since the plan, and records the signature with
+    /// this plan's owner on the path's manifest entry. That recording is
+    /// how an owner joins a path another owner already holds identically,
+    /// and how the manifest catches up when a drifted path was edited into
+    /// agreement with the desired tree — the recorded entry may differ
+    /// from `expected` in any field, so the action carries the signature
+    /// whole.
     Skip {
-        /// The desired node's kind, which the disk node matches.
-        kind: EntryKind,
-        /// The hash of the desired node — its file contents or link
-        /// target — which the disk carries at plan time and must still
-        /// carry at apply time.
-        expected_hash: String,
-        /// The desired executable bit, which the disk node matches;
-        /// always `false` for symlinks
-        /// ([`ManifestEntry::executable`](crate::ManifestEntry::executable)).
-        executable: bool,
+        /// The desired node's signature, which the disk carries at plan
+        /// time and must still carry at apply time.
+        expected: NodeSignature,
     },
     /// Remove an orphan — recorded under this owner alone and absent from
-    /// the desired tree. Apply re-hashes the target first and refuses if
-    /// the disk no longer matches `expected_hash`; a path already gone
-    /// from disk drops from the manifest alone. Directories emptied by
-    /// removal are pruned.
+    /// the desired tree. Apply re-checks the target against `expected`
+    /// first and refuses if the disk no longer matches; a path already
+    /// gone from disk drops from the manifest alone. Directories emptied
+    /// by removal are pruned.
     Remove {
-        /// The hash the disk must still carry at apply time: the recorded
-        /// hash, or — when [`DriftPolicy::Overwrite`] lifted a drift
-        /// refusal — the hash of the drifted bytes observed at plan time.
-        expected_hash: String,
+        /// The node the disk must still hold at apply time: the recorded
+        /// signature, or — when [`DriftPolicy::Overwrite`] lifted a drift
+        /// refusal — the drifted node observed at plan time.
+        expected: NodeSignature,
     },
     /// Drop this owner from the path's manifest entry and leave the disk
     /// alone: the path is absent from this owner's desired tree, but other
@@ -114,6 +109,26 @@ pub enum Action {
         /// Why the path is refused.
         refusal: Refusal,
     },
+}
+
+/// The on-disk node an action expects at apply time: what the deciding
+/// stage knew about the path — the recorded entry, the desired entry the
+/// disk already matched, or the drifted node a lifted refusal was granted
+/// for. Apply re-checks all three fields against the disk before the
+/// action proceeds and refuses if any changed since the plan, so the
+/// changed-since-plan guarantee covers exactly what classification calls
+/// drift: bytes, kind, and mode
+/// ([`PathState::Drifted`](crate::PathState::Drifted)).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NodeSignature {
+    /// The node's kind.
+    pub kind: EntryKind,
+    /// [`sha256_hex`](crate::sha256_hex) of the node — file contents, or
+    /// the link target string.
+    pub hash: String,
+    /// The executable bit; always `false` for symlinks and blocks
+    /// ([`ManifestEntry::executable`](crate::ManifestEntry::executable)).
+    pub executable: bool,
 }
 
 /// Why a planned path is refused rather than acted on.

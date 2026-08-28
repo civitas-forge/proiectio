@@ -90,7 +90,10 @@ fn normalize(rel: &Utf8Path) -> Option<Utf8PathBuf> {
     if kept.is_empty() {
         return None;
     }
-    Some(kept.iter().collect())
+    // Rejoin with `/` explicitly: a normalized key must be byte-identical
+    // on every host, and collecting into a path would separate with the
+    // platform separator.
+    Some(Utf8PathBuf::from(kept.join("/")))
 }
 
 /// Component shapes Windows resolves somewhere other than an ordinary file

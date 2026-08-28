@@ -26,11 +26,17 @@ impl Projection {
     ///
     /// Panics if either path is relative — the crate never consults the
     /// current directory, so a relative path here has no meaning it could
-    /// honor — and if `state_dir` equals `target`: the state files would
-    /// sit at the destination root with no subtree to exclude from
-    /// classification, so the projection's own manifest would read as
-    /// foreign. Keep the state in a subdirectory (the conventional
-    /// `<target>/.proiectio`) or outside the target entirely.
+    /// honor — or carries `..` components: this type reasons about the two
+    /// paths lexically ([`state_prefix`](Projection::state_prefix) strips
+    /// one from the other), and a `..` does not resolve lexically, so such
+    /// a spelling could misplace the state subtree. (`.` components need
+    /// no refusal: path comparison works component-wise and already treats
+    /// them as absent.) Panics too if `state_dir` equals
+    /// `target`: the state files would sit at the destination root with no
+    /// subtree to exclude from classification, so the projection's own
+    /// manifest would read as foreign. Keep the state in a subdirectory
+    /// (the conventional `<target>/.proiectio`) or outside the target
+    /// entirely.
     pub fn new(target: Utf8PathBuf, state_dir: Utf8PathBuf) -> Self {
         assert!(
             target.is_absolute(),
@@ -39,6 +45,14 @@ impl Projection {
         assert!(
             state_dir.is_absolute(),
             "projection state_dir must be absolute, got {state_dir}"
+        );
+        assert!(
+            is_normalized(&target),
+            "projection target must not carry `..` components, got {target}"
+        );
+        assert!(
+            is_normalized(&state_dir),
+            "projection state_dir must not carry `..` components, got {state_dir}"
         );
         assert!(
             state_dir != target,
@@ -75,6 +89,14 @@ impl Projection {
             _ => None,
         }
     }
+}
+
+/// Whether an absolute path is free of `..` components — the shape
+/// [`Projection`]'s lexical equality and prefix reasoning requires. (`.`
+/// components never survive component iteration, so they need no check.)
+fn is_normalized(path: &Utf8Path) -> bool {
+    path.components()
+        .all(|component| component != camino::Utf8Component::ParentDir)
 }
 
 #[cfg(test)]

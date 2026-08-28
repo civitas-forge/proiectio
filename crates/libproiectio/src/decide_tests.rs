@@ -16,6 +16,15 @@ fn link(target: &str) -> Entry {
     }
 }
 
+/// The signature of a disk node holding exactly `entry`.
+fn signature(entry: &Entry) -> NodeSignature {
+    NodeSignature {
+        kind: entry.kind(),
+        hash: desired_hash(entry),
+        executable: desired_executable(entry),
+    }
+}
+
 /// The manifest entry recording exactly `entry`, held by `owners`.
 fn recorded(entry: &Entry, owners: &[&str]) -> ManifestEntry {
     ManifestEntry {
@@ -296,9 +305,7 @@ fn disk_already_equal_to_desired_skips() {
     assert_eq!(
         action(&plan, "a.txt"),
         &Action::Skip {
-            kind: EntryKind::File,
-            expected_hash: desired_hash(&entry),
-            executable: false,
+            expected: signature(&entry),
         }
     );
     assert_eq!(plan.owner, OWNER);
@@ -324,7 +331,7 @@ fn clean_disk_with_changed_desired_overwrites() {
         action(&plan, "a.txt"),
         &Action::Overwrite {
             entry: new,
-            expected_hash: desired_hash(&old),
+            expected: signature(&old),
         }
     );
 }
@@ -371,7 +378,7 @@ fn drift_policy_overwrite_lifts_the_drift_refusal() {
         action(&plan, "a.txt"),
         &Action::Overwrite {
             entry: new,
-            expected_hash: desired_hash(&drifted),
+            expected: signature(&drifted),
         }
     );
 }
@@ -394,9 +401,7 @@ fn a_path_edited_into_agreement_with_desired_skips() {
     assert_eq!(
         action(&plan, "a.txt"),
         &Action::Skip {
-            kind: EntryKind::File,
-            expected_hash: desired_hash(&entry),
-            executable: false,
+            expected: signature(&entry),
         }
     );
 }
@@ -421,9 +426,11 @@ fn an_agreement_skip_carries_the_desired_signature() {
     assert_eq!(
         action(&plan, "bin/tool"),
         &Action::Skip {
-            kind: EntryKind::File,
-            expected_hash: desired_hash(&agreed),
-            executable: true,
+            expected: NodeSignature {
+                kind: EntryKind::File,
+                hash: desired_hash(&agreed),
+                executable: true,
+            },
         }
     );
 }
@@ -502,7 +509,7 @@ fn an_orphan_removes_when_disk_matches_the_recorded_hash() {
     assert_eq!(
         action(&plan, "old.txt"),
         &Action::Remove {
-            expected_hash: desired_hash(&entry),
+            expected: signature(&entry),
         }
     );
 }
@@ -534,7 +541,7 @@ fn drift_policy_overwrite_lifts_a_drifted_orphan_to_removal() {
     assert_eq!(
         action(&plan, "old.txt"),
         &Action::Remove {
-            expected_hash: desired_hash(&drifted),
+            expected: signature(&drifted),
         }
     );
 }
@@ -551,7 +558,7 @@ fn a_missing_orphan_still_plans_removal() {
     assert_eq!(
         action(&plan, "old.txt"),
         &Action::Remove {
-            expected_hash: desired_hash(&entry),
+            expected: signature(&entry),
         }
     );
 }
@@ -619,7 +626,7 @@ fn an_executable_bit_change_alone_overwrites() {
         action(&plan, "run.sh"),
         &Action::Overwrite {
             entry: new,
-            expected_hash: desired_hash(&old),
+            expected: signature(&old),
         }
     );
 }
@@ -642,9 +649,7 @@ fn skip_lets_an_owner_join_a_path_another_owner_holds_identically() {
     assert_eq!(
         action(&plan, ".zshrc"),
         &Action::Skip {
-            kind: EntryKind::File,
-            expected_hash: desired_hash(&entry),
-            executable: false,
+            expected: signature(&entry),
         }
     );
 }
@@ -726,7 +731,7 @@ fn an_empty_desired_tree_plans_removal_and_release() {
     assert_eq!(
         action(&plan, "sole.txt"),
         &Action::Remove {
-            expected_hash: desired_hash(&sole),
+            expected: signature(&sole),
         }
     );
     assert_eq!(action(&plan, "shared.txt"), &Action::Release);
@@ -780,9 +785,7 @@ fn a_denormalized_desired_key_unifies_with_its_recorded_path() {
     assert_eq!(
         action(&plan, "b"),
         &Action::Skip {
-            kind: EntryKind::File,
-            expected_hash: desired_hash(&entry),
-            executable: false,
+            expected: signature(&entry),
         }
     );
     assert_eq!(plan.actions.len(), 1);
@@ -902,6 +905,49 @@ fn a_chain_of_overlapping_desired_paths_refuses_every_claimant() {
 }
 
 #[test]
+fn a_recorded_path_under_a_tree_conflict_is_not_an_orphan() {
+    // The desired tree still names the location — conflictedly — so the
+    // orphan pass must not treat it as dropped and overwrite the refusal
+    // with a removal (or a release, for a shared entry).
+    let entry = file("v1\n", false);
+    let manifest = manifest_of(&[
+        ("a", recorded(&entry, &[OWNER])),
+        ("shared", recorded(&entry, &[OWNER, "other"])),
+    ]);
+    let observations = observed(&[("a", on_disk(&entry)), ("shared", on_disk(&entry))]);
+
+    let plan = plan(
+        &tree(&[
+            ("a", &entry),
+            ("a/b", &file("nested\n", false)),
+            ("shared", &entry),
+            ("shared/x", &file("nested\n", false)),
+        ]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    for (refused, other) in [
+        ("a", "a/b"),
+        ("a/b", "a"),
+        ("shared", "shared/x"),
+        ("shared/x", "shared"),
+    ] {
+        assert_eq!(
+            action(&plan, refused),
+            &Action::Refuse {
+                refusal: Refusal::TreeConflict {
+                    paths: BTreeSet::from([Utf8PathBuf::from(other)]),
+                },
+            },
+            "expected a tree-conflict refusal at {refused}"
+        );
+    }
+    assert_eq!(plan.actions.len(), 4);
+}
+
+#[test]
 fn a_desired_path_entering_the_state_dir_refuses_containment() {
     let entry = file("x\n", false);
 
@@ -983,9 +1029,7 @@ fn a_desired_link_matching_the_disk_target_skips() {
     assert_eq!(
         action(&plan, "rc"),
         &Action::Skip {
-            kind: EntryKind::Symlink,
-            expected_hash: desired_hash(&entry),
-            executable: false,
+            expected: signature(&entry),
         }
     );
 }
@@ -1008,7 +1052,7 @@ fn a_changed_desired_link_target_overwrites_a_clean_link() {
         action(&plan, "rc"),
         &Action::Overwrite {
             entry: new,
-            expected_hash: desired_hash(&old),
+            expected: signature(&old),
         }
     );
 }
