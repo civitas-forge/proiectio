@@ -116,6 +116,62 @@ pub enum Error {
         /// The version this crate supports.
         supported: u32,
     },
+    /// The mapping file does not parse as mapping TOML — a syntax error, a
+    /// missing required field, or an unknown key. Not a refusal.
+    #[error("mapping {path} is not valid: {source}")]
+    MappingFormat {
+        /// The mapping file's location.
+        path: Utf8PathBuf,
+        /// The parse error, unchanged.
+        source: toml::de::Error,
+    },
+    /// The mapping parses but declares a version this crate does not
+    /// support. Not a refusal. Load reads the declared version before
+    /// strictly decoding the rest, so an unsupported future format reports
+    /// this rather than [`MappingFormat`](Error::MappingFormat).
+    #[error("mapping {path} has version {found}; this crate supports version {supported}")]
+    MappingVersion {
+        /// The mapping file's location.
+        path: Utf8PathBuf,
+        /// The version the file declares.
+        found: u32,
+        /// The version this crate supports.
+        supported: u32,
+    },
+    /// A `[files]` entry sets both `contents` and `source`, or neither;
+    /// exactly one must say where the bytes come from. Not a refusal.
+    #[error(
+        "mapping {path}: files entry \"{key}\" must set exactly one of `contents` and `source`"
+    )]
+    MappingContentsXorSource {
+        /// The mapping file's location.
+        path: Utf8PathBuf,
+        /// The offending entry's key, verbatim.
+        key: Utf8PathBuf,
+    },
+    /// One projected path is claimed by more than one mapping entry — the
+    /// same key (after lexical normalization) under `[files]` and
+    /// `[links]`. Not a refusal.
+    #[error("mapping {path}: \"{key}\" is projected by more than one entry")]
+    MappingDuplicate {
+        /// The mapping file's location.
+        path: Utf8PathBuf,
+        /// The normalized key both entries project.
+        key: Utf8PathBuf,
+    },
+    /// The mapping's `[archives]` entries parse structurally, but archive
+    /// extraction is not implemented yet. Not a refusal: the mapping is
+    /// well-formed — this crate cannot honor it.
+    #[error(
+        "mapping {path}: [archives] entries are not yet implemented: {}",
+        join(keys)
+    )]
+    MappingArchiveUnimplemented {
+        /// The mapping file's location.
+        path: Utf8PathBuf,
+        /// The `[archives]` keys, verbatim.
+        keys: BTreeSet<Utf8PathBuf>,
+    },
 }
 
 impl Error {
@@ -133,9 +189,14 @@ impl Error {
             | Error::Containment { .. }
             | Error::OwnerConflict { .. }
             | Error::ExternalTarget { .. } => true,
-            Error::Io { .. } | Error::ManifestFormat { .. } | Error::ManifestVersion { .. } => {
-                false
-            }
+            Error::Io { .. }
+            | Error::ManifestFormat { .. }
+            | Error::ManifestVersion { .. }
+            | Error::MappingFormat { .. }
+            | Error::MappingVersion { .. }
+            | Error::MappingContentsXorSource { .. }
+            | Error::MappingDuplicate { .. }
+            | Error::MappingArchiveUnimplemented { .. } => false,
         }
     }
 }
