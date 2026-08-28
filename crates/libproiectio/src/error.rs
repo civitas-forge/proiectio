@@ -56,7 +56,7 @@ pub enum Error {
     /// component shapes Windows resolves specially — its rustdoc is the
     /// full list), writes through a symlinked ancestor, or paths entering
     /// the projection's own state directory.
-    #[error("refusing paths that escape the destination: {}", join(paths))]
+    #[error("refusing paths that violate containment: {}", join(paths))]
     Containment {
         /// The offending paths as given by the desired tree.
         paths: BTreeSet<Utf8PathBuf>,

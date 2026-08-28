@@ -31,8 +31,10 @@ Security Model
     under the destination: drive and UNC forms (C:..., \\server),
     colons (NTFS alternate data streams), trailing dots or spaces
     (Windows strips them before resolving, so ".. " climbs), and
-    reserved device names (NUL, CON, and kin). All judged
-    lexically, so a tree gets the same verdict on every host.
+    reserved device names — CON, PRN, AUX, NUL, CONIN$, CONOUT$,
+    and COM/LPT followed by a digit 1-9 or a superscript 1-3,
+    case-insensitive, extension or not. All judged lexically, so a
+    tree gets the same verdict on every host.
 
     Normalization alone does not close the hole. A projected symlink
     "logs -> /etc" followed by a projected file "logs/x" is a write

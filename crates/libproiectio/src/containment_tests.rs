@@ -88,6 +88,11 @@ fn escaping_paths_are_refused_with_the_path_verbatim() {
         "LPT9.log",
         "prn",
         "AUX.c",
+        "CONIN$",
+        "conout$.txt",
+        "COM¹",
+        "lpt²",
+        "com³.dat",
         // Backslash anywhere: never a separator we honor, never a filename.
         "..\\..\\escape",
         "a\\b",

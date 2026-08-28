@@ -30,8 +30,9 @@ use crate::{Error, Result};
 ///   the accumulated path (`a/C:evil`), and NTFS alternate data streams
 ///   (`victim:stream`) — a trailing dot or space, which Windows strips
 ///   before resolving (`".. "` would resolve as `..` there), and reserved
-///   device names (`NUL`, `CON`, `AUX`, `PRN`, `COM1`–`COM9`,
-///   `LPT1`–`LPT9`, case-insensitive, with or without an extension);
+///   device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, and
+///   `COM`/`LPT` followed by `1`–`9` or a superscript `¹`/`²`/`³` —
+///   case-insensitive, with or without an extension);
 /// - empty and `.` components — which covers `a//b`, `./x`, and trailing
 ///   slashes;
 /// - `..` climbing past the destination after normalization;
@@ -100,12 +101,14 @@ fn windows_resolves_specially(component: &str) -> bool {
         || is_windows_reserved_device(component)
 }
 
-/// `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9` —
-/// case-insensitive, judged on the portion before the first dot because the
-/// device names win even with an extension attached (`NUL.txt`).
+/// `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, and `COM`/`LPT`
+/// followed by `1`–`9` or a superscript `¹`/`²`/`³` — Microsoft's
+/// documented reserved set — case-insensitive, judged on the portion
+/// before the first dot because the device names win even with an
+/// extension attached (`NUL.txt`).
 fn is_windows_reserved_device(component: &str) -> bool {
     let base = component.split('.').next().unwrap_or(component);
-    if ["con", "prn", "aux", "nul"]
+    if ["con", "prn", "aux", "nul", "conin$", "conout$"]
         .iter()
         .any(|device| base.eq_ignore_ascii_case(device))
     {
@@ -117,10 +120,9 @@ fn is_windows_reserved_device(component: &str) -> bool {
         .take(3)
         .map(|c| c.to_ascii_lowercase())
         .collect();
-    let rest = chars.as_str();
+    let rest: Vec<char> = chars.collect();
     (prefix == "com" || prefix == "lpt")
-        && rest.len() == 1
-        && rest.chars().all(|digit| ('1'..='9').contains(&digit))
+        && matches!(rest[..], [digit] if matches!(digit, '1'..='9' | '¹' | '²' | '³'))
 }
 
 #[cfg(test)]
