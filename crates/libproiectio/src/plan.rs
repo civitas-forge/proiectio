@@ -81,7 +81,10 @@ pub struct PlanOptions {
 /// deliberately differ from it (an agreement skip, a lifted drift) — so a
 /// hand-built or stale plan refuses rather than misfires. `BTreeMap`
 /// keeps plans sorted, diffable, and deterministic; apply derives execution
-/// order from it (parents before children, removals in reverse).
+/// order from it — removals in reverse, then everything else parents before
+/// children, then the symlinks, each published only once the destination
+/// holds whatever its target resolves through (`docs/implementation.lex`
+/// section 6).
 ///
 /// An empty desired tree plans a removal of everything the owner alone
 /// holds and a release of everything it shares.
