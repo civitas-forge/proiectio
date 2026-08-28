@@ -916,7 +916,13 @@ fn a_prefix_places_every_member_beneath_it() {
     let fixture = Tree::new()
         .file("vendor.tar", tar(&tar_members()))
         .materialize();
-    let tree = expand(&fixture.path("vendor.tar"), 0, Utf8Path::new("vendor/lib")).unwrap();
+    let tree = expand(
+        &fixture.path("vendor.tar"),
+        0,
+        Utf8Path::new("vendor/lib"),
+        &new_budget(),
+    )
+    .unwrap();
     assert_eq!(
         tree.keys().map(|path| path.as_str()).collect::<Vec<_>>(),
         vec![
@@ -937,7 +943,13 @@ fn a_prefix_never_absorbs_a_climbing_member() {
     let fixture = Tree::new()
         .file("vendor.tar", tar(&[Member::file("../escape", "out\n")]))
         .materialize();
-    let refused = match expand(&fixture.path("vendor.tar"), 0, Utf8Path::new("vendor")).unwrap_err()
+    let refused = match expand(
+        &fixture.path("vendor.tar"),
+        0,
+        Utf8Path::new("vendor"),
+        &new_budget(),
+    )
+    .unwrap_err()
     {
         Error::Containment { paths } => paths,
         other => panic!("expected a containment refusal, got {other}"),
@@ -956,7 +968,13 @@ fn a_prefix_leaves_a_symlink_target_verbatim() {
     let fixture = Tree::new()
         .file("vendor.tar", tar(&[Member::symlink("current", "../top")]))
         .materialize();
-    let tree = expand(&fixture.path("vendor.tar"), 0, Utf8Path::new("vendor")).unwrap();
+    let tree = expand(
+        &fixture.path("vendor.tar"),
+        0,
+        Utf8Path::new("vendor"),
+        &new_budget(),
+    )
+    .unwrap();
     assert_eq!(
         tree.get(Utf8Path::new("vendor/current")),
         Some(&Entry::Symlink {

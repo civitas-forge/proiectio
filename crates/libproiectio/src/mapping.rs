@@ -229,9 +229,13 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     // every time. Each member arrives already keyed under its prefix; a key
     // some other entry already claimed is the same double claim two
     // `[files]` keys would be.
+    // One byte budget across every table: the bound is on what one untrusted
+    // mapping may make the process allocate, and the expanded trees are all
+    // merged into this one, so they are all live at once.
+    let budget = crate::archive::new_budget();
     for (prefix, table) in archives {
         let source = dir.join(table.source);
-        let expanded = crate::archive::expand(&source, table.strip.unwrap_or(0), &prefix)?;
+        let expanded = crate::archive::expand(&source, table.strip.unwrap_or(0), &prefix, &budget)?;
         for (key, entry) in expanded {
             if tree.insert(key.clone(), entry).is_some() {
                 return Err(Error::MappingDuplicate {

@@ -402,6 +402,35 @@ fn two_archive_tables_naming_one_prefix_are_a_duplicate() {
     ));
 }
 
+/// Every `[archives]` table in one mapping spends one byte budget. The
+/// bound is on what one untrusted input may make the process allocate, and
+/// a mapping is one input: per-table budgets would let a mapping buy a
+/// multiple of the bound by naming one small bomb from several tables, with
+/// every expanded tree live at once because they all merge into one.
+#[test]
+#[cfg(unix)]
+fn archive_tables_in_one_mapping_share_one_byte_budget() {
+    // Two halves of the budget, each fine alone and not together.
+    let half = usize::try_from(crate::archive::MAX_EXPANDED_BYTES / 2 + (1 << 20)).unwrap();
+    let body = "0".repeat(half);
+    let text = r#"
+        version = 1
+        [archives."first/"]
+        source = "./half.tar.gz"
+        [archives."second/"]
+        source = "./half.tar.gz"
+    "#;
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .file("half.tar.gz", targz(&[("big", &body, false)]))
+        .materialize();
+
+    assert!(matches!(
+        load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
+        Error::ArchiveTooLarge { .. }
+    ));
+}
+
 /// The full example of `docs/cli-tour.lex` section 5, verbatim.
 const CLI_TOUR_EXAMPLE: &str = r#"version = 1
 

@@ -10,8 +10,9 @@ use serde::Serialize;
 
 use crate::{Entry, Error, Result};
 
-/// How many bytes one archive may expand to, summed over every member the
-/// expansion keeps.
+/// How many bytes one load may expand archives to, summed over every member
+/// it keeps — over every `[archives]` table in one mapping, not one table
+/// at a time ([`new_budget`]).
 ///
 /// A desired tree holds each member's contents as a `Vec<u8>`
 /// ([`Entry::File`]), so expansion allocates what the archive decompresses
@@ -46,7 +47,7 @@ use crate::{Entry, Error, Result};
 /// — a long-name header declaring eight gigabytes is a few hundred
 /// kilobytes of gzip, and a budget checked per member would be consulted
 /// only after the eight gigabytes had been read.
-const MAX_EXPANDED_BYTES: u64 = 64 << 20;
+pub(crate) const MAX_EXPANDED_BYTES: u64 = 64 << 20;
 
 /// How many members one archive may carry.
 ///
@@ -268,7 +269,21 @@ pub(crate) const ARCHIVE_EXTENSIONS: &str = ".tar, .tar.gz, .tgz, .tar.zst, .zip
 /// Panics if `source` is relative: the crate never consults the current
 /// directory, so a relative path here has no meaning it could honor.
 pub fn load_archive(source: &Utf8Path, strip: u32) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
-    expand(source, strip, Utf8Path::new(""))
+    expand(source, strip, Utf8Path::new(""), &new_budget())
+}
+
+/// The byte budget one load spends, for a caller expanding several archives
+/// into a single desired tree.
+///
+/// [`load_mapping`](crate::load_mapping) takes one of these and hands it to
+/// every `[archives]` table, so a mapping's archives share
+/// [`MAX_EXPANDED_BYTES`] instead of each getting its own. The bound is on
+/// what one untrusted input may make the process allocate, and a mapping is
+/// one input: fifty tables naming one small bomb would otherwise buy fifty
+/// times the memory, all of it live at once, since the expanded trees are
+/// merged rather than expanded and discarded.
+pub(crate) fn new_budget() -> Rc<Budget> {
+    Budget::new(MAX_EXPANDED_BYTES)
 }
 
 /// [`load_archive`] with every projected key placed under `prefix` — the
@@ -289,10 +304,13 @@ pub fn load_archive(source: &Utf8Path, strip: u32) -> Result<BTreeMap<Utf8PathBu
 /// `[archives]`. Joining a normalized prefix onto a normalized member yields
 /// a contained path by construction — both are sequences of ordinary
 /// components — so the join needs no second verdict.
+/// `budget` is what the whole load may still allocate — [`new_budget`] says
+/// why it is the caller's rather than this function's.
 pub(crate) fn expand(
     source: &Utf8Path,
     strip: u32,
     prefix: &Utf8Path,
+    budget: &Rc<Budget>,
 ) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     assert!(
         source.is_absolute(),
@@ -307,7 +325,6 @@ pub(crate) fn expand(
     })?;
     let reader = BufReader::new(file);
 
-    let budget = Budget::new(MAX_EXPANDED_BYTES);
     let mut expansion = Expansion {
         source,
         format,
@@ -316,10 +333,10 @@ pub(crate) fn expand(
         tree: BTreeMap::new(),
         refused: BTreeSet::new(),
         members: 0,
-        budget: Rc::clone(&budget),
+        budget: Rc::clone(budget),
     };
     match format {
-        ArchiveFormat::Tar => expansion.read_tar(Budgeted::new(reader, budget))?,
+        ArchiveFormat::Tar => expansion.read_tar(Budgeted::new(reader, Rc::clone(budget)))?,
         // `MultiGzDecoder`, not `GzDecoder`: gzip streams concatenate, and
         // one tar stream written through several gzip members is a single
         // archive to `gzip -d` and to `tar tzf`. A decoder that stopped at
@@ -330,12 +347,12 @@ pub(crate) fn expand(
         // everywhere else.
         ArchiveFormat::TarGz => {
             let decoder = flate2::read::MultiGzDecoder::new(reader);
-            expansion.read_tar(Budgeted::new(decoder, budget))?;
+            expansion.read_tar(Budgeted::new(decoder, Rc::clone(budget)))?;
         }
         ArchiveFormat::TarZst => {
             let decoder = zstd::stream::read::Decoder::new(reader)
                 .map_err(|e| decode_error(source, format, e))?;
-            expansion.read_tar(Budgeted::new(decoder, budget))?;
+            expansion.read_tar(Budgeted::new(decoder, Rc::clone(budget)))?;
         }
         ArchiveFormat::Zip => expansion.read_zip(reader)?,
     }
@@ -353,7 +370,7 @@ pub(crate) fn expand(
 /// decompressed stream, because on a tar the two spend the same budget: the
 /// parser reads bytes the expansion never sees, and a bound the expansion
 /// alone held would be consulted after they had already been allocated.
-struct Budget {
+pub(crate) struct Budget {
     remaining: Cell<u64>,
     /// Set the moment a spend does not fit, so the failure a reader can only
     /// report as an [`io::Error`] comes back as [`Error::ArchiveTooLarge`]
