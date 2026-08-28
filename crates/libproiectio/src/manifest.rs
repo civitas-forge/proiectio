@@ -11,6 +11,14 @@ pub const MANIFEST_VERSION: u32 = 1;
 /// The manifest's file name inside the caller-chosen state directory.
 pub const MANIFEST_FILE_NAME: &str = "manifest.json";
 
+/// The single-writer lock file's name, the state directory's other file
+/// (`docs/implementation.lex` section 7). It sits here, beside
+/// [`MANIFEST_FILE_NAME`] and outside the `flock(2)`-gated `lock` module, so
+/// every target can name the file: [`Error::LockHeld`](crate::Error::LockHeld)
+/// reports it everywhere, and a caller on a target that builds no
+/// `StateLock` still knows which file proiectio's own runs contend on.
+pub const LOCK_FILE_NAME: &str = "proiectio.lock";
+
 /// The recorded state of a projection: one JSON file in a caller-chosen
 /// state directory, mapping each projected path to what was last written
 /// there.

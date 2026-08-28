@@ -48,6 +48,9 @@ fn every_variant() -> Vec<Error> {
             found: 9,
             supported: crate::MANIFEST_VERSION,
         },
+        Error::LockHeld {
+            path: Utf8PathBuf::from(crate::LOCK_FILE_NAME),
+        },
         Error::MappingFormat {
             path: Utf8PathBuf::from("deploy.toml"),
             source: toml::from_str::<crate::Manifest>("not toml").expect_err("parse failure"),
@@ -91,7 +94,10 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    assert_eq!(codes, vec![2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    assert_eq!(
+        codes,
+        vec![2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    );
     assert_eq!(exit_code(Ok(())), 0);
 }
 
@@ -155,4 +161,22 @@ fn io_messages_keep_the_os_error_visible() {
         source: std::io::Error::other("disk full"),
     };
     assert_eq!(error.to_string(), "bin/tool: disk full");
+}
+
+/// The single-writer lock's contention variant is exit-1 territory: not a
+/// refusal, and its message names the state-dir-relative lock path.
+#[test]
+fn lock_held_exits_1_and_names_the_lock_path() {
+    let error = Error::LockHeld {
+        path: Utf8PathBuf::from(crate::LOCK_FILE_NAME),
+    };
+    assert!(!error.is_refusal());
+    assert_eq!(exit_code(Err(error)), 1);
+    let error = Error::LockHeld {
+        path: Utf8PathBuf::from(crate::LOCK_FILE_NAME),
+    };
+    assert_eq!(
+        error.to_string(),
+        "state lock proiectio.lock is held by another writer"
+    );
 }
