@@ -57,10 +57,23 @@ Security Model
 
     Resolution follows filesystem semantics — the target string is
     resolved from the link's parent directory — and happens once, at
-    plan time, purely to classify. What reaches disk is the target
-    string verbatim; proiectio never rewrites it. A link projected
-    from a source tree therefore keeps working when it stayed
-    relative and in-tree, because the layout around it is preserved.
+    plan time, purely to classify. A "." or empty component resolves
+    away as it does on disk and ".." pops, since the question is
+    where the target lands, not how a path the projection creates may
+    be spelled. One spelling is graded external outright: a backslash
+    anywhere in the target, which is a separator on one host and a
+    name on another, and a tree gets the same verdict on every host.
+    What reaches disk is the target string verbatim; proiectio never
+    rewrites it. A link projected from a source tree therefore keeps
+    working when it stayed relative and in-tree, because the layout
+    around it is preserved.
+
+    Placement carries one more rule, the same one the apply-time
+    check in section 2 enforces from the other side: no projected
+    path may lie beneath a symlink, the projection's own links
+    included ([./design.lex] section 2). A write through a link would
+    land at a path the plan never names, and the classification —
+    which never reads through a link — could not see it afterwards.
 
     An external target writes nothing outside dest — it is only a
     pointer — but a foreign mapping planting pointers into the

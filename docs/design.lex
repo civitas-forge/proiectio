@@ -72,12 +72,31 @@ Proiectio Design
       path after normalization, or one path beneath another, which no
       non-directory entry permits: both claims refused as a tree
       conflict, since there is no deterministic entry to prefer.
+    - A desired symlink whose target grades external
+      ([./security.lex] section 3): refused and named with its
+      target, unless the caller permits external targets (the CLI's
+      --allow-external-targets). Grading is per link and lexical;
+      what apply writes is the target string verbatim.
     - Recorded under this owner but absent from the desired tree: an
       orphan, removed when disk still matches the recorded hash and
       refused as drifted otherwise; directories emptied by removal
       are pruned. When another owner still holds the path, the
       departing owner is released from the entry and the disk is
       left alone.
+
+    A projected path never resolves through a symlink: a plan's key
+    is the location on disk, so what the manifest records at a path
+    is what the next run observes there. A desired path beneath a
+    desired link is the tree conflict above; one beneath a link on
+    disk that this plan leaves standing — held by another owner, or
+    by nobody — is refused as a containment violation. That keeps the
+    three stages agreeing, because the walk that observes the
+    destination never descends a link: a path beneath one reads as
+    gone, so a projection that wrote through the link would plan the
+    write again on every run and then refuse its own file as changed.
+    A link this plan removes is not in the way — removals run first —
+    and removals do travel through an owned in-dest link, which is
+    how a path recorded beneath one is cleaned up.
 
     Block entries carry a delimited managed region inside a file the
     caller does not own whole: apply locates proiectio's delimiter
@@ -101,13 +120,18 @@ Proiectio Design
 3. API
 
     pub enum DriftPolicy { Refuse, Overwrite }
+    pub enum ExternalTargetPolicy { Refuse, Allow }
+    pub struct PlanOptions {
+    pub drift: DriftPolicy,
+    pub external_targets: ExternalTargetPolicy,
+    }
 
     pub struct Projection { target: Utf8PathBuf, state_dir: Utf8PathBuf }
     impl Projection {
     /// Pure: every write, overwrite, removal, and refusal
     /// apply would perform. An empty tree plans a removal.
     pub fn plan(&self, owner: &str, tree: &BTreeMap<Utf8PathBuf, Entry>,
-    policy: DriftPolicy) -> Result<Plan>;
+    options: PlanOptions) -> Result<Plan>;
     pub fn apply(&self, plan: &Plan) -> Result<ApplyReport>;
     pub fn status(&self) -> Result<Status>;
     }
