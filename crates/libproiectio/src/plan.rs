@@ -125,10 +125,12 @@ pub enum Refusal {
         /// The other owners holding the path.
         owners: BTreeSet<String>,
     },
-    /// The projection may not write the path — it escapes the destination
-    /// (absolute, climbing out via `..`, or containing empty or `.`
-    /// components), writes through a symlinked ancestor, or enters the
-    /// projection's own state directory; see
+    /// The projection may not write the path — it is refused by
+    /// [`contained_join`](crate::contained_join) (absolute, climbing out
+    /// via `..`, empty or `.` components, backslashes, and component
+    /// shapes Windows resolves specially — its rustdoc is the full list),
+    /// writes through a symlinked ancestor, or enters the projection's own
+    /// state directory; see
     /// [`Error::Containment`](crate::Error::Containment).
     Containment,
     /// A symlink whose target resolves outside the destination; see

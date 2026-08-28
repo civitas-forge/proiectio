@@ -194,6 +194,10 @@ impl Tree {
     /// Writes the tree into a fresh temporary directory and returns the
     /// [`Fixture`] owning it. The fixture's root is absolute and
     /// canonicalized (on macOS the temp dir sits behind the `/var` symlink).
+    // The canonicalize ban guards tree containment, which is lexical; this
+    // call resolves the fixture's own trusted temp root (on macOS it sits
+    // behind the `/var` symlink), not an untrusted tree path.
+    #[allow(clippy::disallowed_methods)]
     pub(crate) fn materialize(&self) -> Fixture {
         let temp = tempfile::TempDir::new().expect("create TempDir");
         let root =

@@ -51,10 +51,12 @@ pub enum Error {
         paths: BTreeSet<Utf8PathBuf>,
     },
     /// Refusal: desired-tree paths the projection may not write — paths
-    /// that escape the destination (absolute paths, paths climbing out via
-    /// `..`, or empty or `.` components), writes through a symlinked
-    /// ancestor, or paths entering the projection's own state directory.
-    #[error("refusing paths that escape the destination: {}", join(paths))]
+    /// refused by [`contained_join`](crate::contained_join) (absolute,
+    /// climbing out via `..`, empty or `.` components, backslashes, and
+    /// component shapes Windows resolves specially — its rustdoc is the
+    /// full list), writes through a symlinked ancestor, or paths entering
+    /// the projection's own state directory.
+    #[error("refusing paths that violate containment: {}", join(paths))]
     Containment {
         /// The offending paths as given by the desired tree.
         paths: BTreeSet<Utf8PathBuf>,

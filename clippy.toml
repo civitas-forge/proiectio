@@ -5,4 +5,8 @@
 # with `-D warnings`, so a violation fails the build.
 disallowed-methods = [
     { path = "std::env::set_current_dir", reason = "process-global; cargo test is parallel — take absolute paths from the fixture (docs/implementation.lex section 2)" },
+    { path = "std::fs::canonicalize", reason = "canonicalize follows symlinks and requires existence; containment is lexical — go through contained_join (docs/security.lex section 2)" },
+    { path = "std::path::Path::canonicalize", reason = "canonicalize follows symlinks and requires existence; containment is lexical — go through contained_join (docs/security.lex section 2)" },
+    { path = "camino::Utf8Path::canonicalize", reason = "canonicalize follows symlinks and requires existence; containment is lexical — go through contained_join (docs/security.lex section 2)" },
+    { path = "camino::Utf8Path::canonicalize_utf8", reason = "canonicalize follows symlinks and requires existence; containment is lexical — go through contained_join (docs/security.lex section 2)" },
 ]

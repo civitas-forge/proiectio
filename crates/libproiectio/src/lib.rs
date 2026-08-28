@@ -23,6 +23,7 @@
 
 #![forbid(unsafe_code)]
 
+mod containment;
 mod entry;
 mod error;
 mod manifest;
@@ -33,6 +34,7 @@ mod status;
 #[cfg(all(test, unix))]
 mod test_support;
 
+pub use containment::*;
 pub use entry::*;
 pub use error::*;
 pub use manifest::*;
