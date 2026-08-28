@@ -76,7 +76,10 @@ Proiectio Design
       ([./security.lex] section 3): refused and named with its
       target, unless the caller permits external targets (the CLI's
       --allow-external-targets). Grading is per link and lexical;
-      what apply writes is the target string verbatim.
+      what apply writes is the target string verbatim. A target that
+      is not a pathname on any host — empty, or carrying a NUL — is
+      refused before grading and under either policy: it lands
+      nowhere to grade, and there is no pointer to permit.
     - Recorded under this owner but absent from the desired tree: an
       orphan, removed when disk still matches the recorded hash and
       refused as drifted otherwise; directories emptied by removal

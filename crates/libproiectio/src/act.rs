@@ -18,7 +18,7 @@ use cap_std::fs_utf8::{Dir, MetadataExt};
 use cap_tempfile::TempFile;
 use serde::Deserialize;
 
-use crate::containment::{contained_normalize, contained_target};
+use crate::containment::{contained_normalize, contained_target, is_pathname};
 use crate::observe::{io_error, sha256_hex_of_reader};
 use crate::{
     Action, ApplyOutcome, ApplyReport, Entry, EntryKind, Error, MANIFEST_FILE_NAME,
@@ -93,10 +93,13 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// hand-built or stale plan refuses rather than misfires. (The
 /// state-directory exclusion is the deciding stage's admission check; this
 /// function cannot see where `state` lives relative to `dest`. Neither is a
-/// symlink's target re-graded here: whether an external target is permitted
-/// is the caller's [`PlanOptions`](crate::PlanOptions) answer, given before
-/// this plan existed. What containment means at apply time is the walk
-/// below, which writes *through* no link it grades external.)
+/// symlink's target re-*graded* here: whether an external target is
+/// permitted is the caller's [`PlanOptions`](crate::PlanOptions) answer,
+/// given before this plan existed, and an external target writes nothing
+/// outside `dest` — it is only a pointer. What containment means at apply
+/// time is the walk below, which writes *through* no link it grades
+/// external. Targets are checked for being pathnames at all, which no
+/// policy is about.)
 ///
 /// # Up-front failures
 ///
@@ -113,7 +116,14 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 ///   never wrote. Where refusals of several kinds appear in one plan, the
 ///   variant reported first is fixed: [`Error::Containment`],
 ///   [`Error::TreeConflict`], [`Error::Foreign`], [`Error::Drift`],
-///   [`Error::OwnerConflict`], then [`Error::ExternalTarget`];
+///   [`Error::OwnerConflict`], [`Error::ExternalTarget`], then
+///   [`Error::InvalidTarget`];
+/// - a plan writing a symlink whose target is not a pathname on any host —
+///   the empty string, or one carrying a NUL byte — fails as
+///   [`Error::InvalidTarget`]. Such a target would reach the OS and come
+///   back an error partway through the run, which is the one thing this
+///   check exists to prevent; a target the filesystem rejects for its
+///   *length* still surfaces mid-run, since nothing lexical foresees that;
 /// - a plan touching a [`Block`](EntryKind::Block) entry — writing one, or
 ///   re-checking a block signature — fails as
 ///   [`Error::ApplyBlockUnimplemented`] (issue #14).
@@ -222,6 +232,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
     let mut tree_conflict = BTreeSet::new();
     let mut owner_conflicts = BTreeMap::new();
     let mut external = BTreeMap::new();
+    let mut invalid = BTreeMap::new();
     let mut block_unimplemented = BTreeSet::new();
     for (path, action) in &plan.actions {
         // Refusals are keyed by the desired key verbatim — possibly a
@@ -247,6 +258,9 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                 Refusal::ExternalTarget { target } => {
                     external.insert(path.clone(), target.clone());
                 }
+                Refusal::InvalidTarget { target } => {
+                    invalid.insert(path.clone(), target.clone());
+                }
             }
             continue;
         }
@@ -268,6 +282,17 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         // into the manifest and so onto the removal path. Foreign, always.
         if !matches!(action, Action::Write { .. }) && !manifest.entries.contains_key(path) {
             foreign.insert(path.clone());
+            continue;
+        }
+        // A target that is not a pathname reaches the OS as one and comes
+        // back an error, which would break the "nothing is written" promise
+        // partway through a run. Deciding refuses such an entry; a
+        // hand-built plan meets the same refusal here.
+        if let Action::Write { entry } | Action::Overwrite { entry, .. } = action
+            && let Entry::Symlink { target } = entry
+            && !is_pathname(target)
+        {
+            invalid.insert(path.clone(), target.clone());
             continue;
         }
         match action {
@@ -320,6 +345,9 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
     }
     if !external.is_empty() {
         return Err(Error::ExternalTarget { links: external });
+    }
+    if !invalid.is_empty() {
+        return Err(Error::InvalidTarget { links: invalid });
     }
     if !block_unimplemented.is_empty() {
         return Err(Error::ApplyBlockUnimplemented {
@@ -574,32 +602,38 @@ fn publish_link(dir: &Dir, leaf: &str, path: &Utf8Path, target: &str) -> Result<
 /// Creates the link under a temporary name in `dir` and returns that name.
 ///
 /// The name never publishes over anything: `symlink_contents` creates
-/// exclusively, so a name already taken fails with `EEXIST`, and this
-/// retries under a fresh name rather than failing the run — a name left by
-/// a crashed run, or one a concurrent writer occupies, costs an attempt
-/// instead of the projection.
+/// exclusively, so a name already taken fails with `EEXIST`. A few of those
+/// are retried under a fresh name rather than failing the run — a name left
+/// behind by a crashed run, or one a concurrent writer occupies, costs an
+/// attempt instead of the projection — and the last attempt reports
+/// whatever it hits, so an `EEXIST` that keeps recurring surfaces as the
+/// [`Error::Io`] it is.
 fn create_temp_link(
     dir: &cap_std::fs::Dir,
     path: &Utf8Path,
     target: &str,
 ) -> Result<std::path::PathBuf> {
-    const ATTEMPTS: u32 = 16;
-    for attempt in 1..=ATTEMPTS {
+    const RETRIES: u32 = 15;
+    for _ in 0..RETRIES {
         let name = temp_link_name();
         match dir.symlink_contents(target, &name) {
             Ok(()) => return Ok(name),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt < ATTEMPTS => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(io_error(path)(e)),
         }
     }
-    unreachable!("the last attempt returns rather than retrying")
+    let name = temp_link_name();
+    dir.symlink_contents(target, &name)
+        .map_err(io_error(path))?;
+    Ok(name)
 }
 
 /// A name for the temporary link [`publish_link`] renames from: the process
-/// id, a per-call counter, and the full nanosecond clock, so two links
-/// published at once — by this process or another — never collide, and a
-/// name left behind by a crashed run of a process whose id was reused would
-/// take the same nanosecond to reproduce.
+/// id, a per-call counter, and the full nanosecond clock. Two links
+/// published at once by this process differ in the counter; two processes
+/// differ in the pid; a name left behind by a crashed run of a process
+/// whose id was reused would take the same nanosecond to reproduce. Rare
+/// rather than impossible, which is why [`create_temp_link`] retries.
 fn temp_link_name() -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};

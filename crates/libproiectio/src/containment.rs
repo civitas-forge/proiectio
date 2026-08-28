@@ -83,8 +83,10 @@ pub(crate) fn contained_normalize(rel: &Utf8Path) -> Result<Utf8PathBuf> {
 /// empty component resolves away as it does on disk, `..` pops, and a name
 /// the gateway refuses for how Windows *joins* it is an ordinary name in a
 /// pointer nothing joins onto an ambient path — `victim:stream` addresses
-/// a stream of a sibling under the destination, `NUL` a device, neither of
-/// them a place outside. Refused all the same, and graded external:
+/// a stream of a sibling under the destination, `NUL` a device, and both
+/// stay in-dest here.
+///
+/// Graded external, on the other hand:
 ///
 /// - absolute targets — the flag's headline case;
 /// - `..` climbing past the destination;
@@ -121,6 +123,26 @@ pub(crate) fn contained_target(parent: &Utf8Path, target: &str) -> Option<Utf8Pa
         }
     }
     Some(Utf8PathBuf::from(kept.join("/")))
+}
+
+/// Whether `target` is a pathname at all — the question that comes before
+/// [`contained_target`]'s, since a string that names no path lands nowhere
+/// to grade.
+///
+/// Two strings fail it, and no host accepts either: the empty string, which
+/// names nothing, and one carrying a NUL byte, which terminates a pathname
+/// rather than appearing in it. Both would reach the OS as a symlink target
+/// and come back an error — on Linux `ENOENT` for the empty one, a failed
+/// `CString` conversion for the NUL — after apply had begun, so the pure
+/// stage refuses them instead ([`Refusal::InvalidTarget`](crate::Refusal)).
+/// No policy lifts the refusal: there is no pointer here to permit.
+///
+/// This is not a promise that every target passing it is writable — a
+/// target past the host's length limit is refused by the filesystem, and
+/// nothing lexical can see that coming. It rules out the two strings that
+/// are not pathnames on any host, so a tree gets one verdict everywhere.
+pub(crate) fn is_pathname(target: &str) -> bool {
+    !target.is_empty() && !target.contains('\0')
 }
 
 /// Whether `target` opens with a Windows drive designator: an ASCII letter

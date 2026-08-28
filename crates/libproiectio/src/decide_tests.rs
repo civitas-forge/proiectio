@@ -1110,6 +1110,31 @@ fn target_grading_admits_in_dest_targets_and_refuses_escaping_ones() {
 }
 
 #[test]
+fn a_target_that_is_not_a_pathname_refuses_under_either_policy() {
+    // Judged before grading, and not lifted by the external-target
+    // permission: the empty string names nothing and a NUL cannot appear
+    // in a pathname, so there is no pointer for a policy to permit.
+    for target in ["", "\0", "shared/\0rc"] {
+        let entry = link(target);
+        let desired = tree(&[("rc", &entry)]);
+        let expected = Action::Refuse {
+            refusal: Refusal::InvalidTarget {
+                target: target.to_owned(),
+            },
+        };
+
+        for options in [PlanOptions::default(), allowing_external()] {
+            let plan = plan_with(&desired, &Manifest::new(), &observed(&[]), options);
+            assert_eq!(
+                action(&plan, "rc"),
+                &expected,
+                "{target:?} under {options:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn an_external_target_refuses_even_where_the_link_is_already_recorded_and_clean() {
     // Nothing about the disk lifts the refusal: the permission is the
     // invoker's, and it is the same link either way.

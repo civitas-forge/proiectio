@@ -18,8 +18,9 @@ pub enum DriftPolicy {
 }
 
 /// What planning does with a desired symlink whose target resolves outside
-/// the destination — an absolute target, or a relative one climbing out
-/// (`docs/security.lex` section 3).
+/// the destination — an absolute target, one climbing out, or one of the
+/// spellings graded external on every host (`docs/security.lex` section 3
+/// carries the whole rule).
 ///
 /// Such a link writes nothing outside the destination; it is only a
 /// pointer. But a tree the invoker did not author planting pointers into
@@ -58,8 +59,7 @@ pub enum ExternalTargetPolicy {
 pub struct PlanOptions {
     /// What to do with a recorded path edited on disk.
     pub drift: DriftPolicy,
-    /// What to do with a desired symlink whose target resolves outside the
-    /// destination.
+    /// What to do with a desired symlink whose target grades external.
     pub external_targets: ExternalTargetPolicy,
 }
 
@@ -234,12 +234,22 @@ pub enum Refusal {
     /// [`Error::Containment`](crate::Error::Containment).
     Containment,
     /// A desired symlink whose target, resolved lexically from the link's
-    /// parent, lands outside the destination — absolute, or relative and
-    /// climbing out (`docs/security.lex` section 3). Lifted per-plan by
+    /// parent, lands outside the destination — absolute, climbing out, or
+    /// one of the spellings graded external on every host
+    /// (`docs/security.lex` section 3 carries the whole rule). Lifted per-plan by
     /// [`ExternalTargetPolicy::Allow`], which writes the link with the
     /// target verbatim; see
     /// [`Error::ExternalTarget`](crate::Error::ExternalTarget).
     ExternalTarget {
+        /// The offending target string, verbatim.
+        target: String,
+    },
+    /// A desired symlink whose target is not a pathname on any host: the
+    /// empty string, or one carrying a NUL byte. Judged before grading —
+    /// a string naming no path lands nowhere to grade — and no policy
+    /// lifts it, since there is no pointer to permit; see
+    /// [`Error::InvalidTarget`](crate::Error::InvalidTarget).
+    InvalidTarget {
         /// The offending target string, verbatim.
         target: String,
     },

@@ -204,3 +204,17 @@ fn escaping_targets_grade_external() {
         );
     }
 }
+
+#[test]
+fn only_the_two_strings_that_are_not_pathnames_fail_the_pathname_check() {
+    // Grading asks where a target lands; this asks first whether there is
+    // a path to land anywhere. Only these two are not pathnames on any
+    // host — a target the filesystem rejects for its length is nothing
+    // lexical rules can see.
+    assert!(!is_pathname(""));
+    assert!(!is_pathname("\0"));
+    assert!(!is_pathname("shared/\0rc"));
+    for target in ["shared/rc", "../outside", "/etc/passwd", "C:/escape", "."] {
+        assert!(is_pathname(target), "{target:?}");
+    }
+}

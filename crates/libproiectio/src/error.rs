@@ -62,9 +62,11 @@ pub enum Error {
     /// entering the projection's own state directory. The symlink half is
     /// two rules, not one applied twice: deciding refuses a desired path
     /// beneath *any* link that outlives the plan, while applying refuses
-    /// an ancestor link that is unowned, drifted past grading, external,
-    /// or cyclic — and still follows one the manifest owns whose target
-    /// resolves inside the destination (`docs/security.lex` section 2).
+    /// an ancestor link that is unowned, graded external, or cyclic — and
+    /// still follows one the manifest owns whose target resolves inside
+    /// the destination (`docs/security.lex` section 2). An ancestor link
+    /// the manifest owns whose on-disk target changed is
+    /// [`Drift`](Error::Drift), not this.
     #[error("refusing paths that violate containment: {}", join(paths))]
     Containment {
         /// The offending paths as given by the desired tree.
@@ -84,8 +86,9 @@ pub enum Error {
         conflicts: BTreeMap<Utf8PathBuf, BTreeSet<String>>,
     },
     /// Refusal: desired symlinks whose targets, resolved from each link's
-    /// parent directory, land outside the destination — absolute targets
-    /// and relative ones climbing out (`docs/security.lex` section 3). The
+    /// parent directory, land outside the destination — absolute targets,
+    /// ones climbing out, and the spellings graded external on every host
+    /// (`docs/security.lex` section 3 carries the whole rule). The
     /// caller lifts this per plan with
     /// [`ExternalTargetPolicy::Allow`](crate::ExternalTargetPolicy::Allow)
     /// (a CLI's `--allow-external-targets`), which writes each link with
@@ -96,6 +99,25 @@ pub enum Error {
         join_links(links)
     )]
     ExternalTarget {
+        /// The offending links: path of each link, relative to the
+        /// destination, mapped to its target string verbatim.
+        links: BTreeMap<Utf8PathBuf, String>,
+    },
+    /// Refusal: desired symlinks whose targets are not pathnames on any
+    /// host — the empty string, which names nothing, and strings carrying a
+    /// NUL byte, which terminates a pathname rather than appearing in one.
+    /// Either would reach the OS as a target and come back an error partway
+    /// through apply, so the pure stage refuses first. No policy lifts
+    /// this, [`ExternalTargetPolicy::Allow`](crate::ExternalTargetPolicy)
+    /// included: the permission is about where a pointer points, and there
+    /// is no pointer here. It is not a promise that every other target is
+    /// writable — a target past the host's length limit still fails at the
+    /// filesystem, which nothing lexical could foresee.
+    #[error(
+        "refusing symlinks whose targets are not paths: {}",
+        join_invalid(links)
+    )]
+    InvalidTarget {
         /// The offending links: path of each link, relative to the
         /// destination, mapped to its target string verbatim.
         links: BTreeMap<Utf8PathBuf, String>,
@@ -228,6 +250,7 @@ impl Error {
     /// [`Containment`](Error::Containment),
     /// [`OwnerConflict`](Error::OwnerConflict),
     /// [`ExternalTarget`](Error::ExternalTarget),
+    /// [`InvalidTarget`](Error::InvalidTarget),
     /// [`TreeConflict`](Error::TreeConflict)) rather than an operation
     /// failing. A CLI maps refusals to exit 2 and everything else to
     /// exit 1.
@@ -238,6 +261,7 @@ impl Error {
             | Error::Containment { .. }
             | Error::OwnerConflict { .. }
             | Error::ExternalTarget { .. }
+            | Error::InvalidTarget { .. }
             | Error::TreeConflict { .. } => true,
             Error::Io { .. }
             | Error::ManifestFormat { .. }
@@ -275,6 +299,17 @@ fn join_links(links: &BTreeMap<Utf8PathBuf, String>) -> String {
     links
         .iter()
         .map(|(path, target)| format!("{path} -> {target}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// [`join_links`] with the target quoted and escaped, because the targets
+/// this variant reports are the ones a bare rendering would hide: the empty
+/// string prints as nothing, and a NUL byte prints as nothing visible.
+fn join_invalid(links: &BTreeMap<Utf8PathBuf, String>) -> String {
+    links
+        .iter()
+        .map(|(path, target)| format!("{path} -> {target:?}"))
         .collect::<Vec<_>>()
         .join(", ")
 }

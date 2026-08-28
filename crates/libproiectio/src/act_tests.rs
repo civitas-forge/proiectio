@@ -956,6 +956,49 @@ fn projects_links_with_their_targets_verbatim_dangling_included() {
 }
 
 #[test]
+fn a_target_that_is_not_a_pathname_fails_up_front_and_writes_nothing() {
+    // Deciding refuses such a target, so this is the hand-built half: the
+    // whole-plan check catches it before any action runs, rather than
+    // letting the OS reject it partway through the sorted order.
+    let (dest, state) = fixtures();
+    let plan = Plan {
+        owner: "own".to_owned(),
+        actions: BTreeMap::from([
+            (
+                "a.txt".into(),
+                Action::Write {
+                    entry: Entry::File {
+                        contents: b"alpha".to_vec(),
+                        executable: false,
+                    },
+                },
+            ),
+            (
+                "z-link".into(),
+                Action::Write {
+                    entry: Entry::Symlink {
+                        target: String::new(),
+                    },
+                },
+            ),
+        ]),
+    };
+
+    let error = apply_at(&dest, &state, &Manifest::new(), &plan)
+        .expect_err("an empty target is not a path");
+
+    match error {
+        Error::InvalidTarget { links } => assert_eq!(
+            links,
+            BTreeMap::from([(Utf8PathBuf::from("z-link"), String::new())])
+        ),
+        other => panic!("expected InvalidTarget, got {other:?}"),
+    }
+    // Nothing ran, the file sorted before the link included.
+    assert_tree(dest.root(), &Tree::new());
+}
+
+#[test]
 fn a_changed_link_target_is_replaced_in_place() {
     let (dest, state) = fixtures();
     let v1 = Tree::new()

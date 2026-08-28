@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use crate::containment::{contained_normalize, contained_target};
+use crate::containment::{contained_normalize, contained_target, is_pathname};
 use crate::{
     Action, DriftPolicy, Entry, EntryKind, ExternalTargetPolicy, Manifest, ManifestEntry,
     NodeSignature, Observation, Observations, PathState, Plan, PlanOptions, Refusal, Status,
@@ -112,12 +112,20 @@ pub fn classify(
 /// directory and purely to classify it: a relative target normalizing to a
 /// path inside the destination is in-dest and always allowed — whether or
 /// not anything exists there, since a dangling pointer is a legal link —
-/// while an absolute target, or a relative one climbing out, is external
+/// while a target landing outside — absolute, climbing out, or one of the
+/// spellings graded external on every host, `docs/security.lex` section 3
+/// carrying the whole rule — is external
 /// and refused as [`Refusal::ExternalTarget`] carrying the target string,
 /// unless `options` sets [`ExternalTargetPolicy::Allow`]. Grading never
 /// rewrites anything: what apply writes is the target string verbatim,
 /// permitted or not. Only *desired* links are graded — removing a
 /// recorded external link unlinks the pointer and reads nothing through it.
+///
+/// One question comes before grading: a target that is not a pathname on
+/// any host — the empty string, or one carrying a NUL byte — lands nowhere
+/// to grade, and is refused as [`Refusal::InvalidTarget`] under either
+/// policy, since the permission is about where a pointer points and there
+/// is no pointer.
 ///
 /// *No aliases.* A plan's key is the location on disk: the projection
 /// never writes a path that resolves through a symlink, so what the
@@ -335,12 +343,16 @@ fn in_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
 ///
 /// - the path resolves through a link that outlives this plan —
 ///   [`Refusal::Containment`], the no-alias rule;
+/// - the entry is a symlink whose target is not a pathname on any host —
+///   [`Refusal::InvalidTarget`] carrying the target verbatim, under either
+///   policy;
 /// - the entry is a symlink whose target grades external and `options`
 ///   does not permit external targets — [`Refusal::ExternalTarget`]
 ///   carrying the target verbatim.
 ///
-/// Containment first: where a path would resolve is not a question its
-/// own target answers.
+/// In that order. Containment first, because where a path would resolve is
+/// not a question its own target answers; then the pathname check, because
+/// a string naming no path lands nowhere for grading to judge.
 fn link_refusal(
     path: &Utf8Path,
     entry: &Entry,
@@ -351,17 +363,22 @@ fn link_refusal(
     if resolves_through_link(path, observations, vacated) {
         return Some(Refusal::Containment);
     }
-    match entry {
-        Entry::Symlink { target }
-            if options.external_targets == ExternalTargetPolicy::Refuse
-                && !target_resolves_in_dest(path, target) =>
-        {
-            Some(Refusal::ExternalTarget {
-                target: target.clone(),
-            })
-        }
-        _ => None,
+    let Entry::Symlink { target } = entry else {
+        return None;
+    };
+    if !is_pathname(target) {
+        return Some(Refusal::InvalidTarget {
+            target: target.clone(),
+        });
     }
+    if options.external_targets == ExternalTargetPolicy::Refuse
+        && !target_resolves_in_dest(path, target)
+    {
+        return Some(Refusal::ExternalTarget {
+            target: target.clone(),
+        });
+    }
+    None
 }
 
 /// Whether some ancestor of `path` is observed as a symlink that no action

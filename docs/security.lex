@@ -52,8 +52,11 @@ Security Model
 
     | in-dest   | relative target resolving inside dest —      |
     |           | always allowed                               |
-    | external  | absolute, or relative escaping dest —        |
-    |           | refused unless --allow-external-targets      |
+    | external  | absolute, relative escaping dest, or one of  |
+    |           | the two spellings below — refused unless     |
+    |           | --allow-external-targets                     |
+    | not a     | empty, or carrying a NUL — refused under     |
+    | path      | either policy                                |
 
     Resolution follows filesystem semantics — the target string is
     resolved from the link's parent directory — and happens once, at
@@ -82,6 +85,16 @@ Security Model
     resolves inside dest. A write through a link would land at a path
     the plan never names, and the classification — which never reads
     through a link — could not see it afterwards.
+
+    One question comes before grading: whether the target is a
+    pathname at all. Two strings are not, on any host — the empty
+    string, which names nothing, and one carrying a NUL byte, which
+    terminates a pathname rather than appearing in one — and both are
+    refused outright. No flag lifts that: --allow-external-targets
+    permits a pointer to somewhere outside dest, and there is no
+    pointer here. It is not a promise that every other target is
+    writable; one past the host's length limit is refused by the
+    filesystem, which no lexical check foresees.
 
     An external target writes nothing outside dest — it is only a
     pointer — but a foreign mapping planting pointers into the
