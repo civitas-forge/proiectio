@@ -96,11 +96,11 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// hand-built or stale plan refuses rather than misfires. (The
 /// state-directory exclusion is the deciding stage's admission check; this
 /// function cannot see where `state` lives relative to `dest`.) A symlink's
-/// target is re-graded before the link is published, against the disk
+/// target is re-graded before the link is published, against the live disk
 /// rather than the plan-time snapshot the verdict was taken from
 /// ([`regrade`]); [`Plan::external_targets`] says whether there is a
-/// verdict to hold the disk to, since a caller who permitted external
-/// targets permitted them whatever the destination now holds. What
+/// verdict to hold the destination to, since a caller who permitted
+/// external targets permitted them whatever the destination now holds. What
 /// containment means at apply time is the walk below, which writes
 /// *through* no link it grades external.
 ///
@@ -400,13 +400,13 @@ fn run(
         match action {
             Action::Remove { .. } | Action::Refuse { .. } => {}
             Action::Write { entry } => {
-                write(dest, manifest, path, entry, true, plan.external_targets)?;
+                write(dest, manifest, path, entry, true, plan)?;
                 record(manifest, path, entry, &plan.owner);
                 outcomes.insert(path.clone(), ApplyOutcome::Written);
             }
             Action::Overwrite { entry, expected } => {
                 check_expected(dest, manifest, path, expected)?;
-                write(dest, manifest, path, entry, false, plan.external_targets)?;
+                write(dest, manifest, path, entry, false, plan)?;
                 record(manifest, path, entry, &plan.owner);
                 outcomes.insert(path.clone(), ApplyOutcome::Overwritten);
             }
@@ -518,16 +518,16 @@ fn prune(dest: &Dir, manifest: &Manifest, candidates: &BTreeSet<Utf8PathBuf>) ->
 /// refuses — [`Error::Drift`] when the path is recorded (it changed
 /// relative to the plan's view), [`Error::Foreign`] otherwise (something
 /// the projection never wrote appeared). A symlink's target is re-graded
-/// against the disk under `policy` before it is published ([`regrade`]).
-/// Block entries were rejected by [`validate`]; reaching one here is a bug,
-/// but still errors rather than panics.
+/// before it is published ([`regrade`]). Block entries were rejected by
+/// [`validate`]; reaching one here is a bug, but still errors rather than
+/// panics.
 fn write(
     dest: &Dir,
     manifest: &Manifest,
     path: &Utf8Path,
     entry: &Entry,
     fresh: bool,
-    policy: ExternalTargetPolicy,
+    plan: &Plan,
 ) -> Result<()> {
     let Some((parent, leaf, resolved_parent)) = verified_parent(dest, manifest, path, true)? else {
         unreachable!("a creating walk opens or creates every ancestor");
@@ -553,7 +553,7 @@ fn write(
             executable,
         } => persist(&parent, &leaf, path, contents, *executable),
         Entry::Symlink { target } => {
-            regrade(dest, &resolved_parent, path, target, policy)?;
+            regrade(dest, plan, &resolved_parent, path, target)?;
             publish_link(&parent, &leaf, path, target)
         }
         Entry::Block { .. } => Err(Error::ApplyBlockUnimplemented {
@@ -587,18 +587,18 @@ fn persist(
 /// The changed-since-plan re-check for a symlink's target: grades `target`
 /// from `parent` — the link's own parent, relative to the destination and
 /// after any owned-link restarts, since that is the directory the link is
-/// published in — against the disk as it stands now, and refuses a target
-/// that lands outside as [`Error::ExternalTarget`] carrying the link and
-/// its target.
+/// published in — against the destination this run is leaving, and refuses a
+/// target that lands outside as [`Error::ExternalTarget`] carrying the link
+/// and its target.
 ///
-/// The verdict this holds the disk to is the deciding stage's: grading
-/// resolves through the destination's own links (`docs/security.lex`
-/// section 3), so a `pivot` swapped for a link to `/etc` between plan and
-/// apply turns a pointer the plan graded in-dest into one that escapes.
-/// Every other destructive action re-checks its expectation before it
-/// proceeds ([`check_expected`]); this is that re-check for the one part of
-/// a link the plan cannot express as a [`NodeSignature`] — where its
-/// pointer lands.
+/// The verdict this holds the destination to is the deciding stage's:
+/// grading resolves through the destination's own links
+/// (`docs/security.lex` section 3), so a `pivot` swapped for a link to
+/// `/etc` between plan and apply turns a pointer the plan graded in-dest
+/// into one that escapes. Every other destructive action re-checks its
+/// expectation before it proceeds ([`check_expected`]); this is that
+/// re-check for the one part of a link the plan cannot express as a
+/// [`NodeSignature`] — where its pointer lands.
 ///
 /// [`ExternalTargetPolicy::Allow`] skips it: the caller permitted pointers
 /// out of the destination before this plan existed, so there is no
@@ -616,15 +616,15 @@ fn persist(
 /// report in the first place.
 fn regrade(
     dest: &Dir,
+    plan: &Plan,
     parent: &Utf8Path,
     path: &Utf8Path,
     target: &str,
-    policy: ExternalTargetPolicy,
 ) -> Result<()> {
-    if policy == ExternalTargetPolicy::Allow {
+    if plan.external_targets == ExternalTargetPolicy::Allow {
         return Ok(());
     }
-    if contained_target_chain(parent, target, |hop| hop_on_disk(dest, hop))?.is_some() {
+    if contained_target_chain(parent, target, |hop| planned_hop(dest, plan, hop))?.is_some() {
         return Ok(());
     }
     Err(Error::ExternalTarget {
@@ -632,10 +632,38 @@ fn regrade(
     })
 }
 
-/// What stands at one destination-relative path, read for [`regrade`]'s
-/// chain resolution: each ancestor component is opened from the `dest`
-/// handle with `open_dir_nofollow`, so the lstat of the final component is
-/// reached without following anything.
+/// What will stand at one destination-relative path once this run finishes,
+/// read for [`regrade`]'s chain resolution — the same question deciding
+/// answers from the desired tree and the observation snapshot, answered here
+/// from the plan and the live disk.
+///
+/// The plan answers for every path it writes or removes, the disk for
+/// everything it leaves alone. Reading the plan rather than the disk at
+/// those paths is what keeps the two verdicts from disagreeing over apply's
+/// own execution order: a run replacing `pivot -> /etc` with an in-dest link
+/// writes `evil -> pivot/x` before it reaches `pivot`, and grading that
+/// pointer against the half-applied destination would refuse a plan whose
+/// finished destination holds nothing external. A plan carrying any
+/// [`Action::Refuse`] applies nothing, so either every planned entry lands
+/// or none does.
+fn planned_hop(dest: &Dir, plan: &Plan, path: &Utf8Path) -> Result<Hop> {
+    match plan.actions.get(path) {
+        Some(Action::Write { entry } | Action::Overwrite { entry, .. }) => {
+            return Ok(match entry {
+                Entry::Symlink { target } => Hop::Link(target.clone()),
+                Entry::File { .. } | Entry::Block { .. } => Hop::Terminal,
+            });
+        }
+        Some(Action::Remove { .. }) => return Ok(Hop::Terminal),
+        Some(Action::Skip { .. } | Action::Release | Action::Refuse { .. }) | None => {}
+    }
+    hop_on_disk(dest, path)
+}
+
+/// What stands at one destination-relative path on disk, for the paths
+/// [`planned_hop`] leaves the filesystem to answer for: each ancestor
+/// component is opened from the `dest` handle with `open_dir_nofollow`, so
+/// the lstat of the final component is reached without following anything.
 ///
 /// Only a symlink continues a chain. A missing path, or one whose ancestry
 /// is missing or not a directory, is [`Terminal`](Hop::Terminal) — a

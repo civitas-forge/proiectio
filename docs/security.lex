@@ -53,46 +53,63 @@ Security Model
     | in-dest   | relative target resolving inside dest —      |
     |           | always allowed                               |
     | external  | absolute, relative escaping dest, reaching   |
-    |           | outside through a link dest holds, or one of |
-    |           | the two spellings below — refused unless     |
-    |           | --allow-external-targets                     |
+    |           | outside through a link dest will hold, or    |
+    |           | one of the two spellings below — refused     |
+    |           | unless --allow-external-targets              |
     | not a     | empty, or carrying a NUL — refused under     |
     | path      | either policy                                |
 
-    Resolution happens once, at plan time, purely to classify, and it
-    follows the destination's own links: the target string is
-    resolved from the link's parent directory, and a component that
-    is itself a symlink is followed to where it points, hop by hop,
-    out of the observation snapshot. So "pivot/passwd" grades in-dest
-    where "pivot" is an ordinary directory and external where dest
-    holds "pivot -> /etc". The flag is about whether a pointer
-    reaches outside dest, and that is a question about the
-    filesystem: a rule answering it by string arithmetic alone
-    answers a different question. An ordinary chain is unaffected —
-    "shared -> real" under "rc -> shared/rc" lands in dest and needs
-    no flag. Following carries a visited set of the links it
-    followed, so a cycle ends the resolution rather than looping, and
-    a hop whose on-disk target is not UTF-8 ends it too: a hop nobody
-    can follow is one nobody can vouch for. Both end it outside — a
-    chain that never lands cannot be said to land in dest.
+    Grading classifies at plan time and is repeated at apply time
+    against the disk, immediately before each link is published; both
+    run the same rule. It follows the destination's own links: the
+    target string is resolved from the link's parent directory, and a
+    component that is itself a symlink is followed to where it
+    points, hop by hop. So "pivot/passwd" grades in-dest where
+    "pivot" is an ordinary directory and external where dest holds
+    "pivot -> /etc". The flag is about whether a pointer reaches
+    outside dest, and that is a question about the filesystem: a rule
+    answering it by string arithmetic alone answers a different
+    question. An ordinary chain is unaffected — "shared -> real"
+    under "rc -> shared/rc" lands in dest and needs no flag.
+    Following carries a visited set of the links it followed, so a
+    cycle ends the resolution rather than looping, and a hop whose
+    on-disk target is not UTF-8 ends it too: a hop nobody can follow
+    is one nobody can vouch for. Both end it outside — a chain that
+    never lands cannot be said to land in dest.
 
-    The price is stated rather than hidden: a target's verdict now
+    The destination a pointer is graded against is the one the run
+    *leaves*: the tree's own links are hops, a link the run removes
+    is not, and everything the run does not touch is read from the
+    observation snapshot (at apply time, from the disk). A pointer
+    graded against the destination it will live in is what stops two
+    links that each land in dest alone from composing into one that
+    does not — "b -> ." and "a -> b/../escape" both land in dest read
+    separately, and together "a" points at dest's parent, because
+    "b/.." pops the directory "b" resolved to. It is also what makes
+    the verdict the same on the run that writes a link and on every
+    run after it, once that link is on disk to be observed. Reading
+    the tree rather than the disk costs nothing in safety: a plan
+    holding a single refusal applies nothing, so either every entry
+    lands or none does.
+
+    The price is stated rather than hidden: a target's verdict
     depends on what the destination holds, so the same tree may need
     the flag in one destination and not in another. Tree *paths* keep
-    the host-independent lexical verdict of section 2. Two bounds
-    still hold. The projection cannot create the escaping hop itself
-    — a desired link is graded before it may be written — so a pivot
-    is either foreign or flag-permitted. And nothing is written
-    *through* any of these links; the apply-time walk of section 2 is
-    what enforces that.
+    the host-independent lexical verdict of section 2. One bound
+    still holds: nothing is written *through* any of these links; the
+    apply-time walk of section 2 is what enforces that.
 
     A plan-time verdict is about a destination that can move under
-    it, so apply re-grades a link's target against the disk before
-    publishing the link, and refuses it as an external target rather
-    than publish a pointer whose pivot was swapped in the gap between
-    the two calls — the same shape as the drift re-check of section
-    5. Under the flag there is no verdict to re-check: the invoker
-    permitted pointers out of dest whatever the destination holds.
+    it, so apply re-grades a link's target before publishing the
+    link, reading the disk for every path the plan does not itself
+    write, and refuses the link as an external target rather than
+    publish a pointer whose pivot was swapped in the gap between the
+    two calls — the same shape as the drift re-check of section 5.
+    The paths the plan does write it reads from the plan, because
+    apply publishes in path order and half a run is not the
+    destination anything was graded against. Under the flag there is
+    no verdict to re-check: the invoker permitted pointers out of
+    dest whatever the destination holds.
 
     A "." or empty component resolves away as it does on disk, and
     ".." pops what resolution walked — after a followed hop that is

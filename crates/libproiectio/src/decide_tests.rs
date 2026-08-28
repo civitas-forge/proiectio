@@ -1375,6 +1375,131 @@ fn a_plan_carries_the_external_target_permission_it_was_decided_under() {
     assert_eq!(allowing.external_targets, ExternalTargetPolicy::Allow);
 }
 
+#[test]
+fn a_target_escaping_through_a_link_the_same_tree_projects_grades_external() {
+    // Both links grade in-dest read one at a time: "." lands on the
+    // destination itself, and "b/../escape" lands on "escape" where "b" is
+    // an ordinary name. Together they are a pointer to the destination's
+    // *parent*, because "b/.." pops the directory "b" resolved to. Grading
+    // reads the destination the run leaves, so the second link is the first
+    // one's hop and the pointer grades external.
+    let root = link(".");
+    let out = link("b/../escape");
+
+    let plan = plan(
+        &tree(&[("b", &root), ("a", &out)]),
+        &Manifest::new(),
+        &observed(&[]),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "b"),
+        &Action::Write {
+            entry: root.clone()
+        }
+    );
+    assert_eq!(
+        action(&plan, "a"),
+        &Action::Refuse {
+            refusal: Refusal::ExternalTarget {
+                target: "b/../escape".to_owned(),
+            },
+        }
+    );
+}
+
+#[test]
+fn a_cycle_among_the_links_a_tree_projects_grades_external_on_the_first_run() {
+    // A tree the run has not written yet is still the destination the run
+    // leaves, so a cycle among its own links is graded like one already on
+    // disk. Reading only the snapshot would write the cycle on the first
+    // run and refuse the identical tree on the second, once the links it
+    // wrote were observable.
+    let itself = link("self");
+    let there = link("l2");
+    let back = link("l1");
+
+    let plan = plan(
+        &tree(&[("self", &itself), ("l1", &there), ("l2", &back)]),
+        &Manifest::new(),
+        &observed(&[]),
+        DriftPolicy::Refuse,
+    );
+
+    for (path, target) in [("self", "self"), ("l1", "l2"), ("l2", "l1")] {
+        assert_eq!(
+            action(&plan, path),
+            &Action::Refuse {
+                refusal: Refusal::ExternalTarget {
+                    target: target.to_owned(),
+                },
+            },
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn an_ordinary_chain_through_a_link_the_same_tree_projects_needs_no_permission() {
+    // The shape the issue names as the one that must not start needing the
+    // permission, with the pivot projected by this run rather than already
+    // on disk.
+    let shared = link("real");
+    let rc = link("shared/rc");
+
+    let plan = plan(
+        &tree(&[("shared", &shared), ("rc", &rc)]),
+        &Manifest::new(),
+        &observed(&[]),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "shared"),
+        &Action::Write {
+            entry: shared.clone()
+        }
+    );
+    assert_eq!(action(&plan, "rc"), &Action::Write { entry: rc.clone() });
+}
+
+#[test]
+fn a_pivot_this_run_replaces_is_graded_as_the_link_it_becomes() {
+    // The destination holds an escaping pivot and the tree replaces it with
+    // an in-dest link. The pointer through it is graded against the link
+    // the run leaves, not the one it displaces, so nothing about the run's
+    // finished destination reaches outside and the permission is not needed.
+    let escaping = link("/etc");
+    let landing = link("real");
+    let through = link("pivot/x");
+    let manifest = manifest_of(&[("pivot", recorded(&escaping, &[OWNER]))]);
+
+    let plan = plan(
+        &tree(&[("pivot", &landing), ("evil", &through)]),
+        &manifest,
+        &observed(&[
+            ("pivot", on_disk(&escaping)),
+            ("real", Observation::Directory),
+        ]),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "pivot"),
+        &Action::Overwrite {
+            entry: landing.clone(),
+            expected: signature(&escaping),
+        }
+    );
+    assert_eq!(
+        action(&plan, "evil"),
+        &Action::Write {
+            entry: through.clone()
+        }
+    );
+}
+
 // --- the no-alias rule: no projected path resolves through a link ---
 
 #[test]

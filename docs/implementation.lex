@@ -169,8 +169,9 @@ Implementation Guidelines
     external stays ours, in the same module: contained_target_chain,
     the resolution of a target from the link's parent, following the
     links dest holds ([./security.lex] section 3). One rule, three
-    callers — decide resolves it against the observation snapshot,
-    act re-grades against the disk before publishing a link, and
+    callers, each supplying the destination the run leaves — decide
+    reads the desired tree and the observation snapshot, act re-grades
+    reading the plan and the live disk before publishing a link, and
     act's no-follow walk grades the recorded ancestor link it meets
     one lexical hop at a time, being itself that same resolution
     against the live disk — so a target one calls in-dest is one the

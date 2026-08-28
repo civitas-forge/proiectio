@@ -1280,6 +1280,67 @@ fn a_pivot_swapped_after_the_plan_refuses_instead_of_publishing_the_pointer() {
     );
 }
 
+// Two links a tree projects together are a chain like any other: read one
+// at a time both land in-dest, and together they point at the destination's
+// parent, because "b/.." pops the directory "b" resolved to.
+#[test]
+fn a_pointer_escaping_through_a_link_the_same_tree_projects_refuses() {
+    let (dest, state) = fixtures();
+    let desired = Tree::new()
+        .symlink("a", "b/../escape")
+        .symlink("b", ".")
+        .entries();
+
+    let error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
+        .expect_err("the pair dereferences outside the destination");
+
+    match error {
+        Error::ExternalTarget { links } => assert_eq!(
+            links,
+            BTreeMap::from([(Utf8PathBuf::from("a"), "b/../escape".to_owned())])
+        ),
+        other => panic!("expected ExternalTarget, got {other:?}"),
+    }
+    // A refusal in the plan applies nothing, so neither link is on disk.
+    assert_tree(dest.root(), &Tree::new());
+}
+
+// The other side of grading against the destination the run leaves: a
+// pointer through a pivot this run replaces is graded as the link the pivot
+// becomes. Apply publishes "evil" before it reaches "pivot", so re-grading
+// against the half-written destination alone would refuse a run whose
+// finished destination holds nothing external.
+#[test]
+fn a_pointer_through_a_pivot_this_run_replaces_lands_without_the_permission() {
+    let (dest, state) = fixtures();
+    pipeline_with(
+        &dest,
+        &state,
+        "own",
+        &Tree::new().symlink("pivot", "/etc").entries(),
+        PlanOptions {
+            external_targets: ExternalTargetPolicy::Allow,
+            ..PlanOptions::default()
+        },
+    )
+    .expect("the permitted external pivot lands");
+
+    let desired = Tree::new()
+        .symlink("pivot", "real")
+        .symlink("evil", "pivot/x")
+        .entries();
+
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
+        .expect("the run replaces the pivot with an in-dest link");
+
+    assert_tree(
+        dest.root(),
+        &Tree::new()
+            .symlink("pivot", "real")
+            .symlink("evil", "pivot/x"),
+    );
+}
+
 // The no-alias rule end to end: a path resolving through a link the plan
 // leaves standing is refused, so nothing lands where the plan does not name.
 #[test]
