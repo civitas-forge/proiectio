@@ -106,8 +106,7 @@ Implementation Guidelines
       graded external — refused too, an external target is never
       written through; recorded, matching, and in-dest — act reads
       the target through the parent handle, resolves it with
-      contained_normalize — the gateway's normalize-only half,
-      applied to the target joined from the link's parent — and
+      contained_target, the grading call below, and
       restarts the no-follow walk from the dest root along the
       resolved path. Restarts carry a per-walk
       visited set of the links followed: revisiting a link means
@@ -165,9 +164,15 @@ Implementation Guidelines
     tolerates in-dest "..", and at link creation refuses only an
     absolute target — an escaping relative target writes fine and
     fails only when traversed — so grading targets in-dest or
-    external stays contained_join's job. The structured Containment
-    refusal, with paths, names its producers: decide — the lexical
-    rules, and paths entering the projection's own state directory
+    external stays ours, in the same module: contained_target, the
+    lexical resolution of a target from the link's parent
+    ([./security.lex] section 3). One function, two callers — decide
+    grades every desired link with it, act's walk grades the recorded
+    link it meets — so a target one calls in-dest is one the other
+    may follow. The structured Containment refusal, with paths, names
+    its producers: decide — the lexical rules, paths entering the
+    projection's own state directory, and desired paths lying beneath
+    a link the plan leaves standing ([./design.lex] section 2)
     — and act's no-follow walk, on an ancestor symlink that is
     unowned, cyclic, or graded external; one refusal variant,
     because [./security.lex] states one rule. (A swapped owned

@@ -7,7 +7,7 @@ use cap_std::fs_utf8::Dir;
 
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree};
-use crate::{DriftPolicy, EntryKind, decide, observe};
+use crate::{DriftPolicy, EntryKind, ExternalTargetPolicy, PlanOptions, decide, observe};
 
 /// Opens a capability handle at a fixture root. Ambient authority is the
 /// test's to spend; the library itself never opens ambient paths.
@@ -22,7 +22,8 @@ fn fixtures() -> (Fixture, Fixture) {
 
 /// The observe → decide half of a run: the manifest as loaded from `state`
 /// and the plan decided against it — split out so tests can mutate the disk
-/// in the plan-to-apply gap.
+/// in the plan-to-apply gap. `policy` rides the default (refusing)
+/// external-target policy; [`plan_for_with`] takes the options whole.
 fn plan_for(
     dest: &Fixture,
     state: &Fixture,
@@ -30,11 +31,31 @@ fn plan_for(
     desired: &BTreeMap<Utf8PathBuf, Entry>,
     policy: DriftPolicy,
 ) -> (Manifest, Plan) {
+    plan_for_with(
+        dest,
+        state,
+        owner,
+        desired,
+        PlanOptions {
+            drift: policy,
+            ..PlanOptions::default()
+        },
+    )
+}
+
+/// [`plan_for`] under options the test chooses whole.
+fn plan_for_with(
+    dest: &Fixture,
+    state: &Fixture,
+    owner: &str,
+    desired: &BTreeMap<Utf8PathBuf, Entry>,
+    options: PlanOptions,
+) -> (Manifest, Plan) {
     let dest = dir_at(dest.root());
     let state = dir_at(state.root());
     let manifest = load_manifest(&state).expect("load manifest");
     let observations = observe(&dest, &manifest).expect("observe destination");
-    let plan = decide(owner, desired, &manifest, &observations, None, policy);
+    let plan = decide(owner, desired, &manifest, &observations, None, options);
     (manifest, plan)
 }
 
@@ -57,6 +78,18 @@ fn pipeline(
     policy: DriftPolicy,
 ) -> Result<ApplyReport> {
     let (manifest, plan) = plan_for(dest, state, owner, desired, policy);
+    apply_at(dest, state, &manifest, &plan)
+}
+
+/// [`pipeline`] under options the test chooses whole.
+fn pipeline_with(
+    dest: &Fixture,
+    state: &Fixture,
+    owner: &str,
+    desired: &BTreeMap<Utf8PathBuf, Entry>,
+    options: PlanOptions,
+) -> Result<ApplyReport> {
+    let (manifest, plan) = plan_for_with(dest, state, owner, desired, options);
     apply_at(dest, state, &manifest, &plan)
 }
 
@@ -670,9 +703,10 @@ fn an_owned_matching_in_dest_symlink_ancestor_is_followed() {
         "logs".into(),
         recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own"]),
     );
-    // decide refuses nesting beneath a desired symlink until target grading
-    // lands, so the followable case reaches apply only via a plan built
-    // against the recorded link.
+    // Deciding never plans a write beneath a surviving link (its no-alias
+    // rule), so a write reaches the followed arm only from a hand-built
+    // plan — or from a link that appeared in the plan-to-apply gap. The
+    // arm still has to do the right thing.
     let plan = Plan {
         owner: "own".to_owned(),
         actions: BTreeMap::from([(
@@ -748,6 +782,43 @@ fn a_removal_through_an_owned_link_prunes_the_resolved_directory() {
     // the action key's ancestry — is pruned; the owned link survives (a
     // dangling target is allowed).
     assert_tree(dest.root(), &Tree::new().symlink("logs", "real"));
+}
+
+#[test]
+fn deciding_cannot_aim_that_removal_because_the_path_observes_absent() {
+    // The companion to the test above, and the reason `docs/design.lex`
+    // section 2 does not promise the pipeline cleans such a path up: the
+    // walk observes no path beneath a link, so a path recorded under one
+    // classifies Missing and its removal expects nothing — which apply
+    // refuses as drift, having found a node there.
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("real/x.txt", "bytes")
+        .symlink("logs", "real")
+        .write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "logs".into(),
+        recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own"]),
+    );
+    manifest.entries.insert(
+        "logs/x.txt".into(),
+        recorded(EntryKind::File, sha256_hex(b"bytes"), &["own"]),
+    );
+    save_manifest(&dir_at(state.root()), &manifest).expect("seed the manifest");
+
+    let (loaded, plan) = plan_for(&dest, &state, "own", &BTreeMap::new(), DriftPolicy::Refuse);
+
+    assert_eq!(
+        plan.actions.get(Utf8Path::new("logs/x.txt")),
+        Some(&Action::Remove { expected: None })
+    );
+    match apply_at(&dest, &state, &loaded, &plan) {
+        Err(Error::Drift { paths }) => {
+            assert_eq!(paths, BTreeSet::from([Utf8PathBuf::from("logs/x.txt")]));
+        }
+        other => panic!("expected Drift, got {other:?}"),
+    }
 }
 
 #[test]
@@ -856,28 +927,311 @@ fn an_owned_link_cycle_refuses_instead_of_looping() {
     }
 }
 
-#[test]
-fn a_planned_symlink_write_is_a_structured_seam_error() {
-    let (dest, state) = fixtures();
-    let mut desired = Tree::new().file("a.txt", "alpha").entries();
-    desired.insert(
-        "latest".into(),
-        Entry::Symlink {
-            target: "a.txt".to_owned(),
-        },
-    );
+// --- symlinks: creation, replacement, transitions (issue #8) ---
 
-    let error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
-        .expect_err("link creation is issue #8");
+#[test]
+fn projects_links_with_their_targets_verbatim_dangling_included() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new()
+        .file("notes/a.txt", "alpha")
+        .symlink("latest", "notes/a.txt")
+        .symlink("nested/up", "../notes/a.txt")
+        .symlink("someday", "notes/not-yet.txt");
+
+    let report = pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse)
+        .expect("in-dest targets need no permission");
+
+    // Every target reached disk byte for byte, the dangling one included:
+    // a link is a pointer, and nothing resolves it.
+    assert_tree(dest.root(), &tree);
+    assert_eq!(
+        report.outcomes[Utf8Path::new("latest")],
+        ApplyOutcome::Written
+    );
+    let entry = &report.manifest.entries[Utf8Path::new("nested/up")];
+    assert_eq!(entry.kind, EntryKind::Symlink);
+    assert!(!entry.executable);
+    // The manifest hashes the target string, not what it points at.
+    assert_eq!(entry.hash, sha256_hex(b"../notes/a.txt"));
+}
+
+#[test]
+fn a_target_that_is_not_a_pathname_fails_up_front_and_writes_nothing() {
+    // Deciding refuses such a target, so this is the hand-built half: the
+    // whole-plan check catches it before any action runs, rather than
+    // letting the OS reject it partway through the sorted order.
+    let (dest, state) = fixtures();
+    let plan = Plan {
+        owner: "own".to_owned(),
+        actions: BTreeMap::from([
+            (
+                "a.txt".into(),
+                Action::Write {
+                    entry: Entry::File {
+                        contents: b"alpha".to_vec(),
+                        executable: false,
+                    },
+                },
+            ),
+            (
+                "z-link".into(),
+                Action::Write {
+                    entry: Entry::Symlink {
+                        target: String::new(),
+                    },
+                },
+            ),
+        ]),
+    };
+
+    let error = apply_at(&dest, &state, &Manifest::new(), &plan)
+        .expect_err("an empty target is not a path");
 
     match error {
-        Error::ApplySymlinkUnimplemented { paths } => {
-            assert_eq!(paths, BTreeSet::from(["latest".into()]))
-        }
-        other => panic!("expected ApplySymlinkUnimplemented, got {other:?}"),
+        Error::InvalidTarget { links } => assert_eq!(
+            links,
+            BTreeMap::from([(Utf8PathBuf::from("z-link"), String::new())])
+        ),
+        other => panic!("expected InvalidTarget, got {other:?}"),
     }
-    // Reported up front: the well-formed half of the plan did not run.
+    // Nothing ran, the file sorted before the link included.
     assert_tree(dest.root(), &Tree::new());
+}
+
+#[test]
+fn a_changed_link_target_is_replaced_in_place() {
+    let (dest, state) = fixtures();
+    let v1 = Tree::new()
+        .file("v1.txt", "one")
+        .symlink("current", "v1.txt");
+    pipeline(&dest, &state, "own", &v1.entries(), DriftPolicy::Refuse).expect("project v1");
+
+    let v2 = Tree::new()
+        .file("v1.txt", "one")
+        .symlink("current", "v2.txt");
+    let report =
+        pipeline(&dest, &state, "own", &v2.entries(), DriftPolicy::Refuse).expect("project v2");
+
+    assert_eq!(
+        report.outcomes[Utf8Path::new("current")],
+        ApplyOutcome::Overwritten
+    );
+    assert_tree(dest.root(), &v2);
+    assert_eq!(
+        report.manifest.entries[Utf8Path::new("current")].hash,
+        sha256_hex(b"v2.txt")
+    );
+}
+
+// Definition of done: both transitions, under the ordinary drift rules —
+// the rename that publishes a node replaces whatever the leaf held.
+#[test]
+fn a_file_becomes_a_link_and_a_link_becomes_a_file() {
+    let (dest, state) = fixtures();
+    let files = Tree::new()
+        .file("here", "bytes")
+        .file("target", "pointed at");
+    pipeline(&dest, &state, "own", &files.entries(), DriftPolicy::Refuse).expect("project files");
+
+    // file → link
+    let linked = Tree::new()
+        .symlink("here", "target")
+        .file("target", "pointed at");
+    let report = pipeline(&dest, &state, "own", &linked.entries(), DriftPolicy::Refuse)
+        .expect("file → link");
+    assert_eq!(
+        report.outcomes[Utf8Path::new("here")],
+        ApplyOutcome::Overwritten
+    );
+    assert_tree(dest.root(), &linked);
+    assert_eq!(
+        report.manifest.entries[Utf8Path::new("here")].kind,
+        EntryKind::Symlink
+    );
+
+    // link → file, and the link's former target keeps its bytes
+    let report =
+        pipeline(&dest, &state, "own", &files.entries(), DriftPolicy::Refuse).expect("link → file");
+    assert_eq!(
+        report.outcomes[Utf8Path::new("here")],
+        ApplyOutcome::Overwritten
+    );
+    assert_tree(dest.root(), &files);
+    assert_eq!(
+        report.manifest.entries[Utf8Path::new("here")].kind,
+        EntryKind::File
+    );
+}
+
+#[test]
+fn a_link_edited_on_disk_refuses_as_drift_and_force_replaces_it() {
+    let (dest, state) = fixtures();
+    let v1 = Tree::new().symlink("current", "v1.txt");
+    pipeline(&dest, &state, "own", &v1.entries(), DriftPolicy::Refuse).expect("project v1");
+    Tree::new()
+        .symlink("current", "elsewhere.txt")
+        .write_under(dest.root());
+
+    let v2 = Tree::new().symlink("current", "v2.txt");
+    let error = pipeline(&dest, &state, "own", &v2.entries(), DriftPolicy::Refuse)
+        .expect_err("an edited target is a user edit like any other");
+    match error {
+        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["current".into()])),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+    assert_tree(
+        dest.root(),
+        &Tree::new().symlink("current", "elsewhere.txt"),
+    );
+
+    pipeline(&dest, &state, "own", &v2.entries(), DriftPolicy::Overwrite).expect("--force");
+    assert_tree(dest.root(), &v2);
+}
+
+// Definition of done: an external target refuses with the path unless the
+// caller permits it, and lands byte-exact when it does.
+#[test]
+fn external_targets_refuse_without_the_policy_and_land_verbatim_with_it() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new()
+        .symlink("escape", "../outside")
+        .symlink("absolute", "/etc/hosts")
+        .file("kept.txt", "unrelated");
+
+    let error = pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse)
+        .expect_err("external targets are opt-in");
+
+    match error {
+        Error::ExternalTarget { links } => assert_eq!(
+            links,
+            BTreeMap::from([
+                (Utf8PathBuf::from("absolute"), "/etc/hosts".to_owned()),
+                (Utf8PathBuf::from("escape"), "../outside".to_owned()),
+            ])
+        ),
+        other => panic!("expected ExternalTarget, got {other:?}"),
+    }
+    // Refused up front: the unrelated half of the plan did not run either.
+    assert_tree(dest.root(), &Tree::new());
+
+    let report = pipeline_with(
+        &dest,
+        &state,
+        "own",
+        &tree.entries(),
+        PlanOptions {
+            external_targets: ExternalTargetPolicy::Allow,
+            ..PlanOptions::default()
+        },
+    )
+    .expect("permitted external targets land");
+
+    // Byte-exact, both of them: proiectio never rewrites a target.
+    assert_tree(dest.root(), &tree);
+    assert_eq!(
+        report.manifest.entries[Utf8Path::new("absolute")].hash,
+        sha256_hex(b"/etc/hosts")
+    );
+}
+
+#[test]
+fn nothing_is_written_through_a_permitted_external_link() {
+    let (dest, state) = fixtures();
+    let allowing = PlanOptions {
+        external_targets: ExternalTargetPolicy::Allow,
+        ..PlanOptions::default()
+    };
+    let link = Tree::new().symlink("out", "../outside");
+    pipeline_with(&dest, &state, "own", &link.entries(), allowing).expect("plant the pointer");
+
+    // A tree naming a path beneath the link is refused, permitted target or
+    // not: the pointer stays a pointer. (The scaffolding will not declare a
+    // node under a link either, so the desired map is built by hand.)
+    let mut desired = link.entries();
+    desired.insert(
+        "out/x.txt".into(),
+        Entry::File {
+            contents: b"smuggled".to_vec(),
+            executable: false,
+        },
+    );
+    let error = pipeline_with(&dest, &state, "own", &desired, allowing)
+        .expect_err("no write through an external target");
+
+    match error {
+        Error::TreeConflict { paths } => {
+            assert_eq!(paths, BTreeSet::from(["out".into(), "out/x.txt".into()]))
+        }
+        other => panic!("expected TreeConflict, got {other:?}"),
+    }
+    assert_tree(dest.root(), &link);
+}
+
+// The no-alias rule end to end: a path resolving through a link the plan
+// leaves standing is refused, so nothing lands where the plan does not name.
+#[test]
+fn a_path_beneath_another_owners_link_refuses_containment() {
+    let (dest, state) = fixtures();
+    let linked = Tree::new().dir("real").symlink("logs", "real");
+    linked.write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "logs".into(),
+        recorded(EntryKind::Symlink, sha256_hex(b"real"), &["other"]),
+    );
+    save_manifest(&dir_at(state.root()), &manifest).expect("seed the state dir");
+
+    let desired = BTreeMap::from([(
+        Utf8PathBuf::from("logs/x.txt"),
+        Entry::File {
+            contents: b"aliased".to_vec(),
+            executable: false,
+        },
+    )]);
+    let error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
+        .expect_err("a projected path never resolves through a link");
+
+    match error {
+        Error::Containment { paths } => assert_eq!(paths, BTreeSet::from(["logs/x.txt".into()])),
+        other => panic!("expected Containment, got {other:?}"),
+    }
+    assert_tree(dest.root(), &linked);
+}
+
+#[test]
+fn a_path_beneath_a_link_this_run_removes_is_written_as_an_ordinary_path() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .dir("real")
+        .symlink("logs", "real")
+        .write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "logs".into(),
+        recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own"]),
+    );
+    save_manifest(&dir_at(state.root()), &manifest).expect("seed the state dir");
+
+    // The desired tree drops the link and names a path under its name: act
+    // removes the link first, so the write lands in a real directory.
+    let replaced = Tree::new().dir("real").file("logs/x.txt", "a real file");
+    let report = pipeline(
+        &dest,
+        &state,
+        "own",
+        &replaced.entries(),
+        DriftPolicy::Refuse,
+    )
+    .expect("the removal clears the way for the write");
+
+    assert_eq!(
+        report.outcomes,
+        BTreeMap::from([
+            ("logs".into(), ApplyOutcome::Removed),
+            ("logs/x.txt".into(), ApplyOutcome::Written),
+        ])
+    );
+    assert_tree(dest.root(), &replaced);
 }
 
 #[test]

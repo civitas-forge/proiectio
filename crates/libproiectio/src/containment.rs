@@ -65,6 +65,110 @@ pub(crate) fn contained_normalize(rel: &Utf8Path) -> Result<Utf8PathBuf> {
     }
 }
 
+/// Resolves a symlink target lexically, from the directory holding the
+/// link, and says where the *string* points: `Some` of the resolved path
+/// relative to the destination (empty for the destination itself), or
+/// `None` when it points outside.
+///
+/// This is the grading of `docs/security.lex` section 3, and the sole
+/// judge of it: [`decide`](crate::decide) runs it over every desired link,
+/// and apply's no-follow walk runs it over the recorded link it meets, so
+/// a target graded in-dest by one is in-dest to the other. `parent` is the
+/// link's own parent directory relative to the destination — empty at the
+/// destination root — and `target` is the string as written.
+///
+/// Lexical is the whole contract, and it is narrower than what a
+/// filesystem does. No disk is read, so a component of the target that is
+/// itself a symlink is not seen through: `pivot/passwd` grades in-dest
+/// whatever `pivot` turns out to be. Where the destination already holds
+/// an escaping link, a tree can therefore plant a pointer that dereferences
+/// outside without the external-target permission — bounded by the
+/// projection's inability to create that escaping hop itself, since an
+/// absolute or climbing target is graded external and needs the permission.
+/// Nothing is written *through* either link: apply's no-follow walk
+/// enforces that, and it does read the disk.
+///
+/// Where [`contained_join`] judges a path the projection will *create*,
+/// this judges a pointer's content, so the two contracts differ where
+/// spelling rules have no bearing on where the target lands: a `.` or
+/// empty component resolves away as it does on disk, `..` pops, and a name
+/// the gateway refuses for how Windows *joins* it is an ordinary name in a
+/// pointer nothing joins onto an ambient path — `victim:stream` addresses
+/// a stream of a sibling under the destination, `NUL` a device, and both
+/// stay in-dest here.
+///
+/// Graded external, on the other hand:
+///
+/// - absolute targets — the flag's headline case;
+/// - `..` climbing past the destination;
+/// - a leading Windows drive designator — an ASCII letter and a colon,
+///   with a slash (`C:/escape`) or without (`C:escape`, `c:`). Windows
+///   resolves such a target against that drive rather than against the
+///   link's parent, so it lands outside the destination however the rest
+///   is spelled — the one colon shape that is a location and not a name;
+/// - any backslash, which the containment rules never treat as a filename
+///   character: `..\..\escape` is a traversal on one host and a name on
+///   another, and a projection grades it identically everywhere.
+///
+/// The last two are judged on every host, so a tree gets one verdict
+/// everywhere.
+///
+/// No filesystem access: whether anything exists at the resolution is not
+/// asked, because a dangling pointer is a legal link.
+pub(crate) fn contained_target(parent: &Utf8Path, target: &str) -> Option<Utf8PathBuf> {
+    if target.contains('\\') || target.starts_with('/') || starts_with_drive(target) {
+        return None;
+    }
+    let mut kept: Vec<&str> = parent
+        .as_str()
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect();
+    for component in target.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                kept.pop()?;
+            }
+            name => kept.push(name),
+        }
+    }
+    Some(Utf8PathBuf::from(kept.join("/")))
+}
+
+/// Whether `target` is a pathname at all — the question that comes before
+/// [`contained_target`]'s, since a string that names no path lands nowhere
+/// to grade.
+///
+/// Two strings fail it, and no host accepts either: the empty string, which
+/// names nothing, and one carrying a NUL byte, which terminates a pathname
+/// rather than appearing in it. Both would reach the OS as a symlink target
+/// and come back an error — on Linux `ENOENT` for the empty one, a failed
+/// `CString` conversion for the NUL — after apply had begun, so the pure
+/// stage refuses them instead ([`Refusal::InvalidTarget`](crate::Refusal)).
+/// No policy lifts the refusal: there is no pointer here to permit.
+///
+/// This is not a promise that every target passing it is writable — a
+/// target past the host's length limit is refused by the filesystem, and
+/// nothing lexical can see that coming. It rules out the two strings that
+/// are not pathnames on any host, so a tree gets one verdict everywhere.
+pub(crate) fn is_pathname(target: &str) -> bool {
+    !target.is_empty() && !target.contains('\0')
+}
+
+/// Whether `target` opens with a Windows drive designator: an ASCII letter
+/// followed by a colon. `C:/x` names the root of drive C, `C:x` the drive's
+/// own current directory — both places the destination does not contain,
+/// and both spellings a `/`-only split would otherwise read as an ordinary
+/// first component.
+fn starts_with_drive(target: &str) -> bool {
+    let mut chars = target.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(letter), Some(':')) if letter.is_ascii_alphabetic()
+    )
+}
+
 /// Lexical normalization of a relative tree path; `None` is a refusal.
 ///
 /// Hand-rolled rather than `path-absolutize`/`normpath`: both normalize

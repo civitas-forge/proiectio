@@ -52,15 +52,61 @@ Security Model
 
     | in-dest   | relative target resolving inside dest —      |
     |           | always allowed                               |
-    | external  | absolute, or relative escaping dest —        |
-    |           | refused unless --allow-external-targets      |
+    | external  | absolute, relative escaping dest, or one of  |
+    |           | the two spellings below — refused unless     |
+    |           | --allow-external-targets                     |
+    | not a     | empty, or carrying a NUL — refused under     |
+    | path      | either policy                                |
 
-    Resolution follows filesystem semantics — the target string is
-    resolved from the link's parent directory — and happens once, at
-    plan time, purely to classify. What reaches disk is the target
-    string verbatim; proiectio never rewrites it. A link projected
-    from a source tree therefore keeps working when it stayed
-    relative and in-tree, because the layout around it is preserved.
+    Resolution is lexical — the target string is resolved from the
+    link's parent directory, by string alone — and happens once, at
+    plan time, purely to classify. Lexical is the whole contract, and
+    it is narrower than what a filesystem does: grading reads no
+    disk, so it does not see through a component of the target that
+    is itself a symlink. A target "pivot/passwd" grades in-dest
+    whatever "pivot" turns out to be, so where dest already holds an
+    escaping link the projection can plant a pointer that reaches
+    outside without the flag. What bounds that: the projection cannot
+    create the escaping hop itself — an absolute or climbing target
+    is graded external and needs the flag — so the hop must already
+    be in dest, foreign or flag-permitted. Nothing is written
+    *through* either link; the apply-time walk of section 2 is what
+    enforces that, and it does read the disk. A "." or empty
+    component resolves
+    away as it does on disk and ".." pops, since the question is
+    where the target lands, not how a path the projection creates may
+    be spelled. Two spellings are graded external outright, on every
+    host, so a tree gets the same verdict everywhere: a backslash
+    anywhere in the target, which is a separator on one host and a
+    name on another; and a leading Windows drive designator — a
+    letter and a colon, with a slash (C:/escape) or without
+    (C:escape) — which Windows resolves against that drive rather
+    than against the link's parent. Other colon shapes stay names: a
+    target "victim:stream" addresses a sibling's NTFS stream, under
+    the destination, not a place outside it. What reaches disk is the
+    target string verbatim; proiectio never rewrites it. A link
+    projected from a source tree therefore keeps working when it
+    stayed relative and in-tree, because the layout around it is
+    preserved.
+
+    Placement carries one more rule, and it is the plan-time half of
+    section 2's apply-time check rather than the same rule: no
+    projected path may lie beneath a symlink at all, the projection's
+    own links included ([./design.lex] section 2), where section 2
+    still lets apply follow a link proiectio owns whose target
+    resolves inside dest. A write through a link would land at a path
+    the plan never names, and the classification — which never reads
+    through a link — could not see it afterwards.
+
+    One question comes before grading: whether the target is a
+    pathname at all. Two strings are not, on any host — the empty
+    string, which names nothing, and one carrying a NUL byte, which
+    terminates a pathname rather than appearing in one — and both are
+    refused outright. No flag lifts that: --allow-external-targets
+    permits a pointer to somewhere outside dest, and there is no
+    pointer here. It is not a promise that every other target is
+    writable; one past the host's length limit is refused by the
+    filesystem, which no lexical check foresees.
 
     An external target writes nothing outside dest — it is only a
     pointer — but a foreign mapping planting pointers into the

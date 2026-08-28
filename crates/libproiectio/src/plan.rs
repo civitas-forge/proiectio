@@ -17,6 +17,52 @@ pub enum DriftPolicy {
     Overwrite,
 }
 
+/// What planning does with a desired symlink whose target resolves outside
+/// the destination — an absolute target, one climbing out, or one of the
+/// spellings graded external on every host (`docs/security.lex` section 3
+/// carries the whole rule).
+///
+/// Such a link writes nothing outside the destination; it is only a
+/// pointer. But a tree the invoker did not author planting pointers into
+/// the rest of the filesystem is a surprise, so it takes an opt-in on the
+/// invocation rather than a key in the tree.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum ExternalTargetPolicy {
+    /// Refuse the link and name it with its target (the default; a CLI maps
+    /// this refusal to exit 2).
+    #[default]
+    Refuse,
+    /// Write the link, target verbatim (a CLI's `--allow-external-targets`).
+    Allow,
+}
+
+/// The policy inputs one [`decide`](crate::decide) call runs under: what
+/// the caller permits, as opposed to what the desired tree, the manifest,
+/// and the disk say.
+///
+/// Both fields default to refusing, so `PlanOptions::default()` is the
+/// strict projection; a caller lifts one policy at a time:
+///
+/// ```
+/// # use libproiectio::{DriftPolicy, ExternalTargetPolicy, PlanOptions};
+/// let forced = PlanOptions {
+///     drift: DriftPolicy::Overwrite,
+///     ..PlanOptions::default()
+/// };
+/// assert_eq!(forced.external_targets, ExternalTargetPolicy::Refuse);
+/// ```
+///
+/// The two policies stay separate types because they lift unrelated rules:
+/// drift is about the destination's own edits, external targets about where
+/// a projected pointer points.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct PlanOptions {
+    /// What to do with a recorded path edited on disk.
+    pub drift: DriftPolicy,
+    /// What to do with a desired symlink whose target grades external.
+    pub external_targets: ExternalTargetPolicy,
+}
+
 /// Every action apply would perform, keyed by path relative to the
 /// destination.
 ///
@@ -163,10 +209,11 @@ pub enum Refusal {
     /// The desired tree claims one on-disk location more than once: this
     /// key shares a normalized path with another desired key, or its path
     /// lies beneath another desired path. No file or block can hold
-    /// children; beneath a desired *symlink* the layout is expressible on
-    /// disk (apply's owned-link walk, `docs/security.lex` section 2), but
-    /// plans are lexical, so deciding conservatively refuses that nesting
-    /// too until symlink target grading lands. Both sides
+    /// children; beneath a desired *symlink* the nesting is expressible on
+    /// disk — apply's owned-link walk would follow the link and write
+    /// through it — but the write would land somewhere the plan does not
+    /// name, so it is refused as well (the no-alias rule
+    /// [`decide`](crate::decide) documents). Both sides
     /// of a conflict are refused — there is no deterministic entry to
     /// prefer; see [`Error::TreeConflict`](crate::Error::TreeConflict).
     /// [`load_mapping`](crate::load_mapping) rejects same-path duplicates
@@ -182,13 +229,35 @@ pub enum Refusal {
     /// [`contained_join`](crate::contained_join) (absolute, climbing out
     /// via `..`, empty or `.` components, backslashes, and component
     /// shapes Windows resolves specially — its rustdoc is the full list),
-    /// writes through a symlinked ancestor, or enters the projection's own
-    /// state directory; see
-    /// [`Error::Containment`](crate::Error::Containment).
+    /// it lies beneath a symlink that outlives the plan (the no-alias rule
+    /// [`decide`](crate::decide) documents — a link on disk, owned or
+    /// foreign, that no action in this plan removes; beneath a *desired*
+    /// link the refusal is [`TreeConflict`](Refusal::TreeConflict)), or it
+    /// enters the projection's own state directory.
+    ///
+    /// Applying refuses under the narrower apply-time rule of
+    /// `docs/security.lex` section 2, which still lets the walk follow an
+    /// ancestor link the manifest owns whose target resolves inside the
+    /// destination; see [`Error::Containment`](crate::Error::Containment)
+    /// for that split.
     Containment,
-    /// A symlink whose target resolves outside the destination; see
+    /// A desired symlink whose target, resolved lexically from the link's
+    /// parent, lands outside the destination — absolute, climbing out, or
+    /// one of the spellings graded external on every host
+    /// (`docs/security.lex` section 3 carries the whole rule). Lifted per-plan by
+    /// [`ExternalTargetPolicy::Allow`], which writes the link with the
+    /// target verbatim; see
     /// [`Error::ExternalTarget`](crate::Error::ExternalTarget).
     ExternalTarget {
+        /// The offending target string, verbatim.
+        target: String,
+    },
+    /// A desired symlink whose target is not a pathname on any host: the
+    /// empty string, or one carrying a NUL byte. Judged before grading —
+    /// a string naming no path lands nowhere to grade — and no policy
+    /// lifts it, since there is no pointer to permit; see
+    /// [`Error::InvalidTarget`](crate::Error::InvalidTarget).
+    InvalidTarget {
         /// The offending target string, verbatim.
         target: String,
     },

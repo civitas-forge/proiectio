@@ -65,3 +65,24 @@ fn a_plan_serializes_with_paths_as_keys() {
 fn drift_policy_defaults_to_refuse() {
     assert_eq!(DriftPolicy::default(), DriftPolicy::Refuse);
 }
+
+#[test]
+fn external_target_policy_defaults_to_refuse() {
+    assert_eq!(
+        ExternalTargetPolicy::default(),
+        ExternalTargetPolicy::Refuse
+    );
+}
+
+#[test]
+fn plan_options_default_to_the_strict_projection() {
+    // Both policies lift a rule, so the default has to refuse both: a
+    // caller that names neither gets the strict projection.
+    assert_eq!(
+        PlanOptions::default(),
+        PlanOptions {
+            drift: DriftPolicy::Refuse,
+            external_targets: ExternalTargetPolicy::Refuse,
+        }
+    );
+}

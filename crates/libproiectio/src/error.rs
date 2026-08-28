@@ -58,8 +58,15 @@ pub enum Error {
     /// refused by [`contained_join`](crate::contained_join) (absolute,
     /// climbing out via `..`, empty or `.` components, backslashes, and
     /// component shapes Windows resolves specially — its rustdoc is the
-    /// full list), writes through a symlinked ancestor, or paths entering
-    /// the projection's own state directory.
+    /// full list), paths resolving through a symlinked ancestor, and paths
+    /// entering the projection's own state directory. The symlink half is
+    /// two rules, not one applied twice: deciding refuses a desired path
+    /// beneath *any* link that outlives the plan, while applying refuses
+    /// an ancestor link that is unowned, graded external, or cyclic — and
+    /// still follows one the manifest owns whose target resolves inside
+    /// the destination (`docs/security.lex` section 2). An ancestor link
+    /// the manifest owns whose on-disk target changed is
+    /// [`Drift`](Error::Drift), not this.
     #[error("refusing paths that violate containment: {}", join(paths))]
     Containment {
         /// The offending paths as given by the desired tree.
@@ -78,8 +85,15 @@ pub enum Error {
         /// to the other owners holding it.
         conflicts: BTreeMap<Utf8PathBuf, BTreeSet<String>>,
     },
-    /// Refusal: symlinks whose targets resolve outside the destination.
-    /// Like [`Foreign`](Error::Foreign), no policy lifts this.
+    /// Refusal: desired symlinks whose targets, resolved from each link's
+    /// parent directory, land outside the destination — absolute targets,
+    /// ones climbing out, and the spellings graded external on every host
+    /// (`docs/security.lex` section 3 carries the whole rule). The
+    /// caller lifts this per plan with
+    /// [`ExternalTargetPolicy::Allow`](crate::ExternalTargetPolicy::Allow)
+    /// (a CLI's `--allow-external-targets`), which writes each link with
+    /// its target verbatim. Nothing is ever written *through* such a link:
+    /// an external target is a pointer, and apply refuses to resolve one.
     #[error(
         "refusing symlinks with targets outside the destination: {}",
         join_links(links)
@@ -89,11 +103,30 @@ pub enum Error {
         /// destination, mapped to its target string verbatim.
         links: BTreeMap<Utf8PathBuf, String>,
     },
+    /// Refusal: desired symlinks whose targets are not pathnames on any
+    /// host — the empty string, which names nothing, and strings carrying a
+    /// NUL byte, which terminates a pathname rather than appearing in one.
+    /// Either would reach the OS as a target and come back an error partway
+    /// through apply, so the pure stage refuses first. No policy lifts
+    /// this, [`ExternalTargetPolicy::Allow`](crate::ExternalTargetPolicy)
+    /// included: the permission is about where a pointer points, and there
+    /// is no pointer here. It is not a promise that every other target is
+    /// writable — a target past the host's length limit still fails at the
+    /// filesystem, which nothing lexical could foresee.
+    #[error(
+        "refusing symlinks whose targets are not paths: {}",
+        join_invalid(links)
+    )]
+    InvalidTarget {
+        /// The offending links: path of each link, relative to the
+        /// destination, mapped to its target string verbatim.
+        links: BTreeMap<Utf8PathBuf, String>,
+    },
     /// Refusal: desired keys claiming one on-disk location more than once
     /// — two keys normalizing to the same path, or one desired path lying
-    /// beneath another. No file or block entry can hold children; nesting
-    /// beneath a desired *symlink* is conservatively refused too until
-    /// symlink target grading lands
+    /// beneath another. No file or block entry can hold children, and a
+    /// path nesting beneath a desired *symlink* would land somewhere the
+    /// plan does not name
     /// ([`Refusal::TreeConflict`](crate::Refusal::TreeConflict) carries
     /// the rationale). Both sides of a conflict are
     /// refused: there is no deterministic entry to prefer.
@@ -212,20 +245,6 @@ pub enum Error {
         /// The `[archives]` keys, verbatim.
         keys: BTreeSet<Utf8PathBuf>,
     },
-    /// The plan writes a symlink, which [`apply`](crate::apply) cannot do
-    /// yet: link creation waits on symlink target grading (in-dest or
-    /// external, `docs/security.lex` section 3), and creating ungraded links
-    /// would plant escaping pointers without the opt-in that rule demands.
-    /// Not a refusal: the plan is well-formed — this crate cannot honor it
-    /// yet. Reported before anything is written.
-    #[error(
-        "plan writes symlinks, which apply does not implement yet: {}",
-        join(paths)
-    )]
-    ApplySymlinkUnimplemented {
-        /// The planned symlink paths, relative to the destination.
-        paths: BTreeSet<Utf8PathBuf>,
-    },
     /// The plan touches a [`Block`](crate::EntryKind::Block) entry —
     /// writing one, or re-checking a block signature — and block regions
     /// are not implemented in [`apply`](crate::apply) yet. Not a refusal:
@@ -247,6 +266,7 @@ impl Error {
     /// [`Containment`](Error::Containment),
     /// [`OwnerConflict`](Error::OwnerConflict),
     /// [`ExternalTarget`](Error::ExternalTarget),
+    /// [`InvalidTarget`](Error::InvalidTarget),
     /// [`TreeConflict`](Error::TreeConflict)) rather than an operation
     /// failing. A CLI maps refusals to exit 2 and everything else to
     /// exit 1.
@@ -257,6 +277,7 @@ impl Error {
             | Error::Containment { .. }
             | Error::OwnerConflict { .. }
             | Error::ExternalTarget { .. }
+            | Error::InvalidTarget { .. }
             | Error::TreeConflict { .. } => true,
             Error::Io { .. }
             | Error::ManifestFormat { .. }
@@ -267,7 +288,6 @@ impl Error {
             | Error::MappingContentsXorSource { .. }
             | Error::MappingDuplicate { .. }
             | Error::MappingArchiveUnimplemented { .. }
-            | Error::ApplySymlinkUnimplemented { .. }
             | Error::ApplyBlockUnimplemented { .. } => false,
         }
     }
@@ -296,6 +316,17 @@ fn join_links(links: &BTreeMap<Utf8PathBuf, String>) -> String {
     links
         .iter()
         .map(|(path, target)| format!("{path} -> {target}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// [`join_links`] with the target quoted and escaped, because the targets
+/// this variant reports are the ones a bare rendering would hide: the empty
+/// string prints as nothing, and a NUL byte prints as nothing visible.
+fn join_invalid(links: &BTreeMap<Utf8PathBuf, String>) -> String {
+    links
+        .iter()
+        .map(|(path, target)| format!("{path} -> {target:?}"))
         .collect::<Vec<_>>()
         .join(", ")
 }

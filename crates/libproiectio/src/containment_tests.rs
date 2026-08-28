@@ -134,3 +134,87 @@ fn escaping_paths_are_refused_with_the_path_verbatim() {
         }
     }
 }
+
+#[test]
+fn in_dest_targets_resolve_from_the_links_parent() {
+    // (the link's parent, the target as written, where it lands).
+    let cases: &[(&str, &str, &str)] = &[
+        ("", "shared/rc", "shared/rc"),
+        ("nested", "../shared/rc", "shared/rc"),
+        ("nested/deep", "../../shared/rc", "shared/rc"),
+        ("nested", "sibling", "nested/sibling"),
+        ("nested", "sub/../sibling", "nested/sibling"),
+        // Spellings a filesystem resolves away — the pointer is content,
+        // not a path the projection creates.
+        ("", "./shared/rc", "shared/rc"),
+        ("", "shared//rc", "shared/rc"),
+        ("", "shared/", "shared"),
+        ("nested", ".", "nested"),
+        // Colon shapes that name something under the destination rather
+        // than a location outside it: a device name is an ordinary name in
+        // a pointer, and an NTFS stream addresses a sibling's stream.
+        ("", "NUL", "NUL"),
+        ("", "victim:stream", "victim:stream"),
+        ("nested", "ab:c/d", "nested/ab:c/d"),
+        // Nothing needs to exist at the far end: a dangling pointer is a
+        // legal link.
+        ("", "not-there/yet", "not-there/yet"),
+        // The destination itself.
+        ("", ".", ""),
+        ("nested", "..", ""),
+    ];
+
+    for (parent, target, landing) in cases {
+        assert_eq!(
+            contained_target(Utf8Path::new(parent), target),
+            Some(Utf8PathBuf::from(*landing)),
+            "{parent:?} -> {target:?}"
+        );
+    }
+}
+
+#[test]
+fn escaping_targets_grade_external() {
+    let cases: &[(&str, &str)] = &[
+        ("", "/etc/passwd"),
+        ("", "/"),
+        ("nested", "/etc/passwd"),
+        ("", ".."),
+        ("", "../outside"),
+        ("nested", "../../outside"),
+        ("nested/deep", "../../../outside"),
+        ("", "a/../../outside"),
+        // A leading drive designator names a place on that drive, with a
+        // slash or without; graded on every host, like the backslash below.
+        ("", "C:/escape"),
+        ("", "C:escape"),
+        ("", "c:"),
+        ("nested", "a:b"),
+        // Backslashes are a separator on one host and a name on another;
+        // a projection grades them the same way everywhere.
+        ("", "..\\..\\escape"),
+        ("", "a\\b"),
+    ];
+
+    for (parent, target) in cases {
+        assert_eq!(
+            contained_target(Utf8Path::new(parent), target),
+            None,
+            "{parent:?} -> {target:?}"
+        );
+    }
+}
+
+#[test]
+fn only_the_two_strings_that_are_not_pathnames_fail_the_pathname_check() {
+    // Grading asks where a target lands; this asks first whether there is
+    // a path to land anywhere. Only these two are not pathnames on any
+    // host — a target the filesystem rejects for its length is nothing
+    // lexical rules can see.
+    assert!(!is_pathname(""));
+    assert!(!is_pathname("\0"));
+    assert!(!is_pathname("shared/\0rc"));
+    for target in ["shared/rc", "../outside", "/etc/passwd", "C:/escape", "."] {
+        assert!(is_pathname(target), "{target:?}");
+    }
+}

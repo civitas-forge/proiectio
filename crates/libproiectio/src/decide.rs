@@ -2,10 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use crate::containment::contained_normalize;
+use crate::containment::{contained_normalize, contained_target, is_pathname};
 use crate::{
-    Action, DriftPolicy, Entry, EntryKind, Manifest, ManifestEntry, NodeSignature, Observation,
-    Observations, PathState, Plan, Refusal, Status, sha256_hex,
+    Action, DriftPolicy, Entry, EntryKind, ExternalTargetPolicy, Manifest, ManifestEntry,
+    NodeSignature, Observation, Observations, PathState, Plan, PlanOptions, Refusal, Status,
+    sha256_hex,
 };
 
 /// The pure classification: one [`PathState`] per path in the union of the
@@ -31,6 +32,11 @@ use crate::{
 ///   directory is unrecorded and classifies foreign — planning refuses it
 ///   only where the desired tree names that exact path, and writing files
 ///   *inside* an existing directory is the merge `docs/design.lex` promises.
+///
+/// Observation is lstat-only and never descends a symlink, so a path
+/// *beneath* a link on disk is observed [`Absent`](Observation::Absent) —
+/// which is exactly why [`decide`] refuses to plan one (its no-alias rule):
+/// nothing here could tell such a path's real node from a missing one.
 ///
 /// `state_prefix` is the projection's state directory as a path relative to
 /// the destination, when it lies inside it
@@ -89,14 +95,57 @@ pub fn classify(
 /// land in the plan lexically normalized (`a/../b` plans as `b`), so one
 /// on-disk location has one action — and a tree claiming one location
 /// twice (two keys normalizing to the same path, or one desired path lying
-/// beneath another — a nesting no file or block permits, and one refused
-/// conservatively beneath a desired symlink too until symlink target
-/// grading lands) has both claims
+/// beneath another — a nesting no file or block permits, and none the
+/// no-alias rule below permits beneath a symlink either) has both claims
 /// refused as [`Refusal::TreeConflict`], keyed verbatim, each naming the
 /// keys it collides with. [`load_mapping`](crate::load_mapping) rejects
 /// same-path duplicates at parse time as
 /// [`MappingDuplicate`](crate::Error::MappingDuplicate); the refusal here
 /// is the deciding stage's own verdict on any tree, however built.
+///
+/// # Symlinks
+///
+/// Two rules, both lexical, both judged per admitted path.
+///
+/// *Target grading* (`docs/security.lex` section 3). Every desired
+/// symlink's target is resolved once, here, from the link's parent
+/// directory and purely to classify it: a relative target normalizing to a
+/// path inside the destination is in-dest and always allowed — whether or
+/// not anything exists there, since a dangling pointer is a legal link —
+/// while a target landing outside — absolute, climbing out, or one of the
+/// spellings graded external on every host, `docs/security.lex` section 3
+/// carrying the whole rule — is external
+/// and refused as [`Refusal::ExternalTarget`] carrying the target string,
+/// unless `options` sets [`ExternalTargetPolicy::Allow`]. Grading never
+/// rewrites anything: what apply writes is the target string verbatim,
+/// permitted or not. Only *desired* links are graded — removing a
+/// recorded external link unlinks the pointer and reads nothing through it.
+///
+/// One question comes before grading: a target that is not a pathname on
+/// any host — the empty string, or one carrying a NUL byte — lands nowhere
+/// to grade, and is refused as [`Refusal::InvalidTarget`] under either
+/// policy, since the permission is about where a pointer points and there
+/// is no pointer.
+///
+/// *No aliases.* A plan's key is the location on disk: the projection
+/// never writes a path that resolves through a symlink, so what the
+/// manifest records at a path is what a later run observes there.
+/// Refused as [`Refusal::Containment`], therefore, is any admitted path
+/// with a symlink ancestor that outlives this plan — a link on disk, owned
+/// or foreign, that no action in this plan removes; a desired path nesting
+/// beneath a *desired* link is the [`Refusal::TreeConflict`] above. The
+/// rule is what keeps the three stages agreeing: observation never
+/// descends a link, so a path beneath one observes
+/// [`Absent`](Observation::Absent) forever, and a projection that wrote
+/// through the link would re-plan the write on every run and then refuse
+/// its own file as changed. Apply's walk still follows an owned in-dest
+/// link, but this stage cannot aim a removal through one for the same
+/// reason: a path recorded beneath a link classifies
+/// [`Missing`](PathState::Missing), so its [`Remove`](Action::Remove)
+/// expects nothing, and apply refuses as drift on finding a node there.
+/// Under this rule the projection writes no such path, so the shape
+/// survives only in a manifest predating it; removing the link first
+/// clears it.
 ///
 /// Each admitted path is then judged against its classification
 /// ([`classify`]) per the `docs/design.lex` section 2 action table:
@@ -110,9 +159,10 @@ pub fn classify(
 /// - [`Clean`](PathState::Clean) with desired differing —
 ///   [`Overwrite`](Action::Overwrite) expecting the recorded signature;
 /// - [`Drifted`](PathState::Drifted) with desired differing —
-///   [`Refusal::Drift`], unless `policy` is [`DriftPolicy::Overwrite`],
-///   which plans an [`Overwrite`](Action::Overwrite) expecting the
-///   *drifted* node's signature observed at plan time;
+///   [`Refusal::Drift`], unless `options.drift` is
+///   [`DriftPolicy::Overwrite`], which plans an
+///   [`Overwrite`](Action::Overwrite) expecting the *drifted* node's
+///   signature observed at plan time;
 /// - [`Foreign`](PathState::Foreign) — [`Refusal::Foreign`], always: no
 ///   policy lifts it, identical bytes included — adopting a file the
 ///   projection did not write would put it on the removal path;
@@ -129,7 +179,7 @@ pub fn classify(
 ///   expecting nothing when [`Missing`](PathState::Missing) — the path was
 ///   already gone, so apply drops the manifest entry alone and refuses if
 ///   a node has appeared since the plan — and [`Refusal::Drift`] when
-///   [`Drifted`](PathState::Drifted) unless `policy` lifts it to a
+///   [`Drifted`](PathState::Drifted) unless `options.drift` lifts it to a
 ///   [`Remove`](Action::Remove) expecting the drifted node's signature;
 /// - held only by other owners — not this plan's business: no action.
 ///
@@ -144,29 +194,24 @@ pub fn classify(
 ///
 /// Kinds compare through the one hash convention ([`sha256_hex`]): a file
 /// hashes its contents, a symlink its target string — so a desired symlink
-/// whose target equals the on-disk link skips, and a changed target
-/// overwrites or drifts, exactly like file bytes. Two seams remain:
-///
-/// - Symlink target *grading* — in-dest or external, `docs/security.lex`
-///   section 3 — is not judged here yet; when it lands it joins the
-///   per-path admission alongside the containment gateway (grading is
-///   lexical, per link, resolved from the link's parent) and produces
-///   [`Refusal::ExternalTarget`]. Until then no plan carries that refusal.
-/// - [`Block`](EntryKind::Block) entries flow through the same generic
-///   table, where their body hash matches no whole-node observation: a
-///   desired block over nothing plans a [`Write`](Action::Write), a
-///   pre-existing container refuses as foreign, a recorded block never
-///   classifies clean, and a recorded block's drift is never lifted — no
-///   whole-node signature can express the region a lifted removal would
-///   strip. Conservative until block-region classification and
-///   container-tolerant writes land.
+/// whose target equals the on-disk link skips, a changed target overwrites
+/// or drifts, and a file replacing a link (or a link replacing a file)
+/// rides the same rules as changed bytes, exactly like file content. One
+/// seam remains: [`Block`](EntryKind::Block) entries flow through the same
+/// generic table, where their body hash matches no whole-node observation
+/// — a desired block over nothing plans a [`Write`](Action::Write), a
+/// pre-existing container refuses as foreign, a recorded block never
+/// classifies clean, and a recorded block's drift is never lifted, since no
+/// whole-node signature can express the region a lifted removal would
+/// strip. Conservative until block-region classification and
+/// container-tolerant writes land.
 pub fn decide(
     owner: &str,
     desired: &BTreeMap<Utf8PathBuf, Entry>,
     manifest: &Manifest,
     observations: &Observations,
     state_prefix: Option<&Utf8Path>,
-    policy: DriftPolicy,
+    options: PlanOptions,
 ) -> Plan {
     let states = classify(manifest, observations, state_prefix);
     let mut actions: BTreeMap<Utf8PathBuf, Action> = BTreeMap::new();
@@ -229,22 +274,15 @@ pub fn decide(
         }
     }
 
-    for (path, entry) in &admitted {
-        let action = desired_action(
-            owner,
-            entry,
-            states.paths.get(path),
-            manifest.entries.get(path),
-            observations.paths.get(path),
-            policy,
-        );
-        actions.insert(path.clone(), action);
-    }
-
     // Recorded paths the desired tree no longer names. Named means
     // *claimed*, not admitted: a recorded location under a tree-conflict
     // refusal is still named by the desired tree, and planning its removal
     // would overwrite the refusal.
+    //
+    // Judged before the admitted paths because a removal *vacates* its
+    // path: a link this plan unlinks is no longer an ancestor the writes
+    // below would resolve through, and act runs removals first.
+    let mut vacated: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, recorded) in &manifest.entries {
         if claims.contains_key(path)
             || in_state(path, state_prefix)
@@ -259,7 +297,30 @@ pub fn decide(
                 .paths
                 .get(path)
                 .expect("recorded paths outside the state subtree always classify");
-            orphan_action(recorded, observations.paths.get(path), *state, policy)
+            orphan_action(
+                recorded,
+                observations.paths.get(path),
+                *state,
+                options.drift,
+            )
+        };
+        if matches!(action, Action::Remove { .. }) {
+            vacated.insert(path.clone());
+        }
+        actions.insert(path.clone(), action);
+    }
+
+    for (path, entry) in &admitted {
+        let action = match link_refusal(path, entry, observations, &vacated, options) {
+            Some(refusal) => refuse(refusal),
+            None => desired_action(
+                owner,
+                entry,
+                states.paths.get(path),
+                manifest.entries.get(path),
+                observations.paths.get(path),
+                options.drift,
+            ),
         };
         actions.insert(path.clone(), action);
     }
@@ -274,6 +335,84 @@ pub fn decide(
 /// itself included.
 fn in_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
     state_prefix.is_some_and(|prefix| path.starts_with(prefix))
+}
+
+/// The two symlink rules of [`decide`]'s rustdoc, judged over an admitted
+/// path before its classification is consulted; `None` admits the path to
+/// the ordinary action table.
+///
+/// - the path resolves through a link that outlives this plan —
+///   [`Refusal::Containment`], the no-alias rule;
+/// - the entry is a symlink whose target is not a pathname on any host —
+///   [`Refusal::InvalidTarget`] carrying the target verbatim, under either
+///   policy;
+/// - the entry is a symlink whose target grades external and `options`
+///   does not permit external targets — [`Refusal::ExternalTarget`]
+///   carrying the target verbatim.
+///
+/// In that order. Containment first, because where a path would resolve is
+/// not a question its own target answers; then the pathname check, because
+/// a string naming no path lands nowhere for grading to judge.
+fn link_refusal(
+    path: &Utf8Path,
+    entry: &Entry,
+    observations: &Observations,
+    vacated: &BTreeSet<Utf8PathBuf>,
+    options: PlanOptions,
+) -> Option<Refusal> {
+    if resolves_through_link(path, observations, vacated) {
+        return Some(Refusal::Containment);
+    }
+    let Entry::Symlink { target } = entry else {
+        return None;
+    };
+    if !is_pathname(target) {
+        return Some(Refusal::InvalidTarget {
+            target: target.clone(),
+        });
+    }
+    if options.external_targets == ExternalTargetPolicy::Refuse
+        && !target_resolves_in_dest(path, target)
+    {
+        return Some(Refusal::ExternalTarget {
+            target: target.clone(),
+        });
+    }
+    None
+}
+
+/// Whether some ancestor of `path` is observed as a symlink that no action
+/// in this plan removes — `vacated` naming the paths the run unlinks
+/// before it writes anything.
+///
+/// A link the plan removes is not an ancestor the write will meet: act
+/// executes every removal first, children before parents, and only then
+/// creates what the writes need.
+fn resolves_through_link(
+    path: &Utf8Path,
+    observations: &Observations,
+    vacated: &BTreeSet<Utf8PathBuf>,
+) -> bool {
+    path.ancestors().skip(1).any(|ancestor| {
+        !ancestor.as_str().is_empty()
+            && matches!(
+                observations.paths.get(ancestor),
+                Some(Observation::Symlink { .. })
+            )
+            && !vacated.contains(ancestor)
+    })
+}
+
+/// Grades a desired symlink's target (`docs/security.lex` section 3):
+/// `true` where the target, resolved lexically from the link's parent
+/// directory, lands inside the destination.
+///
+/// [`contained_target`] is the rule, and apply's no-follow walk grades the
+/// recorded links it meets by the same call — so a target this stage calls
+/// in-dest is one apply may follow.
+fn target_resolves_in_dest(link: &Utf8Path, target: &str) -> bool {
+    let parent = link.parent().unwrap_or_else(|| Utf8Path::new(""));
+    contained_target(parent, target).is_some()
 }
 
 /// The action for a path the desired tree names, given its classification

@@ -29,6 +29,9 @@ fn every_variant() -> Vec<Error> {
         Error::ExternalTarget {
             links: BTreeMap::from([(Utf8PathBuf::from("toolchain"), "/opt/rust".to_owned())]),
         },
+        Error::InvalidTarget {
+            links: BTreeMap::from([(Utf8PathBuf::from("rc"), String::new())]),
+        },
         Error::TreeConflict {
             paths: paths(&["a", "a/b"]),
         },
@@ -69,9 +72,6 @@ fn every_variant() -> Vec<Error> {
             path: Utf8PathBuf::from("deploy.toml"),
             keys: paths(&["vendor/"]),
         },
-        Error::ApplySymlinkUnimplemented {
-            paths: paths(&["latest"]),
-        },
         Error::ApplyBlockUnimplemented {
             paths: paths(&["shared/.zshrc"]),
         },
@@ -96,7 +96,7 @@ fn refusals_exit_2_and_failures_exit_1() {
 
     assert_eq!(
         codes,
-        vec![2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+        vec![2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
     );
     assert_eq!(exit_code(Ok(())), 0);
 }
@@ -117,6 +117,18 @@ fn refusal_messages_name_the_offending_paths() {
     assert_eq!(
         external.to_string(),
         "refusing symlinks with targets outside the destination: toolchain -> /opt/rust"
+    );
+
+    // Quoted, because these are the targets a bare rendering would hide.
+    let invalid = Error::InvalidTarget {
+        links: BTreeMap::from([
+            (Utf8PathBuf::from("rc"), String::new()),
+            (Utf8PathBuf::from("zed"), "a\0b".to_owned()),
+        ]),
+    };
+    assert_eq!(
+        invalid.to_string(),
+        "refusing symlinks whose targets are not paths: rc -> \"\", zed -> \"a\\0b\""
     );
 
     let conflict = Error::OwnerConflict {
