@@ -169,9 +169,12 @@ Proiectio Design
     ships is the stages themselves, as free functions over directory
     handles the caller opened — decide, decide_removal, apply,
     status — because nothing in the crate opens an ambient path
-    itself ([./implementation.lex] section 3): status takes the state
-    handle and the in-dest state prefix beside it, where Projection
-    would derive the second from the first. The methods land over
+    itself ([./implementation.lex] section 3). Where Projection would
+    answer from its two paths, status takes a StateDir naming the
+    state handle together with where that directory sits relative to
+    the destination — the two travel as one value, since a handle and
+    a path that disagree would produce a confident, wrong report and
+    nothing can check one against the other. The methods land over
     those functions when the CLI has a caller for them.
 
     Dependencies: serde, serde_json, thiserror, camino now; sha2

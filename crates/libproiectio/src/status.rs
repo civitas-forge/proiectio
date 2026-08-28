@@ -56,37 +56,39 @@ pub struct Status {
 /// the manifest, not a lock file, nothing in the destination
 /// (`docs/design.lex` section 2).
 ///
-/// `state` is the capability handle on the state directory, and `None` says
-/// that directory does not exist. Nothing in this crate spends ambient
-/// authority — every I/O function takes a handle the caller opened — so the
-/// absence a caller meets when opening the state directory is spelled in
-/// the signature rather than discovered here.
+/// `state` says where the recorded state is, in the one place a report
+/// depends on it twice: the handle the manifest is read through, and the
+/// state directory's position relative to the destination, which decides
+/// whether the walk crosses the projection's own files. [`StateDir`] pairs
+/// them, so a report cannot be asked for against a handle and a prefix that
+/// describe different directories. Nothing here opens anything — every I/O
+/// function in this crate takes a handle the caller opened, so the absence
+/// a caller meets at the state directory is one of the variants rather than
+/// something discovered here.
 ///
-/// `state_prefix` is the same state directory seen from the other side: its
-/// path relative to the destination when it lies inside it, and `None` when
-/// it lies outside. That subtree is the projection's own state and never
-/// classifies, so a prefix that does not describe the directory `state`
-/// opens misreports — omitting it for an in-dest state directory reports
-/// the manifest and the lock file as [`Foreign`](PathState::Foreign), and
-/// naming an unrelated subtree hides whatever the destination holds there.
-/// [`Projection`](crate::Projection) holds both paths and derives the
-/// prefix from them ([`state_prefix`](crate::Projection::state_prefix)), so
-/// a caller reads the two arguments off one value rather than deriving the
-/// second itself:
+/// [`Projection`](crate::Projection) holds the two paths and already
+/// answers whether the state directory lies inside the target
+/// ([`state_prefix`](crate::Projection::state_prefix)), so the variant
+/// follows from what a caller has:
 ///
 /// ```no_run
 /// # use cap_std::ambient_authority;
 /// # use cap_std::fs_utf8::Dir;
-/// # use libproiectio::{Projection, Result, status};
+/// # use libproiectio::{Projection, Result, StateDir, status};
 /// # fn read(projection: &Projection) -> Result<()> {
 /// let dest = Dir::open_ambient_dir(projection.target(), ambient_authority()).unwrap();
-/// let state = match Dir::open_ambient_dir(projection.state_dir(), ambient_authority()) {
-///     Ok(state) => Some(state),
+/// let opened = match Dir::open_ambient_dir(projection.state_dir(), ambient_authority()) {
+///     Ok(dir) => Some(dir),
 ///     // Never projected here: no state directory, so nothing is recorded.
 ///     Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
 ///     Err(e) => panic!("{e}"),
 /// };
-/// let report = status(&dest, state.as_ref(), projection.state_prefix())?;
+/// let state = match (opened.as_ref(), projection.state_prefix()) {
+///     (None, _) => StateDir::Missing,
+///     (Some(dir), Some(prefix)) => StateDir::Inside { dir, prefix },
+///     (Some(dir), None) => StateDir::Outside(dir),
+/// };
+/// let report = status(&dest, state)?;
 /// # let _ = report;
 /// # Ok(())
 /// # }
@@ -117,13 +119,47 @@ pub struct Status {
 /// promise about what it still looks like — the same reason `apply`
 /// re-checks every node against the signature its plan expects.
 #[cfg(unix)]
-pub fn status(dest: &Dir, state: Option<&Dir>, state_prefix: Option<&Utf8Path>) -> Result<Status> {
-    let manifest = match state {
-        Some(state) => load_manifest(state)?,
-        None => Manifest::new(),
+pub fn status(dest: &Dir, state: StateDir<'_>) -> Result<Status> {
+    let (manifest, state_prefix) = match state {
+        StateDir::Missing => (Manifest::new(), None),
+        StateDir::Outside(dir) => (load_manifest(dir)?, None),
+        StateDir::Inside { dir, prefix } => (load_manifest(dir)?, Some(prefix)),
     };
     let observations = observe(dest, &manifest)?;
     Ok(classify(&manifest, &observations, state_prefix))
+}
+
+/// Where a [`status`] run reads recorded state from, and whether that
+/// state sits inside the destination it is reporting on.
+///
+/// The two facts travel together because a report needs both and they must
+/// describe one directory: the manifest is read through the handle, and the
+/// destination-relative prefix is the subtree the classification skips as
+/// the projection's own. Spelled apart they could disagree — a handle on an
+/// in-dest state directory with no prefix reports the manifest and the lock
+/// file as [`Foreign`](PathState::Foreign), and a prefix naming some other
+/// subtree hides whatever the destination holds there — and no handle can
+/// be checked against a path to catch it. Named together, neither
+/// combination can be written.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy)]
+pub enum StateDir<'a> {
+    /// The state directory does not exist: nothing was ever projected
+    /// here, so nothing is recorded and no subtree of the destination is
+    /// the projection's own. Reads as the empty [`Manifest`].
+    Missing,
+    /// A state directory outside the destination. Every path the walk
+    /// reaches belongs to the destination, so the whole tree classifies.
+    Outside(&'a Dir),
+    /// A state directory inside the destination, at `prefix` relative to
+    /// it — the conventional `<target>/.proiectio`. The subtree under
+    /// `prefix` is the projection's own state and never classifies.
+    Inside {
+        /// The handle the manifest is read through.
+        dir: &'a Dir,
+        /// Where that same directory sits relative to the destination.
+        prefix: &'a Utf8Path,
+    },
 }
 
 #[cfg(all(test, unix))]

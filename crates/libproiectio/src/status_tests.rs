@@ -15,8 +15,8 @@ fn dir_at(root: &Utf8Path) -> Dir {
 }
 
 /// The state handle a caller ends up with for `root`: `None` where the
-/// directory does not exist, which is what [`status`] takes for "nothing
-/// was ever projected here".
+/// directory does not exist, which a caller spells to [`status`] as
+/// [`StateDir::Missing`] — "nothing was ever projected here".
 fn state_at(root: &Utf8Path) -> Option<Dir> {
     match Dir::open_ambient_dir(root, cap_std::ambient_authority()) {
         Ok(state) => Some(state),
@@ -46,9 +46,15 @@ fn project(dest: &Utf8Path, state: &Utf8Path, owner: &str, desired: &BTreeMap<Ut
     apply(&dest, &state, &manifest, &plan).expect("apply");
 }
 
-/// [`status`] over two directories, with no in-dest state prefix.
+/// [`status`] over two directories, the state directory outside the
+/// destination.
 fn status_of(dest: &Utf8Path, state: &Utf8Path) -> Status {
-    status(&dir_at(dest), state_at(state).as_ref(), None).expect("status")
+    let state = state_at(state);
+    let state = match state.as_ref() {
+        Some(dir) => StateDir::Outside(dir),
+        None => StateDir::Missing,
+    };
+    status(&dir_at(dest), state).expect("status")
 }
 
 fn states(status: &Status) -> Vec<(&str, PathState)> {
@@ -83,7 +89,7 @@ fn a_missing_state_directory_reports_nothing() {
     let state = state_at(&missing);
     assert!(state.is_none(), "a missing directory opens as no handle");
 
-    let report = status(&dir_at(dest.root()), state.as_ref(), None).expect("status");
+    let report = status(&dir_at(dest.root()), StateDir::Missing).expect("status");
 
     assert_eq!(report, Status::default());
 }
@@ -93,8 +99,8 @@ fn without_a_state_directory_everything_on_disk_is_foreign() {
     let dest = Tree::new().file("theirs.txt", "not ours").materialize();
     let elsewhere = Tree::new().materialize();
 
-    let state = state_at(&elsewhere.path("never-created"));
-    let report = status(&dir_at(dest.root()), state.as_ref(), None).expect("status");
+    assert!(state_at(&elsewhere.path("never-created")).is_none());
+    let report = status(&dir_at(dest.root()), StateDir::Missing).expect("status");
 
     assert_eq!(states(&report), vec![("theirs.txt", PathState::Foreign)]);
 }
@@ -169,10 +175,13 @@ fn the_state_subtree_inside_the_destination_never_classifies() {
     let tree = Tree::new().file("a.txt", "alpha");
     project(dest.root(), &state, "own", &tree.entries());
 
+    let opened = state_at(&state).expect("the in-dest state directory opens");
     let report = status(
         &dir_at(dest.root()),
-        state_at(&state).as_ref(),
-        Some(prefix),
+        StateDir::Inside {
+            dir: &opened,
+            prefix,
+        },
     )
     .expect("status");
 
