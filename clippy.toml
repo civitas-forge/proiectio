@@ -1,4 +1,10 @@
+# `cargo test` runs tests in parallel threads and the current directory is
+# process-global, so a chdir in one test reroutes every relative path in every
+# concurrently running test. Tests take absolute paths from their TempDir
+# fixture instead (docs/implementation.lex section 2). The CI clippy step runs
+# with `-D warnings`, so a violation fails the build.
 disallowed-methods = [
+    { path = "std::env::set_current_dir", reason = "process-global; cargo test is parallel — take absolute paths from the fixture (docs/implementation.lex section 2)" },
     { path = "std::fs::canonicalize", reason = "canonicalize follows symlinks and requires existence; containment is lexical — go through contained_join (docs/security.lex section 2)" },
     { path = "std::path::Path::canonicalize", reason = "canonicalize follows symlinks and requires existence; containment is lexical — go through contained_join (docs/security.lex section 2)" },
     { path = "camino::Utf8Path::canonicalize", reason = "canonicalize follows symlinks and requires existence; containment is lexical — go through contained_join (docs/security.lex section 2)" },
