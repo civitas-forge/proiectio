@@ -56,10 +56,11 @@ Implementation Guidelines
 
     :: rust ::
 
-    the sole gateway enforcing the containment rules of
+    the sole lexical gateway enforcing the containment rules of
     [./security.lex] — no absolute paths, no ".." escapes, no empty
-    components. Crates are implementation details inside it [1], and
-    two constraints bound the choice:
+    components; act's no-follow walk below is the apply-time half
+    of the same rule. Crates are implementation details inside it
+    [1], and two constraints bound the choice:
 
     - Containment wants *lexical* normalization — never
       std::fs::canonicalize, which follows symlinks and requires
@@ -89,27 +90,47 @@ Implementation Guidelines
       the final mutation happens relative to that parent, so a
       component swapped for a symlink after the check cannot
       redirect a write to an in-dest path the plan never named.
-      When a no-follow open does report a symlink: unowned means
-      the structured refusal below; owned by the manifest with an
-      in-dest target means act reads the link through the parent
-      handle (read_link_contents), resolves the target with
+      When a no-follow open does report a symlink, act matches it
+      against the manifest before anything else: not recorded — the
+      structured refusal below; recorded, but the on-disk target no
+      longer hashes to the recorded string — the same Drift refusal
+      every stale plan gets (section 1); recorded and matching, but
+      graded external — refused too, an external target is never
+      written through; recorded, matching, and in-dest — act reads
+      the target through the parent handle, resolves it with
       contained_join, and restarts the no-follow walk from the dest
-      root along the resolved path.
+      root along the resolved path. Restarts carry a per-walk
+      visited set: revisiting a component means an owned-link
+      cycle, and refuses rather than loops.
+      One boundary the handles do not close: a directory handle
+      follows its object, so a process renaming a verified ancestor
+      out of dest carries the handle with it. That actor holds
+      invoker-level write access and is trusted by the
+      [./security.lex] split — the structural claim here is about
+      hostile content, paths and pointers, not about a concurrently
+      mutating privileged process, which the single-writer lock
+      (section 7) already rules out for proiectio itself.
     - Non-UTF-8 names cannot collide with the projection. Desired
       and manifest paths are Utf8PathBuf by construction, and a
       differently-spelled on-disk name is a different entry, so a
-      non-UTF-8 entry can only ever be foreign — never overwritten,
-      never removed. fs_utf8's file_name() fails per entry, so the
-      walk skips what it cannot name; the classification contract
-      of [./design.lex] is scoped to UTF-8 paths, and prune treats
-      a not-actually-empty directory (ENOTEMPTY — perhaps holding a
-      skipped entry) as kept, not as an error.
+      non-UTF-8 entry is invisible to classification — protected
+      like Foreign in effect, but never a row in the state table,
+      because Status cannot name it. fs_utf8's file_name() fails
+      per entry, so the walk skips what it cannot name;
+      [./design.lex] records the matching scope on the
+      classification contract, and prune treats a not-actually-
+      empty directory (ENOTEMPTY — perhaps holding a skipped entry)
+      as kept, not as an error.
     - --allow-external-targets coexists: symlink() refuses absolute
       targets, but symlink_contents() writes any target string
       verbatim — act uses it for flag-permitted links — and reads
       through such a link still fail, which is the model exactly: an
       external target is a pointer, never written through.
-      read_link_contents() hands observe the string back untouched.
+      read_link_contents() hands observe the string back untouched
+      — via the plain-Dir view (as_cap_std()), because the fs_utf8
+      wrapper errors on a non-UTF-8 target, and a recorded link
+      whose target was edited to such bytes must classify as
+      Drifted, not fail observe.
       One platform edge: symlink_contents() is Unix-only — a
       Windows symlink needs a file-or-directory kind the entry does
       not carry, and dangling targets are allowed, so act could not
@@ -135,13 +156,14 @@ Implementation Guidelines
     absolute target — an escaping relative target writes fine and
     fails only when traversed — so grading targets in-dest or
     external stays contained_join's job. The structured Containment
-    refusal, with paths, comes from two places and nowhere else:
-    decide, for the lexical rules, and act's no-follow walk, when
-    an ancestor turns out to be a symlink proiectio does not own —
-    the same refusal variant, because [./security.lex] states one
-    rule for both. A Dir escape refusal past that walk means a bug
-    in the walk itself — defense in depth — and surfaces as the I/O
-    error it is.
+    refusal, with paths, names its producers: decide — the lexical
+    rules, and paths entering the projection's own state directory
+    — and act's no-follow walk, on an ancestor symlink that is
+    unowned, cyclic, or graded external; one refusal variant,
+    because [./security.lex] states one rule. (A swapped owned
+    target is the walk's Drift refusal, not Containment.) A Dir
+    escape refusal past that walk means a bug in the walk itself —
+    defense in depth — and surfaces as the I/O error it is.
 
 4. Standout
 
