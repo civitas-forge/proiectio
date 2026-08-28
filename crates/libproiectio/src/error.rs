@@ -1,0 +1,135 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use camino::Utf8PathBuf;
+use thiserror::Error;
+
+/// The crate-wide result type.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Everything the engine can fail with.
+///
+/// Variants split into *refusals* — the projection declining to touch a
+/// path, each carrying the offending paths — and runtime failures (I/O,
+/// manifest format). [`Error::is_refusal`] names the split, and a CLI's
+/// 0/1/2 exit contract falls out of a single match:
+///
+/// ```
+/// # use libproiectio::{Error, Result};
+/// fn exit_code(result: Result<()>) -> i32 {
+///     match result {
+///         Ok(()) => 0,
+///         Err(error) if error.is_refusal() => 2,
+///         Err(_) => 1,
+///     }
+/// }
+/// ```
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Refusal: recorded paths whose bytes on disk differ from the
+    /// recorded hash — user edits the projection will not overwrite or
+    /// remove unless the caller passes
+    /// [`DriftPolicy::Overwrite`](crate::DriftPolicy::Overwrite).
+    #[error("refusing to touch drifted paths (edited on disk): {}", join(paths))]
+    Drift {
+        /// The drifted paths, relative to the destination.
+        paths: BTreeSet<Utf8PathBuf>,
+    },
+    /// Refusal: paths on disk that the manifest does not record. A
+    /// projection never overwrites or removes a file it did not write; no
+    /// policy lifts this.
+    #[error(
+        "refusing to touch foreign paths (not written by this projection): {}",
+        join(paths)
+    )]
+    Foreign {
+        /// The foreign paths, relative to the destination.
+        paths: BTreeSet<Utf8PathBuf>,
+    },
+    /// Refusal: desired-tree paths that escape the destination — absolute
+    /// paths, paths climbing out via `..`, or empty or `.` components —
+    /// or writes through a symlinked ancestor.
+    #[error("refusing paths that escape the destination: {}", join(paths))]
+    Containment {
+        /// The offending paths as given by the desired tree.
+        paths: BTreeSet<Utf8PathBuf>,
+    },
+    /// Refusal: symlinks whose targets resolve outside the destination.
+    /// Lifted only by the caller's explicit permission (a CLI's
+    /// `--allow-external-targets`), never by the tree itself.
+    #[error(
+        "refusing symlinks with targets outside the destination: {}",
+        join_links(links)
+    )]
+    ExternalTarget {
+        /// The offending links: path of each link, relative to the
+        /// destination, mapped to its target string verbatim.
+        links: BTreeMap<Utf8PathBuf, String>,
+    },
+    /// A filesystem operation failed. Not a refusal: the underlying OS
+    /// error stays visible.
+    #[error("{path}: {source}")]
+    Io {
+        /// The path the operation touched.
+        path: Utf8PathBuf,
+        /// The OS error, unchanged.
+        source: std::io::Error,
+    },
+    /// The manifest file exists but does not parse as manifest JSON. Not a
+    /// refusal.
+    #[error("manifest {path} is not valid: {source}")]
+    ManifestFormat {
+        /// The manifest file's location.
+        path: Utf8PathBuf,
+        /// The parse error, unchanged.
+        source: serde_json::Error,
+    },
+    /// The manifest parses but declares a version this crate does not
+    /// support. Not a refusal.
+    #[error("manifest {path} has version {found}; this crate supports version {supported}")]
+    ManifestVersion {
+        /// The manifest file's location.
+        path: Utf8PathBuf,
+        /// The version the file declares.
+        found: u32,
+        /// The version this crate supports.
+        supported: u32,
+    },
+}
+
+impl Error {
+    /// Whether this error is a refusal: the projection declining to touch
+    /// a path ([`Drift`](Error::Drift), [`Foreign`](Error::Foreign),
+    /// [`Containment`](Error::Containment),
+    /// [`ExternalTarget`](Error::ExternalTarget)) rather than an
+    /// operation failing. A CLI maps refusals to exit 2 and everything
+    /// else to exit 1.
+    pub fn is_refusal(&self) -> bool {
+        matches!(
+            self,
+            Error::Drift { .. }
+                | Error::Foreign { .. }
+                | Error::Containment { .. }
+                | Error::ExternalTarget { .. }
+        )
+    }
+}
+
+fn join(paths: &BTreeSet<Utf8PathBuf>) -> String {
+    paths
+        .iter()
+        .map(|path| path.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn join_links(links: &BTreeMap<Utf8PathBuf, String>) -> String {
+    links
+        .iter()
+        .map(|(path, target)| format!("{path} -> {target}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[cfg(test)]
+#[path = "error_tests.rs"]
+mod tests;
