@@ -8,7 +8,7 @@ Implementation Guidelines
 
     Separate the logic from the file system — but honestly: planning
     is not pure by itself, because classification needs disk reads,
-    hashing recorded paths to detect drift. So the engine is three
+    hashing what is on disk to detect drift. So the engine is three
     stages, not two:
 
     - observe: read-only I/O. Walk the destination, hash every file
