@@ -32,9 +32,12 @@ pub const MAPPING_VERSION: u32 = 1;
 /// on-disk location has one key; two entries claiming the same normalized
 /// key fail as [`Error::MappingDuplicate`].
 ///
-/// A relative `source` resolves against the mapping file's own directory —
-/// never the current directory — so a mapping and its assets travel
-/// together; an absolute `source` is taken as is. Link targets are carried
+/// A `source` resolves as a path join against the mapping file's own
+/// directory — never the current directory — so a mapping and its assets
+/// travel together. A rooted `source` therefore supplants that directory:
+/// on Unix it is read as given, while on Windows a drive-less `/`-rooted
+/// source would borrow the mapping's drive, as path joins do there. Link
+/// targets are carried
 /// verbatim and unjudged: grading a target in-dest or external needs the
 /// destination and happens at plan time.
 ///

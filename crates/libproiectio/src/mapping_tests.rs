@@ -286,7 +286,6 @@ fn archive_entries_parse_structurally_but_are_not_yet_implemented() {
 }
 
 /// The full example of `docs/cli-tour.lex` section 5, verbatim.
-#[cfg(unix)]
 const CLI_TOUR_EXAMPLE: &str = r#"version = 1
 
 [files."config/settings.toml"]
@@ -316,7 +315,6 @@ strip = 1
 "#;
 
 #[test]
-#[cfg(unix)]
 fn the_cli_tour_example_fails_only_on_its_archive_entry() {
     // Everything before the archives check passes; the entry itself is the
     // not-yet-implemented boundary (and no source file is read on the way).
