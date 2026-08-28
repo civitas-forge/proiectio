@@ -10,6 +10,11 @@
 //! returns an [`ApplyReport`]; [`Status`] is the classification
 //! ([`classify`]) alone, with nothing written.
 //!
+//! A run holding state another writer could touch takes the single-writer
+//! [`StateLock`] on the state directory before [`observe`] and drops it
+//! after applying, so the manifest's read-modify-write is never interleaved
+//! (`docs/implementation.lex` section 7).
+//!
 //! The crate carries no consumer vocabulary: content arrives as bytes,
 //! owners are opaque strings, and nothing here names what the files are
 //! for. A caller computes the desired tree itself or loads one from a TOML
@@ -32,6 +37,8 @@ mod containment;
 mod decide;
 mod entry;
 mod error;
+#[cfg(unix)]
+mod lock;
 mod manifest;
 mod mapping;
 mod observe;
@@ -48,6 +55,8 @@ pub use containment::*;
 pub use decide::*;
 pub use entry::*;
 pub use error::*;
+#[cfg(unix)]
+pub use lock::*;
 pub use manifest::*;
 pub use mapping::*;
 pub use observe::*;

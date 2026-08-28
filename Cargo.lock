@@ -288,6 +288,7 @@ dependencies = [
  "cap-primitives",
  "cap-std",
  "cap-tempfile",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

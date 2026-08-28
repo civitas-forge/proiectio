@@ -140,6 +140,19 @@ pub enum Error {
         /// The version this crate supports.
         supported: u32,
     },
+    /// Another writer holds the single-writer lock on the state directory
+    /// (`docs/implementation.lex` section 7).
+    /// [`StateLock::acquire`](crate::StateLock::acquire) has try-lock
+    /// semantics, so a contended lock reports this immediately rather than
+    /// blocking. Not a refusal — no destination path is being declined,
+    /// the run simply cannot start — so [`Error::is_refusal`] is `false`
+    /// and a CLI maps it to exit 1 like any other runtime failure.
+    #[error("state lock {path} is held by another writer")]
+    LockHeld {
+        /// The lock file's path, relative to the state directory
+        /// ([`LOCK_FILE_NAME`](crate::LOCK_FILE_NAME)).
+        path: Utf8PathBuf,
+    },
     /// The mapping file does not parse as mapping TOML — a syntax error, a
     /// missing required field, or an unknown key. Not a refusal.
     #[error("mapping {path} is not valid: {source}")]
@@ -245,6 +258,7 @@ impl Error {
             Error::Io { .. }
             | Error::ManifestFormat { .. }
             | Error::ManifestVersion { .. }
+            | Error::LockHeld { .. }
             | Error::MappingFormat { .. }
             | Error::MappingVersion { .. }
             | Error::MappingContentsXorSource { .. }
