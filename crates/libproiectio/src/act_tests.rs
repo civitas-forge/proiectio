@@ -7,7 +7,9 @@ use cap_std::fs_utf8::Dir;
 
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree};
-use crate::{DriftPolicy, EntryKind, ExternalTargetPolicy, PlanOptions, decide, observe};
+use crate::{
+    DriftPolicy, EntryKind, ExternalTargetPolicy, PlanOptions, decide, decide_removal, observe,
+};
 
 /// Opens a capability handle at a fixture root. Ambient authority is the
 /// test's to spend; the library itself never opens ambient paths.
@@ -348,6 +350,150 @@ fn pruning_keeps_directories_still_holding_anything() {
     pipeline(&dest, &state, "own", &BTreeMap::new(), DriftPolicy::Refuse).expect("removal");
 
     assert_tree(dest.root(), &Tree::new().file("a/b/theirs.txt", "foreign"));
+}
+
+/// One observe → [`decide_removal`] → apply run: `paths` is `None` for the
+/// whole owner and `Some(set)` for a subset by path.
+fn removal_pipeline(
+    dest: &Fixture,
+    state: &Fixture,
+    owner: &str,
+    paths: Option<&BTreeSet<Utf8PathBuf>>,
+    policy: DriftPolicy,
+) -> Result<ApplyReport> {
+    let (manifest, plan) = {
+        let dest = dir_at(dest.root());
+        let state = dir_at(state.root());
+        let manifest = load_manifest(&state).expect("load manifest");
+        let observations = observe(&dest, &manifest).expect("observe destination");
+        let plan = decide_removal(
+            owner,
+            paths,
+            &manifest,
+            &observations,
+            None,
+            PlanOptions {
+                drift: policy,
+                ..PlanOptions::default()
+            },
+        );
+        (manifest, plan)
+    };
+    apply_at(dest, state, &manifest, &plan)
+}
+
+fn requested(paths: &[&str]) -> BTreeSet<Utf8PathBuf> {
+    paths.iter().map(Utf8PathBuf::from).collect()
+}
+
+// Definition of done: removing a drifted file refuses and names it.
+#[test]
+fn removing_a_drifted_file_refuses_with_the_path() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new()
+        .file("a/b.txt", "as written")
+        .file("c.txt", "kept");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    let edited = Tree::new()
+        .file("a/b.txt", "edited by hand")
+        .file("c.txt", "kept");
+    fs::write(dest.path("a/b.txt"), "edited by hand").expect("edit the file");
+
+    let error = removal_pipeline(&dest, &state, "own", None, DriftPolicy::Refuse)
+        .expect_err("the drifted file refuses");
+
+    assert!(matches!(
+        &error,
+        Error::Drift { paths } if paths == &BTreeSet::from([Utf8PathBuf::from("a/b.txt")])
+    ));
+    // The refusal is up front: nothing was removed, the manifest is whole.
+    assert_tree(dest.root(), &edited);
+    assert_eq!(
+        persisted(&state).entries.keys().collect::<Vec<_>>(),
+        vec![Utf8Path::new("a/b.txt"), Utf8Path::new("c.txt")]
+    );
+
+    // The same removal under --force takes the edited file with it.
+    removal_pipeline(&dest, &state, "own", None, DriftPolicy::Overwrite).expect("forced removal");
+    assert_tree(dest.root(), &Tree::new());
+}
+
+// Definition of done: pruning empties what removal emptied and keeps a
+// directory still holding a file the projection does not own.
+#[test]
+fn removal_prunes_emptied_dirs_and_keeps_one_holding_a_foreign_file() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new()
+        .file("shared/mine.txt", "projected")
+        .file("solely/deep/mine.txt", "projected");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    fs::write(dest.path("shared/theirs.txt"), "foreign").expect("plant a foreign file");
+
+    removal_pipeline(&dest, &state, "own", None, DriftPolicy::Refuse).expect("removal");
+
+    assert_tree(
+        dest.root(),
+        &Tree::new().file("shared/theirs.txt", "foreign"),
+    );
+    assert!(persisted(&state).entries.is_empty());
+}
+
+#[test]
+fn a_subset_removal_clears_the_named_paths_and_leaves_the_rest() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new()
+        .file("a/b/gone.txt", "projected")
+        .file("a/kept.txt", "projected")
+        .file("top.txt", "projected");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+
+    let report = removal_pipeline(
+        &dest,
+        &state,
+        "own",
+        Some(&requested(&["a/b/gone.txt"])),
+        DriftPolicy::Refuse,
+    )
+    .expect("removal");
+
+    assert_eq!(
+        report.outcomes,
+        BTreeMap::from([("a/b/gone.txt".into(), ApplyOutcome::Removed)])
+    );
+    // The emptied `a/b` is pruned; `a` still holds kept.txt and survives.
+    assert_tree(
+        dest.root(),
+        &Tree::new()
+            .file("a/kept.txt", "projected")
+            .file("top.txt", "projected"),
+    );
+    assert_eq!(
+        persisted(&state).entries.keys().collect::<Vec<_>>(),
+        vec![Utf8Path::new("a/kept.txt"), Utf8Path::new("top.txt")]
+    );
+}
+
+#[test]
+fn a_subset_removal_refuses_a_path_that_violates_containment() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new().file("a.txt", "projected");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+
+    let error = removal_pipeline(
+        &dest,
+        &state,
+        "own",
+        Some(&requested(&["../escape", "a.txt"])),
+        DriftPolicy::Refuse,
+    )
+    .expect_err("the escaping path refuses");
+
+    assert!(matches!(
+        &error,
+        Error::Containment { paths } if paths == &BTreeSet::from([Utf8PathBuf::from("../escape")])
+    ));
+    // Up front, so the admitted path in the same request is untouched.
+    assert_tree(dest.root(), &tree);
 }
 
 #[test]
