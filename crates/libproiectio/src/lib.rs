@@ -23,6 +23,7 @@
 
 #![forbid(unsafe_code)]
 
+mod containment;
 mod entry;
 mod error;
 mod manifest;
@@ -31,6 +32,7 @@ mod projection;
 mod report;
 mod status;
 
+pub use containment::*;
 pub use entry::*;
 pub use error::*;
 pub use manifest::*;
