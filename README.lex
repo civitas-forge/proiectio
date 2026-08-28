@@ -32,11 +32,21 @@ Proiectio
 
     If specifying from a directory tree, metadata is copied from the source files.
 
+    Archives (tar, tar.gz, tar.zst, zip) can stand in for a tree — as the tree source itself, or as a mapping entry extracted under a path prefix. Members expand into ordinary entries at plan time and are tracked individually.
+
 3. The Docs
 
-    [./docs/100-design.lex]:
+    [./docs/design.lex]:
         The model — desired tree, manifest, disk — the path classification,
         the apply mechanics and the API.
+
+    [./docs/cli-tour.lex]:
+        The CLI — writing from mappings, trees, and archives; status,
+        removal, exit codes, and the mapping file format.
+
+    [./docs/security.lex]:
+        The trust split, containment, symlink grading, and archive
+        extraction rules.
 
 4. License
 
