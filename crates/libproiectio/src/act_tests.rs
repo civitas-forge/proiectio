@@ -709,6 +709,48 @@ fn an_owned_matching_in_dest_symlink_ancestor_is_followed() {
 }
 
 #[test]
+fn a_removal_through_an_owned_link_prunes_the_resolved_directory() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("real/x.txt", "bytes")
+        .symlink("logs", "real")
+        .write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "logs".into(),
+        recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own"]),
+    );
+    manifest.entries.insert(
+        "logs/x.txt".into(),
+        recorded(EntryKind::File, sha256_hex(b"bytes"), &["own"]),
+    );
+    let plan = Plan {
+        owner: "own".to_owned(),
+        actions: BTreeMap::from([(
+            "logs/x.txt".into(),
+            Action::Remove {
+                expected: Some(NodeSignature {
+                    kind: EntryKind::File,
+                    hash: sha256_hex(b"bytes"),
+                    executable: false,
+                }),
+            },
+        )]),
+    };
+
+    let report = apply_at(&dest, &state, &manifest, &plan).expect("removal through the owned link");
+
+    assert_eq!(
+        report.outcomes,
+        BTreeMap::from([("logs/x.txt".into(), ApplyOutcome::Removed)])
+    );
+    // The directory that actually lost the child — the resolved side, not
+    // the action key's ancestry — is pruned; the owned link survives (a
+    // dangling target is allowed).
+    assert_tree(dest.root(), &Tree::new().symlink("logs", "real"));
+}
+
+#[test]
 fn a_recorded_symlink_ancestor_with_a_changed_target_refuses_drift() {
     let (dest, state) = fixtures();
     Tree::new()

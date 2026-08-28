@@ -106,8 +106,10 @@ Implementation Guidelines
       graded external — refused too, an external target is never
       written through; recorded, matching, and in-dest — act reads
       the target through the parent handle, resolves it with
-      contained_join, and restarts the no-follow walk from the dest
-      root along the resolved path. Restarts carry a per-walk
+      contained_normalize — the gateway's normalize-only half,
+      applied to the target joined from the link's parent — and
+      restarts the no-follow walk from the dest root along the
+      resolved path. Restarts carry a per-walk
       visited set: revisiting a component means an owned-link
       cycle, and refuses rather than loops.
       One boundary the handles do not close: a directory handle

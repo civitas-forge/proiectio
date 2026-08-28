@@ -355,17 +355,19 @@ fn run(
     let mut removed_dirs_candidates: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, action) in plan.actions.iter().rev() {
         if let Action::Remove { expected } = action {
-            remove(dest, manifest, path, expected.as_ref())?;
-            manifest.entries.remove(path);
-            outcomes.insert(path.clone(), ApplyOutcome::Removed);
-            if expected.is_some() {
-                // Only an actual disk removal can have emptied ancestors.
-                for ancestor in path.ancestors().skip(1) {
+            // Only an actual disk removal can have emptied ancestors — and
+            // the ancestors that lost a child are the *resolved* location's,
+            // which differs from the action key's when the walk followed an
+            // owned link.
+            if let Some(resolved) = remove(dest, manifest, path, expected.as_ref())? {
+                for ancestor in resolved.ancestors().skip(1) {
                     if !ancestor.as_str().is_empty() {
                         removed_dirs_candidates.insert(ancestor.to_owned());
                     }
                 }
             }
+            manifest.entries.remove(path);
+            outcomes.insert(path.clone(), ApplyOutcome::Removed);
         }
     }
     prune(dest, manifest, &removed_dirs_candidates)?;
@@ -421,28 +423,33 @@ fn run(
 }
 
 /// Executes one [`Action::Remove`]: with an expected signature, re-checks
-/// the node and unlinks it through the verified parent handle; expecting
-/// `None` — the node was already gone at plan time — verifies nothing has
-/// appeared and touches only the manifest. Either way the entry leaves the
-/// manifest.
+/// the node and unlinks it through the verified parent handle, returning
+/// the *resolved* location it unlinked — the action key unless the walk
+/// followed an owned link — so pruning judges the ancestors that actually
+/// lost a child; expecting `None` — the node was already gone at plan time
+/// — verifies nothing has appeared, touches only the manifest, and returns
+/// `None`. Either way the entry leaves the manifest.
 fn remove(
     dest: &Dir,
     manifest: &Manifest,
     path: &Utf8Path,
     expected: Option<&NodeSignature>,
-) -> Result<()> {
+) -> Result<Option<Utf8PathBuf>> {
     match expected {
         Some(expected) => {
-            let Some((parent, leaf)) = verified_parent(dest, manifest, path, false)? else {
+            let Some((parent, leaf, resolved_parent)) =
+                verified_parent(dest, manifest, path, false)?
+            else {
                 // An ancestor is gone, so the node is too: the disk no
                 // longer holds what the plan expects.
                 return Err(drift(path));
             };
             check_leaf(&parent, &leaf, path, expected)?;
             parent.remove_file(&leaf).map_err(io_error(path))?;
+            Ok(Some(resolved_parent.join(leaf)))
         }
         None => {
-            if let Some((parent, leaf)) = verified_parent(dest, manifest, path, false)? {
+            if let Some((parent, leaf, _)) = verified_parent(dest, manifest, path, false)? {
                 match parent.symlink_metadata(&leaf) {
                     // A node appeared at the path since the plan: a change,
                     // refused exactly like a present node changing.
@@ -451,20 +458,20 @@ fn remove(
                     Err(e) => return Err(io_error(path)(e)),
                 }
             }
+            Ok(None)
         }
     }
-    Ok(())
 }
 
 /// Prunes directories emptied by this run's removals: every ancestor of a
-/// removed path, deepest first, removed through the verified walk when
-/// empty. A directory still holding anything — a foreign file, another
+/// removed node's resolved location, deepest first, removed through the
+/// verified walk when empty. A directory still holding anything — a foreign file, another
 /// projected path, an entry whose name is not UTF-8 — is kept, not an
 /// error; so is one already gone or no longer a directory.
 fn prune(dest: &Dir, manifest: &Manifest, candidates: &BTreeSet<Utf8PathBuf>) -> Result<()> {
     use std::io::ErrorKind;
     for path in candidates.iter().rev() {
-        let Some((parent, leaf)) = verified_parent(dest, manifest, path, false)? else {
+        let Some((parent, leaf, _)) = verified_parent(dest, manifest, path, false)? else {
             continue;
         };
         match parent.remove_dir(&leaf) {
@@ -505,7 +512,7 @@ fn write(
             _ => Error::ApplyBlockUnimplemented { paths },
         });
     };
-    let Some((parent, leaf)) = verified_parent(dest, manifest, path, true)? else {
+    let Some((parent, leaf, _)) = verified_parent(dest, manifest, path, true)? else {
         unreachable!("a creating walk opens or creates every ancestor");
     };
     if fresh {
@@ -588,7 +595,7 @@ fn check_expected(
     path: &Utf8Path,
     expected: &NodeSignature,
 ) -> Result<()> {
-    let Some((parent, leaf)) = verified_parent(dest, manifest, path, false)? else {
+    let Some((parent, leaf, _)) = verified_parent(dest, manifest, path, false)? else {
         return Err(drift(path));
     };
     check_leaf(&parent, &leaf, path, expected)
@@ -649,8 +656,11 @@ fn link_target_hash(parent: &Dir, leaf: &str, path: &Utf8Path) -> Result<String>
 /// The no-follow ancestor walk (`docs/implementation.lex` section 3): opens
 /// each ancestor component of `path` from the previously verified handle
 /// with cap-primitives' `open_dir_nofollow` and returns the verified parent
-/// handle plus the leaf name, so the caller's final mutation cannot be
-/// redirected by a component swapped for a symlink after its check.
+/// handle, the leaf name, and the resolved parent path — the walked prefix
+/// after any owned-link restarts, so a caller that mutates the leaf knows
+/// the directory that actually changed — so the caller's final mutation
+/// cannot be redirected by a component swapped for a symlink after its
+/// check.
 ///
 /// A symlink met on the way is judged by the four arms [`apply`]'s rustdoc
 /// lists: unrecorded, external-target, or cyclic links refuse as
@@ -674,7 +684,7 @@ fn verified_parent(
     manifest: &Manifest,
     path: &Utf8Path,
     create: bool,
-) -> Result<Option<(Dir, String)>> {
+) -> Result<Option<(Dir, String, Utf8PathBuf)>> {
     let mut components: VecDeque<String> = path
         .components()
         .map(|component| component.as_str().to_owned())
@@ -775,7 +785,7 @@ fn verified_parent(
         }
         prefix = here;
     }
-    Ok(Some((dir, leaf)))
+    Ok(Some((dir, leaf, prefix)))
 }
 
 /// Opens the directory named `name` inside `dir` without following a final
