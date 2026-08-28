@@ -10,6 +10,14 @@
 //! returns an [`ApplyReport`]; [`Status`] is the classification
 //! ([`classify`]) alone, with nothing written.
 //!
+//! Two entry points ride that cycle rather than adding to it.
+//! [`decide_removal`] plans the clearing of what one owner holds — the
+//! whole owner, or the paths a caller names — which is [`decide`] against
+//! an empty desired tree, with the same refusals and the same pruning of
+//! the directories a removal empties. [`status`] is the read-only run:
+//! load the manifest, [`observe`], [`classify`], return the report, write
+//! nothing.
+//!
 //! Excluding a concurrent writer is the caller's to do: `StateLock` takes a
 //! single-writer advisory lock on the state directory, and a caller that
 //! can race another proiectio process acquires it before

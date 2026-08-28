@@ -120,11 +120,17 @@ Proiectio Design
     changed since the plan.
 
     Removal is a plan against an empty desired tree — same
-    classification, same drift refusals — and status runs the
-    classification and writes nothing. Proiectio has no notion of
-    git: a caller that wants owned paths excluded from version
-    control reads the owned-path list off the manifest and maintains
-    the exclusion itself.
+    classification, same drift refusals — over everything the owner
+    holds, or over the recorded paths a caller names instead: a subset
+    admits its paths through the same containment gateway, and a named
+    path the owner does not hold plans nothing, so a removal re-run
+    stays a no-op. Status runs the classification and writes nothing;
+    a state directory that does not exist and one holding no manifest
+    both read as the empty manifest, so a destination nothing was ever
+    projected into reports rather than failing. Proiectio has no
+    notion of git: a caller that wants owned paths excluded from
+    version control reads the owned-path list off the manifest and
+    maintains the exclusion itself.
 
 3. API
 
