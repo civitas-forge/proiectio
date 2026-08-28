@@ -17,8 +17,9 @@
 //!
 //! [`Error`] separates *refusals* — the projection declining to touch a path
 //! ([`Error::Drift`], [`Error::Foreign`], [`Error::Containment`],
-//! [`Error::ExternalTarget`]) — from I/O and format failures. A CLI derives
-//! its 0/1/2 exit contract from one match; see [`Error::is_refusal`].
+//! [`Error::OwnerConflict`], [`Error::ExternalTarget`]) — from I/O and
+//! format failures. A CLI derives its 0/1/2 exit contract from one match;
+//! see [`Error::is_refusal`].
 
 #![forbid(unsafe_code)]
 

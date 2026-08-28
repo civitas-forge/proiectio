@@ -43,8 +43,9 @@ Proiectio Design
 
 2. Classification and Apply
 
-    Each path in the union of the desired tree, the manifest, and the
-    directory gets one state:
+    Each path in the union of the manifest and the directory gets one
+    state; the desired tree enters only when plan compares this
+    classification against it to choose actions:
 
     | State   | Meaning                                           |
     | Clean   | disk matches the recorded hash                    |
@@ -104,6 +105,7 @@ Proiectio Design
 
     :: rust ::
 
-    Dependencies: serde_json, sha2, tempfile, camino. The whole crate
+    Dependencies: serde, serde_json, thiserror, camino now; sha2 and
+    tempfile arrive with apply. The whole crate
     is a few hundred lines plus tests; the tests run against real
     temp directories, since atomic rename is the behavior under test.

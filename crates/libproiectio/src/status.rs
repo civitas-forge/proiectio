@@ -12,9 +12,10 @@ use serde::Serialize;
 /// state here — it first appears in a [`Plan`](crate::Plan) as a write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum PathState {
-    /// Disk matches the recorded hash.
+    /// Disk matches the recorded entry: bytes, kind, and executable bit.
     Clean,
-    /// Disk differs from the recorded hash — a user edit.
+    /// Disk differs from the recorded entry — bytes, kind, or executable
+    /// bit — a user edit.
     Drifted,
     /// Recorded, but gone from disk.
     Missing,

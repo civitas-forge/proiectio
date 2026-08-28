@@ -10,7 +10,7 @@ use crate::Manifest;
 pub enum ApplyOutcome {
     /// The path did not exist and was created.
     Written,
-    /// The path existed clean and was replaced.
+    /// The path existed and was replaced.
     Overwritten,
     /// Disk already matched desired; nothing was written.
     Skipped,
@@ -21,12 +21,13 @@ pub enum ApplyOutcome {
     Released,
 }
 
-/// What an apply run did: one outcome per path, and the manifest as
-/// persisted at the end of the run.
+/// What a successful apply run did: one outcome per path, and the
+/// manifest as persisted at the end of the run.
 ///
-/// On a failed apply the manifest still records the entries actually
-/// applied before the error, so a partial run heals on re-run instead of
-/// classifying its own writes as foreign.
+/// A failed apply returns an [`Error`](crate::Error) alone — no report —
+/// but the on-disk manifest still records the entries applied before the
+/// error, so a partial run heals on re-run instead of classifying its own
+/// writes as foreign.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApplyReport {
     /// Per-path outcomes, keyed by path relative to the destination.

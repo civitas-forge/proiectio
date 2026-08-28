@@ -20,6 +20,12 @@ fn every_variant() -> Vec<Error> {
         Error::Containment {
             paths: paths(&["../escape", "/etc/passwd"]),
         },
+        Error::OwnerConflict {
+            conflicts: BTreeMap::from([(
+                Utf8PathBuf::from("shared/.zshrc"),
+                ["dotfiles".to_owned()].into_iter().collect(),
+            )]),
+        },
         Error::ExternalTarget {
             links: BTreeMap::from([(Utf8PathBuf::from("toolchain"), "/opt/rust".to_owned())]),
         },
@@ -55,7 +61,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    assert_eq!(codes, vec![2, 2, 2, 2, 1, 1, 1]);
+    assert_eq!(codes, vec![2, 2, 2, 2, 2, 1, 1, 1]);
     assert_eq!(exit_code(Ok(())), 0);
 }
 
@@ -75,6 +81,20 @@ fn refusal_messages_name_the_offending_paths() {
     assert_eq!(
         external.to_string(),
         "refusing symlinks with targets outside the destination: toolchain -> /opt/rust"
+    );
+
+    let conflict = Error::OwnerConflict {
+        conflicts: BTreeMap::from([(
+            Utf8PathBuf::from("shared/.zshrc"),
+            ["dotfiles".to_owned(), "site".to_owned()]
+                .into_iter()
+                .collect(),
+        )]),
+    };
+    assert_eq!(
+        conflict.to_string(),
+        "refusing paths whose desired bytes conflict with another owner's: \
+         shared/.zshrc (held by dotfiles+site)"
     );
 }
 

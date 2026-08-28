@@ -18,7 +18,10 @@ pub enum EntryKind {
     /// data. The container file may already exist and be otherwise
     /// unmanaged: the projection owns the region, so the surrounding file
     /// being unrecorded does not make the path foreign (see
-    /// [`Error::Foreign`](crate::Error::Foreign)).
+    /// [`Error::Foreign`](crate::Error::Foreign)). A `Block` entry never
+    /// owns its container whole — removal strips the region and leaves the
+    /// file; deleting a whole file on removal is what [`File`](Self::File)
+    /// entries do.
     Block,
 }
 
@@ -47,7 +50,9 @@ pub enum Entry {
     /// caller data — and replaces only the body between them.
     Block {
         /// The bytes between the delimiter lines. The manifest hash covers
-        /// the body alone.
+        /// the body alone. The marker format — and with it how a body that
+        /// itself contains marker lines is handled — is specified where
+        /// apply is implemented, not by this type.
         body: Vec<u8>,
     },
 }

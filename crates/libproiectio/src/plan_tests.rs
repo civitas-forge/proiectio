@@ -17,7 +17,12 @@ fn a_plan_serializes_with_paths_as_keys() {
                     expected_hash: "aa11".to_owned(),
                 },
             ),
-            (Utf8PathBuf::from("config/settings.toml"), Action::Skip),
+            (
+                Utf8PathBuf::from("config/settings.toml"),
+                Action::Skip {
+                    expected_hash: "dd44".to_owned(),
+                },
+            ),
             (Utf8PathBuf::from("shared/.zshrc"), Action::Release),
             (
                 Utf8PathBuf::from("toolchain"),
@@ -33,7 +38,10 @@ fn a_plan_serializes_with_paths_as_keys() {
     let json = serde_json::to_value(&plan).expect("serialize");
 
     assert_eq!(json["owner"], "site");
-    assert_eq!(json["actions"]["config/settings.toml"], "Skip");
+    assert_eq!(
+        json["actions"]["config/settings.toml"]["Skip"]["expected_hash"],
+        "dd44"
+    );
     assert_eq!(json["actions"]["shared/.zshrc"], "Release");
     assert_eq!(
         json["actions"]["bin/tool"]["Overwrite"]["expected_hash"],

@@ -1,12 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camino::Utf8PathBuf;
 use serde::Serialize;
 
 use crate::Entry;
 
-/// What planning does when a recorded path's bytes on disk differ from the
-/// recorded hash — a user edit.
+/// What planning does when a recorded path's state on disk differs from
+/// the recorded entry — bytes, kind, or executable bit — a user edit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub enum DriftPolicy {
     /// Refuse and name the path (the default; a CLI maps this refusal to
@@ -46,6 +46,11 @@ pub enum Action {
     /// Create a path that is not on disk: one never recorded, or one
     /// recorded but gone ([`PathState::Missing`](crate::PathState)) that
     /// the desired tree still wants.
+    ///
+    /// For a [`Entry::Block`] entry, "on disk" means the projection's
+    /// delimited region, not the container file: a pre-existing container
+    /// without this projection's markers plans a `Write`, which inserts
+    /// the region and leaves the rest of the file alone.
     Write {
         /// What to write.
         entry: Entry,
@@ -63,8 +68,15 @@ pub enum Action {
         expected_hash: String,
     },
     /// Disk already equals desired: nothing is written and the mtime
-    /// survives.
-    Skip,
+    /// survives. Apply still records this plan's owner on the path's
+    /// manifest entry — how an owner joins a path another owner already
+    /// holds with identical bytes — after re-hashing the target and
+    /// refusing if the disk no longer matches `expected_hash`.
+    Skip {
+        /// The hash of the bytes on disk at plan time, which equal the
+        /// desired bytes; the disk must still carry it at apply time.
+        expected_hash: String,
+    },
     /// Remove an orphan — recorded under this owner alone and absent from
     /// the desired tree. Apply re-hashes the target first and refuses if
     /// the disk no longer matches `expected_hash`; a path already gone
@@ -103,6 +115,13 @@ pub enum Refusal {
     /// The path is on disk but absent from the manifest; see
     /// [`Error::Foreign`](crate::Error::Foreign). No policy lifts this.
     Foreign,
+    /// The desired bytes differ from what another owner holds at this
+    /// path; see [`Error::OwnerConflict`](crate::Error::OwnerConflict).
+    /// No policy lifts this.
+    OwnerConflict {
+        /// The other owners holding the path.
+        owners: BTreeSet<String>,
+    },
     /// The path escapes the destination — absolute, climbing out via
     /// `..`, containing empty or `.` components, or writing through a
     /// symlinked ancestor; see
