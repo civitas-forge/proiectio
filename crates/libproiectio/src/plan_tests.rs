@@ -6,6 +6,7 @@ use super::*;
 fn a_plan_serializes_with_paths_as_keys() {
     let plan = Plan {
         owner: "site".to_owned(),
+        external_targets: ExternalTargetPolicy::Allow,
         actions: BTreeMap::from([
             (
                 Utf8PathBuf::from("bin/tool"),
@@ -46,6 +47,9 @@ fn a_plan_serializes_with_paths_as_keys() {
     let json = serde_json::to_value(&plan).expect("serialize");
 
     assert_eq!(json["owner"], "site");
+    // The permission the plan was decided under rides along: apply reads it
+    // to know whether a re-graded target has a verdict to hold to.
+    assert_eq!(json["external_targets"], "Allow");
     assert_eq!(
         json["actions"]["config/settings.toml"]["Skip"]["expected"]["hash"],
         "dd44"

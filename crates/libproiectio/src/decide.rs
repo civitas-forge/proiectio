@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::convert::Infallible;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use crate::containment::{contained_normalize, contained_target, is_pathname};
+use crate::containment::{Hop, contained_normalize, contained_target_chain, is_pathname};
 use crate::{
     Action, DriftPolicy, Entry, EntryKind, ExternalTargetPolicy, Manifest, ManifestEntry,
     NodeSignature, Observation, Observations, PathState, Plan, PlanOptions, Refusal, Status,
@@ -105,21 +106,43 @@ pub fn classify(
 ///
 /// # Symlinks
 ///
-/// Two rules, both lexical, both judged per admitted path.
+/// Two rules, both judged per admitted path.
 ///
 /// *Target grading* (`docs/security.lex` section 3). Every desired
-/// symlink's target is resolved once, here, from the link's parent
-/// directory and purely to classify it: a relative target normalizing to a
-/// path inside the destination is in-dest and always allowed — whether or
-/// not anything exists there, since a dangling pointer is a legal link —
-/// while a target landing outside — absolute, climbing out, or one of the
-/// spellings graded external on every host, `docs/security.lex` section 3
-/// carrying the whole rule — is external
-/// and refused as [`Refusal::ExternalTarget`] carrying the target string,
-/// unless `options` sets [`ExternalTargetPolicy::Allow`]. Grading never
-/// rewrites anything: what apply writes is the target string verbatim,
-/// permitted or not. Only *desired* links are graded — removing a
-/// recorded external link unlinks the pointer and reads nothing through it.
+/// symlink's target is classified here, from the link's parent directory
+/// and purely to decide whether the plan may carry it — apply re-grades the
+/// same target against the live disk before publishing the link, since the
+/// destination this verdict was taken against can move underneath it. A
+/// target landing inside the
+/// destination is in-dest and always allowed — whether or not anything
+/// exists there, since a dangling pointer is a legal link — while one
+/// landing outside is external and refused as [`Refusal::ExternalTarget`]
+/// carrying the target string, unless `options` sets
+/// [`ExternalTargetPolicy::Allow`]. Grading never rewrites anything: what
+/// apply writes is the target string verbatim, permitted or not. Only
+/// *desired* links are graded — removing a recorded external link unlinks
+/// the pointer and reads nothing through it.
+///
+/// Resolution follows the destination's own links: a target lands outside
+/// when it is absolute, climbs out, carries one of the spellings graded
+/// external on every host, or reaches outside through a link the
+/// destination holds — where dest holds `pivot -> /etc`, a tree projecting
+/// `evil -> pivot/passwd` needs the permission, while an ordinary in-dest
+/// chain (`shared -> real` with `rc -> shared/rc`) does not.
+/// [`contained_target_chain`] carries the whole rule, cycle guard included,
+/// and [`planned_hop`] supplies the destination it resolves against: the
+/// links this run *leaves* — the desired tree's own, then `observations`
+/// for every path the run does not touch. A pointer graded against the
+/// destination the run leaves is graded against the destination it will
+/// live in, which is what keeps the projection from planting an escaping
+/// pointer out of two links that each land in-dest alone, and what makes
+/// the verdict the same on the run that writes a link and every run after
+/// it. One consequence worth naming: a target's verdict depends on the
+/// destination, so the same tree may need the permission in one
+/// destination and not in another (tree *paths* keep the host-independent
+/// lexical verdict [`contained_join`](crate::contained_join) gives them).
+/// Apply re-grades before publishing a link, so a pivot swapped after the
+/// plan refuses rather than publishing an escaping pointer.
 ///
 /// One question comes before grading: a target that is not a pathname on
 /// any host — the empty string, or one carrying a NUL byte — lands nowhere
@@ -458,7 +481,7 @@ fn plan_actions(
     }
 
     for (path, entry) in &admitted {
-        let action = match link_refusal(path, entry, observations, &vacated, options) {
+        let action = match link_refusal(path, entry, &admitted, observations, &vacated, options) {
             Some(refusal) => refuse(refusal),
             None => desired_action(
                 owner,
@@ -474,6 +497,7 @@ fn plan_actions(
 
     Plan {
         owner: owner.to_owned(),
+        external_targets: options.external_targets,
         actions,
     }
 }
@@ -503,6 +527,7 @@ fn in_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
 fn link_refusal(
     path: &Utf8Path,
     entry: &Entry,
+    admitted: &BTreeMap<Utf8PathBuf, &Entry>,
     observations: &Observations,
     vacated: &BTreeSet<Utf8PathBuf>,
     options: PlanOptions,
@@ -519,7 +544,7 @@ fn link_refusal(
         });
     }
     if options.external_targets == ExternalTargetPolicy::Refuse
-        && !target_resolves_in_dest(path, target)
+        && !target_resolves_in_dest(path, target, admitted, observations, vacated)
     {
         return Some(Refusal::ExternalTarget {
             target: target.clone(),
@@ -551,15 +576,85 @@ fn resolves_through_link(
 }
 
 /// Grades a desired symlink's target (`docs/security.lex` section 3):
-/// `true` where the target, resolved lexically from the link's parent
-/// directory, lands inside the destination.
+/// `true` where the target, resolved from the link's parent directory
+/// through the links the destination will hold, lands inside the
+/// destination.
 ///
-/// [`contained_target`] is the rule, and apply's no-follow walk grades the
-/// recorded links it meets by the same call — so a target this stage calls
-/// in-dest is one apply may follow.
-fn target_resolves_in_dest(link: &Utf8Path, target: &str) -> bool {
+/// [`contained_target_chain`] is the rule; this supplies the destination it
+/// resolves against, out of the plan-time observations and the desired tree
+/// itself, so the stage stays filesystem-free.
+fn target_resolves_in_dest(
+    link: &Utf8Path,
+    target: &str,
+    admitted: &BTreeMap<Utf8PathBuf, &Entry>,
+    observations: &Observations,
+    vacated: &BTreeSet<Utf8PathBuf>,
+) -> bool {
     let parent = link.parent().unwrap_or_else(|| Utf8Path::new(""));
-    contained_target(parent, target).is_some()
+    let landing = contained_target_chain(parent, target, |path| {
+        Ok::<Hop, Infallible>(planned_hop(admitted, observations, path, vacated))
+    });
+    match landing {
+        Ok(landing) => landing.is_some(),
+        Err(never) => match never {},
+    }
+}
+
+/// What will stand at one destination-relative path once this run finishes,
+/// in the terms chain resolution asks in — the destination the pointer being
+/// graded will actually live in.
+///
+/// Three sources, in that order:
+///
+/// - the desired tree, for a path this run writes. A pointer is graded
+///   against the destination the run leaves, so a link the tree projects is
+///   a hop like any other: without this a tree carrying both `b -> .` and
+///   `a -> b/../escape` grades both in-dest and publishes a pointer that
+///   dereferences outside the destination without the permission, and a tree
+///   carrying a symlink cycle is written on the first run and refused on the
+///   second. Reading the desired entry rather than the snapshot is sound
+///   because a plan holding any [`Refuse`](Action::Refuse) applies nothing:
+///   either every admitted entry lands, or none does.
+/// - `vacated`, the paths this run unlinks. A link the run removes is not a
+///   hop the pointer will resolve through — act executes every removal
+///   first — the same reading [`resolves_through_link`] gives an ancestor
+///   the plan removes.
+/// - the observation snapshot, for everything the run leaves alone.
+///
+/// Only a symlink continues a chain: an absent path, a file, a directory,
+/// and a kind the projection never writes all end it, and so does a path the
+/// snapshot never mentions. A link whose on-disk target is not UTF-8 is
+/// [`Unresolvable`](Hop::Unresolvable): nothing can say where it points, so
+/// nothing can vouch for a chain through it (apply's walk refuses to follow
+/// such a link for the same reason).
+fn planned_hop(
+    admitted: &BTreeMap<Utf8PathBuf, &Entry>,
+    observations: &Observations,
+    path: &Utf8Path,
+    vacated: &BTreeSet<Utf8PathBuf>,
+) -> Hop {
+    match admitted.get(path) {
+        Some(Entry::Symlink { target }) => return Hop::Link(target.clone()),
+        Some(Entry::File { .. } | Entry::Block { .. }) => return Hop::Terminal,
+        None => {}
+    }
+    if vacated.contains(path) {
+        return Hop::Terminal;
+    }
+    match observations.paths.get(path) {
+        Some(Observation::Symlink {
+            target: Some(target),
+            ..
+        }) => Hop::Link(target.clone()),
+        Some(Observation::Symlink { target: None, .. }) => Hop::Unresolvable,
+        Some(
+            Observation::Absent
+            | Observation::File { .. }
+            | Observation::Directory
+            | Observation::Other,
+        )
+        | None => Hop::Terminal,
+    }
 }
 
 /// The action for a path the desired tree names, given its classification

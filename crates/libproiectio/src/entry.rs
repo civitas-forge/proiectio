@@ -38,9 +38,10 @@ pub enum Entry {
         /// Whether the executable bit is set on the written file.
         executable: bool,
     },
-    /// A symbolic link. The target string reaches disk verbatim and is
-    /// resolved (once, at plan time, purely to classify it as in-dest or
-    /// external) from the link's parent directory.
+    /// A symbolic link. The target string reaches disk verbatim, and is
+    /// resolved from the link's parent directory through the destination's
+    /// own links, purely to classify it as in-dest or external — at plan
+    /// time, and again against the disk before the link is published.
     Symlink {
         /// The link target, written verbatim.
         target: String,

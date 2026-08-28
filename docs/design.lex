@@ -75,8 +75,11 @@ Proiectio Design
     - A desired symlink whose target grades external
       ([./security.lex] section 3): refused and named with its
       target, unless the caller permits external targets (the CLI's
-      --allow-external-targets). Grading is per link and lexical;
-      what apply writes is the target string verbatim. A target that
+      --allow-external-targets). Grading is per link and resolves
+      through the links the run leaves dest holding — the ones
+      already there and the ones the tree projects — so a target
+      reaching outside through any of them is external too; what
+      apply writes is the target string verbatim. A target that
       is not a pathname on any host — empty, or carrying a NUL — is
       refused before grading and under either policy: it lands
       nowhere to grade, and there is no pointer to permit.
@@ -117,7 +120,11 @@ Proiectio Design
     plan and apply are separate calls, so before each overwrite or
     removal apply re-checks the target against the signature the plan
     expects — kind, hash, executable bit — and refuses if the disk
-    changed since the plan.
+    changed since the plan. A symlink's target is re-graded the same
+    way before the link is published, and refuses as an external
+    target where the plan-time verdict no longer holds
+    ([./security.lex] section 3) — nothing to re-check where the
+    caller permitted external targets.
 
     Removal is a plan against an empty desired tree — same
     classification, same drift refusals — over everything the owner
