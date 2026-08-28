@@ -18,7 +18,9 @@ pub enum DriftPolicy {
 }
 
 /// What planning does with a desired symlink whose target resolves outside
-/// the destination — an absolute target, one climbing out, or one of the
+/// the destination — an absolute target, one climbing out, one reaching
+/// outside through a link the run leaves the destination holding — one
+/// already there or one the tree projects — or one of the
 /// spellings graded external on every host (`docs/security.lex` section 3
 /// carries the whole rule).
 ///
@@ -79,7 +81,10 @@ pub struct PlanOptions {
 /// deliberately differ from it (an agreement skip, a lifted drift) — so a
 /// hand-built or stale plan refuses rather than misfires. `BTreeMap`
 /// keeps plans sorted, diffable, and deterministic; apply derives execution
-/// order from it (parents before children, removals in reverse).
+/// order from it — removals in reverse, then everything else parents before
+/// children, then the symlinks, each published only once the destination
+/// holds whatever its target resolves through (`docs/implementation.lex`
+/// section 6).
 ///
 /// An empty desired tree plans a removal of everything the owner alone
 /// holds and a release of everything it shares.
@@ -88,6 +93,23 @@ pub struct Plan {
     /// The owner the plan was computed for; applied entries are recorded
     /// under this name in the manifest.
     pub owner: String,
+    /// Whether the caller permitted external symlink targets when this
+    /// plan was decided.
+    ///
+    /// The one policy a plan carries, because it is the one apply cannot
+    /// read back off an action. A lifted drift refusal reaches apply as the
+    /// drifted node in an action's `expected` signature, so apply honors it
+    /// without knowing [`DriftPolicy`]; a *permitted* external target
+    /// leaves nothing behind — the link is written verbatim either way, and
+    /// a plan that graded every target in-dest is indistinguishable from one
+    /// that never graded any. Apply re-grades a link's target against the
+    /// disk before publishing it (`docs/security.lex` section 3), and this
+    /// says whether that re-grade has a verdict to hold the destination to:
+    /// under [`Refuse`](ExternalTargetPolicy::Refuse) a target that has
+    /// become escaping since the plan refuses, and under
+    /// [`Allow`](ExternalTargetPolicy::Allow) there was never a verdict, so
+    /// nothing is re-graded and every target still lands verbatim.
+    pub external_targets: ExternalTargetPolicy,
     /// The per-path actions.
     pub actions: BTreeMap<Utf8PathBuf, Action>,
 }
@@ -241,10 +263,11 @@ pub enum Refusal {
     /// destination; see [`Error::Containment`](crate::Error::Containment)
     /// for that split.
     Containment,
-    /// A desired symlink whose target, resolved lexically from the link's
-    /// parent, lands outside the destination — absolute, climbing out, or
-    /// one of the spellings graded external on every host
-    /// (`docs/security.lex` section 3 carries the whole rule). Lifted per-plan by
+    /// A desired symlink whose target, resolved from the link's parent
+    /// through the destination's own links, lands outside the destination —
+    /// absolute, climbing out, reaching outside through a link the run
+    /// leaves dest holding, or one of the spellings graded external on every
+    /// host (`docs/security.lex` section 3 carries the whole rule). Lifted per-plan by
     /// [`ExternalTargetPolicy::Allow`], which writes the link with the
     /// target verbatim; see
     /// [`Error::ExternalTarget`](crate::Error::ExternalTarget).

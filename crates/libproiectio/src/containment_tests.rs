@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
 
@@ -200,6 +200,160 @@ fn escaping_targets_grade_external() {
         assert_eq!(
             contained_target(Utf8Path::new(parent), target),
             None,
+            "{parent:?} -> {target:?}"
+        );
+    }
+}
+
+// --- chain resolution: grading through the destination's own links ---
+
+/// A destination described by its symlinks alone: each path mapped to the
+/// target it points at, or to `None` for a link whose on-disk target is not
+/// UTF-8. Every other path is a hop the chain stops at, which is all
+/// resolution asks about — no filesystem, so the whole rule stays a table.
+type Links<'a> = &'a [(&'a str, Option<&'a str>)];
+
+/// The chain resolution over the destination `links` describes.
+fn resolve(parent: &str, target: &str, links: Links<'_>) -> Option<Utf8PathBuf> {
+    let links: BTreeMap<Utf8PathBuf, Option<String>> = links
+        .iter()
+        .map(|(path, target)| {
+            (
+                Utf8PathBuf::from(*path),
+                target.map(|target| target.to_owned()),
+            )
+        })
+        .collect();
+    let landing = contained_target_chain(Utf8Path::new(parent), target, |path| {
+        Ok::<Hop, std::convert::Infallible>(match links.get(path) {
+            Some(Some(target)) => Hop::Link(target.clone()),
+            Some(None) => Hop::Unresolvable,
+            None => Hop::Terminal,
+        })
+    });
+    match landing {
+        Ok(landing) => landing,
+        Err(never) => match never {},
+    }
+}
+
+#[test]
+fn a_chain_of_in_dest_links_resolves_to_where_the_pointer_lands() {
+    // (the link's parent, the target as written, the destination's links,
+    // where the pointer lands).
+    let cases: &[(&str, &str, Links, &str)] = &[
+        // The ordinary chain: `shared -> real` under `rc -> shared/rc`.
+        // Nothing here needs the external-target permission.
+        ("", "shared/rc", &[("shared", Some("real"))], "real/rc"),
+        // Several hops, and a hop resolved from the link's own parent.
+        (
+            "",
+            "a/leaf",
+            &[("a", Some("b")), ("b", Some("c"))],
+            "c/leaf",
+        ),
+        (
+            "",
+            "deep/pivot/leaf",
+            &[("deep/pivot", Some("side"))],
+            "deep/side/leaf",
+        ),
+        (
+            "nested",
+            "../shared/rc",
+            &[("shared", Some("real"))],
+            "real/rc",
+        ),
+        // `..` pops what the chain walked, not what the target spelled:
+        // after `deep/pivot` resolves to `deep/side`, `..` is `deep`.
+        ("", "deep/pivot/..", &[("deep/pivot", Some("side"))], "deep"),
+        // A hop pointing at nothing keeps the chain in-dest: a pointer to
+        // nothing is still a pointer inside the destination.
+        ("", "shared/rc", &[("shared", Some("gone"))], "gone/rc"),
+        ("", "not-there/yet", &[], "not-there/yet"),
+        // A destination with no links at all grades exactly as the lexical
+        // resolution does.
+        ("nested", "sub/../sibling", &[], "nested/sibling"),
+    ];
+
+    for (parent, target, links, landing) in cases {
+        assert_eq!(
+            resolve(parent, target, links),
+            Some(Utf8PathBuf::from(*landing)),
+            "{parent:?} -> {target:?} through {links:?}"
+        );
+    }
+}
+
+#[test]
+fn a_chain_reaching_outside_the_destination_grades_external() {
+    // (the link's parent, the target as written, the destination's links).
+    let cases: &[(&str, &str, Links)] = &[
+        // The pivot case: dest holds `pivot -> /etc`, so `pivot/passwd`
+        // dereferences to /etc/passwd.
+        ("", "pivot/passwd", &[("pivot", Some("/etc"))]),
+        // The same hop, escaped through a `..` a lexical resolution would
+        // have popped before ever looking at `pivot`.
+        ("", "pivot/../passwd", &[("pivot", Some("/etc"))]),
+        // A hop climbing out, from its own parent rather than the link's.
+        ("", "pivot/x", &[("pivot", Some("../outside"))]),
+        (
+            "nested",
+            "pivot",
+            &[("nested/pivot", Some("../../outside"))],
+        ),
+        // A hop far along the chain.
+        ("", "a/leaf", &[("a", Some("b")), ("b", Some("/etc"))]),
+        // The two spellings graded external on every host apply to a
+        // followed link's target exactly as to the target as written.
+        ("", "pivot/x", &[("pivot", Some("C:/escape"))]),
+        ("", "pivot/x", &[("pivot", Some("..\\..\\escape"))]),
+        // A hop nothing can resolve: the on-disk target is not UTF-8, so
+        // no verdict about where the chain lands is available.
+        ("", "pivot/passwd", &[("pivot", None)]),
+    ];
+
+    for (parent, target, links) in cases {
+        assert_eq!(
+            resolve(parent, target, links),
+            None,
+            "{parent:?} -> {target:?} through {links:?}"
+        );
+    }
+}
+
+#[test]
+fn a_cycle_of_links_grades_external_rather_than_looping() {
+    // The guard is a visited set of the links followed, the shape apply's
+    // no-follow walk carries. It terminates the resolution instead of
+    // chasing the cycle, and the verdict is external: a chain that never
+    // lands cannot be said to land inside the destination.
+    assert_eq!(resolve("", "self", &[("self", Some("self"))]), None);
+    assert_eq!(
+        resolve("", "l1", &[("l1", Some("l2")), ("l2", Some("l1"))]),
+        None
+    );
+    assert_eq!(
+        resolve("", "l1/leaf", &[("l1", Some("l2")), ("l2", Some("l1"))]),
+        None
+    );
+    // Blunter than a kernel's ELOOP counter, deliberately: a target that
+    // traverses one link twice without cycling grades external too.
+    assert_eq!(resolve("", "s/x/../../s/y", &[("s", Some("real"))]), None);
+}
+
+#[test]
+fn the_lexical_grading_is_the_chain_over_a_destination_holding_no_links() {
+    for (parent, target) in [
+        ("", "shared/rc"),
+        ("nested", "../shared/rc"),
+        ("", "/etc/passwd"),
+        ("", "../outside"),
+        ("", "C:/escape"),
+    ] {
+        assert_eq!(
+            contained_target(Utf8Path::new(parent), target),
+            resolve(parent, target, &[]),
             "{parent:?} -> {target:?}"
         );
     }
