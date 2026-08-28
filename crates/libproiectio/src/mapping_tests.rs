@@ -70,6 +70,25 @@ fn keys_are_lexically_normalized() {
 }
 
 #[test]
+fn keys_stay_slash_separated_on_every_host() {
+    // Path equality compares components, which on Windows would hide a key
+    // rebuilt with `\` — and such a key would fail containment at plan
+    // time. The byte-level assertion pins the separator on every host.
+    let text = r#"
+        version = 1
+        [files."a/b/../c/d"]
+        contents = "x"
+    "#;
+
+    let keys: Vec<String> = parse_at(text)
+        .unwrap()
+        .keys()
+        .map(|key| key.as_str().to_owned())
+        .collect();
+    assert_eq!(keys, ["a/c/d"]);
+}
+
+#[test]
 fn inline_contents_default_to_non_executable_and_the_override_wins() {
     let text = r#"
         version = 1
@@ -208,12 +227,20 @@ fn escaping_keys_are_refused_together_each_named_verbatim() {
         contents = "d"
         [links."dir\\sub"]
         target = "x"
+        [archives."../../outside/"]
+        source = "./v.tar"
     "#;
 
-    let want: BTreeSet<Utf8PathBuf> = ["/etc/passwd", "../sibling", "a//b", "dir\\sub"]
-        .into_iter()
-        .map(Utf8PathBuf::from)
-        .collect();
+    let want: BTreeSet<Utf8PathBuf> = [
+        "/etc/passwd",
+        "../sibling",
+        "a//b",
+        "dir\\sub",
+        "../../outside/",
+    ]
+    .into_iter()
+    .map(Utf8PathBuf::from)
+    .collect();
     assert!(matches!(
         parse_at(text).unwrap_err(),
         Error::Containment { paths } if paths == want

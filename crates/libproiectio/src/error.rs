@@ -149,9 +149,9 @@ pub enum Error {
         /// The offending entry's key, verbatim.
         key: Utf8PathBuf,
     },
-    /// One projected path is claimed by more than one mapping entry — the
-    /// same key (after lexical normalization) under `[files]` and
-    /// `[links]`. Not a refusal.
+    /// One projected path is claimed by more than one mapping entry: two
+    /// entries — under `[files]`, `[links]`, or one of each — whose keys
+    /// lexically normalize to the same path. Not a refusal.
     #[error("mapping {path}: \"{key}\" is projected by more than one entry")]
     MappingDuplicate {
         /// The mapping file's location.

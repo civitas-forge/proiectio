@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Deserialize;
@@ -22,8 +23,10 @@ pub const MAPPING_VERSION: u32 = 1;
 /// The trust split (`docs/security.lex` section 1): `path` is the invoker's
 /// and is trusted — it, and every `source` it references, may point anywhere
 /// the invoker can read. The mapping's *content* is not trusted: every
-/// projected key (the table keys, which become the tree's relative paths)
-/// passes [`contained_join`], and the offenders come back aggregated in one
+/// projected key — the `[files]` and `[links]` table keys, which become the
+/// tree's relative paths, and each `[archives]` prefix, judged without its
+/// conventional trailing `/` — passes [`contained_join`], and the offenders
+/// come back aggregated in one
 /// [`Error::Containment`] naming each key verbatim. Keys land in the
 /// returned tree lexically normalized (`a/../b` becomes `b`), so one
 /// on-disk location has one key; two entries claiming the same normalized
@@ -104,6 +107,15 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
             }
         }
     }
+    // An archive key is a projected prefix, so it is confined like every
+    // other projected path — judged without its conventional trailing `/`,
+    // which names the same prefix.
+    for key in doc.archives.keys() {
+        let prefix = key.strip_suffix('/').unwrap_or(key);
+        if normalize_key(Utf8Path::new(prefix)).is_none() {
+            refused.insert(Utf8PathBuf::from(key.clone()));
+        }
+    }
     if !refused.is_empty() {
         return Err(Error::Containment { paths: refused });
     }
@@ -158,21 +170,20 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
                 executable: executable.unwrap_or(false),
             },
             Body::Source(source) => {
+                // One handle for bytes and metadata, so both describe the
+                // same file even if the path is swapped mid-read.
                 let source_path = dir.join(source);
-                let contents = fs::read(&source_path).map_err(|source| Error::Io {
+                let io = |source| Error::Io {
                     path: source_path.clone(),
                     source,
-                })?;
+                };
+                let mut file = fs::File::open(&source_path).map_err(io)?;
                 let executable = match executable {
                     Some(explicit) => explicit,
-                    None => {
-                        let meta = fs::metadata(&source_path).map_err(|source| Error::Io {
-                            path: source_path.clone(),
-                            source,
-                        })?;
-                        is_executable(&meta)
-                    }
+                    None => is_executable(&file.metadata().map_err(io)?),
                 };
+                let mut contents = Vec::new();
+                file.read_to_end(&mut contents).map_err(io)?;
                 Entry::File {
                     contents,
                     executable,
@@ -203,12 +214,19 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
 fn normalize_key(key: &Utf8Path) -> Option<Utf8PathBuf> {
     let root = Utf8Path::new("/");
     let joined = contained_join(root, key).ok()?;
-    Some(
-        joined
-            .strip_prefix(root)
-            .expect("contained_join keeps the path under its destination")
-            .to_owned(),
-    )
+    let relative = joined
+        .strip_prefix(root)
+        .expect("contained_join keeps the path under its destination");
+    // Rejoin the components with `/`: the join above separates with the
+    // platform separator, and a desired-tree key must be byte-identical on
+    // every host — a `\`-separated key would itself fail containment later.
+    Some(Utf8PathBuf::from(
+        relative
+            .components()
+            .map(|component| component.as_str())
+            .collect::<Vec<_>>()
+            .join("/"),
+    ))
 }
 
 /// Where a `[files]` entry's bytes come from, decided before any read.
