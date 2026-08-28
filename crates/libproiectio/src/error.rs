@@ -298,8 +298,11 @@ pub enum Error {
     ArchiveMemberKind {
         /// The archive's location.
         path: Utf8PathBuf,
-        /// The offending member's path as it projects, relative to any
-        /// prefix.
+        /// The offending member, as the archive spells it. Not the path it
+        /// would have projected to: the kind is judged before `strip` and
+        /// the containment gateway, either of which can erase a name, and
+        /// what the invoker has to go and look at is the member the archive
+        /// carries.
         member: Utf8PathBuf,
     },
     /// A zip member's two spellings of its kind disagree: the trailing `/`
@@ -334,8 +337,8 @@ pub enum Error {
     /// deterministic entry to prefer.
     ///
     /// One zip shape never reaches this error: the zip reader keys its
-    /// members by name and keeps the last, so two members whose names are
-    /// byte-identical are already one before expansion sees them
+    /// members by the name it decodes and keeps the last, so two members
+    /// that decode to one name are already one before expansion sees them
     /// ([`load_archive`](crate::load_archive) says what that means). Every
     /// duplicate whose names differ — normalizing alike, or collapsed by
     /// `strip` — is refused here.

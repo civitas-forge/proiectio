@@ -255,13 +255,16 @@ pub(crate) const ARCHIVE_EXTENSIONS: &str = ".tar, .tar.gz, .tgz, .tar.zst, .zip
 ///   one location ([`Error::MappingDuplicate`]) and two desired keys
 ///   claiming one ([`Refusal::TreeConflict`](crate::Refusal::TreeConflict))
 ///   for the same reason: there is no deterministic entry to prefer.
-///   One zip shape escapes it: `ZipArchive` keys its members by name and
-///   keeps the last, so two members whose names are **byte-identical** have
-///   already become one before this expansion sees an index, and it is
-///   handed a single member with nothing to compare. That collapse is the
-///   one every extractor performs — `unzip` writes both in order and the
-///   last stands — so a zip projects what extracting it would produce,
-///   while every duplicate whose names *differ* is refused;
+///   One zip shape escapes it: `ZipArchive` keys its members by the name it
+///   decodes and keeps the last, so two members that decode to one name
+///   have already become one before this expansion sees an index, and it is
+///   handed a single member with nothing to compare. Byte-identical names
+///   are the common case, and two spellings of one name — the same
+///   characters stored once as flagged UTF-8 and once in a legacy encoding
+///   — collapse the same way. That collapse is the one every extractor
+///   performs, `unzip` writing both in order and the last standing, so a
+///   zip projects what extracting it would produce; every duplicate whose
+///   names survive as two is refused;
 /// - a file or symlink member `strip` erases —
 ///   [`Error::ArchiveMemberStripped`];
 /// - a member that, after `strip`, still nests more than 64 directories
@@ -369,7 +372,7 @@ pub(crate) fn expand(
             // asking for more is `ArchiveDecode`: it could not have fit in
             // the budget anyway.
             decoder
-                .window_log_max(MAX_EXPANDED_BYTES.trailing_zeros())
+                .window_log_max(MAX_EXPANDED_BYTES.ilog2())
                 .map_err(|e| decode_error(source, format, e))?;
             expansion.read_tar(Budgeted::new(decoder, Rc::clone(budget)))?;
         }
@@ -504,46 +507,54 @@ impl Expansion<'_> {
             }
             self.count_member()?;
             let raw = entry.path_bytes().into_owned();
+            let name = self.utf8_name(&raw)?;
             let is_dir = entry_type.is_dir();
-            let Some(member) = self.admit(self.utf8_name(&raw)?, is_dir)? else {
+            // The kind first, as on the zip path and for the same reason: a
+            // name can vanish before it is judged — `strip` erases one, and
+            // one the gateway refuses is only recorded — so a hardlink, a
+            // device node, a fifo, or a GNU sparse member would come back
+            // named for what became of its path rather than for the kind
+            // that is the actual problem. Kinds `docs/security.lex` section
+            // 4 restricts out, and a hardlink in particular is a second name
+            // for a file the projection would otherwise have to resolve.
+            if !matches!(
+                entry_type,
+                tar::EntryType::Regular
+                    | tar::EntryType::Continuous
+                    | tar::EntryType::Symlink
+                    | tar::EntryType::Directory
+            ) {
+                return Err(Error::ArchiveMemberKind {
+                    path: self.source.to_owned(),
+                    member: Utf8PathBuf::from(name),
+                });
+            }
+            let Some(member) = self.admit(name, is_dir)? else {
                 continue;
             };
             if is_dir {
                 continue;
             }
-            match entry_type {
-                tar::EntryType::Symlink => {
-                    let raw_target = entry.link_name_bytes().unwrap_or_default().into_owned();
-                    let target = self.utf8_target(&member, &raw_target)?;
-                    self.insert(member, Entry::Symlink { target })?;
-                }
-                tar::EntryType::Regular | tar::EntryType::Continuous => {
-                    let mode = entry.header().mode().map_err(|e| self.decode(e))?;
-                    // Unbounded here only in form: the entry reads through
-                    // the `Budgeted` stream, which stops one byte past what
-                    // the budget has left.
-                    let mut contents = Vec::new();
-                    entry
-                        .read_to_end(&mut contents)
-                        .map_err(|e| self.decode(e))?;
-                    self.insert(
-                        member,
-                        Entry::File {
-                            contents,
-                            executable: is_executable(mode),
-                        },
-                    )?;
-                }
-                // A hardlink, a device node, a fifo, a GNU sparse member:
-                // kinds `docs/security.lex` section 4 restricts out, and a
-                // hardlink in particular is a second name for a file the
-                // projection would otherwise have to resolve.
-                _ => {
-                    return Err(Error::ArchiveMemberKind {
-                        path: self.source.to_owned(),
-                        member,
-                    });
-                }
+            if entry_type == tar::EntryType::Symlink {
+                let raw_target = entry.link_name_bytes().unwrap_or_default().into_owned();
+                let target = self.utf8_target(&member, &raw_target)?;
+                self.insert(member, Entry::Symlink { target })?;
+            } else {
+                let mode = entry.header().mode().map_err(|e| self.decode(e))?;
+                // Unbounded here only in form: the entry reads through the
+                // `Budgeted` stream, which stops one byte past what the
+                // budget has left.
+                let mut contents = Vec::new();
+                entry
+                    .read_to_end(&mut contents)
+                    .map_err(|e| self.decode(e))?;
+                self.insert(
+                    member,
+                    Entry::File {
+                        contents,
+                        executable: is_executable(mode),
+                    },
+                )?;
             }
         }
         Ok(())

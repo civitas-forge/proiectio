@@ -672,6 +672,18 @@ fn a_hardlink_member_is_refused_by_name() {
     ));
 }
 
+/// A kind is judged before `strip` can erase the name carrying it, on the
+/// tar path as on the zip one. Judged after, a fifo the caller stripped down
+/// to nothing would come back as "nothing left after strip" — true, and not
+/// the problem.
+#[test]
+fn a_member_strip_would_erase_is_still_refused_for_its_kind() {
+    assert!(matches!(
+        expand_bytes("dev.tar", &tar(&[Member::new("pkg/pipe", FIFO)]), 2).unwrap_err(),
+        Error::ArchiveMemberKind { member, .. } if member == "pkg/pipe"
+    ));
+}
+
 #[test]
 fn a_fifo_member_is_refused_by_name() {
     assert!(matches!(

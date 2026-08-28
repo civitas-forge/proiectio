@@ -89,6 +89,10 @@ fn every_variant() -> Vec<Error> {
             path: Utf8PathBuf::from("/assets/vendor.tar"),
             member: Utf8PathBuf::from("lib/alias"),
         },
+        Error::ArchiveMemberKindDisagrees {
+            path: Utf8PathBuf::from("/assets/vendor.zip"),
+            member: Utf8PathBuf::from("logs/"),
+        },
         Error::ArchiveMemberDuplicate {
             path: Utf8PathBuf::from("/assets/vendor.zip"),
             member: Utf8PathBuf::from("lib/tool"),
@@ -148,7 +152,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    let (refusals, failures) = (7, 23);
+    let (refusals, failures) = (7, 24);
     assert_eq!(codes.len(), refusals + failures);
     assert!(codes[..refusals].iter().all(|&code| code == 2));
     assert!(codes[refusals..].iter().all(|&code| code == 1));

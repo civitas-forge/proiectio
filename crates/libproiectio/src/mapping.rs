@@ -225,8 +225,8 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
             },
         );
     }
-    // Archives last, in prefix order, so a mapping expands the same way
-    // every time. Each member arrives already keyed under its prefix; a key
+    // Archives last, in mapping-key order, so a mapping expands the same
+    // way every time. Each member arrives already keyed under its prefix; a key
     // some other entry already claimed is the same double claim two
     // `[files]` keys would be.
     // One byte budget across every table: the bound is on what one untrusted
