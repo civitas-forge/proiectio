@@ -29,6 +29,11 @@ pub enum PathState {
 
 /// The classification of every path in the union of the manifest and the
 /// destination directory, with nothing written.
+///
+/// Classification covers what UTF-8 can name: a non-UTF-8 entry on disk
+/// can never match a desired or recorded path, so it stays outside this
+/// map — never overwritten, never removed, and a directory holding one
+/// is never pruned.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Status {
     /// Per-path states, keyed by path relative to the destination.
