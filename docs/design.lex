@@ -105,7 +105,8 @@ Proiectio Design
 
     :: rust ::
 
-    Dependencies: serde, serde_json, thiserror, camino now; sha2 and
-    tempfile arrive with apply. The whole crate
+    Dependencies: serde, serde_json, thiserror, camino now; sha2,
+    cap-std, and cap-tempfile arrive with apply
+    ([./implementation.lex] section 3). The whole crate
     is a few hundred lines plus tests; the tests run against real
     temp directories, since atomic rename is the behavior under test.

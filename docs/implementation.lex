@@ -69,32 +69,57 @@ Implementation Guidelines
 
     Spiked and decided (issue #3): adopt cap-std. Observe and act do
     their I/O through a cap_std::fs_utf8::Dir rooted at dest —
-    camino-typed, and every open refuses ".." and symlink escapes at
-    the handle itself [2]. Escapes fail no matter when a hostile
-    link appears, so the plan-to-apply race is closed structurally,
-    not by string checks. What the spike verified:
+    camino-typed, and every open refuses any path whose resolution
+    escapes that root: an escaping "..", an absolute path, a
+    symlink chain that leaves the Dir [2]. An in-dest ".." still
+    resolves — the refusal is about where a path lands, not how it
+    is spelled. Escapes fail no matter when a hostile link appears,
+    so the plan-to-apply race is closed structurally, not by string
+    checks. What the spike verified:
 
     - A write through an escaping symlinked ancestor — "logs ->
       ../outside", or an absolute target — fails at open time. The
       other half of the [./security.lex] rule stays ours: an in-dest
       symlinked ancestor is followed silently, so refusing links
-      proiectio does not own is still our check.
+      proiectio does not own is still our check — and act enforces
+      it through the handle, not beside it: each ancestor component
+      is opened no-follow from the previously verified handle and
+      the final mutation happens relative to that parent, so a
+      component swapped for a symlink after the check cannot
+      redirect a write to an in-dest path the plan never named.
     - --allow-external-targets coexists: symlink() refuses absolute
       targets, but symlink_contents() writes any target string
       verbatim — act uses it for flag-permitted links — and reads
       through such a link still fail, which is the model exactly: an
       external target is a pointer, never written through.
       read_link_contents() hands observe the string back untouched.
+      One platform edge: symlink_contents() is Unix-only — a
+      Windows symlink needs a file-or-directory kind the entry does
+      not carry, and dangling targets are allowed, so act could not
+      infer one. Nothing here targets Windows; if that changes, the
+      desired-tree symlink entry grows a kind first.
     - Tempfile-persist works inside a Dir: cap-tempfile's
       TempFile::new(&dir) plus replace(name) renames over the path
-      atomically, replaces existing files, and cleans up on drop;
-      the exec bit is a set_permissions after replace.
+      atomically, replaces existing files, and cleans up on drop.
+      Permissions, the exec bit included, go on the open tempfile
+      handle before replace, so bytes and mode publish together in
+      the one rename — never a visible file with a wrong mode.
+
+    Two Dirs, because a capability follows the tree it guards: the
+    dest Dir covers the destination tree, while the manifest and
+    the single-writer lock (section 7) live in the caller-chosen
+    state dir of [./design.lex] — which need not be inside dest —
+    under a second Dir rooted there.
 
     contained_join stays the plan-time gateway regardless: cap-std
     tolerates in-dest ".." and validates nothing at link creation,
     so only the lexical rules produce the structured Containment
-    refusal, with paths, at decide time. A Dir refusal during act
-    means a race or a bug and surfaces as the I/O error it is.
+    refusal, with paths, at decide time. At act time the split
+    holds: an unowned symlinked ancestor found by act's own
+    no-follow walk is the [./security.lex] refusal — structured,
+    path-carrying, exit-mapped as a refusal like every other — while
+    a Dir escape refusal underneath it means a bug or a race that
+    walk already guards, and surfaces as the I/O error it is.
 
 4. Standout
 
@@ -140,8 +165,8 @@ Implementation Guidelines
       wedged forever behind its own safety rule. A failed run must
       leave a destination a re-run can heal.
     - "No cleanup" does not cover our own droppings: a failed
-      persist removes its tempfile (the tempfile crate does this on
-      drop), so dest is never littered with .tmp files.
+      persist removes its tempfile (cap-tempfile's TempFile does
+      this on drop), so dest is never littered with .tmp files.
 
 6. Determinism and Ordering
 
@@ -162,14 +187,14 @@ Notes
 
     :: notes ::
 
-    1. Decided at the I/O layer: cap-std (capability-based Dir
-        rooted at dest, OS-enforced) and cap-tempfile — the
-        section 3 spike. Candidates for the lexical side of
-        contained_join, which that decision does not cover:
+    1. Candidates for the lexical side of contained_join — the one
+        side the cap-std adoption above does not cover:
         path-absolutize and normpath (dot-component cleanup without
         canonicalizing); relative-path (portable, strictly relative
         path types); camino (UTF-8 paths, already in the design).
-        strict-path is superseded by cap-std.
+        strict-path drops out on both sides: it resolves against
+        the live filesystem, which the lexical side must not, and
+        its escape-refusal role is cap-std's at the I/O layer.
     2. openat2 with RESOLVE_BENEATH on Linux 5.6 and newer, openat
         with O_RESOLVE_BENEATH on FreeBSD 13 and newer — a single
         kernel-enforced call — and a per-component fd walk on macOS
