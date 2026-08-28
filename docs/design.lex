@@ -17,7 +17,10 @@ Proiectio Design
     a projected secret is never copied into state.
 
     The manifest, one JSON file in a caller-chosen directory, written
-    atomically and after every other write:
+    atomically and after every other write — and on a failed apply
+    still persisted, recording the entries actually applied, so a
+    partial run heals on re-run instead of classifying its own
+    writes as Foreign:
 
     pub struct Manifest {
     pub version: u32,
@@ -71,6 +74,10 @@ Proiectio Design
     alone, so an edit elsewhere in the file never reads as drift.
     Removal strips the block, or deletes the file where the manifest
     owns it whole.
+
+    plan and apply are separate calls, so before each overwrite or
+    removal apply re-hashes the target and refuses if the disk
+    changed since the plan.
 
     Removal is a plan against an empty desired tree — same
     classification, same drift refusals — and status runs the

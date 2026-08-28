@@ -88,7 +88,14 @@ Security Model
 
     Writes go through a tempfile in the target directory persisted
     over the path, so a crash leaves the old file or the new one,
-    never a torn write. The manifest itself is written atomically,
-    after every other write, and lives with the destination
-    (<dest>/.proiectio by default) — implicitly a proiectio-owned
-    path.
+    never a torn write. Before each overwrite or removal, apply
+    re-hashes the target and refuses if the disk changed after the
+    plan — the drift check holds across the gap between the two
+    calls, not just at plan time.
+
+    The manifest itself is written atomically, after every other
+    write — and on a failed apply still persisted, recording what
+    was actually written, so a partial run heals on re-run instead
+    of wedging behind the Foreign rule. It lives with the
+    destination (<dest>/.proiectio by default) — implicitly a
+    proiectio-owned path.
