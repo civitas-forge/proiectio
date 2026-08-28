@@ -66,6 +66,12 @@ fn every_variant() -> Vec<Error> {
             path: Utf8PathBuf::from("deploy.toml"),
             keys: paths(&["vendor/"]),
         },
+        Error::ApplySymlinkUnimplemented {
+            paths: paths(&["latest"]),
+        },
+        Error::ApplyBlockUnimplemented {
+            paths: paths(&["shared/.zshrc"]),
+        },
     ]
 }
 
@@ -85,7 +91,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    assert_eq!(codes, vec![2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1]);
+    assert_eq!(codes, vec![2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
     assert_eq!(exit_code(Ok(())), 0);
 }
 

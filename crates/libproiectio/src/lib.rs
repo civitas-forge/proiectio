@@ -26,6 +26,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(unix)]
+mod act;
 mod containment;
 mod decide;
 mod entry;
@@ -40,6 +42,8 @@ mod status;
 #[cfg(all(test, unix))]
 mod test_support;
 
+#[cfg(unix)]
+pub use act::*;
 pub use containment::*;
 pub use decide::*;
 pub use entry::*;
