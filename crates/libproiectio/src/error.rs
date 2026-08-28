@@ -196,6 +196,33 @@ pub enum Error {
         /// The `[archives]` keys, verbatim.
         keys: BTreeSet<Utf8PathBuf>,
     },
+    /// The plan writes a symlink, which [`apply`](crate::apply) cannot do
+    /// yet: link creation waits on symlink target grading (in-dest or
+    /// external, `docs/security.lex` section 3), and creating ungraded links
+    /// would plant escaping pointers without the opt-in that rule demands.
+    /// Not a refusal: the plan is well-formed — this crate cannot honor it
+    /// yet. Reported before anything is written.
+    #[error(
+        "plan writes symlinks, which apply does not implement yet: {}",
+        join(paths)
+    )]
+    ApplySymlinkUnimplemented {
+        /// The planned symlink paths, relative to the destination.
+        paths: BTreeSet<Utf8PathBuf>,
+    },
+    /// The plan touches a [`Block`](crate::EntryKind::Block) entry —
+    /// writing one, or re-checking a block signature — and block regions
+    /// are not implemented in [`apply`](crate::apply) yet. Not a refusal:
+    /// the plan is well-formed — this crate cannot honor it yet. Reported
+    /// before anything is written.
+    #[error(
+        "plan touches block entries, which apply does not implement yet: {}",
+        join(paths)
+    )]
+    ApplyBlockUnimplemented {
+        /// The planned block paths, relative to the destination.
+        paths: BTreeSet<Utf8PathBuf>,
+    },
 }
 
 impl Error {
@@ -222,7 +249,9 @@ impl Error {
             | Error::MappingVersion { .. }
             | Error::MappingContentsXorSource { .. }
             | Error::MappingDuplicate { .. }
-            | Error::MappingArchiveUnimplemented { .. } => false,
+            | Error::MappingArchiveUnimplemented { .. }
+            | Error::ApplySymlinkUnimplemented { .. }
+            | Error::ApplyBlockUnimplemented { .. } => false,
         }
     }
 }

@@ -37,7 +37,7 @@ fn to_hex(digest: &[u8]) -> String {
 /// large the file, so observing a destination that happens to hold a huge
 /// foreign file never materializes it.
 #[cfg(unix)]
-fn sha256_hex_of_reader(mut reader: impl std::io::Read) -> std::io::Result<String> {
+pub(crate) fn sha256_hex_of_reader(mut reader: impl std::io::Read) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -208,7 +208,7 @@ fn walk(dir: &Dir, prefix: &Utf8Path, into: &mut BTreeMap<Utf8PathBuf, Observati
 /// Wraps an OS error as [`Error::Io`] at `path` (relative to the
 /// destination).
 #[cfg(unix)]
-fn io_error(path: &Utf8Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
+pub(crate) fn io_error(path: &Utf8Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
     move |source| Error::Io {
         path: path.to_owned(),
         source,
