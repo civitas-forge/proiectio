@@ -296,7 +296,9 @@ fn disk_already_equal_to_desired_skips() {
     assert_eq!(
         action(&plan, "a.txt"),
         &Action::Skip {
+            kind: EntryKind::File,
             expected_hash: desired_hash(&entry),
+            executable: false,
         }
     );
     assert_eq!(plan.owner, OWNER);
@@ -392,7 +394,36 @@ fn a_path_edited_into_agreement_with_desired_skips() {
     assert_eq!(
         action(&plan, "a.txt"),
         &Action::Skip {
+            kind: EntryKind::File,
             expected_hash: desired_hash(&entry),
+            executable: false,
+        }
+    );
+}
+
+#[test]
+fn an_agreement_skip_carries_the_desired_signature() {
+    // The recorded entry differs from the desired one (here in the
+    // executable bit alone), so the skip must carry the full desired
+    // signature for apply to record — the hash by itself could not tell
+    // apply the bit changed.
+    let agreed = file("x\n", true);
+    let manifest = manifest_of(&[("bin/tool", recorded(&file("x\n", false), &[OWNER]))]);
+    let observations = observed(&[("bin/tool", on_disk(&agreed))]);
+
+    let plan = plan(
+        &tree(&[("bin/tool", &agreed)]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "bin/tool"),
+        &Action::Skip {
+            kind: EntryKind::File,
+            expected_hash: desired_hash(&agreed),
+            executable: true,
         }
     );
 }
@@ -611,7 +642,9 @@ fn skip_lets_an_owner_join_a_path_another_owner_holds_identically() {
     assert_eq!(
         action(&plan, ".zshrc"),
         &Action::Skip {
+            kind: EntryKind::File,
             expected_hash: desired_hash(&entry),
+            executable: false,
         }
     );
 }
@@ -747,23 +780,124 @@ fn a_denormalized_desired_key_unifies_with_its_recorded_path() {
     assert_eq!(
         action(&plan, "b"),
         &Action::Skip {
+            kind: EntryKind::File,
             expected_hash: desired_hash(&entry),
+            executable: false,
         }
     );
     assert_eq!(plan.actions.len(), 1);
 }
 
 #[test]
-#[should_panic(expected = "two desired keys normalize to the same path b")]
-fn two_desired_keys_normalizing_to_one_path_panic() {
-    plan(
+fn two_desired_keys_normalizing_to_one_path_refuse_both() {
+    // The tree claims one location twice; there is no deterministic entry
+    // to prefer, so both claims refuse, keyed verbatim, each naming the
+    // other. An unrelated key still plans.
+    let entry = file("x\n", false);
+    let plan = plan(
         &tree(&[
             ("b", &file("one\n", false)),
             ("a/../b", &file("two\n", false)),
+            ("ok.txt", &entry),
         ]),
         &Manifest::new(),
         &observed(&[]),
         DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "b"),
+        &Action::Refuse {
+            refusal: Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("a/../b")]),
+            },
+        }
+    );
+    assert_eq!(
+        action(&plan, "a/../b"),
+        &Action::Refuse {
+            refusal: Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("b")]),
+            },
+        }
+    );
+    assert_eq!(action(&plan, "ok.txt"), &Action::Write { entry });
+    assert_eq!(plan.actions.len(), 3);
+}
+
+#[test]
+fn a_desired_path_beneath_another_refuses_both() {
+    // Every desired entry is a non-directory, so a tree naming both `a`
+    // and `a/b` cannot be applied in any order: whichever lands first
+    // makes the other impossible. Both claims refuse.
+    let plan = plan(
+        &tree(&[
+            ("a", &file("whole\n", false)),
+            ("a/b", &file("nested\n", false)),
+            ("c", &file("fine\n", false)),
+        ]),
+        &Manifest::new(),
+        &observed(&[]),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "a"),
+        &Action::Refuse {
+            refusal: Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("a/b")]),
+            },
+        }
+    );
+    assert_eq!(
+        action(&plan, "a/b"),
+        &Action::Refuse {
+            refusal: Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("a")]),
+            },
+        }
+    );
+    assert!(matches!(action(&plan, "c"), Action::Write { .. }));
+}
+
+#[test]
+fn a_chain_of_overlapping_desired_paths_refuses_every_claimant() {
+    // `a`, `a/b`, and `a/b/c` overlap pairwise; each refusal names every
+    // key it collides with, ancestors and descendants alike.
+    let plan = plan(
+        &tree(&[
+            ("a", &file("1\n", false)),
+            ("a/b", &file("2\n", false)),
+            ("a/b/c", &file("3\n", false)),
+        ]),
+        &Manifest::new(),
+        &observed(&[]),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "a/b"),
+        &Action::Refuse {
+            refusal: Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("a"), Utf8PathBuf::from("a/b/c")]),
+            },
+        }
+    );
+    assert_eq!(
+        action(&plan, "a"),
+        &Action::Refuse {
+            refusal: Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("a/b"), Utf8PathBuf::from("a/b/c")]),
+            },
+        }
+    );
+    assert_eq!(
+        action(&plan, "a/b/c"),
+        &Action::Refuse {
+            refusal: Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("a"), Utf8PathBuf::from("a/b")]),
+            },
+        }
     );
 }
 
@@ -849,7 +983,9 @@ fn a_desired_link_matching_the_disk_target_skips() {
     assert_eq!(
         action(&plan, "rc"),
         &Action::Skip {
+            kind: EntryKind::Symlink,
             expected_hash: desired_hash(&entry),
+            executable: false,
         }
     );
 }

@@ -34,13 +34,15 @@ fn state_prefix_is_none_for_a_state_dir_outside_the_target() {
 }
 
 #[test]
-fn state_prefix_is_none_for_a_state_dir_equal_to_the_target() {
-    let projection = Projection::new(
+#[should_panic(expected = "state_dir must not equal the target")]
+fn a_state_dir_equal_to_the_target_is_rejected() {
+    // The state files would sit at the destination root with no subtree
+    // to exclude, and the projection's own manifest would classify as
+    // foreign.
+    Projection::new(
         Utf8PathBuf::from("/srv/site"),
         Utf8PathBuf::from("/srv/site"),
     );
-
-    assert_eq!(projection.state_prefix(), None);
 }
 
 #[test]

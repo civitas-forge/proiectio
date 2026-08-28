@@ -20,7 +20,9 @@ fn a_plan_serializes_with_paths_as_keys() {
             (
                 Utf8PathBuf::from("config/settings.toml"),
                 Action::Skip {
+                    kind: EntryKind::File,
                     expected_hash: "dd44".to_owned(),
+                    executable: false,
                 },
             ),
             (Utf8PathBuf::from("shared/.zshrc"), Action::Release),

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::Utf8PathBuf;
 use serde::Serialize;
 
-use crate::Entry;
+use crate::{Entry, EntryKind};
 
 /// What planning does when a recorded path's state on disk differs from
 /// the recorded entry — bytes, kind, or executable bit — a user edit.
@@ -51,7 +51,10 @@ pub enum Action {
     /// For a [`Entry::Block`] entry, "on disk" means the projection's
     /// delimited region, not the container file: a pre-existing container
     /// without this projection's markers plans a `Write`, which inserts
-    /// the region and leaves the rest of the file alone.
+    /// the region and leaves the rest of the file alone. Until block-region
+    /// classification lands, the deciding stage does not yet produce that
+    /// plan — it refuses the pre-existing container as foreign
+    /// ([`decide`](crate::decide)'s rustdoc names the seam).
     Write {
         /// What to write.
         entry: Entry,
@@ -69,15 +72,25 @@ pub enum Action {
         expected_hash: String,
     },
     /// Disk already equals desired: nothing is written and the mtime
-    /// survives. Apply still records this plan's owner on the path's
-    /// manifest entry — how an owner joins a path another owner already
-    /// holds with an identical entry: bytes, kind, and executable bit —
-    /// after re-hashing the target and refusing if the disk no longer
-    /// matches `expected_hash`.
+    /// survives. Apply re-checks the whole signature — kind, hash, and
+    /// executable bit — against the disk, refuses if any of it changed
+    /// since the plan, and records the signature with this plan's owner on
+    /// the path's manifest entry. That recording is how an owner joins a
+    /// path another owner already holds identically, and how the manifest
+    /// catches up when a drifted path was edited into agreement with the
+    /// desired tree — the recorded entry may differ from this signature in
+    /// any field, so the action carries all of them.
     Skip {
-        /// The hash of the bytes on disk at plan time, which equal the
-        /// desired bytes; the disk must still carry it at apply time.
+        /// The desired node's kind, which the disk node matches.
+        kind: EntryKind,
+        /// The hash of the desired node — its file contents or link
+        /// target — which the disk carries at plan time and must still
+        /// carry at apply time.
         expected_hash: String,
+        /// The desired executable bit, which the disk node matches;
+        /// always `false` for symlinks
+        /// ([`ManifestEntry::executable`](crate::ManifestEntry::executable)).
+        executable: bool,
     },
     /// Remove an orphan — recorded under this owner alone and absent from
     /// the desired tree. Apply re-hashes the target first and refuses if
@@ -124,6 +137,21 @@ pub enum Refusal {
     OwnerConflict {
         /// The other owners holding the path.
         owners: BTreeSet<String>,
+    },
+    /// The desired tree claims one on-disk location more than once: this
+    /// key shares a normalized path with another desired key, or its path
+    /// lies beneath another desired path (every desired entry is a
+    /// non-directory, so nothing can be projected beneath one). Both sides
+    /// of a conflict are refused — there is no deterministic entry to
+    /// prefer; see [`Error::TreeConflict`](crate::Error::TreeConflict).
+    /// [`load_mapping`](crate::load_mapping) rejects same-path duplicates
+    /// at parse time as
+    /// [`MappingDuplicate`](crate::Error::MappingDuplicate); this refusal
+    /// is the deciding stage's verdict on any tree, however built.
+    TreeConflict {
+        /// The other desired keys, verbatim, claiming the same or an
+        /// overlapping location.
+        paths: BTreeSet<Utf8PathBuf>,
     },
     /// The projection may not write the path — it is refused by
     /// [`contained_join`](crate::contained_join) (absolute, climbing out

@@ -87,7 +87,14 @@ pub fn classify(
 /// `state_prefix` ([`Projection::state_prefix`](crate::Projection::state_prefix)),
 /// gets [`Refusal::Containment`] keyed by the key verbatim. Admitted keys
 /// land in the plan lexically normalized (`a/../b` plans as `b`), so one
-/// on-disk location has one action.
+/// on-disk location has one action — and a tree claiming one location
+/// twice (two keys normalizing to the same path, or one desired path lying
+/// beneath another, which no non-directory entry permits) has both claims
+/// refused as [`Refusal::TreeConflict`], keyed verbatim, each naming the
+/// keys it collides with. [`load_mapping`](crate::load_mapping) rejects
+/// same-path duplicates at parse time as
+/// [`MappingDuplicate`](crate::Error::MappingDuplicate); the refusal here
+/// is the deciding stage's own verdict on any tree, however built.
 ///
 /// Each admitted path is then judged against its classification
 /// ([`classify`]) per the `docs/design.lex` section 2 action table:
@@ -148,16 +155,6 @@ pub fn classify(
 ///   pre-existing container refuses as foreign, and a recorded block never
 ///   classifies clean. Conservative until block-region classification and
 ///   container-tolerant writes land.
-///
-/// # Panics
-///
-/// Panics when two desired keys normalize to the same path (`b` and
-/// `a/../b`): the tree claims one location twice and there is no
-/// deterministic entry to prefer. [`load_mapping`](crate::load_mapping)
-/// rejects such trees at parse time as
-/// [`MappingDuplicate`](crate::Error::MappingDuplicate); a hand-built tree
-/// carrying one is a caller bug, like a relative path handed to
-/// [`Projection::new`](crate::Projection::new).
 pub fn decide(
     owner: &str,
     desired: &BTreeMap<Utf8PathBuf, Entry>,
@@ -169,9 +166,10 @@ pub fn decide(
     let states = classify(manifest, observations, state_prefix);
     let mut actions: BTreeMap<Utf8PathBuf, Action> = BTreeMap::new();
 
-    // Admission: every desired key passes the containment gateway, and none
-    // may enter the projection's own state subtree.
-    let mut admitted: BTreeMap<Utf8PathBuf, &Entry> = BTreeMap::new();
+    // Admission: every desired key passes the containment gateway, none
+    // may enter the projection's own state subtree, and no two admitted
+    // keys may claim overlapping on-disk locations.
+    let mut claims: BTreeMap<Utf8PathBuf, BTreeMap<&Utf8PathBuf, &Entry>> = BTreeMap::new();
     for (key, entry) in desired {
         let Ok(normalized) = contained_normalize(key) else {
             actions.insert(key.clone(), refuse(Refusal::Containment));
@@ -181,10 +179,49 @@ pub fn decide(
             actions.insert(key.clone(), refuse(Refusal::Containment));
             continue;
         }
-        assert!(
-            admitted.insert(normalized.clone(), entry).is_none(),
-            "two desired keys normalize to the same path {normalized}"
-        );
+        claims.entry(normalized).or_default().insert(key, entry);
+    }
+
+    // Overlaps between distinct claimed locations: one normalized path
+    // lying beneath another. Each path checks its proper ancestors, so
+    // every overlapping pair is recorded once, on both sides.
+    let mut overlaps: BTreeMap<Utf8PathBuf, BTreeSet<Utf8PathBuf>> = BTreeMap::new();
+    for (normalized, keys) in &claims {
+        for ancestor in normalized.ancestors().skip(1) {
+            let Some(above) = claims.get(ancestor) else {
+                continue;
+            };
+            overlaps
+                .entry(normalized.clone())
+                .or_default()
+                .extend(above.keys().map(|&key| key.clone()));
+            overlaps
+                .entry(ancestor.to_owned())
+                .or_default()
+                .extend(keys.keys().map(|&key| key.clone()));
+        }
+    }
+
+    let mut admitted: BTreeMap<Utf8PathBuf, &Entry> = BTreeMap::new();
+    for (normalized, keys) in &claims {
+        let overlapping = overlaps.get(normalized);
+        if keys.len() == 1 && overlapping.is_none() {
+            let (_, &entry) = keys.first_key_value().expect("one claim");
+            admitted.insert(normalized.clone(), entry);
+            continue;
+        }
+        // The location is claimed twice — by two keys normalizing to it,
+        // by a key above it, or by one below it. Refuse every claimant,
+        // each naming the keys it collides with.
+        for &key in keys.keys() {
+            let mut paths: BTreeSet<Utf8PathBuf> = keys
+                .keys()
+                .filter(|&&other| other != key)
+                .map(|&other| other.clone())
+                .collect();
+            paths.extend(overlapping.iter().flat_map(|set| set.iter().cloned()));
+            actions.insert(key.clone(), refuse(Refusal::TreeConflict { paths }));
+        }
     }
 
     for (path, entry) in &admitted {
@@ -267,9 +304,7 @@ fn desired_action(
             let observation = observation.expect("a clean path was observed");
             if observation_matches_desired(entry, observation) {
                 // Clean: the bytes on disk are the recorded bytes.
-                Action::Skip {
-                    expected_hash: recorded.hash.clone(),
-                }
+                skip(entry)
             } else {
                 Action::Overwrite {
                     entry: entry.clone(),
@@ -281,11 +316,7 @@ fn desired_action(
             let observation = observation.expect("a drifted path was observed");
             if observation_matches_desired(entry, observation) {
                 // Edited into agreement: disk already equals desired.
-                Action::Skip {
-                    expected_hash: observed_hash(observation)
-                        .expect("a node matching a desired entry carries a hash")
-                        .to_owned(),
-                }
+                skip(entry)
             } else {
                 lift_or_refuse_drift(observation, policy, |drifted_hash| Action::Overwrite {
                     entry: entry.clone(),
@@ -342,6 +373,19 @@ fn lift_or_refuse_drift(
 
 fn refuse(refusal: Refusal) -> Action {
     Action::Refuse { refusal }
+}
+
+/// The skip for a path whose disk node already equals the desired `entry`:
+/// the action carries the full desired signature — kind, hash, executable
+/// bit — because apply re-checks it against the disk and records it in the
+/// manifest, where the recorded entry may differ in any field (a drifted
+/// path edited into agreement, or an owner joining a shared path).
+fn skip(entry: &Entry) -> Action {
+    Action::Skip {
+        kind: entry.kind(),
+        expected_hash: desired_hash(entry),
+        executable: desired_executable(entry),
+    }
 }
 
 /// Whether the observed node is exactly the recorded entry — kind and hash,

@@ -41,7 +41,11 @@ pub enum Error {
     /// Foreignness is judged over what the projection would own. For a
     /// [`Block`](crate::EntryKind::Block) entry that is the delimited
     /// region, not the file around it, so a pre-existing container file
-    /// does not make the path foreign.
+    /// does not make the path foreign. Until block-region classification
+    /// lands, the deciding stage cannot yet see regions and refuses a
+    /// desired block over an unrecorded container with this error —
+    /// conservative, never a wrong write ([`decide`](crate::decide)'s
+    /// rustdoc names the seam).
     #[error(
         "refusing to touch foreign paths (not written by this projection): {}",
         join(paths)
@@ -84,6 +88,23 @@ pub enum Error {
         /// The offending links: path of each link, relative to the
         /// destination, mapped to its target string verbatim.
         links: BTreeMap<Utf8PathBuf, String>,
+    },
+    /// Refusal: desired keys claiming one on-disk location more than once
+    /// — two keys normalizing to the same path, or one desired path lying
+    /// beneath another (every desired entry is a non-directory, so nothing
+    /// can be projected beneath one). Both sides of a conflict are
+    /// refused: there is no deterministic entry to prefer.
+    /// [`load_mapping`](crate::load_mapping) rejects same-path duplicates
+    /// at parse time as [`MappingDuplicate`](Error::MappingDuplicate);
+    /// this refusal is the deciding stage's verdict on any tree, however
+    /// built.
+    #[error(
+        "refusing desired paths that claim overlapping locations: {}",
+        join(paths)
+    )]
+    TreeConflict {
+        /// The conflicting desired keys, verbatim.
+        paths: BTreeSet<Utf8PathBuf>,
     },
     /// A filesystem operation failed. Not a refusal: the underlying OS
     /// error stays visible.
@@ -179,16 +200,18 @@ impl Error {
     /// a path ([`Drift`](Error::Drift), [`Foreign`](Error::Foreign),
     /// [`Containment`](Error::Containment),
     /// [`OwnerConflict`](Error::OwnerConflict),
-    /// [`ExternalTarget`](Error::ExternalTarget)) rather than an
-    /// operation failing. A CLI maps refusals to exit 2 and everything
-    /// else to exit 1.
+    /// [`ExternalTarget`](Error::ExternalTarget),
+    /// [`TreeConflict`](Error::TreeConflict)) rather than an operation
+    /// failing. A CLI maps refusals to exit 2 and everything else to
+    /// exit 1.
     pub fn is_refusal(&self) -> bool {
         match self {
             Error::Drift { .. }
             | Error::Foreign { .. }
             | Error::Containment { .. }
             | Error::OwnerConflict { .. }
-            | Error::ExternalTarget { .. } => true,
+            | Error::ExternalTarget { .. }
+            | Error::TreeConflict { .. } => true,
             Error::Io { .. }
             | Error::ManifestFormat { .. }
             | Error::ManifestVersion { .. }

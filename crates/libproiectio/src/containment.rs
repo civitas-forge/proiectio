@@ -7,13 +7,15 @@ use crate::{Error, Result};
 /// Joins an untrusted tree path onto the destination, refusing everything
 /// that would land outside it.
 ///
-/// This is the sole gateway a desired-tree path passes through on its way
-/// to becoming an on-disk location (`docs/security.lex` section 2,
+/// This function and its normalize-only half `contained_normalize` —
+/// deciding's admission check, which applies the identical contract without
+/// the join — are the sole gateway a desired-tree path passes through on
+/// its way to becoming an on-disk location (`docs/security.lex` section 2,
 /// <https://github.com/civitas-forge/proiectio/blob/main/docs/security.lex>):
 /// `dest` is trusted — the invoker chose it — and `rel` is hostile, computed
 /// by whoever authored the mapping, source tree, or archive. Later stages
 /// never join `dest` with tree input themselves; every in-dest path they
-/// touch came out of this function.
+/// touch came out of this gateway.
 ///
 /// # Contract
 ///
