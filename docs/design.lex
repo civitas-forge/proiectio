@@ -94,9 +94,15 @@ Proiectio Design
     destination never descends a link: a path beneath one reads as
     gone, so a projection that wrote through the link would plan the
     write again on every run and then refuse its own file as changed.
-    A link this plan removes is not in the way — removals run first —
-    and removals do travel through an owned in-dest link, which is
-    how a path recorded beneath one is cleaned up.
+    A link this plan removes is not in the way — removals run first.
+    Apply's walk still follows an owned in-dest link, so a plan that
+    names a path recorded beneath one reaches it; planning cannot
+    write such a plan, because observation never descends the link
+    and the path classifies Missing, whose removal expects nothing
+    and refuses as drift when apply finds a node there. Nothing the
+    projection writes lands beneath a link under this rule, so that
+    shape survives only in a manifest predating it — and clearing one
+    means removing the link first.
 
     Block entries carry a delimited managed region inside a file the
     caller does not own whole: apply locates proiectio's delimiter

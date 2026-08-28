@@ -60,20 +60,28 @@ Security Model
     plan time, purely to classify. A "." or empty component resolves
     away as it does on disk and ".." pops, since the question is
     where the target lands, not how a path the projection creates may
-    be spelled. One spelling is graded external outright: a backslash
+    be spelled. Two spellings are graded external outright, on every
+    host, so a tree gets the same verdict everywhere: a backslash
     anywhere in the target, which is a separator on one host and a
-    name on another, and a tree gets the same verdict on every host.
-    What reaches disk is the target string verbatim; proiectio never
-    rewrites it. A link projected from a source tree therefore keeps
-    working when it stayed relative and in-tree, because the layout
-    around it is preserved.
+    name on another; and a leading Windows drive designator — a
+    letter and a colon, with a slash (C:/escape) or without
+    (C:escape) — which Windows resolves against that drive rather
+    than against the link's parent. Other colon shapes stay names: a
+    target "victim:stream" addresses a sibling's NTFS stream, under
+    the destination, not a place outside it. What reaches disk is the
+    target string verbatim; proiectio never rewrites it. A link
+    projected from a source tree therefore keeps working when it
+    stayed relative and in-tree, because the layout around it is
+    preserved.
 
-    Placement carries one more rule, the same one the apply-time
-    check in section 2 enforces from the other side: no projected
-    path may lie beneath a symlink, the projection's own links
-    included ([./design.lex] section 2). A write through a link would
-    land at a path the plan never names, and the classification —
-    which never reads through a link — could not see it afterwards.
+    Placement carries one more rule, and it is the plan-time half of
+    section 2's apply-time check rather than the same rule: no
+    projected path may lie beneath a symlink at all, the projection's
+    own links included ([./design.lex] section 2), where section 2
+    still lets apply follow a link proiectio owns whose target
+    resolves inside dest. A write through a link would land at a path
+    the plan never names, and the classification — which never reads
+    through a link — could not see it afterwards.
 
     An external target writes nothing outside dest — it is only a
     pointer — but a foreign mapping planting pointers into the

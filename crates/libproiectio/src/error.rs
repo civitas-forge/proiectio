@@ -58,9 +58,13 @@ pub enum Error {
     /// refused by [`contained_join`](crate::contained_join) (absolute,
     /// climbing out via `..`, empty or `.` components, backslashes, and
     /// component shapes Windows resolves specially — its rustdoc is the
-    /// full list), paths resolving through a symlinked ancestor — refused
-    /// when the plan is decided and again when it is applied — and paths
-    /// entering the projection's own state directory.
+    /// full list), paths resolving through a symlinked ancestor, and paths
+    /// entering the projection's own state directory. The symlink half is
+    /// two rules, not one applied twice: deciding refuses a desired path
+    /// beneath *any* link that outlives the plan, while applying refuses
+    /// an ancestor link that is unowned, drifted past grading, external,
+    /// or cyclic — and still follows one the manifest owns whose target
+    /// resolves inside the destination (`docs/security.lex` section 2).
     #[error("refusing paths that violate containment: {}", join(paths))]
     Containment {
         /// The offending paths as given by the desired tree.

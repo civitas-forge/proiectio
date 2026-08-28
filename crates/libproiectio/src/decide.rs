@@ -130,9 +130,14 @@ pub fn classify(
 /// descends a link, so a path beneath one observes
 /// [`Absent`](Observation::Absent) forever, and a projection that wrote
 /// through the link would re-plan the write on every run and then refuse
-/// its own file as changed. Removals still travel through an owned in-dest
-/// link (apply's walk follows it), which is how a path recorded beneath one
-/// is cleaned up.
+/// its own file as changed. Apply's walk still follows an owned in-dest
+/// link, but this stage cannot aim a removal through one for the same
+/// reason: a path recorded beneath a link classifies
+/// [`Missing`](PathState::Missing), so its [`Remove`](Action::Remove)
+/// expects nothing, and apply refuses as drift on finding a node there.
+/// Under this rule the projection writes no such path, so the shape
+/// survives only in a manifest predating it; removing the link first
+/// clears it.
 ///
 /// Each admitted path is then judged against its classification
 /// ([`classify`]) per the `docs/design.lex` section 2 action table:

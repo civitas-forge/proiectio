@@ -81,20 +81,29 @@ pub(crate) fn contained_normalize(rel: &Utf8Path) -> Result<Utf8PathBuf> {
 /// this judges a pointer's content, so the two contracts differ where
 /// spelling rules have no bearing on where the target lands: a `.` or
 /// empty component resolves away as it does on disk, `..` pops, and a name
-/// Windows would resolve specially is an ordinary name in a pointer
-/// nothing joins onto an ambient path. Refused all the same, and graded
-/// external:
+/// the gateway refuses for how Windows *joins* it is an ordinary name in a
+/// pointer nothing joins onto an ambient path — `victim:stream` addresses
+/// a stream of a sibling under the destination, `NUL` a device, neither of
+/// them a place outside. Refused all the same, and graded external:
 ///
 /// - absolute targets — the flag's headline case;
 /// - `..` climbing past the destination;
+/// - a leading Windows drive designator — an ASCII letter and a colon,
+///   with a slash (`C:/escape`) or without (`C:escape`, `c:`). Windows
+///   resolves such a target against that drive rather than against the
+///   link's parent, so it lands outside the destination however the rest
+///   is spelled — the one colon shape that is a location and not a name;
 /// - any backslash, which the containment rules never treat as a filename
 ///   character: `..\..\escape` is a traversal on one host and a name on
 ///   another, and a projection grades it identically everywhere.
 ///
+/// The last two are judged on every host, so a tree gets one verdict
+/// everywhere.
+///
 /// No filesystem access: whether anything exists at the resolution is not
 /// asked, because a dangling pointer is a legal link.
 pub(crate) fn contained_target(parent: &Utf8Path, target: &str) -> Option<Utf8PathBuf> {
-    if target.contains('\\') || target.starts_with('/') {
+    if target.contains('\\') || target.starts_with('/') || starts_with_drive(target) {
         return None;
     }
     let mut kept: Vec<&str> = parent
@@ -112,6 +121,19 @@ pub(crate) fn contained_target(parent: &Utf8Path, target: &str) -> Option<Utf8Pa
         }
     }
     Some(Utf8PathBuf::from(kept.join("/")))
+}
+
+/// Whether `target` opens with a Windows drive designator: an ASCII letter
+/// followed by a colon. `C:/x` names the root of drive C, `C:x` the drive's
+/// own current directory — both places the destination does not contain,
+/// and both spellings a `/`-only split would otherwise read as an ordinary
+/// first component.
+fn starts_with_drive(target: &str) -> bool {
+    let mut chars = target.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(letter), Some(':')) if letter.is_ascii_alphabetic()
+    )
 }
 
 /// Lexical normalization of a relative tree path; `None` is a refusal.

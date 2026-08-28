@@ -106,8 +106,7 @@ Implementation Guidelines
       graded external — refused too, an external target is never
       written through; recorded, matching, and in-dest — act reads
       the target through the parent handle, resolves it with
-      contained_normalize — the gateway's normalize-only half,
-      applied to the target joined from the link's parent — and
+      contained_target, the grading call below, and
       restarts the no-follow walk from the dest root along the
       resolved path. Restarts carry a per-walk
       visited set of the links followed: revisiting a link means

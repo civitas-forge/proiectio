@@ -1056,7 +1056,12 @@ fn target_grading_admits_in_dest_targets_and_refuses_escaping_ones() {
         ("nested/rc", "../../outside", false),
         ("rc", "/etc/passwd", false),
         ("rc", "/", false),
+        ("rc", "C:/escape", false),
+        ("rc", "C:escape", false),
         ("rc", "..\\..\\escape", false),
+        // A colon that is a name, not a drive: an NTFS stream of a sibling
+        // under the destination.
+        ("rc", "victim:stream", true),
     ];
 
     for (path, target, in_dest) in table {

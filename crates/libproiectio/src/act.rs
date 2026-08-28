@@ -151,9 +151,13 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 ///
 /// Deciding refuses to plan a write beneath a link that outlives the plan
 /// (its no-alias rule), so in a decided plan these arms judge what appeared
-/// in the gap between the two calls, and the followed arm carries removals
-/// of paths recorded beneath an owned link. A hand-built plan meets all
-/// four the same way.
+/// in the gap between the two calls. The followed arm additionally carries
+/// an action whose key lies beneath an owned link — a shape only a
+/// hand-built plan or a manifest predating the no-alias rule produces,
+/// since deciding, whose observations never descend a link, classifies such
+/// a path Missing and plans a removal expecting nothing, which the arm
+/// below then refuses as drift. A hand-built plan meets all four arms the
+/// same way.
 ///
 /// File bytes go through a tempfile created inside the verified parent and
 /// renamed over the path, with permissions (the exec bit included) set on
@@ -557,9 +561,7 @@ fn persist(
 /// no-follow walk that verified `dir` never resolves an external target.
 fn publish_link(dir: &Dir, leaf: &str, path: &Utf8Path, target: &str) -> Result<()> {
     let dir = dir.as_cap_std();
-    let temp = temp_link_name();
-    dir.symlink_contents(target, &temp)
-        .map_err(io_error(path))?;
+    let temp = create_temp_link(dir, path, target)?;
     match dir.rename(&temp, dir, leaf) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -569,24 +571,48 @@ fn publish_link(dir: &Dir, leaf: &str, path: &Utf8Path, target: &str) -> Result<
     }
 }
 
-/// A name for the temporary link [`publish_link`] renames from: the
-/// process id, a per-call counter, and the clock, so two links published at
-/// once — by this process or another — never collide, and neither does a
-/// name left behind by a crashed run of a process whose id was reused. A
-/// name that somehow *is* taken fails the create with `EEXIST` rather than
-/// publishing over anything.
-fn temp_link_name() -> String {
+/// Creates the link under a temporary name in `dir` and returns that name.
+///
+/// The name never publishes over anything: `symlink_contents` creates
+/// exclusively, so a name already taken fails with `EEXIST`, and this
+/// retries under a fresh name rather than failing the run — a name left by
+/// a crashed run, or one a concurrent writer occupies, costs an attempt
+/// instead of the projection.
+fn create_temp_link(
+    dir: &cap_std::fs::Dir,
+    path: &Utf8Path,
+    target: &str,
+) -> Result<std::path::PathBuf> {
+    const ATTEMPTS: u32 = 16;
+    for attempt in 1..=ATTEMPTS {
+        let name = temp_link_name();
+        match dir.symlink_contents(target, &name) {
+            Ok(()) => return Ok(name),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt < ATTEMPTS => {}
+            Err(e) => return Err(io_error(path)(e)),
+        }
+    }
+    unreachable!("the last attempt returns rather than retrying")
+}
+
+/// A name for the temporary link [`publish_link`] renames from: the process
+/// id, a per-call counter, and the full nanosecond clock, so two links
+/// published at once — by this process or another — never collide, and a
+/// name left behind by a crashed run of a process whose id was reused would
+/// take the same nanosecond to reproduce.
+fn temp_link_name() -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.subsec_nanos());
+        .map_or(0, |since| since.as_nanos());
     format!(
         ".proiectio-link-{}-{}-{nanos}.tmp",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
+    .into()
 }
 
 /// Records what a write or overwrite placed at `path`: the entry's

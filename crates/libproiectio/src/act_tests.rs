@@ -785,6 +785,43 @@ fn a_removal_through_an_owned_link_prunes_the_resolved_directory() {
 }
 
 #[test]
+fn deciding_cannot_aim_that_removal_because_the_path_observes_absent() {
+    // The companion to the test above, and the reason `docs/design.lex`
+    // section 2 does not promise the pipeline cleans such a path up: the
+    // walk observes no path beneath a link, so a path recorded under one
+    // classifies Missing and its removal expects nothing — which apply
+    // refuses as drift, having found a node there.
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("real/x.txt", "bytes")
+        .symlink("logs", "real")
+        .write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "logs".into(),
+        recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own"]),
+    );
+    manifest.entries.insert(
+        "logs/x.txt".into(),
+        recorded(EntryKind::File, sha256_hex(b"bytes"), &["own"]),
+    );
+    save_manifest(&dir_at(state.root()), &manifest).expect("seed the manifest");
+
+    let (loaded, plan) = plan_for(&dest, &state, "own", &BTreeMap::new(), DriftPolicy::Refuse);
+
+    assert_eq!(
+        plan.actions.get(Utf8Path::new("logs/x.txt")),
+        Some(&Action::Remove { expected: None })
+    );
+    match apply_at(&dest, &state, &loaded, &plan) {
+        Err(Error::Drift { paths }) => {
+            assert_eq!(paths, BTreeSet::from([Utf8PathBuf::from("logs/x.txt")]));
+        }
+        other => panic!("expected Drift, got {other:?}"),
+    }
+}
+
+#[test]
 fn a_recorded_symlink_ancestor_with_a_changed_target_refuses_drift() {
     let (dest, state) = fixtures();
     Tree::new()

@@ -150,8 +150,12 @@ fn in_dest_targets_resolve_from_the_links_parent() {
         ("", "shared//rc", "shared/rc"),
         ("", "shared/", "shared"),
         ("nested", ".", "nested"),
+        // Colon shapes that name something under the destination rather
+        // than a location outside it: a device name is an ordinary name in
+        // a pointer, and an NTFS stream addresses a sibling's stream.
         ("", "NUL", "NUL"),
-        ("", "a:b", "a:b"),
+        ("", "victim:stream", "victim:stream"),
+        ("nested", "ab:c/d", "nested/ab:c/d"),
         // Nothing needs to exist at the far end: a dangling pointer is a
         // legal link.
         ("", "not-there/yet", "not-there/yet"),
@@ -180,6 +184,12 @@ fn escaping_targets_grade_external() {
         ("nested", "../../outside"),
         ("nested/deep", "../../../outside"),
         ("", "a/../../outside"),
+        // A leading drive designator names a place on that drive, with a
+        // slash or without; graded on every host, like the backslash below.
+        ("", "C:/escape"),
+        ("", "C:escape"),
+        ("", "c:"),
+        ("nested", "a:b"),
         // Backslashes are a separator on one host and a name on another;
         // a projection grades them the same way everywhere.
         ("", "..\\..\\escape"),
