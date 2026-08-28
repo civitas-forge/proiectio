@@ -27,6 +27,11 @@ use crate::{Error, Result};
 /// - any backslash: `\` is a separator on Windows and would smuggle
 ///   components (`..\..\x`) past a `/`-only split, so it never counts as a
 ///   filename character in a projected tree;
+/// - any NUL, which terminates a pathname rather than appearing in one —
+///   the rule `is_pathname` applies to a symlink target, applied to a path
+///   the projection would create. A zip member name may carry one, and
+///   without this the refusal would come from the OS during apply, against
+///   a plan that had already called the path writable;
 /// - component shapes Windows resolves somewhere other than an ordinary
 ///   file under the destination, refused in *every* component on every
 ///   host: a colon — drive prefixes, where `Path::push` on Windows replaces
@@ -279,7 +284,12 @@ fn starts_with_drive(target: &str) -> bool {
 /// while this split over `/` gives the same verdict everywhere.
 fn normalize(rel: &Utf8Path) -> Option<Utf8PathBuf> {
     let raw = rel.as_str();
-    if raw.contains('\\') || raw.starts_with('/') {
+    // A NUL terminates a pathname rather than appearing in one, on every
+    // host — the same reason `is_pathname` refuses one in a symlink target.
+    // A key carrying it names nothing the projection could ever write, and
+    // without this the refusal would arrive from the OS during apply,
+    // against a plan that had already called the path writable.
+    if raw.contains('\\') || raw.contains('\0') || raw.starts_with('/') {
         return None;
     }
     let mut kept: Vec<&str> = Vec::new();

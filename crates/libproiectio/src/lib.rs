@@ -33,12 +33,19 @@
 //! The crate carries no consumer vocabulary: content arrives as bytes,
 //! owners are opaque strings, and nothing here names what the files are
 //! for. A caller computes the desired tree itself, loads one from a TOML
-//! mapping file with [`load_mapping`], or walks a source directory into one
+//! mapping file with [`load_mapping`], walks a source directory into one
 //! with [`load_tree`], which copies the tree verbatim — bytes, executable
-//! bits, and symlink targets as written. Verbatim within what UTF-8 can
+//! bits, and symlink targets as written — or expands an archive into one
+//! with [`load_archive`]. Verbatim within what UTF-8 can
 //! name: a source tree holding a name or a symlink target with no UTF-8
 //! spelling fails the load rather than being projected under some other
 //! name.
+//!
+//! An archive is a tree constructor, not a node type. [`load_archive`] and
+//! a mapping's `[archives."prefix/"]` entries expand tar, tar.gz, tar.zst,
+//! and zip members into **ordinary** entries, hashed and tracked one per
+//! file and symlink member, so nothing past the expansion is archive-aware.
+//! Directory members carry no entry, as walked directories do not.
 //!
 //! # Exit contract
 //!
@@ -53,6 +60,7 @@
 
 #[cfg(unix)]
 mod act;
+mod archive;
 mod containment;
 mod decide;
 mod entry;
@@ -90,6 +98,7 @@ mod tree;
 
 #[cfg(unix)]
 pub use act::*;
+pub use archive::*;
 pub use containment::*;
 pub use decide::*;
 pub use entry::*;

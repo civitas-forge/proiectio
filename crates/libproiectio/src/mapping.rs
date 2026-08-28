@@ -15,10 +15,20 @@ pub const MAPPING_VERSION: u32 = 1;
 /// The mapping format (`docs/cli-tour.lex` section 5,
 /// <https://github.com/civitas-forge/proiectio/blob/main/docs/cli-tour.lex>):
 /// a `version`, `[files."path"]` tables carrying `contents` *or* `source`
-/// (exactly one) plus an optional `executable` override, and
-/// `[links."path"]` tables carrying `target`. `[archives."prefix/"]` tables
-/// parse structurally but fail with
-/// [`Error::MappingArchiveUnimplemented`] until archive extraction lands.
+/// (exactly one) plus an optional `executable` override,
+/// `[links."path"]` tables carrying `target`, and `[archives."prefix/"]`
+/// tables carrying a `source` archive and an optional `strip`.
+///
+/// An archive entry is a tree constructor, not a node type: its members
+/// expand at load time into ordinary file and symlink entries, each keyed
+/// under the table's prefix, and nothing downstream remembers an archive was
+/// involved ([`load_archive`](crate::load_archive) carries the member rules,
+/// `docs/security.lex` section 4 the contract). A member is judged by the
+/// containment gateway *before* the prefix is joined, so a member climbing
+/// out — `../etc/passwd` under `vendor/` — is refused rather than absorbed
+/// into `etc/passwd`; an expanded member colliding with another entry's key,
+/// an archive's or a `[files]`/`[links]` table's, is
+/// [`Error::MappingDuplicate`] like any other double claim.
 ///
 /// The trust split (`docs/security.lex` section 1): `path` is the invoker's
 /// and is trusted — it, and every `source` it references, may point anywhere
@@ -33,7 +43,8 @@ pub const MAPPING_VERSION: u32 = 1;
 /// on-disk location has one key; two entries claiming the same normalized
 /// key fail as [`Error::MappingDuplicate`].
 ///
-/// A `source` resolves as a path join against the mapping file's own
+/// A `source` — a `[files]` entry's or an `[archives]` entry's — resolves as
+/// a path join against the mapping file's own
 /// directory — never the current directory — so a mapping and its assets
 /// travel together. A rooted `source` therefore supplants that directory:
 /// on Unix it is read as given, while on Windows a drive-less `/`-rooted
@@ -48,8 +59,9 @@ pub const MAPPING_VERSION: u32 = 1;
 /// `executable` in the entry overrides either.
 ///
 /// All validation — version, shape, keys, duplicates, the
-/// `contents`/`source` rule — runs before any `source` file is read, so a
-/// mapping fails on its own defects without touching the filesystem.
+/// `contents`/`source` rule — runs before any `source` file is read or any
+/// archive is opened, so a mapping fails on its own defects without touching
+/// the filesystem.
 ///
 /// # Panics
 ///
@@ -115,10 +127,14 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     // An archive key is a projected prefix, so it is confined like every
     // other projected path — judged without its conventional trailing `/`,
     // which names the same prefix.
-    for key in doc.archives.keys() {
-        let prefix = key.strip_suffix('/').unwrap_or(key);
-        if normalize_key(Utf8Path::new(prefix)).is_none() {
-            refused.insert(Utf8PathBuf::from(key.clone()));
+    let mut archives = Vec::new();
+    for (key, table) in doc.archives {
+        let prefix = key.strip_suffix('/').unwrap_or(&key);
+        match normalize_key(Utf8Path::new(prefix)) {
+            Some(normalized) => archives.push((normalized, table)),
+            None => {
+                refused.insert(Utf8PathBuf::from(key));
+            }
         }
     }
     if !refused.is_empty() {
@@ -138,6 +154,18 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
             });
         }
     }
+    // Two archive tables naming one prefix — `"v/"` and `"v"` are distinct
+    // TOML keys and the same prefix — would merge two archives into one
+    // location with no way to say which member wins where they overlap.
+    let mut prefixes = BTreeSet::new();
+    for (prefix, _) in &archives {
+        if !prefixes.insert(prefix.clone()) {
+            return Err(Error::MappingDuplicate {
+                path: path.to_owned(),
+                key: prefix.clone(),
+            });
+        }
+    }
 
     // Resolve each file entry's `contents`/`source` choice before any read.
     let mut bodies = Vec::new();
@@ -153,13 +181,6 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
             }
         };
         bodies.push((normalized, body, table.executable));
-    }
-
-    if !doc.archives.is_empty() {
-        return Err(Error::MappingArchiveUnimplemented {
-            path: path.to_owned(),
-            keys: doc.archives.into_keys().map(Utf8PathBuf::from).collect(),
-        });
     }
 
     // Only now touch the filesystem: read the referenced sources, relative
@@ -204,6 +225,26 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
                 target: table.target,
             },
         );
+    }
+    // Archives last, in mapping-key order, so a mapping expands the same
+    // way every time. Each member arrives already keyed under its prefix; a key
+    // some other entry already claimed is the same double claim two
+    // `[files]` keys would be.
+    // One byte budget across every table: the bound is on what one untrusted
+    // mapping may make the process allocate, and the expanded trees are all
+    // merged into this one, so they are all live at once.
+    let budget = crate::archive::new_budget();
+    for (prefix, table) in archives {
+        let source = dir.join(table.source);
+        let expanded = crate::archive::expand(&source, table.strip.unwrap_or(0), &prefix, &budget)?;
+        for (key, entry) in expanded {
+            if tree.insert(key.clone(), entry).is_some() {
+                return Err(Error::MappingDuplicate {
+                    path: path.to_owned(),
+                    key,
+                });
+            }
+        }
     }
     Ok(tree)
 }
@@ -265,15 +306,11 @@ struct LinkTable {
     target: String,
 }
 
-/// One `[archives."prefix/"]` table: parsed structurally so a mapping using
-/// archives fails on shape errors honestly, then refused whole as
-/// [`Error::MappingArchiveUnimplemented`] until extraction is implemented.
+/// One `[archives."prefix/"]` table: the archive to expand under the table's
+/// key, and how many leading path components to drop from each member
+/// (`docs/cli-tour.lex` section 5).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-#[expect(
-    dead_code,
-    reason = "parsed structurally; extraction is not implemented yet"
-)]
 struct ArchiveTable {
     source: String,
     strip: Option<u32>,

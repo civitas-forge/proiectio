@@ -289,9 +289,13 @@ pub enum Error {
         /// The offending entry's key, verbatim.
         key: Utf8PathBuf,
     },
-    /// One projected path is claimed by more than one mapping entry: two
-    /// entries — under `[files]`, `[links]`, or one of each — whose keys
-    /// lexically normalize to the same path. Not a refusal.
+    /// One projected path is claimed by more than one mapping entry. Not a
+    /// refusal. Three shapes reach it: two entries under `[files]`,
+    /// `[links]`, or one of each, whose keys lexically normalize to the same
+    /// path; two `[archives]` tables whose prefixes do (`"v/"` and `"v"` are
+    /// distinct TOML keys and one prefix); and an expanded archive member
+    /// landing on a path another entry already claimed, an archive's or a
+    /// table's.
     #[error("mapping {path}: \"{key}\" is projected by more than one entry")]
     MappingDuplicate {
         /// The mapping file's location.
@@ -299,18 +303,177 @@ pub enum Error {
         /// The normalized key both entries project.
         key: Utf8PathBuf,
     },
-    /// The mapping's `[archives]` entries parse structurally, but archive
-    /// extraction is not implemented yet. Not a refusal: the mapping is
-    /// well-formed — this crate cannot honor it.
+    /// An archive source's filename extension names no decoder this crate
+    /// has. Not a refusal. The extension picks the decoder and nothing else
+    /// does — the bytes are never sniffed — so a name outside the list fails
+    /// here rather than being decoded as whatever it turns out to be
+    /// ([`ArchiveFormat::for_path`](crate::ArchiveFormat::for_path)).
     #[error(
-        "mapping {path}: [archives] entries are not yet implemented: {}",
-        join(keys)
+        "archive {path}: no decoder for this name; expected one of {}",
+        crate::ARCHIVE_EXTENSIONS
     )]
-    MappingArchiveUnimplemented {
-        /// The mapping file's location.
+    ArchiveFormatUnknown {
+        /// The archive's location.
         path: Utf8PathBuf,
-        /// The `[archives]` keys, verbatim.
-        keys: BTreeSet<Utf8PathBuf>,
+    },
+    /// An archive does not decode as the format its extension named — a
+    /// zip spelled `.tar.gz`, a truncated stream, a compression method this
+    /// build does not carry. Not a refusal; the decoder's own error stays
+    /// visible.
+    #[error("archive {path} does not decode as {format}: {source}")]
+    ArchiveDecode {
+        /// The archive's location.
+        path: Utf8PathBuf,
+        /// The format the extension picked.
+        format: crate::ArchiveFormat,
+        /// The decoder's error, unchanged.
+        source: std::io::Error,
+    },
+    /// An archive holds a member whose name is not UTF-8, so
+    /// [`load_archive`](crate::load_archive) cannot key it. Not a refusal,
+    /// for the same reason as
+    /// [`TreeNameNotUtf8`](Error::TreeNameNotUtf8): the archive carries
+    /// content this crate cannot name.
+    #[error("archive {path} holds a member whose name is not UTF-8: {name:?}")]
+    ArchiveMemberNameNotUtf8 {
+        /// The archive's location.
+        path: Utf8PathBuf,
+        /// The name as the archive spells it, lossily decoded — what can be
+        /// *shown* of bytes that have no UTF-8 spelling, on the same terms
+        /// as [`TreeNameNotUtf8::name`](Error::TreeNameNotUtf8).
+        name: String,
+    },
+    /// An archive holds a symlink member whose target is not UTF-8, which
+    /// [`Entry::Symlink`](crate::Entry::Symlink) — a `String` — cannot
+    /// carry. Not a refusal.
+    #[error("archive {path}: member {member} has a target that is not UTF-8: {target:?}")]
+    ArchiveMemberTargetNotUtf8 {
+        /// The archive's location.
+        path: Utf8PathBuf,
+        /// The member's path as it projects, relative to any prefix.
+        member: Utf8PathBuf,
+        /// The target, lossily decoded, on the same terms as
+        /// [`TreeTargetNotUtf8::target`](Error::TreeTargetNotUtf8).
+        target: String,
+    },
+    /// An archive holds a member of a kind the projection never writes — a
+    /// hardlink, a device node, a fifo, a socket, a GNU sparse member.
+    /// Member kinds are restricted to files, directories, and symlinks
+    /// (`docs/security.lex` section 4). Not a refusal, for the same reason
+    /// as [`TreeNodeKind`](Error::TreeNodeKind).
+    #[error("archive {path}: member {member} is not a file, directory, or symlink")]
+    ArchiveMemberKind {
+        /// The archive's location.
+        path: Utf8PathBuf,
+        /// The offending member, as the archive spells it. Not the path it
+        /// would have projected to: the kind is judged before `strip` and
+        /// the containment gateway, either of which can erase a name, and
+        /// what the invoker has to go and look at is the member the archive
+        /// carries.
+        member: Utf8PathBuf,
+    },
+    /// A zip member's two spellings of its kind disagree: the trailing `/`
+    /// the specification asks a directory to carry, and the file-type bits
+    /// of the Unix mode it may also record. A symlink named `logs/`, or a
+    /// directory named without the slash, is one member described two ways,
+    /// and there is no reading of it that is not a guess about which
+    /// spelling the archive meant. Not a refusal.
+    ///
+    /// Separate from [`ArchiveMemberKind`](Error::ArchiveMemberKind), which
+    /// says a kind is one the projection never writes: here both spellings
+    /// name kinds it does write, and the defect is that they are different.
+    #[error("archive {path}: member {member} is one kind by name and another by mode")]
+    ArchiveMemberKindDisagrees {
+        /// The archive's location.
+        path: Utf8PathBuf,
+        /// The offending member, as the archive spells it — trailing slash
+        /// included, since the slash is half of what disagrees.
+        member: Utf8PathBuf,
+    },
+    /// Two members of one archive claim the same projected path — duplicate
+    /// names, which zip permits outright and tar permits by convention, or
+    /// two distinct members `strip` collapses onto one path. Not a refusal.
+    ///
+    /// A desired tree holds one entry per path, so a duplicate has to
+    /// resolve to a single member; first-wins and last-wins both hand that
+    /// choice to whoever built the archive, which is the gap between what a
+    /// reader shows and what an extractor writes. The projection refuses
+    /// instead, as it refuses two mapping keys claiming one location
+    /// ([`MappingDuplicate`](Error::MappingDuplicate)) and two desired keys
+    /// claiming one ([`TreeConflict`](Error::TreeConflict)): there is no
+    /// deterministic entry to prefer.
+    ///
+    /// One zip shape never reaches this error: the zip reader keys its
+    /// members by the name it decodes and keeps the last, so two members
+    /// that decode to one name are already one before expansion sees them
+    /// ([`load_archive`](crate::load_archive) says what that means). Every
+    /// duplicate whose names differ — normalizing alike, or collapsed by
+    /// `strip` — is refused here.
+    #[error("archive {path}: more than one member projects to {member}")]
+    ArchiveMemberDuplicate {
+        /// The archive's location.
+        path: Utf8PathBuf,
+        /// The projected path both members claim, relative to any prefix.
+        member: Utf8PathBuf,
+    },
+    /// A file or symlink member of an archive has no path left after
+    /// `strip` dropped its leading components. Not a refusal: the member is
+    /// content the caller asked to project and there is nowhere to project
+    /// it to, so dropping it silently would lose it. A *directory* member
+    /// `strip` erases is the wrapper `strip` exists to drop, and carries no
+    /// entry in any case.
+    #[error("archive {path}: member {member} has nothing left after strip {strip}")]
+    ArchiveMemberStripped {
+        /// The archive's location.
+        path: Utf8PathBuf,
+        /// The member's path as the archive spells it, normalized.
+        member: Utf8PathBuf,
+        /// The number of leading components dropped.
+        strip: u32,
+    },
+    /// An archive member nests deeper than an expansion places. Not a
+    /// refusal.
+    ///
+    /// The bound is [`load_tree`](crate::load_tree)'s, deliberately:
+    /// `--tree` takes a directory or an archive, so a tarball of a
+    /// directory tree expands to the tree that directory would have loaded
+    /// as, rather than to one the walk would have refused.
+    #[error(
+        "archive {path}: member {member} nests deeper than the {limit} levels a tree may carry"
+    )]
+    ArchiveMemberTooDeep {
+        /// The archive's location.
+        path: Utf8PathBuf,
+        /// The offending member's path, relative to any prefix.
+        member: Utf8PathBuf,
+        /// The deepest nesting an expansion accepts, counted in directories
+        /// above the member as it projects — after `strip`.
+        limit: usize,
+    },
+    /// An archive expands to more bytes than one may allocate. Not a
+    /// refusal.
+    ///
+    /// A desired tree holds every member's contents in memory, and a
+    /// compressed archive chooses how many bytes that is: a few hundred
+    /// kilobytes of gzipped zeros expand to gigabytes. The bound turns a
+    /// decompression bomb into this error instead of an out-of-memory abort
+    /// at plan time.
+    #[error("archive {path} expands past the {limit} bytes an archive may allocate")]
+    ArchiveTooLarge {
+        /// The archive's location.
+        path: Utf8PathBuf,
+        /// The most an expansion may allocate, summed over its members.
+        limit: u64,
+    },
+    /// An archive carries more members than an expansion places. Not a
+    /// refusal. The byte bound does not see this shape: a million empty
+    /// members expand to no bytes at all and still cost a map entry each.
+    #[error("archive {path} carries more than the {limit} members an archive may hold")]
+    ArchiveTooManyMembers {
+        /// The archive's location.
+        path: Utf8PathBuf,
+        /// The most members an expansion accepts.
+        limit: usize,
     },
     /// A source tree holds an entry whose name is not UTF-8, so
     /// [`load_tree`](crate::load_tree) cannot key it. Not a refusal: no
@@ -460,7 +623,17 @@ impl Error {
             | Error::MappingVersion { .. }
             | Error::MappingContentsXorSource { .. }
             | Error::MappingDuplicate { .. }
-            | Error::MappingArchiveUnimplemented { .. }
+            | Error::ArchiveFormatUnknown { .. }
+            | Error::ArchiveDecode { .. }
+            | Error::ArchiveMemberNameNotUtf8 { .. }
+            | Error::ArchiveMemberTargetNotUtf8 { .. }
+            | Error::ArchiveMemberKind { .. }
+            | Error::ArchiveMemberKindDisagrees { .. }
+            | Error::ArchiveMemberDuplicate { .. }
+            | Error::ArchiveMemberStripped { .. }
+            | Error::ArchiveMemberTooDeep { .. }
+            | Error::ArchiveTooLarge { .. }
+            | Error::ArchiveTooManyMembers { .. }
             | Error::TreeNameNotUtf8 { .. }
             | Error::TreeTargetNotUtf8 { .. }
             | Error::TreeTooDeep { .. }

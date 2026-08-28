@@ -98,6 +98,11 @@ fn escaping_paths_are_refused_with_the_path_verbatim() {
         "a\\b",
         "a/b\\c",
         "a\\../b",
+        // A NUL terminates a pathname rather than appearing in one, so a
+        // path carrying one names nothing that could be written.
+        "a\u{0}b",
+        "a/b\u{0}",
+        "\u{0}",
         // `.` components.
         ".",
         "./x",

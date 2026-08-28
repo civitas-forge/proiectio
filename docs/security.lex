@@ -26,7 +26,9 @@ Security Model
     Every path in the desired tree must be relative, and must still
     lie inside the destination after normalization. Refused
     outright: absolute paths, paths that climb out via "..", empty
-    or "." components, any backslash, and — in any component —
+    or "." components, any backslash, any NUL — which terminates a
+    pathname rather than appearing in one, so a path carrying one
+    names nothing that could be written — and — in any component —
     shapes Windows resolves somewhere other than an ordinary file
     under the destination: drive and UNC forms (C:..., \\server),
     colons (NTFS alternate data streams), trailing dots or spaces

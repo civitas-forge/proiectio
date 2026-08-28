@@ -11,8 +11,8 @@ use cap_std::fs::Dir;
 use crate::{Entry, Error, MAX_WALK_DEPTH, Result};
 
 /// Walks a source directory into the desired tree [`decide`](crate::decide)
-/// takes — the second desired-tree source beside
-/// [`load_mapping`](crate::load_mapping) (`docs/cli-tour.lex` section 1,
+/// takes — one of three, beside [`load_mapping`](crate::load_mapping) and
+/// [`load_archive`](crate::load_archive) (`docs/cli-tour.lex` section 1,
 /// <https://github.com/civitas-forge/proiectio/blob/main/docs/cli-tour.lex>:
 /// a directory tree, verbatim, metadata copied from the source).
 ///

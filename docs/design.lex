@@ -186,7 +186,10 @@ Proiectio Design
 
     Dependencies: serde, serde_json, thiserror, camino now; sha2
     and cap-std arrive with observe, cap-tempfile and
-    cap-primitives with apply ([./implementation.lex] section 3).
+    cap-primitives with apply ([./implementation.lex] section 3); tar,
+    flate2, zstd and zip with archive expansion, which decodes an
+    archive into a desired tree and never extracts one to disk
+    ([./security.lex] section 4).
     The whole crate
     is a few hundred lines plus tests; the tests run against real
     temp directories, since atomic rename is the behavior under test.
