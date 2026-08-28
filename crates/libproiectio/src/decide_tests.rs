@@ -509,7 +509,7 @@ fn an_orphan_removes_when_disk_matches_the_recorded_hash() {
     assert_eq!(
         action(&plan, "old.txt"),
         &Action::Remove {
-            expected: signature(&entry),
+            expected: Some(signature(&entry)),
         }
     );
 }
@@ -541,26 +541,23 @@ fn drift_policy_overwrite_lifts_a_drifted_orphan_to_removal() {
     assert_eq!(
         action(&plan, "old.txt"),
         &Action::Remove {
-            expected: signature(&drifted),
+            expected: Some(signature(&drifted)),
         }
     );
 }
 
 #[test]
 fn a_missing_orphan_still_plans_removal() {
-    // Already gone from disk: the Remove drops the manifest entry alone.
+    // Already gone from disk: the Remove expects nothing, so apply drops
+    // the manifest entry alone — and refuses if a node has appeared at
+    // the path since the plan, even one matching the recorded signature.
     let entry = file("old\n", false);
     let manifest = manifest_of(&[("old.txt", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[("old.txt", Observation::Absent)]);
 
     let plan = plan(&tree(&[]), &manifest, &observations, DriftPolicy::Refuse);
 
-    assert_eq!(
-        action(&plan, "old.txt"),
-        &Action::Remove {
-            expected: signature(&entry),
-        }
-    );
+    assert_eq!(action(&plan, "old.txt"), &Action::Remove { expected: None });
 }
 
 #[test]
@@ -731,7 +728,7 @@ fn an_empty_desired_tree_plans_removal_and_release() {
     assert_eq!(
         action(&plan, "sole.txt"),
         &Action::Remove {
-            expected: signature(&sole),
+            expected: Some(signature(&sole)),
         }
     );
     assert_eq!(action(&plan, "shared.txt"), &Action::Release);
@@ -1117,6 +1114,41 @@ fn a_drifted_orphan_now_a_directory_stays_refused_under_overwrite_policy() {
 }
 
 // --- blocks: the generic-table seam ---
+
+#[test]
+fn a_drifted_recorded_block_is_never_lifted() {
+    // A recorded block owns only its delimited region, which no
+    // whole-node signature expresses: lifting would plan whole-file
+    // actions against a container the projection does not own whole, so
+    // the drift refusal holds under either policy — for a changed desired
+    // block and for an orphaned one alike.
+    let recorded_block = Entry::Block {
+        body: b"v1\n".to_vec(),
+    };
+    let desired_block = Entry::Block {
+        body: b"v2\n".to_vec(),
+    };
+    let container = file("# config\nmanaged v1\n", false);
+    let manifest = manifest_of(&[("conf", recorded(&recorded_block, &[OWNER]))]);
+    let observations = observed(&[("conf", on_disk(&container))]);
+
+    let changed = plan(
+        &tree(&[("conf", &desired_block)]),
+        &manifest,
+        &observations,
+        DriftPolicy::Overwrite,
+    );
+    let orphaned = plan(&tree(&[]), &manifest, &observations, DriftPolicy::Overwrite);
+
+    for plan in [&changed, &orphaned] {
+        assert_eq!(
+            action(plan, "conf"),
+            &Action::Refuse {
+                refusal: Refusal::Drift,
+            }
+        );
+    }
+}
 
 #[test]
 fn a_desired_block_over_nothing_writes() {

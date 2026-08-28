@@ -91,8 +91,11 @@ pub enum Error {
     },
     /// Refusal: desired keys claiming one on-disk location more than once
     /// — two keys normalizing to the same path, or one desired path lying
-    /// beneath another (every desired entry is a non-directory, so nothing
-    /// can be projected beneath one). Both sides of a conflict are
+    /// beneath another. No file or block entry can hold children; nesting
+    /// beneath a desired *symlink* is conservatively refused too until
+    /// symlink target grading lands
+    /// ([`Refusal::TreeConflict`](crate::Refusal::TreeConflict) carries
+    /// the rationale). Both sides of a conflict are
     /// refused: there is no deterministic entry to prefer.
     /// [`load_mapping`](crate::load_mapping) rejects same-path duplicates
     /// at parse time as [`MappingDuplicate`](Error::MappingDuplicate);

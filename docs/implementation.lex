@@ -25,7 +25,8 @@ Implementation Guidelines
     takes only a Plan, never the mapping or the disk directly.
 
     One deliberate exception to "verbatim": before each destructive
-    action — overwrite or removal — act re-hashes the target and
+    action — overwrite or removal — act re-checks the target against
+    the signature the plan expects — kind, hash, executable bit — and
     refuses if it changed since observation. plan and apply are
     separate calls in the library, so the gap between them is real
     even where the CLI closes it to milliseconds.

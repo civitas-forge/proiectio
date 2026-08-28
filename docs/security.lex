@@ -97,9 +97,10 @@ Security Model
     Writes go through a tempfile in the target directory persisted
     over the path, so a crash leaves the old file or the new one,
     never a torn write. Before each overwrite or removal, apply
-    re-hashes the target and refuses if the disk changed after the
-    plan — the drift check holds across the gap between the two
-    calls, not just at plan time.
+    re-checks the target against the signature the plan expects —
+    kind, hash, executable bit — and refuses if the disk changed
+    after the plan; the drift check holds across the gap between the
+    two calls, not just at plan time.
 
     The manifest itself is written atomically, after every other
     write — and on a failed apply still persisted, recording what

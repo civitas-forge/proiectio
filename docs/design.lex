@@ -68,6 +68,10 @@ Proiectio Design
       DriftPolicy::Overwrite (the CLI's --force).
     - Foreign: refuse always — a projection never overwrites a file
       it did not write.
+    - Two desired entries claiming one on-disk location — the same
+      path after normalization, or one path beneath another, which no
+      non-directory entry permits: both claims refused as a tree
+      conflict, since there is no deterministic entry to prefer.
     - Recorded under this owner but absent from the desired tree: an
       orphan, removed when disk still matches the recorded hash and
       refused as drifted otherwise; directories emptied by removal
@@ -83,7 +87,8 @@ Proiectio Design
     owns it whole.
 
     plan and apply are separate calls, so before each overwrite or
-    removal apply re-hashes the target and refuses if the disk
+    removal apply re-checks the target against the signature the plan
+    expects — kind, hash, executable bit — and refuses if the disk
     changed since the plan.
 
     Removal is a plan against an empty desired tree — same

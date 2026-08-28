@@ -89,7 +89,9 @@ pub fn classify(
 /// land in the plan lexically normalized (`a/../b` plans as `b`), so one
 /// on-disk location has one action — and a tree claiming one location
 /// twice (two keys normalizing to the same path, or one desired path lying
-/// beneath another, which no non-directory entry permits) has both claims
+/// beneath another — a nesting no file or block permits, and one refused
+/// conservatively beneath a desired symlink too until symlink target
+/// grading lands) has both claims
 /// refused as [`Refusal::TreeConflict`], keyed verbatim, each naming the
 /// keys it collides with. [`load_mapping`](crate::load_mapping) rejects
 /// same-path duplicates at parse time as
@@ -123,9 +125,10 @@ pub fn classify(
 /// - held by other owners too — [`Release`](Action::Release): the departing
 ///   owner drops from the entry, the disk is untouched;
 /// - held by this owner alone — an orphan: [`Remove`](Action::Remove)
-///   expecting the recorded signature when [`Clean`](PathState::Clean) or
-///   [`Missing`](PathState::Missing) (apply drops an already-gone path from
-///   the manifest alone), [`Refusal::Drift`] when
+///   expecting the recorded signature when [`Clean`](PathState::Clean),
+///   expecting nothing when [`Missing`](PathState::Missing) — the path was
+///   already gone, so apply drops the manifest entry alone and refuses if
+///   a node has appeared since the plan — and [`Refusal::Drift`] when
 ///   [`Drifted`](PathState::Drifted) unless `policy` lifts it to a
 ///   [`Remove`](Action::Remove) expecting the drifted node's signature;
 /// - held only by other owners — not this plan's business: no action.
@@ -152,8 +155,10 @@ pub fn classify(
 /// - [`Block`](EntryKind::Block) entries flow through the same generic
 ///   table, where their body hash matches no whole-node observation: a
 ///   desired block over nothing plans a [`Write`](Action::Write), a
-///   pre-existing container refuses as foreign, and a recorded block never
-///   classifies clean. Conservative until block-region classification and
+///   pre-existing container refuses as foreign, a recorded block never
+///   classifies clean, and a recorded block's drift is never lifted — no
+///   whole-node signature can express the region a lifted removal would
+///   strip. Conservative until block-region classification and
 ///   container-tolerant writes land.
 pub fn decide(
     owner: &str,
@@ -321,7 +326,7 @@ fn desired_action(
                 // Edited into agreement: disk already equals desired.
                 skip(entry)
             } else {
-                lift_or_refuse_drift(observation, policy, |drifted| Action::Overwrite {
+                lift_or_refuse_drift(recorded, observation, policy, |drifted| Action::Overwrite {
                     entry: entry.clone(),
                     expected: drifted,
                 })
@@ -340,15 +345,18 @@ fn orphan_action(
     policy: DriftPolicy,
 ) -> Action {
     match state {
-        // Missing removes too: apply drops an already-gone path from the
-        // manifest alone (`Action::Remove`).
-        PathState::Clean | PathState::Missing => Action::Remove {
-            expected: recorded_signature(recorded),
+        PathState::Clean => Action::Remove {
+            expected: Some(recorded_signature(recorded)),
         },
+        // Missing removes too, expecting nothing: the plan records the
+        // absence, so apply drops the manifest entry alone — and a node
+        // appearing at the path since the plan is a change apply refuses,
+        // exactly like a present node changing.
+        PathState::Missing => Action::Remove { expected: None },
         PathState::Drifted => {
             let observation = observation.expect("a drifted path was observed");
-            lift_or_refuse_drift(observation, policy, |drifted| Action::Remove {
-                expected: drifted,
+            lift_or_refuse_drift(recorded, observation, policy, |drifted| Action::Remove {
+                expected: Some(drifted),
             })
         }
         PathState::Foreign => unreachable!("recorded paths are never foreign"),
@@ -358,14 +366,24 @@ fn orphan_action(
 /// Resolves a drifted path under `policy`: refuse, or — when the policy
 /// overwrites and the drifted node carries a signature for apply's
 /// changed-since-plan re-check — the destructive action built by `lift`
-/// expecting the drifted node. A node without a signature (a directory,
-/// or a kind the projection never writes) stays refused under either
-/// policy.
+/// expecting the drifted node. Refused under either policy:
+///
+/// - a node without a signature — a directory, or a kind the projection
+///   never writes;
+/// - a recorded [`Block`](EntryKind::Block): it owns only its delimited
+///   region, which no whole-node signature expresses — a lifted removal
+///   would read as whole-file deletion of a container the projection does
+///   not own whole. Conservative until block-region classification lands
+///   (the seam in [`decide`]'s rustdoc).
 fn lift_or_refuse_drift(
+    recorded: &ManifestEntry,
     observation: &Observation,
     policy: DriftPolicy,
     lift: impl FnOnce(NodeSignature) -> Action,
 ) -> Action {
+    if recorded.kind == EntryKind::Block {
+        return refuse(Refusal::Drift);
+    }
     match policy {
         DriftPolicy::Refuse => refuse(Refusal::Drift),
         DriftPolicy::Overwrite => match observed_signature(observation) {

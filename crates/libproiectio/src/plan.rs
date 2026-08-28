@@ -24,10 +24,13 @@ pub enum DriftPolicy {
 /// never the desired tree — because each action carries what executing it
 /// needs: the [`Entry`] to write, and for destructive and recording
 /// actions the [`NodeSignature`] the disk must still match. Plans are
-/// plain data, not capabilities: apply
-/// re-validates containment, re-hashes targets, and re-checks the recorded
-/// kind and executable bit against the manifest before touching anything,
-/// so a hand-built or stale plan refuses rather than misfires. `BTreeMap`
+/// plain data, not capabilities: apply re-validates containment and
+/// re-checks the disk against each action's `expected` signature before
+/// touching anything — the manifest enters only for the recording an
+/// action performs, never as the re-check baseline, since `expected` may
+/// deliberately differ from the recorded entry (an agreement skip, a
+/// lifted drift) — so a hand-built or stale plan refuses rather than
+/// misfires. `BTreeMap`
 /// keeps plans sorted, diffable, and deterministic; apply derives execution
 /// order from it (parents before children, removals in reverse).
 ///
@@ -89,14 +92,17 @@ pub enum Action {
     },
     /// Remove an orphan — recorded under this owner alone and absent from
     /// the desired tree. Apply re-checks the target against `expected`
-    /// first and refuses if the disk no longer matches; a path already
-    /// gone from disk drops from the manifest alone. Directories emptied
-    /// by removal are pruned.
+    /// first and refuses if the disk no longer matches. Directories
+    /// emptied by removal are pruned.
     Remove {
-        /// The node the disk must still hold at apply time: the recorded
-        /// signature, or — when [`DriftPolicy::Overwrite`] lifted a drift
-        /// refusal — the drifted node observed at plan time.
-        expected: NodeSignature,
+        /// The node the disk must still hold at apply time — the recorded
+        /// signature, or the drifted node observed at plan time when
+        /// [`DriftPolicy::Overwrite`] lifted a drift refusal. `None` for a
+        /// path that was already gone at plan time
+        /// ([`Missing`](crate::PathState::Missing)): apply then drops the
+        /// entry from the manifest alone, and refuses if a node has
+        /// appeared at the path since the plan.
+        expected: Option<NodeSignature>,
     },
     /// Drop this owner from the path's manifest entry and leave the disk
     /// alone: the path is absent from this owner's desired tree, but other
@@ -155,8 +161,11 @@ pub enum Refusal {
     },
     /// The desired tree claims one on-disk location more than once: this
     /// key shares a normalized path with another desired key, or its path
-    /// lies beneath another desired path (every desired entry is a
-    /// non-directory, so nothing can be projected beneath one). Both sides
+    /// lies beneath another desired path. No file or block can hold
+    /// children; beneath a desired *symlink* the layout is expressible on
+    /// disk (apply's owned-link walk, `docs/security.lex` section 2), but
+    /// plans are lexical, so deciding conservatively refuses that nesting
+    /// too until symlink target grading lands. Both sides
     /// of a conflict are refused — there is no deterministic entry to
     /// prefer; see [`Error::TreeConflict`](crate::Error::TreeConflict).
     /// [`load_mapping`](crate::load_mapping) rejects same-path duplicates
