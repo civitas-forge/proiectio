@@ -58,9 +58,21 @@ Security Model
     | not a     | empty, or carrying a NUL — refused under     |
     | path      | either policy                                |
 
-    Resolution follows filesystem semantics — the target string is
-    resolved from the link's parent directory — and happens once, at
-    plan time, purely to classify. A "." or empty component resolves
+    Resolution is lexical — the target string is resolved from the
+    link's parent directory, by string alone — and happens once, at
+    plan time, purely to classify. Lexical is the whole contract, and
+    it is narrower than what a filesystem does: grading reads no
+    disk, so it does not see through a component of the target that
+    is itself a symlink. A target "pivot/passwd" grades in-dest
+    whatever "pivot" turns out to be, so where dest already holds an
+    escaping link the projection can plant a pointer that reaches
+    outside without the flag. What bounds that: the projection cannot
+    create the escaping hop itself — an absolute or climbing target
+    is graded external and needs the flag — so the hop must already
+    be in dest, foreign or flag-permitted. Nothing is written
+    *through* either link; the apply-time walk of section 2 is what
+    enforces that, and it does read the disk. A "." or empty
+    component resolves
     away as it does on disk and ".." pops, since the question is
     where the target lands, not how a path the projection creates may
     be spelled. Two spellings are graded external outright, on every

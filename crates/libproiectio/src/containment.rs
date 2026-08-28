@@ -65,10 +65,10 @@ pub(crate) fn contained_normalize(rel: &Utf8Path) -> Result<Utf8PathBuf> {
     }
 }
 
-/// Resolves a symlink target the way a filesystem would — lexically, from
-/// the directory holding the link — and says where it lands: `Some` of the
-/// resolved path relative to the destination (empty for the destination
-/// itself), or `None` when the target lands outside it.
+/// Resolves a symlink target lexically, from the directory holding the
+/// link, and says where the *string* points: `Some` of the resolved path
+/// relative to the destination (empty for the destination itself), or
+/// `None` when it points outside.
 ///
 /// This is the grading of `docs/security.lex` section 3, and the sole
 /// judge of it: [`decide`](crate::decide) runs it over every desired link,
@@ -76,6 +76,17 @@ pub(crate) fn contained_normalize(rel: &Utf8Path) -> Result<Utf8PathBuf> {
 /// a target graded in-dest by one is in-dest to the other. `parent` is the
 /// link's own parent directory relative to the destination — empty at the
 /// destination root — and `target` is the string as written.
+///
+/// Lexical is the whole contract, and it is narrower than what a
+/// filesystem does. No disk is read, so a component of the target that is
+/// itself a symlink is not seen through: `pivot/passwd` grades in-dest
+/// whatever `pivot` turns out to be. Where the destination already holds
+/// an escaping link, a tree can therefore plant a pointer that dereferences
+/// outside without the external-target permission — bounded by the
+/// projection's inability to create that escaping hop itself, since an
+/// absolute or climbing target is graded external and needs the permission.
+/// Nothing is written *through* either link: apply's no-follow walk
+/// enforces that, and it does read the disk.
 ///
 /// Where [`contained_join`] judges a path the projection will *create*,
 /// this judges a pointer's content, so the two contracts differ where

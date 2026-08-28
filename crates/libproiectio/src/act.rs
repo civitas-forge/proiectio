@@ -288,12 +288,15 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         // back an error, which would break the "nothing is written" promise
         // partway through a run. Deciding refuses such an entry; a
         // hand-built plan meets the same refusal here.
-        if let Action::Write { entry } | Action::Overwrite { entry, .. } = action
-            && let Entry::Symlink { target } = entry
-            && !is_pathname(target)
-        {
-            invalid.insert(path.clone(), target.clone());
-            continue;
+        let written = match action {
+            Action::Write { entry } | Action::Overwrite { entry, .. } => Some(entry),
+            _ => None,
+        };
+        if let Some(Entry::Symlink { target }) = written {
+            if !is_pathname(target) {
+                invalid.insert(path.clone(), target.clone());
+                continue;
+            }
         }
         match action {
             Action::Write { entry } => {

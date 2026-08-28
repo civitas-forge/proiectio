@@ -229,9 +229,17 @@ pub enum Refusal {
     /// [`contained_join`](crate::contained_join) (absolute, climbing out
     /// via `..`, empty or `.` components, backslashes, and component
     /// shapes Windows resolves specially — its rustdoc is the full list),
-    /// writes through a symlinked ancestor, or enters the projection's own
-    /// state directory; see
-    /// [`Error::Containment`](crate::Error::Containment).
+    /// it lies beneath a symlink that outlives the plan (the no-alias rule
+    /// [`decide`](crate::decide) documents — a link on disk, owned or
+    /// foreign, that no action in this plan removes; beneath a *desired*
+    /// link the refusal is [`TreeConflict`](Refusal::TreeConflict)), or it
+    /// enters the projection's own state directory.
+    ///
+    /// Applying refuses under the narrower apply-time rule of
+    /// `docs/security.lex` section 2, which still lets the walk follow an
+    /// ancestor link the manifest owns whose target resolves inside the
+    /// destination; see [`Error::Containment`](crate::Error::Containment)
+    /// for that split.
     Containment,
     /// A desired symlink whose target, resolved lexically from the link's
     /// parent, lands outside the destination — absolute, climbing out, or
