@@ -88,7 +88,7 @@ pub enum Error {
     /// Refusal: desired symlinks whose targets, resolved from each link's
     /// parent directory through the destination's own links, land outside
     /// the destination — absolute targets, ones climbing out, ones reaching
-    /// outside through a link the destination holds, and the spellings
+    /// outside through a link the run leaves dest holding, and the spellings
     /// graded external on every host (`docs/security.lex` section 3 carries
     /// the whole rule). Apply raises it again where a link's target has
     /// become escaping since the plan. The caller lifts this per plan with

@@ -96,9 +96,9 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// hand-built or stale plan refuses rather than misfires. (The
 /// state-directory exclusion is the deciding stage's admission check; this
 /// function cannot see where `state` lives relative to `dest`.) A symlink's
-/// target is re-graded before the link is published, against the live disk
-/// rather than the plan-time snapshot the verdict was taken from
-/// ([`regrade`]); [`Plan::external_targets`] says whether there is a
+/// target is re-graded against the live disk before the link is published,
+/// rather than trusting the plan-time snapshot the verdict was taken from
+/// ([`settle_links`]); [`Plan::external_targets`] says whether there is a
 /// verdict to hold the destination to, since a caller who permitted
 /// external targets permitted them whatever the destination now holds. What
 /// containment means at apply time is the walk below, which writes
@@ -138,7 +138,8 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// directories emptied by removal pruned afterwards (deepest first; a
 /// directory still holding anything, a non-UTF-8 name included, is kept,
 /// never an error); then everything else in sorted order, parents before
-/// children, creating missing parent directories on the way.
+/// children, creating missing parent directories on the way; then the
+/// symlinks, which grading makes order-dependent ([`settle_links`]).
 ///
 /// Every path to a mutation is resolved by a no-follow walk from the `dest`
 /// handle: each ancestor component is opened with cap-primitives'
@@ -180,9 +181,9 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// temporary name in the verified parent and renamed over the path, so a
 /// file becoming a link — or a link becoming a file — publishes in one
 /// rename, and the target string reaches disk verbatim, whatever it points
-/// at — after [`regrade`] has re-run the deciding stage's grading over it
-/// against the disk, so a link whose target became escaping since the plan
-/// refuses as [`Error::ExternalTarget`] instead of publishing. Before every
+/// at — after the deciding stage's grading has been re-run over it against
+/// the disk, so a link whose target became escaping since the plan refuses
+/// as [`Error::ExternalTarget`] instead of publishing. Before every
 /// overwrite, removal, and skip the target is
 /// re-checked against the action's expected signature — kind, hash,
 /// executable bit — and a mismatch refuses as [`Error::Drift`] carrying the
@@ -395,10 +396,22 @@ fn run(
         }
     }
     prune(dest, manifest, &removed_dirs_candidates)?;
-    // Then everything else in sorted order, parents before children.
+    // Then everything else in sorted order, parents before children — the
+    // symlinks excepted. A link's target is graded against the destination
+    // as it stands, so it waits for whatever the run is still going to put
+    // where its target resolves through ([`settle_links`]).
+    let mut links: Vec<(&Utf8PathBuf, &Action)> = Vec::new();
     for (path, action) in &plan.actions {
         match action {
             Action::Remove { .. } | Action::Refuse { .. } => {}
+            Action::Write { entry } | Action::Overwrite { entry, .. }
+                if matches!(entry, Entry::Symlink { .. }) =>
+            {
+                links.push((path, action));
+            }
+            Action::Skip { expected } if expected.kind == EntryKind::Symlink => {
+                links.push((path, action));
+            }
             Action::Write { entry } => {
                 write(dest, manifest, path, entry, true, plan)?;
                 record(manifest, path, entry, &plan.owner);
@@ -412,21 +425,7 @@ fn run(
             }
             Action::Skip { expected } => {
                 check_expected(dest, manifest, path, expected)?;
-                let mut owners = manifest
-                    .entries
-                    .get(path)
-                    .map(|entry| entry.owners.clone())
-                    .unwrap_or_default();
-                owners.insert(plan.owner.clone());
-                manifest.entries.insert(
-                    path.clone(),
-                    ManifestEntry {
-                        kind: expected.kind,
-                        hash: expected.hash.clone(),
-                        executable: expected.executable,
-                        owners,
-                    },
-                );
+                skip(manifest, path, expected, &plan.owner);
                 outcomes.insert(path.clone(), ApplyOutcome::Skipped);
             }
             Action::Release => {
@@ -443,7 +442,157 @@ fn run(
             }
         }
     }
+    settle_links(dest, manifest, plan, outcomes, links)
+}
+
+/// Records `path` in `manifest` under `owner` with the signature the plan
+/// expects — an [`Action::Skip`]'s whole effect on the manifest.
+fn skip(manifest: &mut Manifest, path: &Utf8Path, expected: &NodeSignature, owner: &str) {
+    let mut owners = manifest
+        .entries
+        .get(path)
+        .map(|entry| entry.owners.clone())
+        .unwrap_or_default();
+    owners.insert(owner.to_owned());
+    manifest.entries.insert(
+        path.to_owned(),
+        ManifestEntry {
+            kind: expected.kind,
+            hash: expected.hash.clone(),
+            executable: expected.executable,
+            owners,
+        },
+    );
+}
+
+/// Executes the plan's symlink actions, after everything else in the run —
+/// the part of apply that grading makes order-dependent.
+///
+/// A link's target is graded against the destination as it stands
+/// (`docs/security.lex` section 3), and a run may be putting the very thing
+/// the target resolves through in place: replacing a `pivot -> /etc` with an
+/// in-dest link, or replacing a link with a file so nothing lives beneath
+/// it. Sorted order reaches `evil -> pivot/x` before `pivot`, so grading a
+/// link where sorted order happens to place it would refuse a run whose
+/// finished destination holds nothing external.
+///
+/// So a link whose target does not grade in-dest yet is *held*, not
+/// refused, and the pass repeats over what it held. Each pass either
+/// publishes something or the destination will never satisfy the rest, so a
+/// pass that publishes nothing refuses every link still waiting as
+/// [`Error::ExternalTarget`]. The run only ever publishes a link that grades
+/// in-dest against the disk at that moment, so a run that fails partway
+/// leaves no pointer out of the destination behind.
+///
+/// Symlink skips come last, once the destination is finished: nothing is
+/// published for them, but a plan-time in-dest verdict is still a verdict,
+/// and a pivot swapped under an untouched recorded link invalidates it the
+/// same way it invalidates one this run writes.
+fn settle_links(
+    dest: &Dir,
+    manifest: &mut Manifest,
+    plan: &Plan,
+    outcomes: &mut BTreeMap<Utf8PathBuf, ApplyOutcome>,
+    links: Vec<(&Utf8PathBuf, &Action)>,
+) -> Result<()> {
+    let (mut pending, skips): (Vec<_>, Vec<_>) = links
+        .into_iter()
+        .partition(|(_, action)| !matches!(action, Action::Skip { .. }));
+    while !pending.is_empty() {
+        let before = pending.len();
+        let mut held: Vec<(&Utf8PathBuf, &Action)> = Vec::new();
+        for (path, action) in pending {
+            let (entry, fresh, outcome) = match action {
+                Action::Write { entry } => (entry, true, ApplyOutcome::Written),
+                Action::Overwrite { entry, expected } => {
+                    check_expected(dest, manifest, path, expected)?;
+                    (entry, false, ApplyOutcome::Overwritten)
+                }
+                _ => unreachable!("only writes and overwrites are pending here"),
+            };
+            match write(dest, manifest, path, entry, fresh, plan)? {
+                Written::Published => {
+                    record(manifest, path, entry, &plan.owner);
+                    outcomes.insert(path.clone(), outcome);
+                }
+                Written::Held => held.push((path, action)),
+            }
+        }
+        if held.len() == before {
+            return Err(Error::ExternalTarget {
+                links: held
+                    .iter()
+                    .map(|(path, action)| ((*path).clone(), planned_target(action)))
+                    .collect(),
+            });
+        }
+        pending = held;
+    }
+    for (path, action) in skips {
+        let Action::Skip { expected } = action else {
+            unreachable!("only skips are left here");
+        };
+        check_expected(dest, manifest, path, expected)?;
+        regrade_recorded_link(dest, manifest, plan, path)?;
+        skip(manifest, path, expected, &plan.owner);
+        outcomes.insert(path.clone(), ApplyOutcome::Skipped);
+    }
     Ok(())
+}
+
+/// The target string of the symlink a write or overwrite carries — what
+/// [`settle_links`] names a held link by when it refuses it.
+fn planned_target(action: &Action) -> String {
+    match action {
+        Action::Write {
+            entry: Entry::Symlink { target },
+        }
+        | Action::Overwrite {
+            entry: Entry::Symlink { target },
+            ..
+        } => target.clone(),
+        _ => unreachable!("only symlink writes and overwrites are held"),
+    }
+}
+
+/// Grades the target of the link already on disk at `path`, for an
+/// [`Action::Skip`] the run leaves in place: the plan called it in-dest, and
+/// this holds the finished destination to that verdict.
+///
+/// The target is read off the disk rather than the plan, which carries only
+/// the link's [`NodeSignature`] — [`check_expected`] has already held that
+/// signature against the node, so the string read here is the one the plan
+/// graded. A matching hash proves agreement with the record, not UTF-8: a
+/// manifest this crate never writes can record the hash of raw bytes, and
+/// what cannot be graded is refused as [`Error::Containment`], the verdict
+/// the ancestor walk gives the same shape.
+fn regrade_recorded_link(
+    dest: &Dir,
+    manifest: &Manifest,
+    plan: &Plan,
+    path: &Utf8Path,
+) -> Result<()> {
+    if plan.external_targets == ExternalTargetPolicy::Allow {
+        return Ok(());
+    }
+    let Some((parent, leaf, resolved_parent)) = verified_parent(dest, manifest, path, false)?
+    else {
+        return Err(drift(path));
+    };
+    let target = parent
+        .as_cap_std()
+        .read_link_contents(&leaf)
+        .map_err(io_error(path))?;
+    let bytes = std::os::unix::ffi::OsStrExt::as_bytes(target.as_os_str());
+    let Ok(target) = std::str::from_utf8(bytes) else {
+        return Err(containment(path));
+    };
+    if target_lands_in_dest(dest, plan, &resolved_parent, target)? {
+        return Ok(());
+    }
+    Err(Error::ExternalTarget {
+        links: BTreeMap::from([(path.to_owned(), target.to_owned())]),
+    })
 }
 
 /// Executes one [`Action::Remove`]: with an expected signature, re-checks
@@ -518,7 +667,12 @@ fn prune(dest: &Dir, manifest: &Manifest, candidates: &BTreeSet<Utf8PathBuf>) ->
 /// refuses — [`Error::Drift`] when the path is recorded (it changed
 /// relative to the plan's view), [`Error::Foreign`] otherwise (something
 /// the projection never wrote appeared). A symlink's target is re-graded
-/// before it is published ([`regrade`]). Block entries were rejected by
+/// against the destination as it stands before it is published, and the
+/// write comes back [`Held`](Written::Held) — not refused — where it does
+/// not land in-dest yet, for [`settle_links`] to try again once the run has
+/// put more of the destination in place. Only a symlink is ever held, so a
+/// caller writing a file has nothing to read in the answer. Block entries
+/// were rejected by
 /// [`validate`]; reaching one here is a bug, but still errors rather than
 /// panics.
 fn write(
@@ -528,7 +682,7 @@ fn write(
     entry: &Entry,
     fresh: bool,
     plan: &Plan,
-) -> Result<()> {
+) -> Result<Written> {
     let Some((parent, leaf, resolved_parent)) = verified_parent(dest, manifest, path, true)? else {
         unreachable!("a creating walk opens or creates every ancestor");
     };
@@ -551,15 +705,31 @@ fn write(
         Entry::File {
             contents,
             executable,
-        } => persist(&parent, &leaf, path, contents, *executable),
+        } => persist(&parent, &leaf, path, contents, *executable)?,
         Entry::Symlink { target } => {
-            regrade(dest, plan, &resolved_parent, path, target)?;
-            publish_link(&parent, &leaf, path, target)
+            if !target_lands_in_dest(dest, plan, &resolved_parent, target)? {
+                return Ok(Written::Held);
+            }
+            publish_link(&parent, &leaf, path, target)?;
         }
-        Entry::Block { .. } => Err(Error::ApplyBlockUnimplemented {
-            paths: BTreeSet::from([path.to_owned()]),
-        }),
+        Entry::Block { .. } => {
+            return Err(Error::ApplyBlockUnimplemented {
+                paths: BTreeSet::from([path.to_owned()]),
+            });
+        }
     }
+    Ok(Written::Published)
+}
+
+/// What one [`write`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Written {
+    /// The entry is on disk.
+    Published,
+    /// A symlink whose target does not grade in-dest against the
+    /// destination as it stands. Nothing was written; [`settle_links`]
+    /// tries again after the rest of the run has landed.
+    Held,
 }
 
 /// Publishes `contents` at `leaf` inside `dir` atomically: tempfile,
@@ -587,9 +757,7 @@ fn persist(
 /// The changed-since-plan re-check for a symlink's target: grades `target`
 /// from `parent` — the link's own parent, relative to the destination and
 /// after any owned-link restarts, since that is the directory the link is
-/// published in — against the destination this run is leaving, and refuses a
-/// target that lands outside as [`Error::ExternalTarget`] carrying the link
-/// and its target.
+/// published in — against the destination as it stands right now.
 ///
 /// The verdict this holds the destination to is the deciding stage's:
 /// grading resolves through the destination's own links
@@ -598,72 +766,37 @@ fn persist(
 /// into one that escapes. Every other destructive action re-checks its
 /// expectation before it proceeds ([`check_expected`]); this is that
 /// re-check for the one part of a link the plan cannot express as a
-/// [`NodeSignature`] — where its pointer lands.
+/// [`NodeSignature`] — where its pointer lands. Because it reads the disk
+/// and nothing else, a `false` here can also mean the run has not yet put
+/// the target's own pivot in place, which is why the caller holds the link
+/// rather than refusing it ([`settle_links`]).
 ///
-/// [`ExternalTargetPolicy::Allow`] skips it: the caller permitted pointers
-/// out of the destination before this plan existed, so there is no
-/// plan-time verdict for the disk to have invalidated, and the target
-/// lands verbatim as it always would have.
-///
-/// The refusal is [`Error::ExternalTarget`] and not [`Error::Drift`] even
-/// though a change since the plan is what exposed it, because an error
-/// names the rule it refuses under and the permission that lifts it: the
-/// invoker who wants this link written wants `--allow-external-targets`,
-/// which is exactly what grading answers to, while `--force` lifts drift
-/// and must never be the lever that publishes an escaping pointer. The
-/// payload follows the rule too — the link and its target string, not a
-/// bare path — and a pivot the manifest never recorded produces no drift to
-/// report in the first place.
-fn regrade(
-    dest: &Dir,
-    plan: &Plan,
-    parent: &Utf8Path,
-    path: &Utf8Path,
-    target: &str,
-) -> Result<()> {
+/// [`ExternalTargetPolicy::Allow`] answers `true` outright: the caller
+/// permitted pointers out of the destination before this plan existed, so
+/// there is no plan-time verdict for the destination to have invalidated,
+/// and the target lands verbatim as it always would have.
+fn target_lands_in_dest(dest: &Dir, plan: &Plan, parent: &Utf8Path, target: &str) -> Result<bool> {
     if plan.external_targets == ExternalTargetPolicy::Allow {
-        return Ok(());
+        return Ok(true);
     }
-    if contained_target_chain(parent, target, |hop| planned_hop(dest, plan, hop))?.is_some() {
-        return Ok(());
-    }
-    Err(Error::ExternalTarget {
-        links: BTreeMap::from([(path.to_owned(), target.to_owned())]),
-    })
+    Ok(contained_target_chain(parent, target, |hop| hop_on_disk(dest, hop))?.is_some())
 }
 
-/// What will stand at one destination-relative path once this run finishes,
-/// read for [`regrade`]'s chain resolution — the same question deciding
-/// answers from the desired tree and the observation snapshot, answered here
-/// from the plan and the live disk.
-///
-/// The plan answers for every path it writes or removes — the leaf and its
-/// ancestors alike — and the disk for everything the run leaves alone. Each
-/// ancestor the disk answers for is opened from the `dest` handle with
-/// `open_dir_nofollow`, so the lstat of the final component is reached
-/// without following anything.
-///
-/// Reading the plan rather than the disk at those paths is what keeps the
-/// two stages from grading different destinations, because apply publishes
-/// in path order and half a run is not the destination anything was graded
-/// against: a run replacing `pivot -> /etc` with an in-dest link reaches
-/// `evil -> pivot/x` first, and a run replacing a link with a file reaches a
-/// pointer beneath it first. Both finish with nothing external, and both
-/// would refuse if the pointer were graded against the disk alone. A plan
-/// carrying any [`Action::Refuse`] applies nothing, so either every planned
-/// entry lands or none does.
+/// What stands at one destination-relative path on disk, read for
+/// [`target_lands_in_dest`]'s chain resolution: each ancestor component is
+/// opened from the `dest` handle with `open_dir_nofollow`, so the lstat of
+/// the final component is reached without following anything.
 ///
 /// Only a symlink continues a chain. A missing path, or one whose ancestry
 /// is missing or is anything but a directory, is [`Terminal`](Hop::Terminal)
 /// — a pointer into nothing stays a pointer inside the destination. Two
 /// shapes are [`Unresolvable`](Hop::Unresolvable), and both grade the chain
 /// external: a target that is not UTF-8, which nothing can say the landing
-/// of, and an ancestor the disk still holds a symlink at — the chain
-/// established that ancestor as an ordinary directory a moment ago and the
-/// plan does not name it, so meeting a link there means the destination is
-/// being rewritten underneath this run, and a chain resolved through it
-/// would vouch for nothing.
-fn planned_hop(dest: &Dir, plan: &Plan, path: &Utf8Path) -> Result<Hop> {
+/// of, and an ancestor that is a symlink — the chain established that
+/// ancestor as an ordinary directory a moment ago, so meeting a link there
+/// means the destination is being rewritten underneath this run, and a chain
+/// resolved through it would vouch for nothing.
+fn hop_on_disk(dest: &Dir, path: &Utf8Path) -> Result<Hop> {
     let mut components: VecDeque<String> = path
         .components()
         .map(|component| component.as_str().to_owned())
@@ -675,15 +808,6 @@ fn planned_hop(dest: &Dir, plan: &Plan, path: &Utf8Path) -> Result<Hop> {
     let mut prefix = Utf8PathBuf::new();
     for component in components {
         let here = prefix.join(&component);
-        if let Some(planned) = planned_node(plan, &here) {
-            // The run leaves a non-directory here, so nothing lives beneath
-            // it. A link would have been followed before the chain asked
-            // about anything under it.
-            return Ok(match planned {
-                Hop::Link(_) => Hop::Unresolvable,
-                terminal => terminal,
-            });
-        }
         let meta = match dir.symlink_metadata(&component) {
             Ok(meta) => meta,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Hop::Terminal),
@@ -697,9 +821,6 @@ fn planned_hop(dest: &Dir, plan: &Plan, path: &Utf8Path) -> Result<Hop> {
         }
         dir = open_nofollow(&dir, &component).map_err(io_error(&here))?;
         prefix = here;
-    }
-    if let Some(planned) = planned_node(plan, path) {
-        return Ok(planned);
     }
     match dir.symlink_metadata(&leaf) {
         Ok(meta) if meta.file_type().is_symlink() => {
@@ -719,20 +840,6 @@ fn planned_hop(dest: &Dir, plan: &Plan, path: &Utf8Path) -> Result<Hop> {
     }
 }
 
-/// What `plan` leaves at one destination-relative path, or `None` where it
-/// names the path but leaves what stands there alone — a skip, a release, or
-/// a refusal, all of which the disk answers for.
-fn planned_node(plan: &Plan, path: &Utf8Path) -> Option<Hop> {
-    match plan.actions.get(path)? {
-        Action::Write { entry } | Action::Overwrite { entry, .. } => Some(match entry {
-            Entry::Symlink { target } => Hop::Link(target.clone()),
-            Entry::File { .. } | Entry::Block { .. } => Hop::Terminal,
-        }),
-        Action::Remove { .. } => Some(Hop::Terminal),
-        Action::Skip { .. } | Action::Release | Action::Refuse { .. } => None,
-    }
-}
-
 /// Publishes the symlink `leaf -> target` inside `dir` atomically: the link
 /// is created under a temporary name in that same verified directory and
 /// renamed over the leaf, so the path holds the old node or the finished
@@ -745,7 +852,8 @@ fn planned_node(plan: &Plan, path: &Utf8Path) -> Option<Hop> {
 /// `symlink_contents`, which writes any target string — an absolute one
 /// included, where `symlink` would refuse
 /// (`docs/implementation.lex` section 3). Grading happened twice by now —
-/// in the deciding stage and again in [`regrade`] — and neither rewrites
+/// in the deciding stage and again in [`target_lands_in_dest`] — and
+/// neither rewrites
 /// what a link points at. Nothing is written *through* the link either: the
 /// no-follow walk that verified `dir` never resolves an external target.
 fn publish_link(dir: &Dir, leaf: &str, path: &Utf8Path, target: &str) -> Result<()> {

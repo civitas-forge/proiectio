@@ -19,7 +19,8 @@ pub enum DriftPolicy {
 
 /// What planning does with a desired symlink whose target resolves outside
 /// the destination — an absolute target, one climbing out, one reaching
-/// outside through a link the destination already holds, or one of the
+/// outside through a link the run leaves the destination holding — one
+/// already there or one the tree projects — or one of the
 /// spellings graded external on every host (`docs/security.lex` section 3
 /// carries the whole rule).
 ///
@@ -100,7 +101,7 @@ pub struct Plan {
     /// a plan that graded every target in-dest is indistinguishable from one
     /// that never graded any. Apply re-grades a link's target against the
     /// disk before publishing it (`docs/security.lex` section 3), and this
-    /// says whether that re-grade has a verdict to hold the disk to:
+    /// says whether that re-grade has a verdict to hold the destination to:
     /// under [`Refuse`](ExternalTargetPolicy::Refuse) a target that has
     /// become escaping since the plan refuses, and under
     /// [`Allow`](ExternalTargetPolicy::Allow) there was never a verdict, so
@@ -261,8 +262,8 @@ pub enum Refusal {
     Containment,
     /// A desired symlink whose target, resolved from the link's parent
     /// through the destination's own links, lands outside the destination —
-    /// absolute, climbing out, reaching outside through a link the
-    /// destination holds, or one of the spellings graded external on every
+    /// absolute, climbing out, reaching outside through a link the run
+    /// leaves dest holding, or one of the spellings graded external on every
     /// host (`docs/security.lex` section 3 carries the whole rule). Lifted per-plan by
     /// [`ExternalTargetPolicy::Allow`], which writes the link with the
     /// target verbatim; see

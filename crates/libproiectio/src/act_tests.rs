@@ -1376,6 +1376,82 @@ fn a_pointer_under_a_link_this_run_replaces_with_a_file_lands_without_the_permis
     );
 }
 
+// A run that fails partway leaves no pointer out of the destination
+// behind: "evil" waits for the pivot it resolves through, the pivot's
+// overwrite refuses, and the pointer is never published.
+#[test]
+fn a_held_link_is_not_published_when_the_pivot_it_waits_for_refuses() {
+    let (dest, state) = fixtures();
+    pipeline_with(
+        &dest,
+        &state,
+        "own",
+        &Tree::new().symlink("pivot", "/etc").entries(),
+        PlanOptions {
+            external_targets: ExternalTargetPolicy::Allow,
+            ..PlanOptions::default()
+        },
+    )
+    .expect("the permitted external pivot lands");
+
+    let desired = Tree::new()
+        .symlink("pivot", "real")
+        .symlink("evil", "pivot/x")
+        .entries();
+    let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
+
+    // The gap between the two calls: the pivot is edited, so its overwrite
+    // will refuse the signature the plan expects.
+    Tree::new()
+        .symlink("pivot", "/tmp")
+        .write_under(dest.root());
+    let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the pivot drifted");
+
+    match error {
+        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from([Utf8PathBuf::from("pivot")])),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+    assert_tree(dest.root(), &Tree::new().symlink("pivot", "/tmp"));
+}
+
+// A link the run leaves in place is held to its plan-time verdict too: the
+// run publishes nothing for a skip, but the pivot under it moved, and a
+// fresh plan over the same disk would refuse.
+#[test]
+fn a_skipped_link_whose_pivot_was_swapped_refuses() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .dir("real")
+        .symlink("pivot", "real")
+        .write_under(dest.root());
+    let desired = Tree::new().symlink("rc", "pivot/x").entries();
+
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
+        .expect("the chain lands in dest, so the link is written");
+
+    // The same tree again: "rc" is clean, so the plan skips it.
+    let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
+    assert!(
+        matches!(plan.actions[Utf8Path::new("rc")], Action::Skip { .. }),
+        "an unchanged link is skipped"
+    );
+
+    // The gap between the two calls: the pivot now points outside.
+    Tree::new()
+        .symlink("pivot", "/etc")
+        .write_under(dest.root());
+    let error = apply_at(&dest, &state, &manifest, &plan)
+        .expect_err("the skipped link now resolves outside the destination");
+
+    match error {
+        Error::ExternalTarget { links } => assert_eq!(
+            links,
+            BTreeMap::from([(Utf8PathBuf::from("rc"), "pivot/x".to_owned())])
+        ),
+        other => panic!("expected ExternalTarget, got {other:?}"),
+    }
+}
+
 // The no-alias rule end to end: a path resolving through a link the plan
 // leaves standing is refused, so nothing lands where the plan does not name.
 #[test]

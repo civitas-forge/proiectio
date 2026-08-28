@@ -77,11 +77,11 @@ Security Model
     is one nobody can vouch for. Both end it outside — a chain that
     never lands cannot be said to land in dest.
 
-    The destination a pointer is graded against is the one the run
-    *leaves*: the tree's own links are hops, a link the run removes
-    is not, and everything the run does not touch is read from the
-    observation snapshot (at apply time, from the disk). A pointer
-    graded against the destination it will live in is what stops two
+    At plan time the destination a pointer is graded against is the
+    one the run *leaves*: the tree's own links are hops, a link the
+    run removes is not, and everything the run does not touch is read
+    from the observation snapshot. A pointer graded against the
+    destination it will live in is what stops two
     links that each land in dest alone from composing into one that
     does not — "b -> ." and "a -> b/../escape" both land in dest read
     separately, and together "a" points at dest's parent, because
@@ -100,16 +100,25 @@ Security Model
     apply-time walk of section 2 is what enforces that.
 
     A plan-time verdict is about a destination that can move under
-    it, so apply re-grades a link's target before publishing the
-    link, reading the disk for every path the plan does not itself
-    write, and refuses the link as an external target rather than
-    publish a pointer whose pivot was swapped in the gap between the
-    two calls — the same shape as the drift re-check of section 5.
-    The paths the plan does write it reads from the plan, because
-    apply publishes in path order and half a run is not the
-    destination anything was graded against. Under the flag there is
-    no verdict to re-check: the invoker permitted pointers out of
-    dest whatever the destination holds.
+    it, so apply re-grades a link's target against the disk as it
+    stands before publishing the link, and refuses it as an external
+    target rather than publish a pointer whose pivot was swapped in
+    the gap between the two calls — the same shape as the drift
+    re-check of section 5. A link the run leaves in place is
+    re-graded too, once the run is finished: nothing is published for
+    it, but the pivot under it can move like any other. Under the
+    flag there is no verdict to re-check: the invoker permitted
+    pointers out of dest whatever the destination holds.
+
+    Re-grading against the disk is what makes the order links are
+    published in matter, since a run may be putting the pivot its own
+    pointer resolves through in place. Links go last, after
+    everything else the run writes, and one that does not grade
+    in-dest yet is held rather than refused, until a pass publishes
+    nothing and every link still waiting is refused
+    ([./implementation.lex] section 6). So the destination never
+    holds a pointer out of dest that this run published — not even
+    between two actions, and not after a run that failed partway.
 
     A "." or empty component resolves away as it does on disk, and
     ".." pops what resolution walked — after a followed hop that is
