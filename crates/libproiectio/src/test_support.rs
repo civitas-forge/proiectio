@@ -23,11 +23,15 @@
 //! in tests.
 //!
 //! The scaffolding defends its own isolation promise: tree paths admit only
-//! normal components (no `..`, no `.`, no absolute paths, no empty segments),
+//! normal segments (no `..`, no `.`, no absolute paths, no empty segments),
 //! and no node may sit under a declared file or symlink — so a declared tree
 //! cannot reach outside the fixture directory, by dot-dot or by writing
-//! through a declared link. This module is Unix-only (`cfg(unix)` at the
-//! declaration site): exec bits and symlinks are the behavior under test.
+//! through a declared link. [`Tree::write_under`] extends the same promise to
+//! overlays on an existing root: it refuses to write through an on-disk
+//! symlink ancestor, and it unlinks (never follows) an existing leaf whose
+//! kind differs from the declared node. This module is Unix-only
+//! (`cfg(unix)` at the declaration site): exec bits and symlinks are the
+//! behavior under test.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -159,9 +163,9 @@ impl Tree {
 
     /// The desired-tree value `plan` takes.
     ///
-    /// [`Node::Dir`] entries are omitted: the desired tree carries no
-    /// directory entries — directories are implied by parent components
-    /// (`docs/design.lex` section 1).
+    /// [`Node::Dir`] entries are omitted: [`Entry`] has no directory variant —
+    /// a desired tree implies its directories from the parent components of
+    /// its files and links.
     pub(crate) fn entries(&self) -> BTreeMap<Utf8PathBuf, Entry> {
         self.nodes
             .iter()
@@ -199,12 +203,20 @@ impl Tree {
     /// Writes the tree's nodes under an existing absolute `root`, in sorted
     /// path order (parents before children), creating implied parent
     /// directories.
+    ///
+    /// Overlaying on a non-empty root stays inside it: a write whose on-disk
+    /// ancestor is a symlink panics instead of following it, and an existing
+    /// leaf is unlinked (never followed, never errored on) when its kind
+    /// differs from the declared node — so a declared file replaces a stale
+    /// symlink rather than writing through it.
     pub(crate) fn write_under(&self, root: &Utf8Path) {
         assert!(root.is_absolute(), "write_under takes an absolute root");
         for (path, node) in &self.nodes {
             let abs = root.join(path);
             let parent = abs.parent().expect("joined path has a parent");
+            assert_no_symlink_ancestor(root, parent);
             fs::create_dir_all(parent).unwrap_or_else(|e| panic!("create {parent:?}: {e}"));
+            unlink_mismatched_leaf(&abs, node);
             match node {
                 Node::File {
                     contents,
@@ -255,17 +267,66 @@ impl Fixture {
     }
 }
 
-/// Asserts `path` is relative and made only of normal components — no `..`,
-/// no `.`, no root, no empty string — so joining it under a fixture root can
-/// never resolve outside the root.
+/// Asserts `path` is relative and made only of normal segments — no `..`,
+/// no `.`, no leading `/`, no empty segments (so no `a//b` and no trailing
+/// slash) — so joining it under a fixture root can never resolve outside the
+/// root. Checks the raw string, because `Utf8Path::components()` silently
+/// normalizes `.` and empty segments away.
 fn assert_normal_relative(path: &Utf8Path) {
+    let raw = path.as_str();
     assert!(
-        !path.as_str().is_empty()
-            && path
-                .components()
-                .all(|c| matches!(c, camino::Utf8Component::Normal(_))),
-        "tree paths are non-empty, relative, and free of `.`/`..` components, got {path:?}"
+        !raw.is_empty()
+            && !raw.starts_with('/')
+            && raw
+                .split('/')
+                .all(|segment| !segment.is_empty() && segment != "." && segment != ".."),
+        "tree paths are non-empty, relative, and free of `.`/`..`/empty segments, got {path:?}"
     );
+}
+
+/// Panics if any on-disk component strictly below `root`, down to `parent`,
+/// exists and is a symlink: `create_dir_all` and `fs::write` would follow it,
+/// and the write could land outside the fixture.
+fn assert_no_symlink_ancestor(root: &Utf8Path, parent: &Utf8Path) {
+    let rel = parent
+        .strip_prefix(root)
+        .expect("write_under paths stay under the root");
+    let mut cur = root.to_owned();
+    for component in rel.components() {
+        cur.push(component);
+        if let Ok(meta) = fs::symlink_metadata(&cur) {
+            assert!(
+                !meta.file_type().is_symlink(),
+                "on-disk ancestor {cur:?} is a symlink — refusing to write through it"
+            );
+        }
+    }
+}
+
+/// Unlinks an existing path at `abs` when it cannot simply be overwritten in
+/// place by `node`: a declared file over an existing symlink must replace the
+/// link, not write through it, and a declared symlink or directory over a
+/// different kind would otherwise fail with `EEXIST`/`ENOTDIR`. Never follows
+/// the existing path.
+fn unlink_mismatched_leaf(abs: &Utf8Path, node: &Node) {
+    let Ok(meta) = fs::symlink_metadata(abs) else {
+        return;
+    };
+    let file_type = meta.file_type();
+    let overwritable_in_place = match node {
+        Node::File { .. } => file_type.is_file(),
+        // `symlink(2)` refuses any existing path, same-kind included.
+        Node::Symlink { .. } => false,
+        Node::Dir => file_type.is_dir(),
+    };
+    if overwritable_in_place {
+        return;
+    }
+    if file_type.is_dir() {
+        fs::remove_dir_all(abs).unwrap_or_else(|e| panic!("remove {abs:?}: {e}"));
+    } else {
+        fs::remove_file(abs).unwrap_or_else(|e| panic!("remove {abs:?}: {e}"));
+    }
 }
 
 /// Diffs the directory at `root` against `expected`, returning one line per
@@ -337,7 +398,7 @@ fn observe(root: &Utf8Path, dir: &Utf8Path, into: &mut BTreeMap<Utf8PathBuf, Nod
         } else if meta.is_dir() {
             into.insert(rel, Node::Dir);
             observe(root, &abs, into);
-        } else {
+        } else if meta.is_file() {
             let contents = fs::read(&abs).unwrap_or_else(|e| panic!("read {abs:?}: {e}"));
             into.insert(
                 rel,
@@ -345,6 +406,14 @@ fn observe(root: &Utf8Path, dir: &Utf8Path, into: &mut BTreeMap<Utf8PathBuf, Nod
                     contents,
                     executable: meta.permissions().mode() & 0o100 != 0,
                 },
+            );
+        } else {
+            // A FIFO or device node: `fs::read` on a writerless FIFO blocks
+            // forever, so report the kind instead of opening it.
+            panic!(
+                "unsupported node kind at {abs:?}: {:?} — fixtures hold only \
+                 files, directories, and symlinks",
+                meta.file_type()
             );
         }
     }

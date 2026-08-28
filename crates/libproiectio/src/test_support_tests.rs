@@ -102,7 +102,7 @@ fn tree_diff_reports_undeclared_paths() {
 }
 
 #[test]
-#[should_panic(expected = "free of `.`/`..` components")]
+#[should_panic(expected = "free of `.`/`..`/empty segments")]
 fn tree_rejects_dot_dot_components() {
     let _ = Tree::new().file("../escape.txt", "outside");
 }
@@ -121,6 +121,51 @@ fn tree_rejects_nodes_nested_under_a_symlink() {
 #[should_panic(expected = "nodes may only sit under directories")]
 fn tree_rejects_declaring_an_ancestor_file_after_its_descendant() {
     let _ = Tree::new().file("a/b.txt", "inner").file("a", "now a file");
+}
+
+#[test]
+#[should_panic(expected = "free of `.`/`..`/empty segments")]
+fn tree_rejects_dot_and_empty_segments() {
+    // `Utf8Path::components()` would normalize these away; the raw-segment
+    // check refuses them instead of silently rewriting the path.
+    let _ = Tree::new().file("a/./b", "hidden dot");
+}
+
+#[test]
+#[should_panic(expected = "refusing to write through it")]
+fn write_under_refuses_an_on_disk_symlink_ancestor() {
+    let fixture = Tree::new()
+        .dir("real")
+        .symlink("link", "real")
+        .materialize();
+
+    // `link/x` resolves through the symlink; the overlay must refuse, not
+    // follow.
+    Tree::new()
+        .file("link/x", "boom")
+        .write_under(fixture.root());
+}
+
+#[test]
+fn write_under_replaces_a_symlink_leaf_instead_of_writing_through_it() {
+    let fixture = Tree::new()
+        .file("target.txt", "original")
+        .symlink("alias", "target.txt")
+        .materialize();
+
+    Tree::new().file("alias", "new").write_under(fixture.root());
+
+    // The link target is untouched; the link itself became a regular file.
+    assert_eq!(
+        fs::read(fixture.path("target.txt")).expect("read link target"),
+        b"original"
+    );
+    assert_tree(
+        fixture.root(),
+        &Tree::new()
+            .file("target.txt", "original")
+            .file("alias", "new"),
+    );
 }
 
 #[test]
