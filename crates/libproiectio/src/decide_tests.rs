@@ -1458,14 +1458,14 @@ fn a_desired_block_over_nothing_writes() {
 /// [`decide_removal`] for [`OWNER`] with no in-dest state prefix, under
 /// `policy` and the default (refusing) external-target policy.
 fn removal(
-    paths: Option<&BTreeSet<Utf8PathBuf>>,
+    scope: RemovalScope<'_>,
     manifest: &Manifest,
     observations: &Observations,
     policy: DriftPolicy,
 ) -> Plan {
     decide_removal(
         OWNER,
-        paths,
+        scope,
         manifest,
         observations,
         None,
@@ -1496,7 +1496,12 @@ fn removing_a_whole_owner_is_deciding_against_an_empty_tree() {
         ("theirs.txt", on_disk(&entry)),
     ]);
 
-    let removal = removal(None, &manifest, &observations, DriftPolicy::Refuse);
+    let removal = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
 
     assert_eq!(
         removal,
@@ -1538,7 +1543,7 @@ fn a_subset_removal_names_the_only_paths_it_judges() {
     ]);
 
     let plan = removal(
-        Some(&requested(&["b/c.txt", "shared.txt"])),
+        RemovalScope::Paths(&requested(&["b/c.txt", "shared.txt"])),
         &manifest,
         &observations,
         DriftPolicy::Refuse,
@@ -1561,13 +1566,31 @@ fn a_subset_removal_names_the_only_paths_it_judges() {
 }
 
 #[test]
+fn a_subset_removal_naming_no_path_plans_nothing() {
+    let entry = file("alpha\n", false);
+    let manifest = manifest_of(&[("a.txt", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[("a.txt", on_disk(&entry))]);
+
+    // Clearing the owner is `Everything`, never an empty list: a caller
+    // passing along a path list that came up empty removes nothing.
+    let plan = removal(
+        RemovalScope::Paths(&BTreeSet::new()),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(plan.actions, BTreeMap::new());
+}
+
+#[test]
 fn a_subset_removal_matches_the_manifest_on_normalized_paths() {
     let entry = file("alpha\n", false);
     let manifest = manifest_of(&[("b/c.txt", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[("b/c.txt", on_disk(&entry))]);
 
     let plan = removal(
-        Some(&requested(&["b/x/../c.txt"])),
+        RemovalScope::Paths(&requested(&["b/x/../c.txt"])),
         &manifest,
         &observations,
         DriftPolicy::Refuse,
@@ -1589,7 +1612,7 @@ fn requested_paths_pass_the_same_containment_gateway_as_desired_keys() {
 
     let plan = decide_removal(
         OWNER,
-        Some(&requested(&[
+        RemovalScope::Paths(&requested(&[
             "../escape",
             "/etc/passwd",
             "a\\b",
@@ -1639,7 +1662,7 @@ fn naming_a_path_this_owner_does_not_hold_plans_nothing() {
     // (which the manifest never records): a removal owes nothing at any of
     // them, so re-running one that already succeeded stays a no-op.
     let plan = removal(
-        Some(&requested(&["gone.txt", "foreign.txt", "theirs.txt", "b"])),
+        RemovalScope::Paths(&requested(&["gone.txt", "foreign.txt", "theirs.txt", "b"])),
         &manifest,
         &observations,
         DriftPolicy::Refuse,
@@ -1656,10 +1679,10 @@ fn removing_a_drifted_path_refuses_and_the_policy_lifts_it() {
     let observations = observed(&[("a.txt", on_disk(&drifted))]);
     let named = requested(&["a.txt"]);
 
-    for paths in [None, Some(&named)] {
+    for scope in [RemovalScope::Everything, RemovalScope::Paths(&named)] {
         assert_eq!(
             action(
-                &removal(paths, &manifest, &observations, DriftPolicy::Refuse),
+                &removal(scope, &manifest, &observations, DriftPolicy::Refuse),
                 "a.txt"
             ),
             &Action::Refuse {
@@ -1670,7 +1693,7 @@ fn removing_a_drifted_path_refuses_and_the_policy_lifts_it() {
         // apply still refuses if the file changes again after the plan.
         assert_eq!(
             action(
-                &removal(paths, &manifest, &observations, DriftPolicy::Overwrite),
+                &removal(scope, &manifest, &observations, DriftPolicy::Overwrite),
                 "a.txt"
             ),
             &Action::Remove {
@@ -1687,7 +1710,7 @@ fn removing_an_already_gone_path_drops_the_entry_alone() {
     let observations = observed(&[("a.txt", Observation::Absent)]);
 
     let plan = removal(
-        Some(&requested(&["a.txt"])),
+        RemovalScope::Paths(&requested(&["a.txt"])),
         &manifest,
         &observations,
         DriftPolicy::Refuse,

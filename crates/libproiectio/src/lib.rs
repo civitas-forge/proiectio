@@ -12,9 +12,10 @@
 //!
 //! Two entry points ride that cycle rather than adding to it.
 //! [`decide_removal`] plans the clearing of what one owner holds — the
-//! whole owner, or the paths a caller names — which is [`decide`] against
-//! an empty desired tree, with the same refusals and the same pruning of
-//! the directories a removal empties. [`status`] is the read-only run:
+//! whole owner, or the paths a caller names ([`RemovalScope`]) — which is
+//! [`decide`] against an empty desired tree, with the same refusals and the
+//! same pruning of the directories a removal empties. [`status`] is the
+//! read-only run:
 //! load the manifest, [`observe`], [`classify`], return the report, write
 //! nothing.
 //!

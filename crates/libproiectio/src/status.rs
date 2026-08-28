@@ -60,22 +60,33 @@ pub struct Status {
 /// that directory does not exist. Nothing in this crate spends ambient
 /// authority — every I/O function takes a handle the caller opened — so the
 /// absence a caller meets when opening the state directory is spelled in
-/// the signature rather than discovered here:
+/// the signature rather than discovered here.
+///
+/// `state_prefix` is the same state directory seen from the other side: its
+/// path relative to the destination when it lies inside it, and `None` when
+/// it lies outside. That subtree is the projection's own state and never
+/// classifies, so a prefix that does not describe the directory `state`
+/// opens misreports — omitting it for an in-dest state directory reports
+/// the manifest and the lock file as [`Foreign`](PathState::Foreign), and
+/// naming an unrelated subtree hides whatever the destination holds there.
+/// [`Projection`](crate::Projection) holds both paths and derives the
+/// prefix from them ([`state_prefix`](crate::Projection::state_prefix)), so
+/// a caller reads the two arguments off one value rather than deriving the
+/// second itself:
 ///
 /// ```no_run
-/// # use camino::Utf8Path;
 /// # use cap_std::ambient_authority;
 /// # use cap_std::fs_utf8::Dir;
-/// # use libproiectio::{Result, status};
-/// # fn read(projection_target: &Utf8Path, projection_state: &Utf8Path) -> Result<()> {
-/// let dest = Dir::open_ambient_dir(projection_target, ambient_authority()).unwrap();
-/// let state = match Dir::open_ambient_dir(projection_state, ambient_authority()) {
+/// # use libproiectio::{Projection, Result, status};
+/// # fn read(projection: &Projection) -> Result<()> {
+/// let dest = Dir::open_ambient_dir(projection.target(), ambient_authority()).unwrap();
+/// let state = match Dir::open_ambient_dir(projection.state_dir(), ambient_authority()) {
 ///     Ok(state) => Some(state),
 ///     // Never projected here: no state directory, so nothing is recorded.
 ///     Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
 ///     Err(e) => panic!("{e}"),
 /// };
-/// let report = status(&dest, state.as_ref(), None)?;
+/// let report = status(&dest, state.as_ref(), projection.state_prefix())?;
 /// # let _ = report;
 /// # Ok(())
 /// # }
@@ -85,13 +96,19 @@ pub struct Status {
 /// is an error: a state directory that does not exist reads as the empty
 /// [`Manifest`], and so does one holding no manifest file yet
 /// ([`load_manifest`]). Against a destination that is also empty the report
-/// is empty; against one holding files, every file it can name classifies
-/// [`Foreign`](PathState::Foreign) — the projection wrote none of them.
+/// is empty; against one holding anything, every path it can name
+/// classifies [`Foreign`](PathState::Foreign) — the projection wrote none
+/// of them.
 ///
-/// `state_prefix` is the state directory's path relative to the
-/// destination when it lies inside it
-/// ([`Projection::state_prefix`](crate::Projection::state_prefix)); that
-/// subtree is the projection's own state and never classifies.
+/// Foreign covers directories as well as files, here as everywhere
+/// ([`classify`]): the manifest records no directories, so every directory
+/// the walk meets is unrecorded — including the parents a past
+/// [`apply`](crate::apply) created for the owned files inside them, which
+/// report [`Clean`](PathState::Clean) beneath a
+/// [`Foreign`](PathState::Foreign) parent. A caller rendering a report for
+/// a person can drop the directory rows; planning is unaffected, since a
+/// desired path only meets a foreign refusal where the tree names that
+/// exact location.
 ///
 /// No lock is taken. A concurrent [`apply`](crate::apply) can move the disk
 /// under the walk, so a report is what the destination looked like, not a

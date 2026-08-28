@@ -141,11 +141,22 @@ Proiectio Design
     pub external_targets: ExternalTargetPolicy,
     }
 
+    pub enum RemovalScope<'a> {
+    Everything,
+    Paths(&'a BTreeSet<Utf8PathBuf>),
+    }
+
     pub struct Projection { target: Utf8PathBuf, state_dir: Utf8PathBuf }
     impl Projection {
     /// Pure: every write, overwrite, removal, and refusal
     /// apply would perform. An empty tree plans a removal.
     pub fn plan(&self, owner: &str, tree: &BTreeMap<Utf8PathBuf, Entry>,
+    options: PlanOptions) -> Result<Plan>;
+    /// The removal on its own terms: everything this owner
+    /// holds, or the recorded paths named. Clearing the owner
+    /// and naming no path are separate spellings, never an
+    /// empty list.
+    pub fn plan_removal(&self, owner: &str, scope: RemovalScope<'_>,
     options: PlanOptions) -> Result<Plan>;
     pub fn apply(&self, plan: &Plan) -> Result<ApplyReport>;
     pub fn status(&self) -> Result<Status>;

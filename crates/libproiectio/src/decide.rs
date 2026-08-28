@@ -221,26 +221,24 @@ pub fn decide(
         observations,
         state_prefix,
         options,
-        &Scope::Everything,
+        &Judged::Everything,
     )
 }
 
 /// The removal stage: the plan that clears what `owner` holds, either
 /// whole or at the paths named — [`decide`] against an empty desired tree,
-/// with the recorded paths it judges narrowed to `paths`
+/// with the recorded paths it judges narrowed by `scope`
 /// (`docs/design.lex` section 2).
 ///
-/// `paths` is `None` for the whole owner and `Some(set)` for a subset:
-///
-/// - `None` — every path recorded under `owner` is judged. This is exactly
-///   `decide(owner, &BTreeMap::new(), ..)`, which is the definition of a
-///   removal, spelled as its own call so a caller need not build an empty
-///   tree to say it.
-/// - `Some(set)` — only the recorded paths the set names are judged; every
-///   other recorded path keeps its entry and its node, absent from the plan
-///   entirely. The set names *locations*, one recorded path each: the
-///   manifest records no directories, so naming one names nothing, and a
-///   subtree is spelled by naming its paths.
+/// - [`RemovalScope::Everything`] — every path recorded under `owner` is
+///   judged. This is exactly `decide(owner, &BTreeMap::new(), ..)`, which is
+///   the definition of a removal, spelled as its own call so a caller need
+///   not build an empty tree to say it.
+/// - [`RemovalScope::Paths`] — only the recorded paths the set names are
+///   judged; every other recorded path keeps its entry and its node, absent
+///   from the plan entirely. The set names *locations*, one recorded path
+///   each: the manifest records no directories, so naming one names nothing,
+///   and a subtree is spelled by naming its paths.
 ///
 /// Each requested path is admitted through the same containment gateway
 /// every desired key passes ([`contained_join`](crate::contained_join)'s
@@ -268,15 +266,15 @@ pub fn decide(
 /// any that still holds anything.
 pub fn decide_removal(
     owner: &str,
-    paths: Option<&BTreeSet<Utf8PathBuf>>,
+    scope: RemovalScope<'_>,
     manifest: &Manifest,
     observations: &Observations,
     state_prefix: Option<&Utf8Path>,
     options: PlanOptions,
 ) -> Plan {
-    let (scope, refused) = match paths {
-        None => (Scope::Everything, BTreeMap::new()),
-        Some(requested) => {
+    let (judged, refused) = match scope {
+        RemovalScope::Everything => (Judged::Everything, BTreeMap::new()),
+        RemovalScope::Paths(requested) => {
             let mut admitted = BTreeSet::new();
             let mut refused: BTreeMap<Utf8PathBuf, Action> = BTreeMap::new();
             for request in requested {
@@ -289,7 +287,7 @@ pub fn decide_removal(
                     }
                 }
             }
-            (Scope::Paths(admitted), refused)
+            (Judged::Paths(admitted), refused)
         }
     };
     let mut plan = plan_actions(
@@ -299,7 +297,7 @@ pub fn decide_removal(
         observations,
         state_prefix,
         options,
-        &scope,
+        &judged,
     );
     // A refused request was never admitted, so its key names no planned
     // action: the two maps are disjoint.
@@ -307,9 +305,28 @@ pub fn decide_removal(
     plan
 }
 
+/// What a [`decide_removal`] call clears: everything the owner holds, or
+/// the paths a caller names.
+///
+/// The two are separate spellings rather than a full list and an empty one,
+/// so clearing an owner cannot be said by accident: `Paths` over an empty
+/// set names no location and plans nothing, and only `Everything` reaches
+/// every recorded path. A caller passing a path list it collected — a
+/// command line's arguments, say — therefore removes nothing when the list
+/// comes up empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemovalScope<'a> {
+    /// Every path recorded under the owner.
+    Everything,
+    /// The recorded paths this set names, and no others. Each passes the
+    /// containment gateway first, and matches the manifest lexically
+    /// normalized.
+    Paths(&'a BTreeSet<Utf8PathBuf>),
+}
+
 /// Which of the owner's recorded paths a plan judges: everything it holds,
-/// or the admitted subset a [`decide_removal`] request named.
-enum Scope {
+/// or the admitted subset a [`RemovalScope::Paths`] request named.
+enum Judged {
     /// Every path recorded under the owner — what planning against a
     /// desired tree always judges, since any recorded path the tree no
     /// longer names is an orphan.
@@ -320,18 +337,18 @@ enum Scope {
     Paths(BTreeSet<Utf8PathBuf>),
 }
 
-impl Scope {
+impl Judged {
     /// Whether a recorded path is this plan's business.
     fn covers(&self, path: &Utf8Path) -> bool {
         match self {
-            Scope::Everything => true,
-            Scope::Paths(paths) => paths.contains(path),
+            Judged::Everything => true,
+            Judged::Paths(paths) => paths.contains(path),
         }
     }
 }
 
 /// The body behind [`decide`] and [`decide_removal`]: the action table of
-/// [`decide`]'s rustdoc, with `scope` narrowing which of the owner's
+/// [`decide`]'s rustdoc, with `judged` narrowing which of the owner's
 /// recorded paths it judges.
 fn plan_actions(
     owner: &str,
@@ -340,7 +357,7 @@ fn plan_actions(
     observations: &Observations,
     state_prefix: Option<&Utf8Path>,
     options: PlanOptions,
-    scope: &Scope,
+    judged: &Judged,
 ) -> Plan {
     let states = classify(manifest, observations, state_prefix);
     let mut actions: BTreeMap<Utf8PathBuf, Action> = BTreeMap::new();
@@ -416,7 +433,7 @@ fn plan_actions(
         if claims.contains_key(path)
             || in_state(path, state_prefix)
             || !recorded.owners.contains(owner)
-            || !scope.covers(path)
+            || !judged.covers(path)
         {
             continue;
         }

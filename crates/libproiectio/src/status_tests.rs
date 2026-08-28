@@ -125,6 +125,25 @@ fn reports_one_state_per_path_of_the_union() {
 }
 
 #[test]
+fn a_directory_the_projection_created_still_reports_foreign() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let tree = Tree::new().file("a/b/mine.txt", "projected");
+    project(dest.root(), state.root(), "own", &tree.entries());
+
+    // The manifest records no directories, so the parents apply created
+    // for an owned file are unrecorded like any other directory.
+    assert_eq!(
+        states(&status_of(dest.root(), state.root())),
+        vec![
+            ("a", PathState::Foreign),
+            ("a/b", PathState::Foreign),
+            ("a/b/mine.txt", PathState::Clean),
+        ]
+    );
+}
+
+#[test]
 fn status_writes_nothing() {
     let dest = Tree::new().materialize();
     let state = Tree::new().materialize();

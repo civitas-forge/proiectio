@@ -8,7 +8,8 @@ use cap_std::fs_utf8::Dir;
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree};
 use crate::{
-    DriftPolicy, EntryKind, ExternalTargetPolicy, PlanOptions, decide, decide_removal, observe,
+    DriftPolicy, EntryKind, ExternalTargetPolicy, PlanOptions, RemovalScope, decide,
+    decide_removal, observe,
 };
 
 /// Opens a capability handle at a fixture root. Ambient authority is the
@@ -352,13 +353,13 @@ fn pruning_keeps_directories_still_holding_anything() {
     assert_tree(dest.root(), &Tree::new().file("a/b/theirs.txt", "foreign"));
 }
 
-/// One observe → [`decide_removal`] → apply run: `paths` is `None` for the
-/// whole owner and `Some(set)` for a subset by path.
+/// One observe → [`decide_removal`] → apply run over `scope`: the whole
+/// owner, or the paths named.
 fn removal_pipeline(
     dest: &Fixture,
     state: &Fixture,
     owner: &str,
-    paths: Option<&BTreeSet<Utf8PathBuf>>,
+    scope: RemovalScope<'_>,
     policy: DriftPolicy,
 ) -> Result<ApplyReport> {
     let (manifest, plan) = {
@@ -368,7 +369,7 @@ fn removal_pipeline(
         let observations = observe(&dest, &manifest).expect("observe destination");
         let plan = decide_removal(
             owner,
-            paths,
+            scope,
             &manifest,
             &observations,
             None,
@@ -399,8 +400,14 @@ fn removing_a_drifted_file_refuses_with_the_path() {
         .file("c.txt", "kept");
     fs::write(dest.path("a/b.txt"), "edited by hand").expect("edit the file");
 
-    let error = removal_pipeline(&dest, &state, "own", None, DriftPolicy::Refuse)
-        .expect_err("the drifted file refuses");
+    let error = removal_pipeline(
+        &dest,
+        &state,
+        "own",
+        RemovalScope::Everything,
+        DriftPolicy::Refuse,
+    )
+    .expect_err("the drifted file refuses");
 
     assert!(matches!(
         &error,
@@ -414,7 +421,14 @@ fn removing_a_drifted_file_refuses_with_the_path() {
     );
 
     // The same removal under --force takes the edited file with it.
-    removal_pipeline(&dest, &state, "own", None, DriftPolicy::Overwrite).expect("forced removal");
+    removal_pipeline(
+        &dest,
+        &state,
+        "own",
+        RemovalScope::Everything,
+        DriftPolicy::Overwrite,
+    )
+    .expect("forced removal");
     assert_tree(dest.root(), &Tree::new());
 }
 
@@ -429,7 +443,14 @@ fn removal_prunes_emptied_dirs_and_keeps_one_holding_a_foreign_file() {
     pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
     fs::write(dest.path("shared/theirs.txt"), "foreign").expect("plant a foreign file");
 
-    removal_pipeline(&dest, &state, "own", None, DriftPolicy::Refuse).expect("removal");
+    removal_pipeline(
+        &dest,
+        &state,
+        "own",
+        RemovalScope::Everything,
+        DriftPolicy::Refuse,
+    )
+    .expect("removal");
 
     assert_tree(
         dest.root(),
@@ -451,7 +472,7 @@ fn a_subset_removal_clears_the_named_paths_and_leaves_the_rest() {
         &dest,
         &state,
         "own",
-        Some(&requested(&["a/b/gone.txt"])),
+        RemovalScope::Paths(&requested(&["a/b/gone.txt"])),
         DriftPolicy::Refuse,
     )
     .expect("removal");
@@ -483,7 +504,7 @@ fn a_subset_removal_refuses_a_path_that_violates_containment() {
         &dest,
         &state,
         "own",
-        Some(&requested(&["../escape", "a.txt"])),
+        RemovalScope::Paths(&requested(&["../escape", "a.txt"])),
         DriftPolicy::Refuse,
     )
     .expect_err("the escaping path refuses");
