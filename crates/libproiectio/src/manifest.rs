@@ -17,7 +17,7 @@ pub const MANIFEST_VERSION: u32 = 1;
 /// desired content for a diff, and a projected secret is never copied into
 /// state. It round-trips through JSON, and `BTreeMap` keeps the
 /// serialization stable and diffable.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     /// Format version; see [`MANIFEST_VERSION`].
     pub version: u32,
@@ -33,6 +33,14 @@ impl Manifest {
             version: MANIFEST_VERSION,
             entries: BTreeMap::new(),
         }
+    }
+}
+
+impl Default for Manifest {
+    /// Same as [`Manifest::new`]: an empty manifest at the current
+    /// [`MANIFEST_VERSION`], never version 0.
+    fn default() -> Self {
+        Manifest::new()
     }
 }
 

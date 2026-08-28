@@ -37,6 +37,11 @@ pub enum Error {
     /// Refusal: paths on disk that the manifest does not record. A
     /// projection never overwrites or removes a file it did not write; no
     /// policy lifts this.
+    ///
+    /// Foreignness is judged over what the projection would own. For a
+    /// [`Block`](crate::EntryKind::Block) entry that is the delimited
+    /// region, not the file around it, so a pre-existing container file
+    /// does not make the path foreign.
     #[error(
         "refusing to touch foreign paths (not written by this projection): {}",
         join(paths)
@@ -54,8 +59,7 @@ pub enum Error {
         paths: BTreeSet<Utf8PathBuf>,
     },
     /// Refusal: symlinks whose targets resolve outside the destination.
-    /// Lifted only by the caller's explicit permission (a CLI's
-    /// `--allow-external-targets`), never by the tree itself.
+    /// Like [`Foreign`](Error::Foreign), no policy lifts this.
     #[error(
         "refusing symlinks with targets outside the destination: {}",
         join_links(links)

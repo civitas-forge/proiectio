@@ -66,7 +66,9 @@ Proiectio Design
     - Recorded under this owner but absent from the desired tree: an
       orphan, removed when disk still matches the recorded hash and
       refused as drifted otherwise; directories emptied by removal
-      are pruned.
+      are pruned. When another owner still holds the path, the
+      departing owner is released from the entry and the disk is
+      left alone.
 
     Block entries carry a delimited managed region inside a file the
     caller does not own whole: apply locates proiectio's delimiter
@@ -96,7 +98,7 @@ Proiectio Design
     /// apply would perform. An empty tree plans a removal.
     pub fn plan(&self, owner: &str, tree: &BTreeMap<Utf8PathBuf, Entry>,
     policy: DriftPolicy) -> Result<Plan>;
-    pub fn apply(&self, plan: &Plan) -> Result<Manifest>;
+    pub fn apply(&self, plan: &Plan) -> Result<ApplyReport>;
     pub fn status(&self) -> Result<Status>;
     }
 

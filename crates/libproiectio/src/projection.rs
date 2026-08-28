@@ -15,7 +15,21 @@ pub struct Projection {
 impl Projection {
     /// A projection writing into `target`, with its manifest kept in
     /// `state_dir`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either path is relative: the crate never consults the
+    /// current directory, so a relative path here has no meaning it could
+    /// honor.
     pub fn new(target: Utf8PathBuf, state_dir: Utf8PathBuf) -> Self {
+        assert!(
+            target.is_absolute(),
+            "projection target must be absolute, got {target}"
+        );
+        assert!(
+            state_dir.is_absolute(),
+            "projection state_dir must be absolute, got {state_dir}"
+        );
         Projection { target, state_dir }
     }
 
@@ -29,3 +43,7 @@ impl Projection {
         &self.state_dir
     }
 }
+
+#[cfg(test)]
+#[path = "projection_tests.rs"]
+mod tests;

@@ -14,10 +14,11 @@ fn a_plan_serializes_with_paths_as_keys() {
                         contents: b"#!/bin/sh\n".to_vec(),
                         executable: true,
                     },
-                    recorded_hash: "aa11".to_owned(),
+                    expected_hash: "aa11".to_owned(),
                 },
             ),
             (Utf8PathBuf::from("config/settings.toml"), Action::Skip),
+            (Utf8PathBuf::from("shared/.zshrc"), Action::Release),
             (
                 Utf8PathBuf::from("toolchain"),
                 Action::Refuse {
@@ -33,8 +34,9 @@ fn a_plan_serializes_with_paths_as_keys() {
 
     assert_eq!(json["owner"], "site");
     assert_eq!(json["actions"]["config/settings.toml"], "Skip");
+    assert_eq!(json["actions"]["shared/.zshrc"], "Release");
     assert_eq!(
-        json["actions"]["bin/tool"]["Overwrite"]["recorded_hash"],
+        json["actions"]["bin/tool"]["Overwrite"]["expected_hash"],
         "aa11"
     );
     assert_eq!(

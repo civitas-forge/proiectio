@@ -3,8 +3,13 @@ use std::collections::BTreeMap;
 use camino::Utf8PathBuf;
 use serde::Serialize;
 
-/// The classification of one path in the union of the desired tree, the
-/// manifest, and the destination directory.
+/// The classification of one path in the union of the manifest and the
+/// destination directory.
+///
+/// Planning runs this classification too, then compares against the
+/// desired tree to choose each path's [`Action`](crate::Action); status
+/// needs no desired tree, so a path only the desired tree names has no
+/// state here — it first appears in a [`Plan`](crate::Plan) as a write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum PathState {
     /// Disk matches the recorded hash.
@@ -17,9 +22,8 @@ pub enum PathState {
     Foreign,
 }
 
-/// The classification of every recorded path, with nothing written.
-///
-/// Status runs the same classification planning does and stops there.
+/// The classification of every path in the union of the manifest and the
+/// destination directory, with nothing written.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Status {
     /// Per-path states, keyed by path relative to the destination.

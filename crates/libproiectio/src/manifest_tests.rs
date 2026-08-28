@@ -55,3 +55,8 @@ fn new_manifest_is_empty_at_the_current_version() {
     assert_eq!(manifest.version, MANIFEST_VERSION);
     assert!(manifest.entries.is_empty());
 }
+
+#[test]
+fn default_matches_new() {
+    assert_eq!(Manifest::default(), Manifest::new());
+}

@@ -13,6 +13,12 @@ pub enum EntryKind {
     /// A delimited managed region inside a file the projection does not own
     /// whole. Only the body between the delimiter lines is written and
     /// hashed, so an edit elsewhere in the file never reads as drift.
+    ///
+    /// The delimiter lines are proiectio's own fixed markers, not caller
+    /// data. The container file may already exist and be otherwise
+    /// unmanaged: the projection owns the region, so the surrounding file
+    /// being unrecorded does not make the path foreign (see
+    /// [`Error::Foreign`](crate::Error::Foreign)).
     Block,
 }
 
@@ -37,8 +43,8 @@ pub enum Entry {
         target: String,
     },
     /// A delimited managed region inside a shared file: apply locates the
-    /// projection's delimiter lines and replaces only the body between
-    /// them.
+    /// projection's delimiter lines — the crate's own fixed markers, not
+    /// caller data — and replaces only the body between them.
     Block {
         /// The bytes between the delimiter lines. The manifest hash covers
         /// the body alone.

@@ -16,6 +16,9 @@ pub enum ApplyOutcome {
     Skipped,
     /// The orphaned path was removed.
     Removed,
+    /// This owner was dropped from the path's manifest entry; the disk was
+    /// not touched because other owners still hold the path.
+    Released,
 }
 
 /// What an apply run did: one outcome per path, and the manifest as
