@@ -98,7 +98,7 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// function cannot see where `state` lives relative to `dest`.) A symlink's
 /// target is re-graded against the live disk before the link is published,
 /// rather than trusting the plan-time snapshot the verdict was taken from
-/// ([`settle_links`]); [`Plan::external_targets`] says whether there is a
+/// (`settle_links`); [`Plan::external_targets`] says whether there is a
 /// verdict to hold the destination to, since a caller who permitted
 /// external targets permitted them whatever the destination now holds. What
 /// containment means at apply time is the walk below, which writes
@@ -152,7 +152,7 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// directory still holding anything, a non-UTF-8 name included, is kept,
 /// never an error); then everything else in sorted order, parents before
 /// children, creating missing parent directories on the way; then the
-/// symlinks, which grading makes order-dependent ([`settle_links`]).
+/// symlinks, which grading makes order-dependent (`settle_links`).
 ///
 /// Every path to a mutation is resolved by a no-follow walk from the `dest`
 /// handle: each ancestor component is opened with cap-primitives'

@@ -129,8 +129,8 @@ pub fn classify(
 /// destination holds — where dest holds `pivot -> /etc`, a tree projecting
 /// `evil -> pivot/passwd` needs the permission, while an ordinary in-dest
 /// chain (`shared -> real` with `rc -> shared/rc`) does not.
-/// [`contained_target_chain`] carries the whole rule, cycle guard included,
-/// and [`planned_hop`] supplies the destination it resolves against: the
+/// `contained_target_chain` carries the whole rule, cycle guard included,
+/// and `planned_hop` supplies the destination it resolves against: the
 /// links this run *leaves* — the desired tree's own, then `observations`
 /// for every path the run does not touch. A pointer graded against the
 /// destination the run leaves is graded against the destination it will
