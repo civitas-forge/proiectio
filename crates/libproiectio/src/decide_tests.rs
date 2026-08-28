@@ -1613,6 +1613,84 @@ fn a_desired_path_beneath_a_link_the_plan_only_releases_still_refuses() {
     );
 }
 
+// The two tests below are why deciding may grade a target from the lexical
+// `link.parent()` while apply grades it from the parent its walk resolved
+// to. The two disagree only for a link with a symlink ancestor, and the
+// tree that would exhibit the disagreement is refused from both directions:
+// a desired ancestor link by the overlap check, an observed one by the
+// no-alias rule. Each test states the divergent verdict alongside the
+// refusal, so removing either guard turns the refusal into a `Write` here
+// and fails, rather than leaving apply to catch the escape.
+
+#[test]
+fn a_desired_link_beneath_a_desired_link_refuses_before_the_verdicts_diverge() {
+    // `b/c/x` spells two climbs. From `b/c`, where the tree writes it, they
+    // pop `c` and `b` and land on `escape` inside the destination. From
+    // `real`, where apply's walk would follow `b/c` to, the second climb
+    // pops past the destination root.
+    let pivot = link("real");
+    let escaping = link("../../escape");
+
+    let plan = plan(
+        &tree(&[("b/c", &pivot), ("b/c/x", &escaping)]),
+        &Manifest::new(),
+        &observed(&[("real", Observation::Directory)]),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "b/c"),
+        &Action::Refuse {
+            refusal: Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("b/c/x")]),
+            },
+        }
+    );
+    assert_eq!(
+        action(&plan, "b/c/x"),
+        &Action::Refuse {
+            refusal: Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("b/c")]),
+            },
+        }
+    );
+}
+
+#[test]
+fn a_desired_link_beneath_an_observed_link_refuses_before_the_verdicts_diverge() {
+    // The same target and the same divergence, with the ancestor link
+    // already on disk instead of in the tree. The second assertion is the
+    // verdict apply would reach: written at the location `b/c` resolves to,
+    // the identical target grades external.
+    let escaping = link("../../escape");
+    let observations = observed(&[
+        ("b/c", on_disk(&link("real"))),
+        ("real", Observation::Directory),
+    ]);
+
+    let plan = plan(
+        &tree(&[("b/c/x", &escaping), ("real/x", &escaping)]),
+        &Manifest::new(),
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "b/c/x"),
+        &Action::Refuse {
+            refusal: Refusal::Containment,
+        }
+    );
+    assert_eq!(
+        action(&plan, "real/x"),
+        &Action::Refuse {
+            refusal: Refusal::ExternalTarget {
+                target: "../../escape".to_owned(),
+            },
+        }
+    );
+}
+
 // --- kind-agnostic comparison: symlinks through the generic table ---
 
 #[test]

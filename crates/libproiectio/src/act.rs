@@ -498,6 +498,32 @@ fn skip(manifest: &mut Manifest, path: &Utf8Path, expected: &NodeSignature, owne
 /// destination root, and `a` reaches outside without either grading ever
 /// saying so.
 ///
+/// Those two conditions are the whole of it, and what makes them enough is
+/// that only a symlink can redirect a path:
+///
+/// - by the time settling starts, removals, prunes and every file the plan
+///   writes have run, so the only node the destination gains from here on is
+///   a link this loop publishes. A `write` still creates missing ancestor
+///   directories, and a directory appearing where a chain found nothing
+///   leaves that chain's landing exactly where it was.
+/// - the chain asks about every path it walks past the link's own parent —
+///   one question per name, and each pop and each followed link leaves the
+///   walked prefix on a path it already asked about — so `unpublished`
+///   covers all of them.
+/// - the paths a chain walks but never asks about are the link's own parent
+///   and that parent's ancestors, which the walk inside `hop_on_disk`
+///   crosses. [`verified_parent`] has just opened or created every one of
+///   them as a real directory, and a link is published by renaming over its
+///   leaf, which cannot replace a directory. So none of them can turn into a
+///   link before the run ends.
+/// - `unpublished` names each remaining link by its action key, and [`write`]
+///   refuses a link whose walk resolved to a different location, so the key
+///   is the location the link goes down at.
+///
+/// Together: after a link is published, every path its resolution passed
+/// through is either final or a directory that stays one, so nothing the
+/// rest of the run does moves where it lands.
+///
 /// Each pass either publishes something or the destination will never
 /// satisfy the rest, so a pass that publishes nothing refuses every link
 /// still waiting as [`Error::ExternalTarget`] — which is also how a plan
@@ -684,7 +710,13 @@ fn prune(dest: &Dir, manifest: &Manifest, candidates: &BTreeSet<Utf8PathBuf>) ->
 /// write comes back [`Held`](Written::Held) — not refused — where it does
 /// not land in-dest yet, for [`settle_links`] to try again once the run has
 /// put more of the destination in place. Only a symlink is ever held, so a
-/// caller writing a file has nothing to read in the answer. Block entries
+/// caller writing a file has nothing to read in the answer.
+///
+/// A symlink is also the one entry the walk will not follow an owned link to
+/// reach: settling names what it is still going to publish by action key, so
+/// a link going down anywhere else is one no other link's chain can wait for.
+/// Deciding's no-alias rule refuses to plan such a link, and a hand-built
+/// plan carrying one is refused here as [`Error::Containment`]. Block entries
 /// were rejected by
 /// [`validate`]; reaching one here is a bug, but still errors rather than
 /// panics.
@@ -721,6 +753,17 @@ fn write(
             executable,
         } => persist(&parent, &leaf, path, contents, *executable)?,
         Entry::Symlink { target } => {
+            // Settling names the paths this run will still put a link at by
+            // their action keys ([`settle_links`]), and a chain that walks
+            // one of them waits for it. A link the walk followed an owned
+            // link to reach would go down somewhere that set never names,
+            // so a chain through *that* location would wait for nothing and
+            // could be moved after it was vouched for. Deciding's no-alias
+            // rule refuses to plan such a link; a hand-built plan carrying
+            // one is refused here rather than published off its key.
+            if resolved_parent.join(&leaf) != path {
+                return Err(containment(path));
+            }
             if !link_settles(dest, plan, unpublished, &resolved_parent, target)? {
                 return Ok(Written::Held);
             }

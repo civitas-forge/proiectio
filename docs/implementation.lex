@@ -257,6 +257,13 @@ Implementation Guidelines
     behind. The order stays deterministic: same plan, same
     destination, same sequence.
 
+    What the run is still going to publish a link at is named by
+    action key, so a symlink is the one entry the walk of section 3
+    will not follow an owned link to reach: published anywhere but
+    its key, it would be a link no other link's chain waits for.
+    Deciding's no-alias rule refuses to plan such a link, and a
+    hand-built plan carrying one is refused at apply.
+
 7. Concurrency
 
     Two processes applying to one destination corrupt the manifest's

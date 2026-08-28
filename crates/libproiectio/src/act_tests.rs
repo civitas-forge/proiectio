@@ -915,6 +915,65 @@ fn an_owned_matching_in_dest_symlink_ancestor_is_followed() {
     );
 }
 
+// A symlink is the one entry that arm is not allowed to relocate, because
+// settling's wait-for set names what the run will still publish by action
+// key. Without this refusal the plan below escapes: `a` is graded and
+// published while nothing stands at `real/x`, then `pivot/x` goes down at
+// `real/x` — a path no chain waited for, since the set names `pivot/x` —
+// and `dest/a` resolves to the destination's grandparent.
+#[test]
+fn a_link_the_walk_would_relocate_through_an_owned_link_refuses() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .dir("real")
+        .symlink("pivot", "real")
+        .write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "pivot".into(),
+        recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own"]),
+    );
+    let plan = Plan {
+        owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([
+            (
+                "a".into(),
+                Action::Write {
+                    entry: Entry::Symlink {
+                        target: "real/x/../../escape".to_owned(),
+                    },
+                },
+            ),
+            (
+                "pivot/x".into(),
+                Action::Write {
+                    entry: Entry::Symlink {
+                        target: "..".to_owned(),
+                    },
+                },
+            ),
+        ]),
+    };
+
+    let error = apply_at(&dest, &state, &manifest, &plan)
+        .expect_err("a link is never published off its key");
+
+    match error {
+        Error::Containment { paths } => assert_eq!(paths, BTreeSet::from(["pivot/x".into()])),
+        other => panic!("expected Containment, got {other:?}"),
+    }
+    // `a` landed — `real/x` is nothing, so it points at `escape` inside the
+    // destination — and the link that would have moved it never went down.
+    assert_tree(
+        dest.root(),
+        &Tree::new()
+            .dir("real")
+            .symlink("pivot", "real")
+            .symlink("a", "real/x/../../escape"),
+    );
+}
+
 #[test]
 fn a_removal_through_an_owned_link_prunes_the_resolved_directory() {
     let (dest, state) = fixtures();
