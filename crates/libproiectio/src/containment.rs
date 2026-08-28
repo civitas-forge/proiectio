@@ -7,13 +7,15 @@ use crate::{Error, Result};
 /// Joins an untrusted tree path onto the destination, refusing everything
 /// that would land outside it.
 ///
-/// This is the sole gateway a desired-tree path passes through on its way
-/// to becoming an on-disk location (`docs/security.lex` section 2,
+/// This function and its normalize-only half `contained_normalize` —
+/// deciding's admission check, which applies the identical contract without
+/// the join — are the sole gateway a desired-tree path passes through on
+/// its way to becoming an on-disk location (`docs/security.lex` section 2,
 /// <https://github.com/civitas-forge/proiectio/blob/main/docs/security.lex>):
 /// `dest` is trusted — the invoker chose it — and `rel` is hostile, computed
 /// by whoever authored the mapping, source tree, or archive. Later stages
 /// never join `dest` with tree input themselves; every in-dest path they
-/// touch came out of this function.
+/// touch came out of this gateway.
 ///
 /// # Contract
 ///
@@ -46,8 +48,17 @@ use crate::{Error, Result};
 /// containment — no write through a symlinked ancestor — is a check against
 /// the disk and belongs to apply, not to this function.
 pub fn contained_join(dest: &Utf8Path, rel: &Utf8Path) -> Result<Utf8PathBuf> {
+    Ok(dest.join(contained_normalize(rel)?))
+}
+
+/// The lexical half of [`contained_join`]: judges `rel` by the full
+/// containment contract above and returns it normalized, without joining it
+/// onto a destination. Deciding admits every desired-tree key through this —
+/// same gateway, same verdicts — because a [`Plan`](crate::Plan) keys its
+/// actions relative to the destination and needs no absolute join.
+pub(crate) fn contained_normalize(rel: &Utf8Path) -> Result<Utf8PathBuf> {
     match normalize(rel) {
-        Some(normalized) => Ok(dest.join(normalized)),
+        Some(normalized) => Ok(normalized),
         None => Err(Error::Containment {
             paths: BTreeSet::from([rel.to_owned()]),
         }),
@@ -79,7 +90,10 @@ fn normalize(rel: &Utf8Path) -> Option<Utf8PathBuf> {
     if kept.is_empty() {
         return None;
     }
-    Some(kept.iter().collect())
+    // Rejoin with `/` explicitly: a normalized key must be byte-identical
+    // on every host, and collecting into a path would separate with the
+    // platform separator.
+    Some(Utf8PathBuf::from(kept.join("/")))
 }
 
 /// Component shapes Windows resolves somewhere other than an ordinary file

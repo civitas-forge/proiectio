@@ -29,6 +29,9 @@ fn every_variant() -> Vec<Error> {
         Error::ExternalTarget {
             links: BTreeMap::from([(Utf8PathBuf::from("toolchain"), "/opt/rust".to_owned())]),
         },
+        Error::TreeConflict {
+            paths: paths(&["a", "a/b"]),
+        },
         Error::Io {
             path: Utf8PathBuf::from("config/settings.toml"),
             source: std::io::Error::other("disk full"),
@@ -82,7 +85,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    assert_eq!(codes, vec![2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1]);
+    assert_eq!(codes, vec![2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1]);
     assert_eq!(exit_code(Ok(())), 0);
 }
 
@@ -116,6 +119,14 @@ fn refusal_messages_name_the_offending_paths() {
         conflict.to_string(),
         "refusing paths whose desired entries conflict with another owner's: \
          shared/.zshrc (held by dotfiles+site)"
+    );
+
+    let tree_conflict = Error::TreeConflict {
+        paths: paths(&["a", "a/b"]),
+    };
+    assert_eq!(
+        tree_conflict.to_string(),
+        "refusing desired paths that claim overlapping locations: a, a/b"
     );
 }
 

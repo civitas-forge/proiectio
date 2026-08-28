@@ -14,13 +14,21 @@ fn a_plan_serializes_with_paths_as_keys() {
                         contents: b"#!/bin/sh\n".to_vec(),
                         executable: true,
                     },
-                    expected_hash: "aa11".to_owned(),
+                    expected: NodeSignature {
+                        kind: EntryKind::File,
+                        hash: "aa11".to_owned(),
+                        executable: true,
+                    },
                 },
             ),
             (
                 Utf8PathBuf::from("config/settings.toml"),
                 Action::Skip {
-                    expected_hash: "dd44".to_owned(),
+                    expected: NodeSignature {
+                        kind: EntryKind::File,
+                        hash: "dd44".to_owned(),
+                        executable: false,
+                    },
                 },
             ),
             (Utf8PathBuf::from("shared/.zshrc"), Action::Release),
@@ -39,12 +47,12 @@ fn a_plan_serializes_with_paths_as_keys() {
 
     assert_eq!(json["owner"], "site");
     assert_eq!(
-        json["actions"]["config/settings.toml"]["Skip"]["expected_hash"],
+        json["actions"]["config/settings.toml"]["Skip"]["expected"]["hash"],
         "dd44"
     );
     assert_eq!(json["actions"]["shared/.zshrc"], "Release");
     assert_eq!(
-        json["actions"]["bin/tool"]["Overwrite"]["expected_hash"],
+        json["actions"]["bin/tool"]["Overwrite"]["expected"]["hash"],
         "aa11"
     );
     assert_eq!(

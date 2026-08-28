@@ -23,7 +23,10 @@ pub enum PathState {
     /// except where a desired [`Block`](crate::EntryKind::Block) entry
     /// owns only the delimited region inside it, in which case the
     /// container stays foreign as a file while the region is a write
-    /// target.
+    /// target. Until block-region classification lands, the deciding
+    /// stage cannot yet see regions and refuses that case too —
+    /// conservative, never a wrong write
+    /// ([`decide`](crate::decide)'s rustdoc names the seam).
     Foreign,
 }
 

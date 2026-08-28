@@ -5,7 +5,7 @@ use std::io::Read;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Deserialize;
 
-use crate::{Entry, Error, Result, contained_join};
+use crate::{Entry, Error, Result};
 
 /// The mapping format version this crate accepts.
 pub const MAPPING_VERSION: u32 = 1;
@@ -25,8 +25,9 @@ pub const MAPPING_VERSION: u32 = 1;
 /// the invoker can read. The mapping's *content* is not trusted: every
 /// projected key — the `[files]` and `[links]` table keys, which become the
 /// tree's relative paths, and each `[archives]` prefix, judged without its
-/// conventional trailing `/` — passes [`contained_join`], and the offenders
-/// come back aggregated in one
+/// conventional trailing `/` — passes the containment gateway
+/// ([`contained_join`](crate::contained_join)'s lexical contract), and the
+/// offenders come back aggregated in one
 /// [`Error::Containment`] naming each key verbatim. Keys land in the
 /// returned tree lexically normalized (`a/../b` becomes `b`), so one
 /// on-disk location has one key; two entries claiming the same normalized
@@ -206,30 +207,14 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     Ok(tree)
 }
 
-/// Runs one projected key through [`contained_join`] and returns it
-/// lexically normalized; `None` is a containment refusal, which the caller
-/// aggregates into one [`Error::Containment`] naming every offender.
-///
-/// The gateway takes a destination only to join onto it, and its verdict on
-/// the relative path does not depend on which destination that is — the
-/// mapping is parsed before any destination exists — so the key is judged
-/// against the filesystem root and the relative remainder is kept.
+/// Runs one projected key through the containment gateway's normalize-only
+/// half and returns it lexically normalized; `None` is a containment
+/// refusal, which the caller aggregates into one [`Error::Containment`]
+/// naming every offender. The gateway's verdict on a relative key does not
+/// depend on any destination — the mapping is parsed before one exists —
+/// which is exactly the half `contained_normalize` carries.
 fn normalize_key(key: &Utf8Path) -> Option<Utf8PathBuf> {
-    let root = Utf8Path::new("/");
-    let joined = contained_join(root, key).ok()?;
-    let relative = joined
-        .strip_prefix(root)
-        .expect("contained_join keeps the path under its destination");
-    // Rejoin the components with `/`: the join above separates with the
-    // platform separator, and a desired-tree key must be byte-identical on
-    // every host — a `\`-separated key would itself fail containment later.
-    Some(Utf8PathBuf::from(
-        relative
-            .components()
-            .map(|component| component.as_str())
-            .collect::<Vec<_>>()
-            .join("/"),
-    ))
+    crate::containment::contained_normalize(key).ok()
 }
 
 /// Where a `[files]` entry's bytes come from, decided before any read.
