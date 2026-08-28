@@ -83,6 +83,10 @@ fn every_variant() -> Vec<Error> {
         Error::TreeNodeKind {
             path: Utf8PathBuf::from("/srv/skeleton/run.sock"),
         },
+        Error::TreeTooDeep {
+            path: Utf8PathBuf::from("/srv/skeleton/a/b/c"),
+            limit: 64,
+        },
         Error::ApplyBlockUnimplemented {
             paths: paths(&["shared/.zshrc"]),
         },
@@ -107,7 +111,9 @@ fn refusals_exit_2_and_failures_exit_1() {
 
     assert_eq!(
         codes,
-        vec![2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+        vec![
+            2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
+        ]
     );
     assert_eq!(exit_code(Ok(())), 0);
 }
@@ -168,8 +174,10 @@ fn refusal_messages_name_the_offending_paths() {
 /// A source tree carrying something a desired tree cannot express fails the
 /// load rather than declining a destination path, so these are exit-1
 /// failures — and each names where in the source the trouble sits. The
-/// undecodable pieces are quoted, because a lossy rendering is otherwise
-/// indistinguishable from a name that really holds a replacement character.
+/// undecodable pieces are quoted so their edges show — a name is otherwise
+/// free to start or end in a space, or to render as nothing at all. Quoting
+/// does not recover what the lossy decode dropped: a replacement character
+/// stands for bytes with no UTF-8 spelling and for itself alike.
 #[test]
 fn tree_source_messages_name_the_node_and_exit_1() {
     let name = Error::TreeNameNotUtf8 {
@@ -200,6 +208,17 @@ fn tree_source_messages_name_the_node_and_exit_1() {
     assert_eq!(
         kind.to_string(),
         "tree node /srv/skeleton/run.sock is not a file, directory, or symlink"
+    );
+
+    let deep = Error::TreeTooDeep {
+        path: Utf8PathBuf::from("/srv/skeleton/a/b/c"),
+        limit: 64,
+    };
+    assert!(!deep.is_refusal());
+    assert_eq!(
+        deep.to_string(),
+        "tree directory /srv/skeleton/a/b/c nests deeper than the 64 levels \
+         a source tree may carry"
     );
 }
 

@@ -10,6 +10,25 @@ use cap_std::fs::Dir;
 
 use crate::{Entry, Error, Result};
 
+/// How deep below the source root [`load_tree`] walks, counted in
+/// directories.
+///
+/// The walk spends a stack frame per level and the source tree chooses the
+/// depth — every lookup is relative to an open directory handle, so a
+/// filesystem holds trees far deeper than any path naming them could be
+/// spelled, and a bind mount making a directory its own ancestor gives a
+/// tree no bottom at all. Unbounded, a deep enough source runs the stack
+/// off its end and aborts the process; bounded, it comes back as
+/// [`Error::TreeTooDeep`].
+///
+/// The number is what this recursion affords, not what a filesystem allows.
+/// Measured on a debug build, the walk exhausts a 2 MiB stack — Rust's
+/// default for a spawned thread, and what a test thread gets — somewhere
+/// past 200 levels, so the limit sits far enough below that to leave the
+/// stack to the caller. It is also far past any real source tree: the
+/// deepest sit in the tens of levels.
+const MAX_DEPTH: usize = 64;
+
 /// Walks a source directory into the desired tree [`decide`](crate::decide)
 /// takes — the second desired-tree source beside
 /// [`load_mapping`](crate::load_mapping) (`docs/cli-tour.lex` section 1,
@@ -18,7 +37,11 @@ use crate::{Entry, Error, Result};
 ///
 /// Every regular file under `source` becomes an [`Entry::File`] carrying its
 /// bytes and its owner-executable bit; every symlink becomes an
-/// [`Entry::Symlink`] carrying the target string verbatim. Keys are paths
+/// [`Entry::Symlink`] carrying the target string verbatim — where UTF-8 can
+/// spell it. [`Entry::Symlink`] holds a `String`, as every path in this
+/// crate is UTF-8, so a target whose bytes have no UTF-8 spelling has no
+/// desired-tree representation and fails the load rather than being
+/// rewritten into one ([`Error::TreeTargetNotUtf8`]). Keys are paths
 /// relative to `source`, so the destination reproduces the source's layout —
 /// which is why a relative in-tree target keeps working once projected: the
 /// link and what it points at move together. Targets are neither graded nor
@@ -115,11 +138,23 @@ use crate::{Entry, Error, Result};
 /// A name that changed kind between its `lstat` and its open lands in
 /// whichever of those two the open produced, and the walk does not
 /// second-guess it. Where the open itself refuses — a name that has become
-/// a symlink, which `O_NOFOLLOW` will not open, or a socket, which has no
-/// reader to open — the OS error is reported as [`Error::Io`]. Where the
-/// open succeeds and the handle turns out to hold something other than a
-/// regular file — a FIFO, a directory — that is [`Error::TreeNodeKind`],
-/// the same answer the `lstat` would have given had it seen it first.
+/// a symlink, which `O_NOFOLLOW` will not open, or a socket, which the OS
+/// declines to open through the filesystem at all — the OS error is
+/// reported as [`Error::Io`]. Where the open succeeds and the handle turns
+/// out to hold something other than a regular file — a FIFO, which
+/// `O_NONBLOCK` opens for reading without waiting, or a directory — that is
+/// [`Error::TreeNodeKind`], the same answer the `lstat` would have given
+/// had it seen it first.
+///
+/// One more shape fails the load: a source tree nesting more than 64
+/// directories below `source` — [`Error::TreeTooDeep`], naming the
+/// directory a level past that. The walk spends a stack frame per level and
+/// the source tree chooses the depth, so a tree deep enough would run the
+/// stack off its end; a bind mount making a directory its own ancestor
+/// gives the tree no bottom at all, and no symlink check sees that, because
+/// every level of it is a real directory. The limit is far past any real
+/// source tree — the deepest sit in the tens of levels — and far short of
+/// what the recursion can afford.
 ///
 /// [`contained_join`]: crate::contained_join
 ///
@@ -141,7 +176,7 @@ pub fn load_tree(source: &Utf8Path) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
         tree: BTreeMap::new(),
         refused: BTreeSet::new(),
     };
-    walk.descend(&root, Utf8Path::new(""))?;
+    walk.descend(&root, Utf8Path::new(""), 0)?;
     if !walk.refused.is_empty() {
         return Err(Error::Containment {
             paths: walk.refused,
@@ -163,10 +198,17 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
-    /// Walks every entry of `dir` — the source subdirectory at `prefix` —
-    /// into the tree, recursing into real subdirectories through handles
-    /// opened from `dir`, so every open stays anchored to the source handle.
-    fn descend(&mut self, dir: &Dir, prefix: &Utf8Path) -> Result<()> {
+    /// Walks every entry of `dir` — the source subdirectory at `prefix`,
+    /// `depth` directory levels below the source root — into the tree,
+    /// recursing into real subdirectories through handles opened from
+    /// `dir`, so every open stays anchored to the source handle.
+    fn descend(&mut self, dir: &Dir, prefix: &Utf8Path, depth: usize) -> Result<()> {
+        if depth > MAX_DEPTH {
+            return Err(Error::TreeTooDeep {
+                path: self.absolute(prefix),
+                limit: MAX_DEPTH,
+            });
+        }
         let entries = dir.entries().map_err(io_at(self.absolute(prefix)))?;
         for entry in entries {
             let entry = entry.map_err(io_at(self.absolute(prefix)))?;
@@ -215,12 +257,13 @@ impl Walk<'_> {
                 Entry::Symlink { target }
             } else if file_type.is_dir() {
                 // A directory is a container, not an entry: the tree it
-                // holds implies it. Judged after the symlink arm, as
-                // `observe`'s walk judges it, so a link to a directory is
-                // carried as a pointer without that resting on the `lstat`
-                // above being a no-follow one.
+                // holds implies it. Judged after the symlink arm, in
+                // `observe`'s order — the two answers are exclusive, so what
+                // sends a link to a directory down the symlink arm is the
+                // stat above being a no-follow one, and the order is there
+                // to keep the two walks reading alike.
                 let sub = open_dir_nofollow(dir, &name).map_err(io_at(self.absolute(&rel)))?;
-                self.descend(&sub, &rel)?;
+                self.descend(&sub, &rel, depth + 1)?;
                 continue;
             } else if file_type.is_file() {
                 // One handle for bytes and mode, so both describe the same

@@ -287,6 +287,35 @@ fn a_refused_directory_holding_nothing_is_still_refused() {
     ));
 }
 
+/// Nests `depth` directories under `root` and returns the deepest one.
+/// `create_dir_all` spells the whole chain in one path, which stays well
+/// inside the host's path limit at these depths — the walk itself is bound
+/// by no such limit, which is the point of `MAX_DEPTH`.
+fn nest(root: &Utf8Path, depth: usize) -> Utf8PathBuf {
+    let deep = root.join(vec!["d"; depth].join("/"));
+    fs::create_dir_all(&deep).expect("nest directories");
+    deep
+}
+
+#[test]
+fn a_tree_at_the_depth_limit_loads_and_one_past_it_is_named() {
+    // The walk spends a stack frame per level, so a tree the source chose
+    // to nest without end has to come back as an error rather than as a
+    // stack the walk runs off the end of.
+    let source = Tree::new().materialize();
+    let deepest = nest(source.root(), MAX_DEPTH);
+    fs::write(deepest.join("marker"), "deep").expect("write the deepest file");
+
+    let desired = load_tree(source.root()).unwrap();
+    assert_eq!(desired.len(), 1);
+
+    let past = nest(source.root(), MAX_DEPTH + 1);
+    assert!(matches!(
+        load_tree(source.root()).unwrap_err(),
+        Error::TreeTooDeep { path, limit } if path == past && limit == MAX_DEPTH
+    ));
+}
+
 #[test]
 fn a_node_kind_the_projection_never_writes_is_named_and_never_opened() {
     let source = Tree::new().file("keep.txt", "a").materialize();

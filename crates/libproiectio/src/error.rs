@@ -281,6 +281,26 @@ pub enum Error {
         /// terms as [`TreeNameNotUtf8::name`](Error::TreeNameNotUtf8).
         target: String,
     },
+    /// A source tree nests deeper than [`load_tree`](crate::load_tree)
+    /// walks. Not a refusal, for the same reason as
+    /// [`TreeNameNotUtf8`](Error::TreeNameNotUtf8): the source carries a
+    /// shape the load cannot take, and no destination path is being
+    /// declined.
+    ///
+    /// The walk spends a stack frame per directory level, and depth is the
+    /// source tree's to choose — every lookup is relative to an open
+    /// directory handle, so a filesystem holds trees far deeper than a path
+    /// naming them could be spelled, and a directory made its own ancestor
+    /// by a bind mount has no bottom at all. The bound is what turns both
+    /// into this error instead of a stack the walk runs off the end of.
+    #[error("tree directory {path} nests deeper than the {limit} levels a source tree may carry")]
+    TreeTooDeep {
+        /// The absolute path of the directory one level past the limit.
+        path: Utf8PathBuf,
+        /// The deepest nesting the walk accepts, counted in directories
+        /// below the source root.
+        limit: usize,
+    },
     /// A source tree holds a node of a kind the projection never writes — a
     /// FIFO, a socket, or a device node. Not a refusal: the load cannot
     /// produce a desired tree at all. A node the walk's `lstat` found to be
@@ -289,9 +309,11 @@ pub enum Error {
     ///
     /// A name that became one of those kinds *after* that `lstat` reaches
     /// this variant only when the walk's open succeeded and the handle
-    /// turned out not to hold a regular file. An open that fails outright —
-    /// a name that has become a symlink, which the walk will not follow, or
-    /// a socket, which has no reader — is [`Io`](Error::Io) instead.
+    /// turned out not to hold a regular file — a FIFO, which opens for
+    /// reading without waiting, or a directory. An open that fails outright
+    /// is [`Io`](Error::Io) instead: a name that has become a symlink, which
+    /// the walk will not follow, or a socket, which the OS declines to open
+    /// through the filesystem at all.
     #[error("tree node {path} is not a file, directory, or symlink")]
     TreeNodeKind {
         /// The node's absolute path.
@@ -342,6 +364,7 @@ impl Error {
             | Error::MappingArchiveUnimplemented { .. }
             | Error::TreeNameNotUtf8 { .. }
             | Error::TreeTargetNotUtf8 { .. }
+            | Error::TreeTooDeep { .. }
             | Error::TreeNodeKind { .. }
             | Error::ApplyBlockUnimplemented { .. } => false,
         }

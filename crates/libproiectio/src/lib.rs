@@ -35,7 +35,10 @@
 //! for. A caller computes the desired tree itself, loads one from a TOML
 //! mapping file with [`load_mapping`], or walks a source directory into one
 //! with [`load_tree`], which copies the tree verbatim — bytes, executable
-//! bits, and symlink targets as written.
+//! bits, and symlink targets as written. Verbatim within what UTF-8 can
+//! name: a source tree holding a name or a symlink target with no UTF-8
+//! spelling fails the load rather than being projected under some other
+//! name.
 //!
 //! # Exit contract
 //!
