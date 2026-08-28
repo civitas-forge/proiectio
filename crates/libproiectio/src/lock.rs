@@ -58,7 +58,7 @@ pub struct StateLock {
 
 impl StateLock {
     /// Takes the exclusive advisory lock on `state`'s
-    /// [`LOCK_FILE_NAME`](crate::LOCK_FILE_NAME), creating the file if
+    /// [`LOCK_FILE_NAME`], creating the file if
     /// absent — try-lock semantics: a lock held by another writer reports
     /// [`Error::LockHeld`] immediately, never blocks. `LockHeld` is not a
     /// refusal ([`Error::is_refusal`] is `false`), so a CLI maps it to

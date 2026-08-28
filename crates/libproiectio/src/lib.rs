@@ -4,7 +4,7 @@
 //!
 //! The model compares three trees pairwise: the *desired* tree the caller
 //! passes ([`Entry`] values keyed by relative path), the *recorded* state in
-//! the [`Manifest`], and the files on disk — read once by [`observe`] into
+//! the [`Manifest`], and the files on disk — read once by [`observe()`] into
 //! an [`Observations`] snapshot. Planning ([`decide`]) turns the comparison
 //! into a [`Plan`] of per-path actions; applying executes the plan and
 //! returns an [`ApplyReport`]; [`Status`] is the classification

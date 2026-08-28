@@ -35,6 +35,13 @@ jobs:
       - name: Test
         run: cargo test
 
+      # Rustdoc is where the crate's contract is written, and a broken
+      # intra-doc link is how a rule loses the definition it points at.
+      - name: Document
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
   msrv:
     name: Test on MSRV
     runs-on: ubuntu-latest
