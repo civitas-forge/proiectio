@@ -21,6 +21,30 @@ Security Model
     on the invocation, never a key in the mapping: an untrusted
     mapping granting itself permission is no permission at all.
 
+    An embedder gets the same split, spelled in the library's own
+    terms rather than the CLI's. The invoker is whoever constructs the
+    Projection and hands over a mapping path, a source tree or an
+    archive: those are absolute paths the embedder chose, and the
+    crate opens them against ambient authority, as it opens the
+    destination and the state directory. What it never does is
+    narrower:
+
+    No path computed from content the crate did not author is ever
+    resolved against ambient authority, and nothing resolves against
+    the process's current directory. Desired-tree keys, symlink
+    targets, archive member names and mapping keys reach the
+    filesystem only as relative paths, through a directory handle
+    whose root the invoker named, after passing the lexical
+    containment gateway of section 2.
+
+    So an embedder chooses where the projection may read and write by
+    choosing those paths, and chooses what content may do by passing
+    DriftPolicy and ExternalTargetPolicy — the library-side spellings
+    of --force and --allow-external-targets. It cannot hand out the
+    permission by other means: nothing public takes or returns a
+    directory handle, and the stages that would accept one are
+    crate-internal ([./design.lex] section 3).
+
 2. Containment
 
     Every path in the desired tree must be relative, and must still
