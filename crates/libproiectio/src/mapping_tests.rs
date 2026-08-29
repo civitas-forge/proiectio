@@ -4,8 +4,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
 
-/// A fixed absolute location for table tests: entries that only carry
-/// inline `contents` never read the filesystem, so the file need not exist.
+// A fixed absolute location for table tests: entries that only carry
+// inline `contents` never read the filesystem, so the file need not exist.
 const MAPPING: &str = "/maps/deploy.toml";
 
 fn parse_at(text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
@@ -271,9 +271,9 @@ fn two_entries_projecting_one_normalized_key_are_refused() {
     ));
 }
 
-/// A well-formed gzipped tar of `(name, contents, executable)` members.
-/// Mapping tests need only legitimate archives — the hostile corpus lives
-/// beside the expansion it exercises — so the `tar` writer builds them.
+// A well-formed gzipped tar of `(name, contents, executable)` members.
+// Mapping tests need only legitimate archives — the hostile corpus lives
+// beside the expansion it exercises — so the `tar` writer builds them.
 #[cfg(unix)]
 fn targz(members: &[(&str, &str, bool)]) -> Vec<u8> {
     let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -294,9 +294,9 @@ fn targz(members: &[(&str, &str, bool)]) -> Vec<u8> {
         .expect("finish the gzip stream")
 }
 
-/// A zip carrying one member under the name given, verbatim — the writer
-/// does not sanitize what it is handed, which is what lets a mapping test
-/// spell a member that climbs out of its prefix.
+// A zip carrying one member under the name given, verbatim — the writer
+// does not sanitize what it is handed, which is what lets a mapping test
+// spell a member that climbs out of its prefix.
 #[cfg(unix)]
 fn zip_named(name: &str, body: &str) -> Vec<u8> {
     use std::io::Write;
@@ -342,10 +342,10 @@ fn archive_members_expand_under_their_prefix_as_ordinary_entries() {
     );
 }
 
-/// A member is judged before the prefix is joined, so a prefix confines
-/// rather than absorbs: joined first, `../escape` under `vendor/` would have
-/// normalized to `escape` — a projected path outside the prefix the mapping
-/// wrote, refused by nothing.
+// A member is judged before the prefix is joined, so a prefix confines
+// rather than absorbs: joined first, `../escape` under `vendor/` would have
+// normalized to `escape` — a projected path outside the prefix the mapping
+// wrote, refused by nothing.
 #[test]
 #[cfg(unix)]
 fn an_archive_member_climbing_out_of_its_prefix_is_refused_by_name() {
@@ -366,9 +366,9 @@ fn an_archive_member_climbing_out_of_its_prefix_is_refused_by_name() {
     ));
 }
 
-/// The definition of done: one mapping may name several archives, so a
-/// member path says neither which archive to open nor which file to edit.
-/// The refusal names both.
+// The definition of done: one mapping may name several archives, so a
+// member path says neither which archive to open nor which file to edit.
+// The refusal names both.
 #[test]
 #[cfg(unix)]
 fn a_refused_member_names_its_archive_and_the_mapping_that_named_it() {
@@ -411,8 +411,8 @@ fn a_refused_member_names_its_archive_and_the_mapping_that_named_it() {
     );
 }
 
-/// An expanded member is an ordinary projected path, so one colliding with
-/// another entry's key is the same double claim two `[files]` keys would be.
+// An expanded member is an ordinary projected path, so one colliding with
+// another entry's key is the same double claim two `[files]` keys would be.
 #[test]
 #[cfg(unix)]
 fn an_archive_member_colliding_with_another_entry_is_a_duplicate() {
@@ -437,8 +437,8 @@ fn an_archive_member_colliding_with_another_entry_is_a_duplicate() {
     ));
 }
 
-/// Two archive tables naming one prefix would merge into one location with
-/// no rule for which member wins where they overlap.
+// Two archive tables naming one prefix would merge into one location with
+// no rule for which member wins where they overlap.
 #[test]
 fn two_archive_tables_naming_one_prefix_are_a_duplicate() {
     let text = r#"
@@ -455,11 +455,11 @@ fn two_archive_tables_naming_one_prefix_are_a_duplicate() {
     ));
 }
 
-/// Every `[archives]` table in one mapping spends one byte budget. The
-/// bound is on what one untrusted input may make the process allocate, and
-/// a mapping is one input: per-table budgets would let a mapping buy a
-/// multiple of the bound by naming one small bomb from several tables, with
-/// every expanded tree live at once because they all merge into one.
+// Every `[archives]` table in one mapping spends one byte budget. The
+// bound is on what one untrusted input may make the process allocate, and
+// a mapping is one input: per-table budgets would let a mapping buy a
+// multiple of the bound by naming one small bomb from several tables, with
+// every expanded tree live at once because they all merge into one.
 #[test]
 #[cfg(unix)]
 fn archive_tables_in_one_mapping_share_one_byte_budget() {
@@ -484,7 +484,7 @@ fn archive_tables_in_one_mapping_share_one_byte_budget() {
     ));
 }
 
-/// The full example of `docs/cli-tour.lex` section 5, verbatim.
+// The full example of `docs/cli-tour.lex` section 5, verbatim.
 const CLI_TOUR_EXAMPLE: &str = r#"version = 1
 
 [files."config/settings.toml"]

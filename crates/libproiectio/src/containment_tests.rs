@@ -212,13 +212,13 @@ fn escaping_targets_grade_external() {
 
 // --- chain resolution: grading through the destination's own links ---
 
-/// A destination described by its symlinks alone: each path mapped to the
-/// target it points at, or to `None` for a link whose on-disk target is not
-/// UTF-8. Every other path is a hop the chain stops at, which is all
-/// resolution asks about — no filesystem, so the whole rule stays a table.
+// A destination described by its symlinks alone: each path mapped to the
+// target it points at, or to `None` for a link whose on-disk target is not
+// UTF-8. Every other path is a hop the chain stops at, which is all
+// resolution asks about — no filesystem, so the whole rule stays a table.
 type Links<'a> = &'a [(&'a str, Option<&'a str>)];
 
-/// The chain resolution over the destination `links` describes.
+// The chain resolution over the destination `links` describes.
 fn resolve(parent: &str, target: &str, links: Links<'_>) -> Option<Utf8PathBuf> {
     let links: BTreeMap<Utf8PathBuf, Option<String>> = links
         .iter()

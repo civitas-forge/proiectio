@@ -147,7 +147,7 @@ fn every_variant() -> Vec<Error> {
     ]
 }
 
-/// The CLI's 0/1/2 exit contract, as one match over `is_refusal`.
+// The CLI's 0/1/2 exit contract, as one match over `is_refusal`.
 fn exit_code(result: Result<()>) -> i32 {
     match result {
         Ok(()) => 0,
@@ -226,13 +226,13 @@ fn refusal_messages_name_the_offending_paths() {
     );
 }
 
-/// A source tree carrying something a desired tree cannot express fails the
-/// load rather than declining a destination path, so these are exit-1
-/// failures — and each names where in the source the trouble sits. The
-/// undecodable pieces are quoted so their edges show — a name is otherwise
-/// free to start or end in a space, or to render as nothing at all. Quoting
-/// does not recover what the lossy decode dropped: a replacement character
-/// stands for bytes with no UTF-8 spelling and for itself alike.
+// A source tree carrying something a desired tree cannot express fails the
+// load rather than declining a destination path, so these are exit-1
+// failures — and each names where in the source the trouble sits. The
+// undecodable pieces are quoted so their edges show — a name is otherwise
+// free to start or end in a space, or to render as nothing at all. Quoting
+// does not recover what the lossy decode dropped: a replacement character
+// stands for bytes with no UTF-8 spelling and for itself alike.
 #[test]
 fn tree_source_messages_name_the_node_and_exit_1() {
     let name = Error::TreeNameNotUtf8 {
@@ -277,10 +277,10 @@ fn tree_source_messages_name_the_node_and_exit_1() {
     );
 }
 
-/// An archive carrying something a desired tree cannot express fails the
-/// load the same way a source tree does — exit 1, and the message names both
-/// the archive and the member, since a member path alone says nothing about
-/// which archive to open.
+// An archive carrying something a desired tree cannot express fails the
+// load the same way a source tree does — exit 1, and the message names both
+// the archive and the member, since a member path alone says nothing about
+// which archive to open.
 #[test]
 fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
     let unknown = Error::ArchiveFormatUnknown {
@@ -348,10 +348,10 @@ fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
     );
 }
 
-/// The destination's depth error is the source tree's bound applied to the
-/// other tree, and it says so: same limit, different tree, and a path spelled
-/// relative to the destination rather than absolutely. Both are exit-1
-/// failures — nothing is being declined, the walk cannot be taken at all.
+// The destination's depth error is the source tree's bound applied to the
+// other tree, and it says so: same limit, different tree, and a path spelled
+// relative to the destination rather than absolutely. Both are exit-1
+// failures — nothing is being declined, the walk cannot be taken at all.
 #[test]
 fn a_destination_too_deep_names_the_directory_and_exits_1() {
     let deep = Error::DestinationTooDeep {
@@ -375,8 +375,8 @@ fn io_messages_keep_the_os_error_visible() {
     assert_eq!(error.to_string(), "bin/tool: disk full");
 }
 
-/// The single-writer lock's contention variant is exit-1 territory: not a
-/// refusal, and its message names the state-dir-relative lock path.
+// The single-writer lock's contention variant is exit-1 territory: not a
+// refusal, and its message names the state-dir-relative lock path.
 #[test]
 fn lock_held_exits_1_and_names_the_lock_path() {
     let error = Error::LockHeld {

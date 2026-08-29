@@ -4,8 +4,8 @@ use cap_std::fs_utf8::Dir;
 use super::*;
 use crate::test_support::Tree;
 
-/// Opens a capability handle at a fixture root. Ambient authority is the
-/// test's to spend; the library itself never opens ambient paths.
+// Opens a capability handle at a fixture root. Ambient authority is the
+// test's to spend; the library itself never opens ambient paths.
 fn dir_at(root: &Utf8Path) -> Dir {
     Dir::open_ambient_dir(root, cap_std::ambient_authority()).expect("open fixture root as a Dir")
 }
@@ -26,10 +26,10 @@ fn dropping_the_guard_lets_the_next_writer_acquire() {
     StateLock::acquire(&dir).expect("acquire after drop");
 }
 
-/// The contention contract: a second writer — its own thread, its own open
-/// of the state directory, as a concurrent process would hold — gets
-/// [`Error::LockHeld`] immediately (try-lock, never a hang), and succeeds
-/// once the first guard drops.
+// The contention contract: a second writer — its own thread, its own open
+// of the state directory, as a concurrent process would hold — gets
+// [`Error::LockHeld`] immediately (try-lock, never a hang), and succeeds
+// once the first guard drops.
 #[test]
 fn contended_acquire_reports_lock_held_immediately() {
     let state = Tree::new().materialize();

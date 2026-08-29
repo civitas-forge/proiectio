@@ -10,15 +10,15 @@ use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree};
 use crate::{EntryKind, ManifestEntry, Placement};
 
-/// Opens the destination handle observe takes, rooted at the fixture.
-/// Ambient authority is the test's to spend; the library itself never
-/// opens ambient paths.
+// Opens the destination handle observe takes, rooted at the fixture.
+// Ambient authority is the test's to spend; the library itself never
+// opens ambient paths.
 fn dest(fixture: &Fixture) -> Dir {
     Dir::open_ambient_dir(fixture.root(), cap_std::ambient_authority())
         .expect("open fixture root as a Dir")
 }
 
-/// A manifest recording the given `(path, kind, hash)` rows under one owner.
+// A manifest recording the given `(path, kind, hash)` rows under one owner.
 fn manifest_of(rows: &[(&str, EntryKind, String)]) -> Manifest {
     let mut manifest = Manifest::new();
     for (path, kind, hash) in rows {
@@ -260,11 +260,11 @@ fn non_utf8_entry_name_is_skipped_not_an_error() {
     assert_eq!(paths, expected);
 }
 
-/// Nests `depth` directories under `root` and returns the deepest one's
-/// path relative to `root`. `create_dir_all` spells the whole chain in one
-/// path, which stays well inside the host's path limit at these depths — the
-/// walk itself is bound by no such limit, which is the point of
-/// `MAX_WALK_DEPTH`.
+// Nests `depth` directories under `root` and returns the deepest one's
+// path relative to `root`. `create_dir_all` spells the whole chain in one
+// path, which stays well inside the host's path limit at these depths — the
+// walk itself is bound by no such limit, which is the point of
+// `MAX_WALK_DEPTH`.
 fn nest(root: &Utf8Path, depth: usize) -> Utf8PathBuf {
     let rel = Utf8PathBuf::from(vec!["d"; depth].join("/"));
     fs::create_dir_all(root.join(&rel)).expect("nest directories");
@@ -360,8 +360,8 @@ fn observe_writes_nothing() {
 
 // --- blocks: observing the region, not the container ---
 
-/// A manifest recording a region at `path` under `marker` and `placement`,
-/// whose body hashes to `body`.
+// A manifest recording a region at `path` under `marker` and `placement`,
+// whose body hashes to `body`.
 fn block_manifest(path: &str, marker: &str, placement: Placement, body: &str) -> Manifest {
     manifest_of(&[(
         path,

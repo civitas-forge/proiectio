@@ -11,8 +11,8 @@ fn projection(dest: &Utf8Path, state: &Utf8Path) -> Projection {
     Projection::new(dest.to_owned(), state.to_owned())
 }
 
-/// One full plan → apply pass, so a status test has something recorded to
-/// classify.
+// One full plan → apply pass, so a status test has something recorded to
+// classify.
 fn project(projection: &Projection, owner: &str, desired: &BTreeMap<Utf8PathBuf, Entry>) {
     let mut run = projection.begin().expect("begin");
     run.plan(owner, desired, Origin::Caller, PlanOptions::default())
@@ -27,9 +27,6 @@ fn states(status: &Status) -> Vec<(&str, PathState)> {
         .map(|(path, state)| (path.as_str(), *state))
         .collect()
 }
-
-// Definition of done: a destination with no manifest and a missing state
-// directory both report emptily rather than failing.
 
 #[test]
 fn a_destination_with_no_manifest_reports_nothing() {

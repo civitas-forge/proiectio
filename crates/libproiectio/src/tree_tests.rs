@@ -11,15 +11,15 @@ use crate::{
     observe,
 };
 
-/// Opens a capability handle at a fixture root. Ambient authority is the
-/// test's to spend; the library itself opens only the source tree it is
-/// handed.
+// Opens a capability handle at a fixture root. Ambient authority is the
+// test's to spend; the library itself opens only the source tree it is
+// handed.
 fn dir_at(root: &Utf8Path) -> Utf8Dir {
     Utf8Dir::open_ambient_dir(root, cap_std::ambient_authority()).expect("open fixture root")
 }
 
-/// One observe → decide → apply run of `desired` into a fresh destination,
-/// under the strict default policies.
+// One observe → decide → apply run of `desired` into a fresh destination,
+// under the strict default policies.
 fn project(dest: &Fixture, state: &Fixture, desired: &BTreeMap<Utf8PathBuf, Entry>) -> ApplyReport {
     let dest_dir = dir_at(dest.root());
     let state_dir = dir_at(state.root());
@@ -37,8 +37,8 @@ fn project(dest: &Fixture, state: &Fixture, desired: &BTreeMap<Utf8PathBuf, Entr
     apply(&dest_dir, &state_dir, &manifest, &plan).expect("apply the plan")
 }
 
-/// The action the strict default plan gives each desired path, against an
-/// empty destination — how a test asks what deciding makes of a loaded tree.
+// The action the strict default plan gives each desired path, against an
+// empty destination — how a test asks what deciding makes of a loaded tree.
 fn actions_for(desired: &BTreeMap<Utf8PathBuf, Entry>) -> BTreeMap<Utf8PathBuf, Action> {
     let dest = Tree::new().materialize();
     let dest_dir = dir_at(dest.root());
@@ -163,8 +163,8 @@ fn an_in_tree_link_is_graded_in_dest() {
     ));
 }
 
-/// Gzip's magic bytes and deflate header, then bytes no text encoding would
-/// survive — enough to prove the copy is byte-for-byte and not a decode.
+// Gzip's magic bytes and deflate header, then bytes no text encoding would
+// survive — enough to prove the copy is byte-for-byte and not a decode.
 const ARCHIVE: &[u8] = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03\xff\x00\xfe\x01";
 
 #[test]
@@ -293,10 +293,10 @@ fn a_refused_directory_holding_nothing_is_still_refused() {
     ));
 }
 
-/// Nests `depth` directories under `root` and returns the deepest one.
-/// `create_dir_all` spells the whole chain in one path, which stays well
-/// inside the host's path limit at these depths — the walk itself is bound
-/// by no such limit, which is the point of `MAX_WALK_DEPTH`.
+// Nests `depth` directories under `root` and returns the deepest one.
+// `create_dir_all` spells the whole chain in one path, which stays well
+// inside the host's path limit at these depths — the walk itself is bound
+// by no such limit, which is the point of `MAX_WALK_DEPTH`.
 fn nest(root: &Utf8Path, depth: usize) -> Utf8PathBuf {
     let deep = root.join(vec!["d"; depth].join("/"));
     fs::create_dir_all(&deep).expect("nest directories");
@@ -415,7 +415,7 @@ fn a_missing_source_is_an_io_error_naming_it() {
 
 #[test]
 fn a_source_that_is_a_file_is_an_io_error_naming_it() {
-    // `--tree` pointed at an archive extracts it (issue #13); pointed at an
+    // `--tree` pointed at an archive extracts it; pointed at an
     // ordinary file, this loader has no tree to walk.
     let fixture = Tree::new().file("notes.txt", "x").materialize();
     let file = fixture.path("notes.txt");

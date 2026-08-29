@@ -1,6 +1,6 @@
 use super::*;
 
-/// The owner every test plans for unless it says otherwise.
+// The owner every test plans for unless it says otherwise.
 const OWNER: &str = "site";
 
 fn file(contents: &str, executable: bool) -> Entry {
@@ -16,7 +16,7 @@ fn link(target: &str) -> Entry {
     }
 }
 
-/// The signature of a disk node holding exactly `entry`.
+// The signature of a disk node holding exactly `entry`.
 fn signature(entry: &Entry) -> NodeSignature {
     NodeSignature {
         kind: entry.kind(),
@@ -25,7 +25,7 @@ fn signature(entry: &Entry) -> NodeSignature {
     }
 }
 
-/// The manifest entry recording exactly `entry`, held by `owners`.
+// The manifest entry recording exactly `entry`, held by `owners`.
 fn recorded(entry: &Entry, owners: &[&str]) -> ManifestEntry {
     ManifestEntry {
         kind: entry.kind(),
@@ -35,7 +35,7 @@ fn recorded(entry: &Entry, owners: &[&str]) -> ManifestEntry {
     }
 }
 
-/// The observation of a disk node holding exactly `entry`.
+// The observation of a disk node holding exactly `entry`.
 fn on_disk(entry: &Entry) -> Observation {
     match entry {
         Entry::File {
@@ -59,7 +59,7 @@ fn on_disk(entry: &Entry) -> Observation {
     }
 }
 
-/// The marker every block test uses.
+// The marker every block test uses.
 const MARKER: &str = "# proiectio";
 
 fn block(body: &str, placement: Placement) -> Entry {
@@ -70,8 +70,8 @@ fn block(body: &str, placement: Placement) -> Entry {
     }
 }
 
-/// The observation of a container the region is gone from, whose author's
-/// side is newline-terminated or not.
+// The observation of a container the region is gone from, whose author's
+// side is newline-terminated or not.
 fn no_region(newline_terminated: bool) -> Observation {
     Observation::Block {
         hash: None,
@@ -80,8 +80,8 @@ fn no_region(newline_terminated: bool) -> Observation {
     }
 }
 
-/// The observation of a region whose body was edited on disk, under a
-/// container holding the marker on `occurrences` lines.
+// The observation of a region whose body was edited on disk, under a
+// container holding the marker on `occurrences` lines.
 fn edited_region(body: &str, occurrences: usize) -> Observation {
     Observation::Block {
         hash: Some(sha256_hex(body.as_bytes())),
@@ -116,8 +116,8 @@ fn observed(paths: &[(&str, Observation)]) -> Observations {
     }
 }
 
-/// [`decide`] for [`OWNER`] with no in-dest state prefix, under `policy`
-/// and the default (refusing) external-target policy.
+// [`decide`] for [`OWNER`] with no in-dest state prefix, under `policy`
+// and the default (refusing) external-target policy.
 fn plan(
     desired: &BTreeMap<Utf8PathBuf, Entry>,
     manifest: &Manifest,
@@ -135,7 +135,7 @@ fn plan(
     )
 }
 
-/// [`plan`] under options the test chooses whole.
+// [`plan`] under options the test chooses whole.
 fn plan_with(
     desired: &BTreeMap<Utf8PathBuf, Entry>,
     manifest: &Manifest,
@@ -1058,9 +1058,9 @@ fn a_desired_path_entering_the_state_dir_refuses_containment() {
     );
 }
 
-/// A state directory nested inside the destination, so the destination
-/// holds locations the state subtree lies *beneath* as well as locations
-/// inside it.
+// A state directory nested inside the destination, so the destination
+// holds locations the state subtree lies *beneath* as well as locations
+// inside it.
 const NESTED_STATE: &str = ".local/state/proiectio";
 
 #[test]
@@ -1265,7 +1265,7 @@ fn the_state_subtree_is_invisible_to_planning() {
 
 // --- symlink target grading (`docs/security.lex` section 3) ---
 
-/// The options permitting external targets, drift refused as usual.
+// The options permitting external targets, drift refused as usual.
 fn allowing_external() -> PlanOptions {
     PlanOptions {
         external_targets: ExternalTargetPolicy::Allow,
@@ -1420,7 +1420,7 @@ fn a_recorded_external_link_the_tree_dropped_is_removed_without_permission() {
     );
 }
 
-// --- grading through the destination's own links (issue #29) ---
+// --- grading through the destination's own links ---
 
 #[test]
 fn a_target_reaching_outside_through_a_link_in_the_destination_grades_external() {
@@ -1679,9 +1679,8 @@ fn a_cycle_among_the_links_a_tree_projects_grades_external_on_the_first_run() {
 
 #[test]
 fn an_ordinary_chain_through_a_link_the_same_tree_projects_needs_no_permission() {
-    // The shape the issue names as the one that must not start needing the
-    // permission, with the pivot projected by this run rather than already
-    // on disk.
+    // The chain that must not start needing the permission, with the pivot
+    // projected by this run rather than already on disk.
     let shared = link("real");
     let rc = link("shared/rc");
 
@@ -2416,8 +2415,8 @@ fn an_orphaned_region_is_removed_and_a_vanished_one_expects_nothing() {
 
 // --- removal: whole owner, or a subset by path ---
 
-/// [`decide_removal`] for [`OWNER`] with no in-dest state prefix, under
-/// `policy` and the default (refusing) external-target policy.
+// [`decide_removal`] for [`OWNER`] with no in-dest state prefix, under
+// `policy` and the default (refusing) external-target policy.
 fn removal(
     scope: RemovalScope<'_>,
     manifest: &Manifest,
