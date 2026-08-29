@@ -138,7 +138,7 @@ impl Projection {
     /// the walk can name classifies [`Foreign`](crate::PathState::Foreign).
     pub fn status(&self) -> Result<Status> {
         let dest = self.open_target()?;
-        let manifest = self.manifest()?;
+        let manifest = self.manifest_under(&dest)?;
         let observations = observe(&dest, &manifest)?;
         Ok(classify(&manifest, &observations, self.state_prefix()))
     }
@@ -149,7 +149,19 @@ impl Projection {
     /// A state directory that does not exist, and one holding no manifest
     /// file yet, both read as the empty [`Manifest`].
     pub fn manifest(&self) -> Result<Manifest> {
-        match self.open_state() {
+        match self.open_state(None) {
+            Some(state) => load_manifest(&state?),
+            None => Ok(Manifest::new()),
+        }
+    }
+
+    /// The manifest read through a destination handle a caller already
+    /// holds, so an in-dest state directory is a child of the very
+    /// directory the observation walks rather than of a second open of the
+    /// target path. Renaming the target between two opens would otherwise
+    /// classify one directory against another's manifest.
+    fn manifest_under(&self, dest: &Dir) -> Result<Manifest> {
+        match self.open_state(Some(dest)) {
             Some(state) => load_manifest(&state?),
             None => Ok(Manifest::new()),
         }
@@ -174,7 +186,7 @@ impl Projection {
         options: PlanOptions,
     ) -> Result<Plan> {
         let dest = self.open_target()?;
-        let manifest = self.manifest()?;
+        let manifest = self.manifest_under(&dest)?;
         let observations = observe(&dest, &manifest)?;
         Ok(decide(
             owner,
@@ -200,7 +212,7 @@ impl Projection {
         options: PlanOptions,
     ) -> Result<Plan> {
         let dest = self.open_target()?;
-        let manifest = self.manifest()?;
+        let manifest = self.manifest_under(&dest)?;
         let observations = observe(&dest, &manifest)?;
         Ok(decide_removal(
             owner,
@@ -226,25 +238,31 @@ impl Projection {
     /// a destination never projected into. Reads distinguish the two;
     /// [`begin`](Projection::begin) creates the directory instead.
     ///
-    /// A state directory inside the target is reached through the
-    /// destination handle, on the same terms as
-    /// [`begin`](Projection::begin) opens it: the handle and the prefix
+    /// A state directory inside the target is reached through a destination
+    /// handle, on the same terms as [`begin`](Projection::begin) opens it:
+    /// the handle and the prefix
     /// [`state_prefix`](Projection::state_prefix) excludes from
     /// classification then name one directory, because a prefix component
     /// that is a symlink leaving the target is refused rather than
-    /// followed. A destination that does not exist reads as no state
-    /// directory, since an in-dest state directory cannot outlive the
-    /// target it sits in.
-    fn open_state(&self) -> Option<Result<Dir>> {
-        match self.state_prefix() {
-            Some(prefix) => match self.open_target() {
+    /// followed. Pass `dest` where the caller already holds one — a read
+    /// that walks the destination must read its manifest through the same
+    /// handle, or a target renamed between two opens would leave it
+    /// classifying one directory against another's manifest. Opening the
+    /// target here is for a caller with no handle of its own, and a target
+    /// that does not exist then reads as no state directory, since an
+    /// in-dest state directory cannot outlive the target it sits in.
+    fn open_state(&self, dest: Option<&Dir>) -> Option<Result<Dir>> {
+        let Some(prefix) = self.state_prefix() else {
+            return self
+                .absent_is_none(Dir::open_ambient_dir(&self.state_dir, ambient_authority()));
+        };
+        match dest {
+            Some(dest) => self.absent_is_none(dest.open_dir(prefix)),
+            None => match self.open_target() {
                 Ok(dest) => self.absent_is_none(dest.open_dir(prefix)),
                 Err(Error::Io { source, .. }) if source.kind() == NotFound => None,
                 Err(error) => Some(Err(error)),
             },
-            None => {
-                self.absent_is_none(Dir::open_ambient_dir(&self.state_dir, ambient_authority()))
-            }
         }
     }
 

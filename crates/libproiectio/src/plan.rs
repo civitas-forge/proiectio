@@ -68,18 +68,26 @@ pub struct PlanOptions {
 /// Every action apply would perform, keyed by path relative to the
 /// destination.
 ///
-/// A plan is complete: apply's inputs are the projection and the plan —
-/// never the desired tree — because each action carries what executing it
-/// needs: the [`Entry`] to write, and for destructive and recording
-/// actions the [`NodeSignature`] the disk must still match. Plans are
-/// plain data, not capabilities: apply re-validates containment, refuses
-/// an [`Overwrite`](Action::Overwrite), [`Skip`](Action::Skip),
+/// A plan is complete: applying it reads the desired tree again for
+/// nothing, because each action carries what executing it needs — the
+/// [`Entry`] to write, and for destructive and recording actions the
+/// [`NodeSignature`] the disk must still match.
+///
+/// A plan is a report, not a capability. Only a [`Run`](crate::Run) can
+/// execute one, and only the one it decided itself:
+/// [`Run::apply`](crate::Run::apply) takes no plan, so a plan from
+/// [`Projection::plan`](crate::Projection::plan) — decided outside the
+/// single-writer guard — is a description of what applying would do and
+/// nothing that can be handed back. Applying re-checks everything anyway:
+/// it re-validates containment, refuses an
+/// [`Overwrite`](Action::Overwrite), [`Skip`](Action::Skip),
 /// [`Remove`](Action::Remove), or [`Release`](Action::Release) keyed by a
-/// path the manifest does not record, and re-checks the disk against each
+/// path the manifest does not record, and matches the disk against each
 /// action's `expected` signature before touching anything — the recorded
 /// entry itself is never the signature baseline, since `expected` may
 /// deliberately differ from it (an agreement skip, a lifted drift) — so a
-/// hand-built or stale plan refuses rather than misfires. `BTreeMap`
+/// plan gone stale between deciding and applying refuses rather than
+/// misfires. `BTreeMap`
 /// keeps plans sorted, diffable, and deterministic; apply derives execution
 /// order from it — removals in reverse, then everything else parents before
 /// children, then the symlinks, each published only once the destination
