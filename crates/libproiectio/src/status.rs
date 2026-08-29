@@ -47,6 +47,19 @@ pub struct Status {
     pub paths: BTreeMap<Utf8PathBuf, PathState>,
 }
 
-#[cfg(all(test, unix))]
+// These tests record what a read reports after a write pass, so they project
+// through `Run` and carry the same target predicate `run` does — narrower
+// than the `cfg(unix)` on `Projection::status` itself, which they would
+// otherwise be compiled against a `begin` that does not exist there.
+#[cfg(all(
+    test,
+    unix,
+    not(any(
+        target_os = "espidf",
+        target_os = "horizon",
+        target_os = "solaris",
+        target_os = "vita"
+    ))
+))]
 #[path = "status_tests.rs"]
 mod tests;

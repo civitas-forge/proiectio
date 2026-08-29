@@ -4,6 +4,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 use std::collections::BTreeMap;
 
 #[cfg(unix)]
+use std::io::ErrorKind::NotFound;
+
+#[cfg(unix)]
 use cap_std::ambient_authority;
 #[cfg(unix)]
 use cap_std::fs_utf8::Dir;
@@ -222,10 +225,35 @@ impl Projection {
     /// A handle on the state directory, or `None` where there is none yet —
     /// a destination never projected into. Reads distinguish the two;
     /// [`begin`](Projection::begin) creates the directory instead.
+    ///
+    /// A state directory inside the target is reached through the
+    /// destination handle, on the same terms as
+    /// [`begin`](Projection::begin) opens it: the handle and the prefix
+    /// [`state_prefix`](Projection::state_prefix) excludes from
+    /// classification then name one directory, because a prefix component
+    /// that is a symlink leaving the target is refused rather than
+    /// followed. A destination that does not exist reads as no state
+    /// directory, since an in-dest state directory cannot outlive the
+    /// target it sits in.
     fn open_state(&self) -> Option<Result<Dir>> {
-        match Dir::open_ambient_dir(&self.state_dir, ambient_authority()) {
+        match self.state_prefix() {
+            Some(prefix) => match self.open_target() {
+                Ok(dest) => self.absent_is_none(dest.open_dir(prefix)),
+                Err(Error::Io { source, .. }) if source.kind() == NotFound => None,
+                Err(error) => Some(Err(error)),
+            },
+            None => {
+                self.absent_is_none(Dir::open_ambient_dir(&self.state_dir, ambient_authority()))
+            }
+        }
+    }
+
+    /// One open of the state directory, with its absence reported as `None`
+    /// rather than as an error.
+    fn absent_is_none(&self, opened: std::io::Result<Dir>) -> Option<Result<Dir>> {
+        match opened {
             Ok(state) => Some(Ok(state)),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => None,
+            Err(source) if source.kind() == NotFound => None,
             Err(source) => Some(Err(Error::Io {
                 path: self.state_dir.clone(),
                 source,

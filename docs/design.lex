@@ -220,6 +220,14 @@ Proiectio Design
     chose — and begin creates the state directory where a first run finds
     none.
 
+    A state directory inside the target is created and opened through the
+    destination handle rather than at its absolute path, so the handle and
+    the prefix classification excludes name one directory or the call
+    fails: a prefix component that is a symlink leaving the target is
+    refused there instead of followed, which is the only way the two could
+    have come to describe different directories. Outside the target there
+    is no prefix and no such pair.
+
     So the crate does open invoker-named paths against ambient authority:
     the two paths above, a mapping file and the sources it references, a
     source tree, an archive — all licensed by the trust split

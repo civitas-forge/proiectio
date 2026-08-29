@@ -157,6 +157,32 @@ fn deciding_again_replaces_the_kept_plan() {
     assert_tree(dest.root(), &Tree::new().file("second.txt", "two"));
 }
 
+/// A state directory inside the destination is reached through the
+/// destination handle, so a prefix component that is a symlink out of the
+/// target is refused rather than followed — the handle and the prefix
+/// `state_prefix` excludes from classification name one directory or there
+/// is no run.
+#[test]
+fn an_in_dest_state_directory_symlinked_out_of_the_target_refuses() {
+    let elsewhere = Tree::new().materialize();
+    let dest = Tree::new()
+        .symlink(".proiectio", elsewhere.root().as_str())
+        .materialize();
+    let projection = projection(&dest, &dest.path(".proiectio"));
+
+    let error = projection
+        .begin()
+        .expect_err("the state prefix leaves the target");
+    assert!(matches!(error, Error::Io { .. }), "got {error:?}");
+
+    // Nothing was written through the link, and the read agrees.
+    assert_tree(elsewhere.root(), &Tree::new());
+    assert!(
+        projection.status().is_err(),
+        "the read refuses the same escape"
+    );
+}
+
 #[test]
 fn a_removal_run_clears_what_the_owner_holds() {
     let dest = Tree::new().materialize();
@@ -181,6 +207,44 @@ fn a_removal_run_clears_what_the_owner_holds() {
 
     assert_tree(dest.root(), &Tree::new());
     assert!(projection.manifest().expect("manifest").entries.is_empty());
+}
+
+/// Deciding discards the kept plan before it decides, so a decision that
+/// fails leaves the run with nothing to apply rather than with the plan the
+/// caller was replacing — which `apply` would otherwise execute in place of
+/// the decision that never happened.
+#[test]
+fn a_decision_that_fails_leaves_no_plan_behind() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(&dest, state.root());
+
+    let mut run = projection.begin().expect("begin");
+    run.plan(
+        "harness",
+        &desired(&Tree::new().file("first.txt", "one")),
+        Origin::Caller,
+        PlanOptions::default(),
+    )
+    .expect("first plan");
+
+    // Nesting the destination past the walk's limit fails the observation
+    // every later decision starts from.
+    fs::create_dir_all(dest.path(["d"; crate::MAX_WALK_DEPTH + 1].join("/"))).expect("nest");
+    let error = run
+        .plan(
+            "harness",
+            &desired(&Tree::new().file("second.txt", "two")),
+            Origin::Caller,
+            PlanOptions::default(),
+        )
+        .expect_err("the observation fails");
+    assert!(matches!(error, Error::DestinationTooDeep { .. }), "{error}");
+
+    assert!(run.planned().is_none(), "the replaced plan is gone");
+    let report = run.apply().expect("apply");
+    assert!(report.outcomes.is_empty());
+    assert!(!dest.path("first.txt").exists(), "nothing was projected");
 }
 
 /// A removal is decided from the manifest, so its plan has no source tree to
