@@ -484,7 +484,7 @@ fn desired_action(
                 Action::Overwrite {
                     entry: entry.clone(),
                     expected: recorded_signature(recorded),
-                    reason: OverwriteReason::ContentChanged,
+                    reason: clean_overwrite_reason(entry, recorded),
                 }
             }
         }
@@ -613,6 +613,17 @@ fn refuse(refusal: Refusal) -> Action {
 fn skip(entry: &Entry) -> Action {
     Action::Skip {
         expected: desired_signature(entry),
+    }
+}
+
+fn clean_overwrite_reason(entry: &Entry, recorded: &ManifestEntry) -> OverwriteReason {
+    if entry.kind() == recorded.kind
+        && desired_hash(entry) == recorded.hash
+        && desired_executable(entry) != recorded.executable
+    {
+        OverwriteReason::ExecutableChanged
+    } else {
+        OverwriteReason::ContentChanged
     }
 }
 

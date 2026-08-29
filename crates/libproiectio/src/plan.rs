@@ -96,7 +96,7 @@ pub enum Action {
         /// What to write.
         entry: Entry,
     },
-    /// Replace a recorded path whose desired content changed.
+    /// Replace a recorded path.
     Overwrite {
         /// What to write.
         entry: Entry,
@@ -135,6 +135,7 @@ pub enum Action {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum OverwriteReason {
     ContentChanged,
+    ExecutableChanged,
     ForcedDrift,
 }
 

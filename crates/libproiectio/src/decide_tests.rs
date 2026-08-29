@@ -703,6 +703,30 @@ fn an_executable_bit_change_alone_overwrites() {
         &Action::Overwrite {
             entry: new,
             expected: signature(&old),
+            reason: OverwriteReason::ExecutableChanged,
+        }
+    );
+}
+
+#[test]
+fn a_content_and_executable_bit_change_together_reads_as_content_changed() {
+    let old = file("#!/bin/sh\n", false);
+    let new = file("#!/bin/bash\n", true);
+    let manifest = manifest_of(&[("run.sh", recorded(&old, &[OWNER]))]);
+    let observations = observed(&[("run.sh", on_disk(&old))]);
+
+    let plan = plan(
+        &tree(&[("run.sh", &new)]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "run.sh"),
+        &Action::Overwrite {
+            entry: new,
+            expected: signature(&old),
             reason: OverwriteReason::ContentChanged,
         }
     );
