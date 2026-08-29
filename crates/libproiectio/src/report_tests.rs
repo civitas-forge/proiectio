@@ -3,11 +3,9 @@ use camino::Utf8PathBuf;
 use super::*;
 use crate::PathState;
 
-fn facts(kind: EntryKind, origin: Origin) -> PathFacts {
+fn facts(shape: PathShape, origin: Option<Origin>) -> PathFacts {
     PathFacts {
-        kind,
-        executable: false,
-        target: None,
+        shape,
         owners: BTreeSet::from(["site".to_owned()]),
         origin,
     }
@@ -25,15 +23,12 @@ fn two_rows() -> Report<PathState> {
             (
                 Utf8PathBuf::from("bin/tool"),
                 row(
-                    Some(PathFacts {
-                        executable: true,
-                        ..facts(
-                            EntryKind::File,
-                            Origin::Mapping {
-                                path: Utf8PathBuf::from("/etc/deploy.toml"),
-                            },
-                        )
-                    }),
+                    Some(facts(
+                        PathShape::File { executable: true },
+                        Some(Origin::Mapping {
+                            path: Utf8PathBuf::from("/etc/deploy.toml"),
+                        }),
+                    )),
                     PathState::Drifted,
                 ),
             ),
@@ -117,9 +112,7 @@ fn a_report_serializes_with_paths_as_keys_and_no_bytes() {
             "rows": {
                 "bin/tool": {
                     "facts": {
-                        "kind": "File",
-                        "executable": true,
-                        "target": null,
+                        "shape": { "File": { "executable": true } },
                         "owners": ["site"],
                         "origin": { "Mapping": { "path": "/etc/deploy.toml" } },
                     },
@@ -140,10 +133,12 @@ fn a_symlink_row_carries_its_target_verbatim() {
         rows: BTreeMap::from([(
             Utf8PathBuf::from("current"),
             row(
-                Some(PathFacts {
-                    target: Some("releases/1.2.3".to_owned()),
-                    ..facts(EntryKind::Symlink, Origin::Caller)
-                }),
+                Some(facts(
+                    PathShape::Symlink {
+                        target: Some("releases/1.2.3".to_owned()),
+                    },
+                    Some(Origin::Caller),
+                )),
                 PathState::Clean,
             ),
         )]),
@@ -151,6 +146,29 @@ fn a_symlink_row_carries_its_target_verbatim() {
 
     let json = serde_json::to_value(&report).expect("serialize");
 
-    assert_eq!(json["rows"]["current"]["facts"]["target"], "releases/1.2.3");
+    assert_eq!(
+        json["rows"]["current"]["facts"]["shape"]["Symlink"]["target"],
+        "releases/1.2.3"
+    );
     assert_eq!(json["rows"]["current"]["facts"]["origin"], "Caller");
+}
+
+// A status row knows the manifest's hash of a link target rather than the
+// string, and no source named the path.
+#[test]
+fn a_row_can_name_neither_target_nor_origin() {
+    let report = Report {
+        rows: BTreeMap::from([(
+            Utf8PathBuf::from("current"),
+            row(
+                Some(facts(PathShape::Symlink { target: None }, None)),
+                PathState::Clean,
+            ),
+        )]),
+    };
+
+    let json = serde_json::to_value(&report).expect("serialize");
+
+    assert!(json["rows"]["current"]["facts"]["shape"]["Symlink"]["target"].is_null());
+    assert!(json["rows"]["current"]["facts"]["origin"].is_null());
 }

@@ -3,15 +3,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
-use crate::{EntryKind, Origin};
+use crate::Origin;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum PathShape {
+    File { executable: bool },
+    Symlink { target: Option<String> },
+    Block,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PathFacts {
-    pub kind: EntryKind,
-    pub executable: bool,
-    pub target: Option<String>,
+    pub shape: PathShape,
     pub owners: BTreeSet<String>,
-    pub origin: Origin,
+    pub origin: Option<Origin>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
