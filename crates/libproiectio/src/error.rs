@@ -261,14 +261,14 @@ pub enum Error {
         supported: u32,
     },
     /// Another writer holds the single-writer lock on the state directory
-    /// (`docs/implementation.lex` section 7). `StateLock::acquire` has
-    /// try-lock semantics, so a contended lock reports this immediately
-    /// rather than blocking. Not a refusal — no destination path is being
-    /// declined, the run simply cannot start — so [`Error::is_refusal`] is
-    /// `false` and a CLI maps it to exit 1 like any other runtime failure.
+    /// (`docs/implementation.lex` section 7). Acquisition is try-lock, so a
+    /// contended lock reports this immediately rather than blocking. Not a
+    /// refusal — no destination path is being declined, the run simply
+    /// cannot start — so [`Error::is_refusal`] is `false` and a CLI maps it
+    /// to exit 1 like any other runtime failure.
     ///
     /// (The variant is spelled on every target so the exit contract does
-    /// not shift under a `cfg`; the lock itself, `StateLock`, is built only
+    /// not shift under a `cfg`; the guard, and so `Run`, is built only
     /// where `flock(2)` is available.)
     #[error("state lock {path} is held by another writer")]
     LockHeld {
