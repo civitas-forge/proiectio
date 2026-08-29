@@ -6,9 +6,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs_utf8::Dir as Utf8Dir;
 
 use super::*;
-use crate::test_support::{Fixture, Tree, assert_tree};
+use crate::test_support::{Fixture, Tree, assert_tree, origins_of};
 use crate::{
-    Manifest, Origin, PlanOptions, Refusal, apply, block_markers, decide, load_manifest, observe,
+    Manifest, Origin, PlanOptions, Refusal, RefusalKind, apply, block_markers, decide,
+    load_manifest, observe,
 };
 
 // ---------------------------------------------------------------------------
@@ -619,7 +620,9 @@ fn hostile_member_names_are_refused_and_named() {
     let fixture = Tree::new().file("hostile.tar", tar(&members)).materialize();
     let error = load_archive(&fixture.path("hostile.tar"), 0).unwrap_err();
     let refused = match &error {
-        Error::Containment { paths } => paths,
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
+            origins_of(refused)
+        }
         other => panic!("expected a containment refusal, got {other}"),
     };
     assert!(refused.values().all(|origin| *origin
@@ -649,7 +652,9 @@ fn a_zip_with_windows_separators_is_refused_by_name() {
         zip_file("..\\..\\escape", "out\n"),
     ];
     let refused = match expand_bytes("windows.zip", &zip(&members), 0).unwrap_err() {
-        Error::Containment { paths } => paths,
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
+            origins_of(&refused)
+        }
         other => panic!("expected a containment refusal, got {other}"),
     };
     let named: Vec<&str> = refused.keys().map(|path| path.as_str()).collect();
@@ -691,7 +696,9 @@ fn a_zip_member_strip_would_erase_is_still_judged_for_its_kind() {
 fn a_member_name_carrying_a_nul_is_refused() {
     let members = vec![zip_file("a\u{0}b", "x\n"), zip_file("ok", "kept\n")];
     let refused = match expand_bytes("nul.zip", &zip(&members), 0).unwrap_err() {
-        Error::Containment { paths } => paths,
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
+            origins_of(&refused)
+        }
         other => panic!("expected a containment refusal, got {other}"),
     };
     assert_eq!(
@@ -1086,7 +1093,9 @@ fn a_prefix_never_absorbs_a_climbing_member() {
     )
     .unwrap_err()
     {
-        Error::Containment { paths } => paths,
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
+            origins_of(&refused)
+        }
         other => panic!("expected a containment refusal, got {other}"),
     };
     assert_eq!(

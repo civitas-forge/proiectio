@@ -6,13 +6,13 @@
 // scenario declares its container as an ordinary file and injects the block
 // entry into the map by hand.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use crate::Entry;
+use crate::{Entry, Origin, Refusal, Refused};
 
 // One node of a declared tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -396,3 +396,40 @@ fn kind_of(node: &Node) -> &'static str {
 
 #[path = "test_support_tests.rs"]
 mod tests;
+
+// The refused paths alone.
+pub(crate) fn paths_of(refused: &Refused) -> BTreeSet<Utf8PathBuf> {
+    refused.paths().keys().cloned().collect()
+}
+
+// Each refused path with the source that named it.
+pub(crate) fn origins_of(refused: &Refused) -> BTreeMap<Utf8PathBuf, Origin> {
+    refused
+        .paths()
+        .iter()
+        .map(|(path, refused)| (path.clone(), refused.origin.clone()))
+        .collect()
+}
+
+// Each refused path with its reason.
+pub(crate) fn refusals_of(refused: &Refused) -> BTreeMap<Utf8PathBuf, Refusal> {
+    refused
+        .paths()
+        .iter()
+        .map(|(path, refused)| (path.clone(), refused.refusal.clone()))
+        .collect()
+}
+
+// Each refused path with its reason and the source that named it.
+pub(crate) fn sourced_of(refused: &Refused) -> BTreeMap<Utf8PathBuf, (Refusal, Origin)> {
+    refused
+        .paths()
+        .iter()
+        .map(|(path, refused)| {
+            (
+                path.clone(),
+                (refused.refusal.clone(), refused.origin.clone()),
+            )
+        })
+        .collect()
+}

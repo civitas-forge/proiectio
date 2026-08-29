@@ -8,7 +8,7 @@ use std::rc::Rc;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
-use crate::{Desired, Entry, Error, Origin, Result};
+use crate::{Desired, Entry, Error, Origin, Refusal, Refused, Result};
 
 /// How many bytes one load may expand archives to, summed over every member
 /// it keeps and, on a tar, over every byte the parser consumes.
@@ -151,13 +151,14 @@ pub(crate) fn expand(
             path: source.to_owned(),
             via: via.map(Utf8Path::to_owned),
         };
-        return Err(Error::Containment {
-            paths: expansion
+        return Err(Refused::aggregate(
+            expansion
                 .refused
                 .into_iter()
-                .map(|path| (path, origin.clone()))
-                .collect(),
-        });
+                .map(|path| (path, Refusal::Containment, origin.clone())),
+        )
+        .expect("refused is not empty")
+        .into());
     }
     Ok(expansion.tree)
 }

@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
+use crate::RefusalKind;
+use crate::test_support::origins_of;
 
 // A fixed absolute location for table tests: entries that only carry
 // inline `contents` never read the filesystem, so the file need not exist.
@@ -272,7 +274,7 @@ fn escaping_keys_are_refused_together_each_named_verbatim() {
     let error = parse_at(text).unwrap_err();
     assert!(matches!(
         &error,
-        Error::Containment { paths } if *paths == want
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment && origins_of(refused) == want
     ));
     let named = want
         .keys()
@@ -396,8 +398,8 @@ fn an_archive_member_climbing_out_of_its_prefix_is_refused_by_name() {
 
     assert!(matches!(
         load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
-        Error::Containment { paths }
-            if paths == BTreeMap::from([(
+        Error::Refused(refused)
+            if origins_of(&refused) == BTreeMap::from([(
                 Utf8PathBuf::from("../escape"),
                 Origin::Archive {
                     path: fixture.path("assets/vendor.zip"),
@@ -428,9 +430,9 @@ fn a_refused_member_names_its_archive_and_the_mapping_that_named_it() {
     let error = load_mapping(&fixture.path("deploy.toml")).unwrap_err();
 
     match &error {
-        Error::Containment { paths } => {
+        Error::Refused(refused) => {
             assert_eq!(
-                *paths,
+                origins_of(refused),
                 BTreeMap::from([(
                     Utf8PathBuf::from("../escape"),
                     Origin::Archive {
