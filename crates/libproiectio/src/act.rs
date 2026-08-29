@@ -178,7 +178,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                     block(fault);
                 }
             }
-            Action::Skip { expected }
+            Action::Skip { expected, .. }
             | Action::Remove {
                 expected: Some(expected),
             } => {
@@ -269,7 +269,7 @@ fn run(
                 links.push((path, action));
                 unpublished.insert(path.clone());
             }
-            Action::Skip { expected } if expected.kind == EntryKind::Symlink => {
+            Action::Skip { expected, .. } if expected.kind == EntryKind::Symlink => {
                 links.push((path, action));
             }
             _ => {}
@@ -280,7 +280,7 @@ fn run(
             Action::Remove { .. } | Action::Refuse { .. } => {}
             Action::Write { entry } | Action::Overwrite { entry, .. }
                 if matches!(entry, Entry::Symlink { .. }) => {}
-            Action::Skip { expected } if expected.kind == EntryKind::Symlink => {}
+            Action::Skip { expected, .. } if expected.kind == EntryKind::Symlink => {}
             Action::Write { entry } if matches!(entry, Entry::Block { .. }) => {
                 let outcome = acting_on(plan, path, || write_block(dest, manifest, path, entry))?;
                 record(manifest, path, entry, &plan.owner);
@@ -312,7 +312,7 @@ fn run(
                 record(manifest, path, entry, &plan.owner);
                 outcomes.insert(path.clone(), ApplyOutcome::Overwritten);
             }
-            Action::Skip { expected } => {
+            Action::Skip { expected, .. } => {
                 acting_on(plan, path, || {
                     check_expected(dest, manifest, path, expected)
                 })?;
@@ -410,7 +410,7 @@ fn settle_links(
         pending = held;
     }
     for (path, action) in skips {
-        let Action::Skip { expected } = action else {
+        let Action::Skip { expected, .. } = action else {
             unreachable!("only skips are left here");
         };
         acting_on(plan, path, || {

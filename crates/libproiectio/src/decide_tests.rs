@@ -382,6 +382,7 @@ fn disk_already_equal_to_desired_skips() {
     assert_eq!(
         action(&plan, "a.txt"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -480,6 +481,7 @@ fn a_path_edited_into_agreement_with_desired_skips() {
     assert_eq!(
         action(&plan, "a.txt"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -505,6 +507,7 @@ fn an_agreement_skip_carries_the_desired_signature() {
     assert_eq!(
         action(&plan, "bin/tool"),
         &Action::Skip {
+            entry: agreed.clone(),
             expected: NodeSignature {
                 kind: EntryKind::File,
                 hash: desired_hash(&agreed),
@@ -750,6 +753,7 @@ fn skip_lets_an_owner_join_a_path_another_owner_holds_identically() {
     assert_eq!(
         action(&plan, ".zshrc"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -886,6 +890,7 @@ fn a_denormalized_desired_key_unifies_with_its_recorded_path() {
     assert_eq!(
         action(&plan, "b"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -1422,6 +1427,7 @@ fn an_external_target_refuses_even_where_the_link_is_already_recorded_and_clean(
     assert_eq!(
         action(&allowing, "toolchain"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -1970,6 +1976,7 @@ fn a_desired_link_matching_the_disk_target_skips() {
     assert_eq!(
         action(&plan, "rc"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -2283,6 +2290,7 @@ fn a_region_matching_desired_skips() {
     assert_eq!(
         action(&plan, "conf"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );

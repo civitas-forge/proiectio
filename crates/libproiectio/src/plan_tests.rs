@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
-use crate::RefusalKind;
+use crate::{ManifestEntry, RefusalKind};
 
 // A plan holding one of every action, with the facts each row draws on:
 // an entry for the writes, an expected signature for the skips and the
@@ -37,9 +37,26 @@ fn one_of_each() -> Plan {
             (
                 Utf8PathBuf::from("config/settings.toml"),
                 Action::Skip {
+                    entry: Entry::File {
+                        contents: b"port = 80\n".to_vec(),
+                        executable: false,
+                    },
                     expected: NodeSignature {
                         kind: EntryKind::File,
                         hash: "dd44".to_owned(),
+                        executable: false,
+                    },
+                },
+            ),
+            (
+                Utf8PathBuf::from("config/theme"),
+                Action::Skip {
+                    entry: Entry::Symlink {
+                        target: "themes/dark".to_owned(),
+                    },
+                    expected: NodeSignature {
+                        kind: EntryKind::Symlink,
+                        hash: "ee55".to_owned(),
                         executable: false,
                     },
                 },
@@ -79,6 +96,33 @@ fn one_of_each() -> Plan {
     }
 }
 
+// What the manifest records for the plan above: two of its paths, one held
+// by a second owner. `current` and `gone.txt` are recorded nowhere.
+fn recorded() -> Manifest {
+    let mut manifest = Manifest::new();
+    manifest.entries.extend([
+        (
+            Utf8PathBuf::from("bin/tool"),
+            ManifestEntry {
+                kind: EntryKind::File,
+                hash: "aa11".to_owned(),
+                executable: true,
+                owners: BTreeSet::from(["ops".to_owned(), "site".to_owned()]),
+            },
+        ),
+        (
+            Utf8PathBuf::from("config/settings.toml"),
+            ManifestEntry {
+                kind: EntryKind::File,
+                hash: "dd44".to_owned(),
+                executable: false,
+                owners: BTreeSet::from(["site".to_owned()]),
+            },
+        ),
+    ]);
+    manifest
+}
+
 fn verdict(report: &Report<PlannedAction>, path: &str) -> PlannedAction {
     report.rows[Utf8Path::new(path)].verdict.clone()
 }
@@ -89,7 +133,7 @@ fn facts(report: &Report<PlannedAction>, path: &str) -> Option<PathFacts> {
 
 #[test]
 fn a_report_carries_one_verdict_per_planned_path() {
-    let report = one_of_each().report();
+    let report = one_of_each().report(&recorded());
 
     assert_eq!(
         report
@@ -104,6 +148,7 @@ fn a_report_carries_one_verdict_per_planned_path() {
                 }
             ),
             ("config/settings.toml", PlannedAction::Skip),
+            ("config/theme", PlannedAction::Skip),
             ("current", PlannedAction::Write),
             ("gone.txt", PlannedAction::Remove),
             ("orphan.txt", PlannedAction::Remove),
@@ -120,16 +165,17 @@ fn a_report_carries_one_verdict_per_planned_path() {
     );
 }
 
-// A plan does not carry the manifest, so no row names an owner.
+// The owners are the manifest's, so a row names every owner holding the
+// path, not just the one the plan would record.
 #[test]
 fn write_and_overwrite_rows_take_their_facts_from_the_entry() {
-    let report = one_of_each().report();
+    let report = one_of_each().report(&recorded());
 
     assert_eq!(
         facts(&report, "bin/tool"),
         Some(PathFacts {
             shape: PathShape::File { executable: true },
-            owners: BTreeSet::new(),
+            owners: BTreeSet::from(["ops".to_owned(), "site".to_owned()]),
             origin: Some(Origin::Mapping {
                 path: Utf8PathBuf::from("/etc/deploy.toml")
             }),
@@ -137,9 +183,20 @@ fn write_and_overwrite_rows_take_their_facts_from_the_entry() {
     );
 }
 
+// A path the manifest does not record is the one case that reports no owner.
+#[test]
+fn an_unrecorded_path_reports_no_owners() {
+    let report = one_of_each().report(&recorded());
+
+    assert_eq!(
+        facts(&report, "current").map(|facts| facts.owners),
+        Some(BTreeSet::new())
+    );
+}
+
 #[test]
 fn a_planned_symlink_carries_its_target() {
-    let report = one_of_each().report();
+    let report = one_of_each().report(&recorded());
 
     assert_eq!(
         facts(&report, "current"),
@@ -153,18 +210,32 @@ fn a_planned_symlink_carries_its_target() {
     );
 }
 
+// A skip states what the desired entry says, so a skipped link names its
+// target as a written one does: the row reads the same on both runs.
 #[test]
-fn skip_and_remove_rows_take_their_facts_from_the_expected_signature() {
-    let report = one_of_each().report();
+fn skip_rows_take_their_facts_from_the_desired_entry() {
+    let report = one_of_each().report(&recorded());
 
     assert_eq!(
         facts(&report, "config/settings.toml"),
         Some(PathFacts {
             shape: PathShape::File { executable: false },
-            owners: BTreeSet::new(),
+            owners: BTreeSet::from(["site".to_owned()]),
             origin: Some(Origin::Caller),
         })
     );
+    assert_eq!(
+        facts(&report, "config/theme").map(|facts| facts.shape),
+        Some(PathShape::Symlink {
+            target: Some("themes/dark".to_owned())
+        })
+    );
+}
+
+#[test]
+fn a_remove_row_takes_its_facts_from_the_expected_signature() {
+    let report = one_of_each().report(&recorded());
+
     assert_eq!(
         facts(&report, "orphan.txt").map(|facts| facts.shape),
         Some(PathShape::File { executable: false })
@@ -174,7 +245,7 @@ fn skip_and_remove_rows_take_their_facts_from_the_expected_signature() {
 // Nothing on disk is expected at these paths, so there is nothing to state.
 #[test]
 fn rows_without_an_entry_or_a_signature_carry_no_facts() {
-    let report = one_of_each().report();
+    let report = one_of_each().report(&recorded());
 
     assert_eq!(facts(&report, "gone.txt"), None);
     assert_eq!(facts(&report, "shared/.zshrc"), None);
@@ -183,7 +254,7 @@ fn rows_without_an_entry_or_a_signature_carry_no_facts() {
 
 #[test]
 fn a_summary_counts_the_rows_of_each_action() {
-    let report = one_of_each().report();
+    let report = one_of_each().report(&recorded());
 
     assert_eq!(
         report.summary(),
@@ -195,7 +266,7 @@ fn a_summary_counts_the_rows_of_each_action() {
                 },
                 1
             ),
-            (PlannedAction::Skip, 1),
+            (PlannedAction::Skip, 2),
             (PlannedAction::Remove, 2),
             (PlannedAction::Release, 1),
             (
@@ -212,14 +283,14 @@ fn a_summary_counts_the_rows_of_each_action() {
 
 #[test]
 fn a_report_serializes_with_paths_as_keys_and_no_bytes() {
-    let json = serde_json::to_value(one_of_each().report()).expect("serialize");
+    let json = serde_json::to_value(one_of_each().report(&recorded())).expect("serialize");
 
     assert_eq!(
         json["rows"]["bin/tool"],
         serde_json::json!({
             "facts": {
                 "shape": { "File": { "executable": true } },
-                "owners": [],
+                "owners": ["ops", "site"],
                 "origin": { "Mapping": { "path": "/etc/deploy.toml" } },
             },
             "verdict": { "Overwrite": { "reason": "ForcedDrift" } },
@@ -239,7 +310,7 @@ fn a_plan_that_refuses_nothing_is_not_refused() {
 
     assert_eq!(plan.refused(), None);
     assert_eq!(
-        verdict(&plan.report(), "bin/tool"),
+        verdict(&plan.report(&recorded()), "bin/tool"),
         PlannedAction::Overwrite {
             reason: OverwriteReason::ForcedDrift
         }

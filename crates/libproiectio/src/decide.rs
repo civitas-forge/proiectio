@@ -612,6 +612,7 @@ fn refuse(refusal: Refusal) -> Action {
 /// carrying the desired signature for apply to re-check and record.
 fn skip(entry: &Entry) -> Action {
     Action::Skip {
+        entry: entry.clone(),
         expected: desired_signature(entry),
     }
 }

@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
-use crate::{Entry, EntryKind, Origin, PathFacts, PathShape, Refusal, Refused, Report, Row};
+use crate::{
+    Entry, EntryKind, Manifest, Origin, PathFacts, PathShape, Refusal, Refused, Report, Row,
+};
 
 /// What planning does when a recorded path's state on disk differs from the
 /// recorded entry — bytes, kind, or executable bit.
@@ -85,14 +87,19 @@ impl Plan {
             })
     }
 
-    pub fn report(&self) -> Report<PlannedAction> {
+    pub fn report(&self, manifest: &Manifest) -> Report<PlannedAction> {
         Report {
             rows: self
                 .actions
                 .iter()
                 .map(|(path, action)| {
+                    let owners = manifest
+                        .entries
+                        .get(path)
+                        .map(|recorded| recorded.owners.clone())
+                        .unwrap_or_default();
                     let row = Row {
-                        facts: facts_of(action, self.origin_of(path)),
+                        facts: facts_of(action, self.origin_of(path), owners),
                         verdict: verdict_of(action),
                     };
                     (path.clone(), row)
@@ -109,19 +116,20 @@ impl Plan {
     }
 }
 
-fn facts_of(action: &Action, origin: Origin) -> Option<PathFacts> {
+fn facts_of(action: &Action, origin: Origin, owners: BTreeSet<String>) -> Option<PathFacts> {
     let shape = match action {
-        Action::Write { entry } | Action::Overwrite { entry, .. } => match entry {
-            Entry::File { executable, .. } => PathShape::File {
-                executable: *executable,
-            },
-            Entry::Symlink { target } => PathShape::Symlink {
-                target: Some(target.clone()),
-            },
-            Entry::Block { .. } => PathShape::Block,
-        },
-        Action::Skip { expected }
-        | Action::Remove {
+        Action::Write { entry } | Action::Overwrite { entry, .. } | Action::Skip { entry, .. } => {
+            match entry {
+                Entry::File { executable, .. } => PathShape::File {
+                    executable: *executable,
+                },
+                Entry::Symlink { target } => PathShape::Symlink {
+                    target: Some(target.clone()),
+                },
+                Entry::Block { .. } => PathShape::Block,
+            }
+        }
+        Action::Remove {
             expected: Some(expected),
         } => match expected.kind {
             EntryKind::File => PathShape::File {
@@ -136,7 +144,7 @@ fn facts_of(action: &Action, origin: Origin) -> Option<PathFacts> {
     };
     Some(PathFacts {
         shape,
-        owners: BTreeSet::new(),
+        owners,
         origin: Some(origin),
     })
 }
@@ -177,6 +185,8 @@ pub enum Action {
     /// Disk already equals desired: nothing is written, the mtime survives,
     /// and apply records the signature under this plan's owner.
     Skip {
+        /// The desired node, which the disk already holds.
+        entry: Entry,
         /// The desired node's signature, which the disk carries at plan time
         /// and must still carry at apply time.
         expected: NodeSignature,
