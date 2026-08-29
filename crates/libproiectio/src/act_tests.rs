@@ -972,13 +972,16 @@ fn a_recorded_link_whose_matching_target_is_not_utf8_refuses_containment() {
     }
 }
 
+// No write goes down anywhere but its action key. The walk follows an owned
+// in-dest link, but a file that landed at the resolved location would leave
+// the bytes at `real/x.txt` while the manifest recorded `logs/x.txt` — a
+// path no later observation descends to, so every run after it plans the
+// write again and deciding refuses it under the no-alias rule.
 #[test]
-fn an_owned_matching_in_dest_symlink_ancestor_is_followed() {
+fn a_file_write_the_walk_would_relocate_through_an_owned_link_refuses() {
     let (dest, state) = fixtures();
-    Tree::new()
-        .dir("real")
-        .symlink("logs", "real")
-        .write_under(dest.root());
+    let linked = Tree::new().dir("real").symlink("logs", "real");
+    linked.write_under(dest.root());
     let mut manifest = Manifest::new();
     manifest.entries.insert(
         "logs".into(),
@@ -986,8 +989,7 @@ fn an_owned_matching_in_dest_symlink_ancestor_is_followed() {
     );
     // Deciding never plans a write beneath a surviving link (its no-alias
     // rule), so a write reaches the followed arm only from a hand-built
-    // plan — or from a link that appeared in the plan-to-apply gap. The
-    // arm still has to do the right thing.
+    // plan — or from a link that appeared in the plan-to-apply gap.
     let plan = Plan {
         owner: "own".to_owned(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -1002,34 +1004,153 @@ fn an_owned_matching_in_dest_symlink_ancestor_is_followed() {
         )]),
     };
 
-    let report = apply_at(&dest, &state, &manifest, &plan).expect("the owned link is followed");
+    let error =
+        apply_at(&dest, &state, &manifest, &plan).expect_err("a file is never written off its key");
 
-    assert_eq!(
-        report.outcomes,
-        BTreeMap::from([("logs/x.txt".into(), ApplyOutcome::Written)])
-    );
-    // The walk restarted along the resolved path: the bytes live under the
-    // link's target.
-    assert_tree(
-        dest.root(),
-        &Tree::new()
-            .file("real/x.txt", "through the owned link")
-            .symlink("logs", "real"),
-    );
+    match error {
+        Error::Containment { paths } => assert_eq!(paths, BTreeSet::from(["logs/x.txt".into()])),
+        other => panic!("expected Containment, got {other:?}"),
+    }
+    assert_tree(dest.root(), &linked);
     assert!(
-        report
-            .manifest
+        !persisted(&state)
             .entries
             .contains_key(Utf8Path::new("logs/x.txt"))
     );
 }
 
-// A symlink is the one entry that arm is not allowed to relocate, because
-// settling's wait-for set names what the run will still publish by action
-// key. Without this refusal the plan below escapes: `a` is graded and
-// published while nothing stands at `real/x`, then `pivot/x` goes down at
-// `real/x` — a path no chain waited for, since the set names `pivot/x` —
-// and `dest/a` resolves to the destination's grandparent.
+// A block's container is held to the key the same way: splicing into the
+// container the walk resolved to would record a region at `logs/rc` whose
+// bytes live in `real/rc`.
+#[test]
+fn a_block_whose_container_the_walk_relocates_refuses() {
+    let (dest, state) = fixtures();
+    let linked = Tree::new()
+        .file("real/rc", "author line\n")
+        .symlink("logs", "real");
+    linked.write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "logs".into(),
+        recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own"]),
+    );
+    let plan = Plan {
+        owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([(
+            "logs/rc".into(),
+            Action::Write {
+                entry: block("spliced\n", Placement::Append),
+            },
+        )]),
+    };
+
+    let error = apply_at(&dest, &state, &manifest, &plan)
+        .expect_err("a region is never spliced off its key");
+
+    match error {
+        Error::Containment { paths } => assert_eq!(paths, BTreeSet::from(["logs/rc".into()])),
+        other => panic!("expected Containment, got {other:?}"),
+    }
+    assert_tree(dest.root(), &linked);
+}
+
+// The shape the review of #31 named, end to end: a link two owners share is
+// released — the disk untouched, this owner dropped — and reappears matching
+// its recorded signature before apply reaches the path beneath it. Release
+// checks no disk (and could not: the link matches its record), the walk finds
+// the link still recorded by the owner who stayed, and follows it. The write
+// is what refuses; without that refusal `pivot/x.txt` would be recorded while
+// the bytes sat at `real/x.txt`, unwritable and unremovable thereafter.
+#[test]
+fn a_link_released_and_reappearing_in_the_gap_does_not_relocate_the_write() {
+    let (dest, state) = fixtures();
+    Tree::new().dir("real").write_under(dest.root());
+    let mut seeded = Manifest::new();
+    seeded.entries.insert(
+        "pivot".into(),
+        recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own", "other"]),
+    );
+    save_manifest(&dir_at(state.root()), &seeded).expect("seed the state dir");
+
+    // The link is not on disk at plan time, so the no-alias rule sees no
+    // ancestor link and the write under it is planned.
+    let desired = BTreeMap::from([(
+        Utf8PathBuf::from("pivot/x.txt"),
+        Entry::File {
+            contents: b"aliased".to_vec(),
+            executable: false,
+        },
+    )]);
+    let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
+    assert_eq!(
+        plan.actions.get(Utf8Path::new("pivot")),
+        Some(&Action::Release)
+    );
+
+    // The other owner's run puts the link back, exactly as recorded.
+    std::os::unix::fs::symlink("real", dest.path("pivot")).expect("the link reappears");
+
+    let error = apply_at(&dest, &state, &manifest, &plan)
+        .expect_err("the write refuses rather than land under the link");
+
+    match error {
+        Error::Containment { paths } => assert_eq!(paths, BTreeSet::from(["pivot/x.txt".into()])),
+        other => panic!("expected Containment, got {other:?}"),
+    }
+    assert_tree(
+        dest.root(),
+        &Tree::new().dir("real").symlink("pivot", "real"),
+    );
+    // The release landed and was persisted with the partial run: the owner
+    // who stayed still holds the link, and nothing records the aliased path.
+    let after = persisted(&state);
+    assert_eq!(
+        after.entries[Utf8Path::new("pivot")].owners,
+        BTreeSet::from(["other".to_owned()])
+    );
+    assert!(!after.entries.contains_key(Utf8Path::new("pivot/x.txt")));
+}
+
+// Release is the one action that re-checks nothing, and this is what that
+// buys: an owner departs a shared path whatever the disk holds. Refusing
+// here would trap the departing owner behind an edit that is not theirs to
+// fix, and the owner who stays keeps the record either way.
+#[test]
+fn a_release_drops_the_owner_over_a_drifted_node_without_touching_it() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new().file("shared.txt", "same bytes");
+    pipeline(&dest, &state, "one", &tree.entries(), DriftPolicy::Refuse).expect("owner one");
+    pipeline(&dest, &state, "two", &tree.entries(), DriftPolicy::Refuse).expect("owner two");
+
+    let (manifest, plan) = plan_for(&dest, &state, "two", &BTreeMap::new(), DriftPolicy::Refuse);
+    assert_eq!(
+        plan.actions.get(Utf8Path::new("shared.txt")),
+        Some(&Action::Release)
+    );
+    // An edit in the plan-to-apply gap: a signature check would refuse here.
+    let edited = Tree::new().file("shared.txt", "edited by somebody");
+    edited.write_under(dest.root());
+
+    let report = apply_at(&dest, &state, &manifest, &plan).expect("the owner departs regardless");
+
+    assert_eq!(
+        report.outcomes,
+        BTreeMap::from([("shared.txt".into(), ApplyOutcome::Released)])
+    );
+    assert_eq!(
+        report.manifest.entries[Utf8Path::new("shared.txt")].owners,
+        BTreeSet::from(["one".to_owned()])
+    );
+    assert_tree(dest.root(), &edited);
+}
+
+// A symlink carries a second reason: settling's wait-for set names what the
+// run will still publish by action key. Without this refusal the plan below
+// escapes: `a` is graded and published while nothing stands at `real/x`,
+// then `pivot/x` goes down at `real/x` — a path no chain waited for, since
+// the set names `pivot/x` — and `dest/a` resolves to the destination's
+// grandparent.
 #[test]
 fn a_link_the_walk_would_relocate_through_an_owned_link_refuses() {
     let (dest, state) = fixtures();

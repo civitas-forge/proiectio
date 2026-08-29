@@ -176,6 +176,20 @@ pub enum Action {
     /// Drop this owner from the path's manifest entry and leave the disk
     /// alone: the path is absent from this owner's desired tree, but other
     /// owners still hold it.
+    ///
+    /// The one action apply re-checks nothing on disk for, and deliberately.
+    /// It carries no `expected` signature because deciding plans a release
+    /// for a shared recorded path whatever its classification, so a re-check
+    /// would refuse an owner's departure over the state of a node that owner
+    /// is not touching. A release changes no bytes, so there is no
+    /// destructive step for the changed-since-plan rule to guard.
+    ///
+    /// Checking here would also not close the gap it appears to open. A link
+    /// this run releases can reappear before apply — but it reappears
+    /// *matching* its recorded signature, which is the only thing a check
+    /// here could compare against. What closes it is at the write: apply
+    /// refuses a write whose ancestor walk relocated it off its action key
+    /// (`docs/implementation.lex` section 3).
     Release,
     /// The path is named and left untouched. A plan containing refusals
     /// reports them all; applying it fails with the matching refusal
@@ -235,9 +249,9 @@ pub enum Refusal {
     /// key shares a normalized path with another desired key, or its path
     /// lies beneath another desired path. No file or block can hold
     /// children; beneath a desired *symlink* the nesting is expressible on
-    /// disk — apply's owned-link walk would follow the link and write
-    /// through it — but the write would land somewhere the plan does not
-    /// name, so it is refused as well (the no-alias rule
+    /// disk — apply's walk follows a link the projection owns — but the
+    /// write would land somewhere the plan does not name, which apply
+    /// refuses and deciding will not plan (the no-alias rule
     /// [`decide`](crate::decide) documents). Both sides
     /// of a conflict are refused — there is no deterministic entry to
     /// prefer; see [`Error::TreeConflict`](crate::Error::TreeConflict).
@@ -262,10 +276,11 @@ pub enum Refusal {
     /// that subtree, or one the state directory sits beneath.
     ///
     /// Applying refuses under the narrower apply-time rule of
-    /// `docs/security.lex` section 2, which still lets the walk follow an
-    /// ancestor link the manifest owns whose target resolves inside the
-    /// destination; see [`Error::Containment`](crate::Error::Containment)
-    /// for that split.
+    /// `docs/security.lex` section 2, whose walk still follows an ancestor
+    /// link the manifest owns whose target resolves inside the destination —
+    /// though only a removal ends up acting through one, since a write the
+    /// link relocated off its action key refuses; see
+    /// [`Error::Containment`](crate::Error::Containment) for that split.
     Containment,
     /// A desired symlink whose target, resolved from the link's parent
     /// through the destination's own links, lands outside the destination —

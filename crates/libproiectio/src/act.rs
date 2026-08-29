@@ -226,6 +226,17 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 ///   visited set: revisiting a link means an owned-link cycle, refused as
 ///   [`Error::Containment`] rather than looped.
 ///
+/// What a restart earns the action depends on what the action does, and
+/// `docs/implementation.lex` section 3 states all three answers together. A
+/// **write** — file, symlink, or a block's container — must go down at its
+/// action key, since that is the path the manifest records: one the walk
+/// relocated is refused as [`Error::Containment`] (`at_action_key`). A
+/// **removal** follows the link and reports where it unlinked, so pruning
+/// judges the directory that actually lost a child (`remove`) — nothing is
+/// created and the manifest entry goes away either way. A **release** walks
+/// nothing: it drops an owner from a manifest entry and reads no disk
+/// ([`Action::Release`]).
+///
 /// A creating walk stops at [`MAX_WALK_DEPTH`] directories as well,
 /// wherever a restart has taken it, failing as
 /// [`Error::DestinationTooDeep`] before it creates the directory past the
@@ -883,13 +894,15 @@ fn prune(dest: &Dir, manifest: &Manifest, candidates: &BTreeSet<Utf8PathBuf>) ->
 /// put more of the destination in place. Only a symlink is ever held, so a
 /// caller writing a file has nothing to read in the answer.
 ///
-/// A symlink is also the one entry the walk will not follow an owned link to
-/// reach: settling names what it is still going to publish by action key, so
-/// a link going down anywhere else is one no other link's chain can wait for.
-/// Deciding's no-alias rule refuses to plan such a link, and a hand-built
-/// plan carrying one is refused here as [`Error::Containment`]. A block never
-/// reaches this function: [`run`] splices its region instead, through a walk
-/// that creates nothing.
+/// Nothing is written where the walk did not go down at the action key
+/// (`at_action_key`) — a symlink, a file, and a block's container alike.
+/// A block never reaches this function: [`run`] splices its region instead,
+/// through a walk that creates nothing but is held to the same key.
+///
+/// The key is judged after the walk, so a walk that created directories on
+/// its way to a relocated landing leaves them behind, like any mid-run
+/// failure (`docs/implementation.lex` section 5): what the refusal promises
+/// is that no node goes down off its key, not that the run leaves no trace.
 fn write(
     dest: &Dir,
     manifest: &Manifest,
@@ -902,6 +915,7 @@ fn write(
     let Some((parent, leaf, resolved_parent)) = verified_parent(dest, manifest, path, true)? else {
         unreachable!("a creating walk opens or creates every ancestor");
     };
+    at_action_key(path, &resolved_parent.join(&leaf))?;
     if fresh {
         match parent.symlink_metadata(&leaf) {
             Ok(_) => {
@@ -923,17 +937,6 @@ fn write(
             executable,
         } => persist(&parent, &leaf, path, contents, *executable)?,
         Entry::Symlink { target } => {
-            // Settling names the paths this run will still put a link at by
-            // their action keys ([`settle_links`]), and a chain that walks
-            // one of them waits for it. A link the walk followed an owned
-            // link to reach would go down somewhere that set never names,
-            // so a chain through *that* location would wait for nothing and
-            // could be moved after it was vouched for. Deciding's no-alias
-            // rule refuses to plan such a link; a hand-built plan carrying
-            // one is refused here rather than published off its key.
-            if resolved_parent.join(&leaf) != path {
-                return Err(containment(path));
-            }
             if !link_settles(dest, plan, unpublished, &resolved_parent, target)? {
                 return Ok(Written::Held);
             }
@@ -1007,20 +1010,28 @@ fn persist_mode(dir: &Dir, leaf: &str, path: &Utf8Path, contents: &[u8], mode: u
 /// back: [`Error::Drift`] where the manifest records the path, since the node
 /// changed under the plan, and [`Error::Foreign`] where it does not, since
 /// the projection never wrote it.
+///
+/// [`OpenContainer::landing`] carries where the walk came out, so the two
+/// callers that republish a container — [`write_block`] and
+/// [`overwrite_block`] — hold it to the action key (`at_action_key`),
+/// while [`remove_block`] follows an owned link like every other removal.
 fn read_block_container(
     dest: &Dir,
     manifest: &Manifest,
     path: &Utf8Path,
 ) -> Result<Option<OpenContainer>> {
-    let Some((parent, leaf, _)) = verified_parent(dest, manifest, path, false)? else {
+    let Some((parent, leaf, resolved_parent)) = verified_parent(dest, manifest, path, false)?
+    else {
         return Ok(None);
     };
+    let landing = resolved_parent.join(&leaf);
     match read_container(&parent, &leaf, path)? {
         Container::File { bytes, mode } => Ok(Some(OpenContainer {
             parent,
             leaf,
             bytes,
             mode,
+            landing,
         })),
         Container::Absent => Ok(None),
         Container::Other => Err(if manifest.entries.contains_key(path) {
@@ -1045,6 +1056,10 @@ struct OpenContainer {
     /// The author's permission bits, carried onto the tempfile so the mode
     /// survives the rename.
     mode: u32,
+    /// Where the no-follow walk came out, relative to the destination: the
+    /// action key unless the walk followed an owned link to reach the
+    /// container.
+    landing: Utf8PathBuf,
 }
 
 /// Executes an [`Action::Write`] whose entry is a block: splices the region
@@ -1071,6 +1086,11 @@ struct OpenContainer {
 ///   [`ContainerMissing`](BlockFault::ContainerMissing): a block never
 ///   creates its container, which is what keeps the projection from owning
 ///   one whole.
+///
+/// The container this read opened must be the one the action names: a walk
+/// that reached it through an owned link refuses as [`Error::Containment`]
+/// (`at_action_key`) rather than splice a region the manifest would then
+/// record at another path.
 ///
 /// A recorded path is asked one question first, under the *recorded* marker
 /// rather than the entry's: the plan reached a write by finding the recorded
@@ -1102,6 +1122,7 @@ fn write_block(
     let Some(container) = read_block_container(dest, manifest, path)? else {
         return Err(block_refusal(path, BlockFault::ContainerMissing));
     };
+    at_action_key(path, &container.landing)?;
     if let Some((was_marker, was_placement)) = manifest
         .entries
         .get(path)
@@ -1155,7 +1176,8 @@ fn write_block(
 ///
 /// The old region is located with `expected`'s marker and placement and the
 /// new one written with the entry's, so a caller who changed either migrates
-/// the region in this single publish.
+/// the region in this single publish. Like every other write, it happens at
+/// the action key or not at all (`at_action_key`).
 fn overwrite_block(
     dest: &Dir,
     manifest: &Manifest,
@@ -1177,6 +1199,7 @@ fn overwrite_block(
     let Some(container) = read_block_container(dest, manifest, path)? else {
         return Err(drift(path));
     };
+    at_action_key(path, &container.landing)?;
     // The recorded marker must still identify one region. A duplicate that
     // appeared since the plan leaves nothing saying which occurrence bounds
     // the recorded bytes, and the extreme one hashing to `expected` does not
@@ -1747,6 +1770,38 @@ fn open_nofollow(dir: &Dir, name: &str) -> std::io::Result<Dir> {
     let start = std::fs::File::from(dir.as_cap_std().as_fd().try_clone_to_owned()?);
     let opened = cap_primitives::fs::open_dir_nofollow(&start, std::path::Path::new(name))?;
     Ok(Dir::from_std_file(opened))
+}
+
+/// Holds a write to its action key: `landing` is where [`verified_parent`]'s
+/// walk came out — the resolved parent joined with the leaf — and anywhere
+/// but `path` refuses as [`Error::Containment`] carrying the key.
+///
+/// The walk follows a symlink the projection owns whose target resolves
+/// in-dest, so a write can arrive somewhere the action does not name. Writing
+/// there puts bytes at one location while the manifest records another, which
+/// is the alias deciding's no-alias rule exists to prevent, and no later run
+/// heals it: observation never descends a link, so the key classifies
+/// [`Missing`](crate::PathState::Missing), the write is planned again, and
+/// deciding then refuses it under that same rule — the path is neither
+/// writable nor removable until someone edits the destination by hand.
+/// Deciding plans no write beneath a link that outlives the plan, so a walk
+/// that relocates one means the destination moved between the two calls.
+///
+/// A symlink carries a second reason: [`settle_links`] names the paths this
+/// run will still put a link at by their action keys, and a chain that walks
+/// one of them waits for it. A link going down anywhere else is one no chain
+/// waits for, so a landing already vouched for could still move.
+///
+/// Removals are held to no key. They travel through an owned link on purpose
+/// — [`remove`] reports the resolved location so pruning judges the directory
+/// that lost a child — and they leave no record pointing at what they
+/// unlinked (`docs/implementation.lex` section 3).
+fn at_action_key(path: &Utf8Path, landing: &Utf8Path) -> Result<()> {
+    if landing == path {
+        Ok(())
+    } else {
+        Err(containment(path))
+    }
 }
 
 /// [`Error::Drift`] at one path.

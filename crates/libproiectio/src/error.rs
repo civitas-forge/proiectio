@@ -125,11 +125,14 @@ pub enum Error {
     /// subtree, or with the state directory beneath them. The symlink half is
     /// two rules, not one applied twice: deciding refuses a desired path
     /// beneath *any* link that outlives the plan, while applying refuses
-    /// an ancestor link that is unowned, graded external, or cyclic — and
-    /// still follows one the manifest owns whose target resolves inside
-    /// the destination (`docs/security.lex` section 2). An ancestor link
-    /// the manifest owns whose on-disk target changed is
-    /// [`Drift`](Error::Drift), not this.
+    /// an ancestor link that is unowned, graded external, or cyclic. One
+    /// the manifest owns whose target resolves inside the destination is
+    /// followed (`docs/security.lex` section 2), and what the action does
+    /// there decides the rest: a removal travels through it, while a write
+    /// the link relocated off its action key is refused here too — bytes at
+    /// one path with the manifest recording another is the alias deciding's
+    /// no-alias rule exists to prevent. An ancestor link the manifest owns
+    /// whose on-disk target changed is [`Drift`](Error::Drift), not this.
     #[error("refusing paths that violate containment: {}", join(paths))]
     Containment {
         /// The offending locations, spelled as whatever named them: a
