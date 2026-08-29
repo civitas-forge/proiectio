@@ -178,9 +178,10 @@ Implementation Guidelines
     one lexical hop at a time, being itself that same resolution
     against the live disk — so a target one calls in-dest is one the
     others may follow. The structured Containment refusal, with paths, names
-    its producers: decide — the lexical rules, paths entering the
-    projection's own state directory, and desired paths lying beneath
-    a link the plan leaves standing ([./design.lex] section 2)
+    its producers: decide — the lexical rules, paths overlapping the
+    projection's own state directory (inside it, or with it sitting
+    beneath them), and desired paths lying beneath a link the plan
+    leaves standing ([./design.lex] section 2)
     — and act's no-follow walk, on an ancestor symlink that is
     unowned, cyclic, or graded external; one refusal variant,
     because [./security.lex] states one rule. (A swapped owned

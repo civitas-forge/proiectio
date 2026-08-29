@@ -44,7 +44,14 @@ use crate::{
 /// the destination, when it lies inside it
 /// ([`Projection::state_prefix`](crate::Projection::state_prefix)); the
 /// subtree under it — the prefix itself included — is the projection's own
-/// state and never classifies.
+/// state and never classifies. A path the state directory sits *beneath* is
+/// not that subtree and classifies like any other: `.local`, with the state
+/// directory at `.local/state/proiectio`, holds whatever else the
+/// destination puts under it. Deciding still refuses a *desired* path
+/// there — writing one would stand where the state directory stands — so
+/// the two readings of the prefix are separate tests, `in_state` here and
+/// `overlaps_state` at the admission points, each documented where it
+/// lives.
 ///
 /// A recorded [`Block`](EntryKind::Block) classifies over its *region*, not
 /// its container: [`observe`](crate::observe) locates the region with the
@@ -106,8 +113,10 @@ pub fn classify(
 ///
 /// Every desired-tree key is admitted through the containment gateway
 /// ([`contained_join`](crate::contained_join)'s lexical contract): a key the
-/// gateway refuses, or one entering the state-directory subtree named by
-/// `state_prefix` ([`Projection::state_prefix`](crate::Projection::state_prefix)),
+/// gateway refuses, or one claiming a location that overlaps the
+/// state-directory subtree named by `state_prefix`
+/// ([`Projection::state_prefix`](crate::Projection::state_prefix)) — a
+/// location inside that subtree, or one the state directory sits beneath —
 /// gets [`Refusal::Containment`] keyed by the key verbatim. Admitted keys
 /// land in the plan lexically normalized (`a/../b` plans as `b`), so one
 /// on-disk location has one action — and a tree claiming one location
@@ -309,8 +318,9 @@ pub fn decide(
 ///
 /// Each requested path is admitted through the same containment gateway
 /// every desired key passes ([`contained_join`](crate::contained_join)'s
-/// lexical contract): a path the gateway refuses, or one entering the
-/// state-directory subtree named by `state_prefix`, gets
+/// lexical contract): a path the gateway refuses, or one naming a location
+/// that overlaps the state-directory subtree named by `state_prefix` —
+/// inside it, or with the state directory beneath it — gets
 /// [`Refusal::Containment`] keyed by the request verbatim and is judged no
 /// further. Admitted requests are matched against the manifest lexically
 /// normalized, so `a/../b` names the recorded `b`.
@@ -346,7 +356,7 @@ pub fn decide_removal(
             let mut refused: BTreeMap<Utf8PathBuf, Action> = BTreeMap::new();
             for request in requested {
                 match contained_normalize(request) {
-                    Ok(normalized) if !in_state(&normalized, state_prefix) => {
+                    Ok(normalized) if !overlaps_state(&normalized, state_prefix) => {
                         admitted.insert(normalized);
                     }
                     _ => {
@@ -430,15 +440,15 @@ fn plan_actions(
     let mut actions: BTreeMap<Utf8PathBuf, Action> = BTreeMap::new();
 
     // Admission: every desired key passes the containment gateway, none
-    // may enter the projection's own state subtree, and no two admitted
-    // keys may claim overlapping on-disk locations.
+    // may claim a location overlapping the projection's own state subtree,
+    // and no two admitted keys may claim overlapping on-disk locations.
     let mut claims: BTreeMap<Utf8PathBuf, BTreeMap<&Utf8PathBuf, &Entry>> = BTreeMap::new();
     for (key, entry) in desired {
         let Ok(normalized) = contained_normalize(key) else {
             actions.insert(key.clone(), refuse(Refusal::Containment));
             continue;
         };
-        if in_state(&normalized, state_prefix) {
+        if overlaps_state(&normalized, state_prefix) {
             actions.insert(key.clone(), refuse(Refusal::Containment));
             continue;
         }
@@ -546,8 +556,45 @@ fn plan_actions(
     }
 }
 
-/// Whether `path` lies in the projection's own state subtree — the prefix
-/// itself included.
+/// Whether acting at `path` would touch the projection's own state subtree:
+/// the admission question, asked of every location a plan may write or
+/// remove, and answered symmetrically — the two overlap when either path is
+/// a prefix of the other.
+///
+/// Both directions name the same collision. `.proiectio/manifest.json` is a
+/// location inside the state directory; `.local`, where the state directory
+/// is `.local/state/proiectio`, is a location the state directory sits
+/// beneath, and a desired file there would stand where that directory
+/// stands. Refusing only the first would let the second reach apply, whose
+/// walk meets a file-versus-directory mismatch and refuses it as
+/// [`Refusal::Foreign`] or [`Refusal::Drift`] — a later stage naming a
+/// different rule, against a plan a dry run had already reported as what
+/// apply would execute (`docs/implementation.lex` section 1). So the
+/// admission points refuse both as [`Refusal::Containment`], keyed by the
+/// key or request verbatim.
+fn overlaps_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
+    state_prefix.is_some_and(|prefix| path.starts_with(prefix) || prefix.starts_with(path))
+}
+
+/// Whether `path` is itself in the projection's own state subtree — the
+/// prefix included — which is the exclusion [`classify`]'s two loops and the
+/// orphan loop of [`plan_actions`] apply.
+///
+/// Asymmetric on purpose, and deliberately not [`overlaps_state`]: a path
+/// the state directory sits *beneath* is not the projection's state. Where
+/// the state directory is `.local/state/proiectio`, `.local` holds whatever
+/// else the destination puts under it, so an observed `.local` is an
+/// unrecorded directory and classifies [`Foreign`](PathState::Foreign) like
+/// any other, and a `.local` some earlier configuration recorded as a file
+/// classifies as whatever the disk now holds. Excluding either would hide a
+/// node from [`status`](crate::status) and strand a manifest entry no
+/// removal could ever reach — while the state subtree proper is excluded
+/// because the projection's own files are not the projection's output.
+///
+/// The orphan loop shares this test with [`classify`] rather than the
+/// admission one because it reads the classification `classify` produced for
+/// every recorded path it judges: a path one skips and the other judges has
+/// no entry to read.
 fn in_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
     state_prefix.is_some_and(|prefix| path.starts_with(prefix))
 }
