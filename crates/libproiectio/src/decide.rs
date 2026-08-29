@@ -418,7 +418,11 @@ fn desired_action(
     observation: Option<&Observation>,
     policy: DriftPolicy,
 ) -> Action {
-    if let Some(refusal) = block_refusal(entry, observation) {
+    if let Some(refusal) = block_refusal(
+        entry,
+        recorded.is_some_and(|recorded| recorded.kind.is_block()),
+        observation,
+    ) {
         return refuse(refusal);
     }
     let Some(state) = state else {
@@ -435,7 +439,10 @@ fn desired_action(
         // A block owns the region, not the container: an unrecorded regular
         // file plans a write, and apply's read of the bytes settles the rest.
         if matches!(entry, Entry::Block { .. })
-            && matches!(observation, Some(Observation::File { .. }))
+            && matches!(
+                observation,
+                Some(Observation::File { .. } | Observation::Block { .. })
+            )
         {
             return Action::Write {
                 entry: entry.clone(),
@@ -498,12 +505,11 @@ fn desired_action(
 
 /// The refusals a desired [`Block`](Entry::Block) earns before its
 /// classification is consulted.
-///
-/// An unrecorded container carries no region observation, so the
-/// [`Append`](Placement::Append) newline check goes unasked here and apply
-/// asks it of the bytes it reads: such a path can plan a write and refuse at
-/// apply.
-fn block_refusal(entry: &Entry, observation: Option<&Observation>) -> Option<Refusal> {
+fn block_refusal(
+    entry: &Entry,
+    recorded_is_block: bool,
+    observation: Option<&Observation>,
+) -> Option<Refusal> {
     let Entry::Block {
         body,
         marker,
@@ -515,16 +521,42 @@ fn block_refusal(entry: &Entry, observation: Option<&Observation>) -> Option<Ref
     if let Some(fault) = block::entry_fault(marker, *placement, body) {
         return Some(Refusal::Block { fault });
     }
-    let author_ready = !matches!(
-        observation,
+    let author_ready = match observation {
         Some(Observation::Block {
-            newline_terminated: false,
+            hash: None,
+            desired: Some(desired),
             ..
-        })
-    );
+        }) => desired.author_newline_terminated,
+        Some(Observation::Block {
+            newline_terminated, ..
+        }) => *newline_terminated,
+        _ => true,
+    };
     if *placement == Placement::Append && !author_ready {
         return Some(Refusal::Block {
             fault: BlockFault::ContainerNotNewlineTerminated,
+        });
+    }
+    let Some(Observation::Block {
+        hash,
+        occurrences,
+        desired: Some(desired),
+        ..
+    }) = observation
+    else {
+        return None;
+    };
+    if hash.is_some() {
+        return (*occurrences == 1 && desired.occurrences > 0).then_some(Refusal::Block {
+            fault: BlockFault::MarkerInAuthorText,
+        });
+    }
+    let adopted = desired.occurrences == 1 && desired.hash.as_deref() == Some(&sha256_hex(body));
+    if desired.occurrences > 0 && !adopted {
+        return Some(if recorded_is_block {
+            Refusal::Drift
+        } else {
+            Refusal::Foreign
         });
     }
     None

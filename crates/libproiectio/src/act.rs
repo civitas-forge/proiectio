@@ -778,7 +778,7 @@ fn overwrite_block(
     }
     let author = block::strip(&container.bytes, Some(&region));
     if block::occurrence_count(&author, marker) > 0 {
-        return Err(drift(path));
+        return Err(block_refusal(path, BlockFault::MarkerInAuthorText));
     }
     if *placement == Placement::Append && !block::newline_terminated(&author) {
         return Err(block_refusal(

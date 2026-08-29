@@ -8,8 +8,8 @@ use cap_std::fs_utf8::Dir;
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree};
 use crate::{
-    DriftPolicy, EntryKind, ExternalTargetPolicy, PlanOptions, RemovalScope, decide,
-    decide_removal, observe,
+    BlockMarkers, DriftPolicy, EntryKind, ExternalTargetPolicy, PlanOptions, RemovalScope,
+    block_markers, decide, decide_removal, observe,
 };
 
 // Opens a capability handle at a fixture root. Ambient authority is the
@@ -57,7 +57,8 @@ fn plan_for_with(
     let dest = dir_at(dest.root());
     let state = dir_at(state.root());
     let manifest = load_manifest(&state).expect("load manifest");
-    let observations = observe(&dest, &manifest).expect("observe destination");
+    let observations =
+        observe(&dest, &manifest, &block_markers(desired)).expect("observe destination");
     let plan = decide(
         owner,
         desired,
@@ -382,7 +383,8 @@ fn removal_pipeline(
         let dest = dir_at(dest.root());
         let state = dir_at(state.root());
         let manifest = load_manifest(&state).expect("load manifest");
-        let observations = observe(&dest, &manifest).expect("observe destination");
+        let observations =
+            observe(&dest, &manifest, &BlockMarkers::new()).expect("observe destination");
         let plan = decide_removal(
             owner,
             scope,
@@ -2402,8 +2404,11 @@ fn a_migration_into_a_marker_the_author_already_wrote_refuses() {
         .expect_err("the author's side already carries the new marker");
 
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
-        other => panic!("expected Drift, got {other:?}"),
+        Error::Block { blocks } => assert_eq!(
+            blocks,
+            BTreeMap::from([("rc".into(), BlockFault::MarkerInAuthorText)])
+        ),
+        other => panic!("expected Block, got {other:?}"),
     }
     assert_eq!(container(&dest, "rc"), before);
 }
@@ -2427,7 +2432,8 @@ fn removing_a_block_leaves_the_container_byte_identical_apart_from_the_region() 
             let dest_dir = dir_at(dest.root());
             let state_dir = dir_at(state.root());
             let manifest = load_manifest(&state_dir).expect("load manifest");
-            let observations = observe(&dest_dir, &manifest).expect("observe");
+            let observations =
+                observe(&dest_dir, &manifest, &BlockMarkers::new()).expect("observe");
             let plan = decide_removal(
                 "own",
                 RemovalScope::Everything,
@@ -2871,7 +2877,7 @@ fn the_bytes_outside_a_region_are_never_interpreted() {
         let dest_dir = dir_at(dest.root());
         let state_dir = dir_at(state.root());
         let manifest = load_manifest(&state_dir).expect("load manifest");
-        let observations = observe(&dest_dir, &manifest).expect("observe");
+        let observations = observe(&dest_dir, &manifest, &BlockMarkers::new()).expect("observe");
         let plan = decide_removal(
             "own",
             RemovalScope::Everything,
@@ -2991,7 +2997,8 @@ fn a_second_marker_line_past_the_edge_refuses_and_strands_nothing() {
             let dest_dir = dir_at(dest.root());
             let state_dir = dir_at(state.root());
             let manifest = load_manifest(&state_dir).expect("load manifest");
-            let observations = observe(&dest_dir, &manifest).expect("observe");
+            let observations =
+                observe(&dest_dir, &manifest, &BlockMarkers::new()).expect("observe");
             let plan = decide_removal(
                 "own",
                 RemovalScope::Everything,
@@ -3201,7 +3208,8 @@ fn plan_result(
     let dest_dir = dir_at(dest.root());
     let state_dir = dir_at(state.root());
     let manifest = load_manifest(&state_dir).expect("load manifest");
-    let observations = observe(&dest_dir, &manifest).expect("observe destination");
+    let observations =
+        observe(&dest_dir, &manifest, &block_markers(desired)).expect("observe destination");
     let planned = decide(
         "own",
         desired,
@@ -3311,4 +3319,95 @@ fn deciding_accepts_a_desired_path_at_the_walk_depth() {
         fs::read_to_string(dest.path(&at_the_limit)).expect("the deep file"),
         "deep"
     );
+}
+
+#[test]
+fn deciding_refuses_an_unrecorded_container_that_already_carries_the_marker() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("rc", "author\n# proiectio\nsomebody elses body\n")
+        .write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+
+    let plan = plan_result(&dest, &state, &desired).1.expect("decide");
+
+    assert_eq!(
+        plan.actions.get(Utf8Path::new("rc")),
+        Some(&Action::Refuse {
+            refusal: Refusal::Foreign
+        })
+    );
+    assert_plan_and_apply_agree(&dest, &state, &desired);
+}
+
+#[test]
+fn deciding_adopts_an_unrecorded_container_whose_region_already_matches() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("rc", "author\n# proiectio\nmanaged\n")
+        .write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+
+    let plan = plan_result(&dest, &state, &desired).1.expect("decide");
+
+    assert!(matches!(
+        plan.actions.get(Utf8Path::new("rc")),
+        Some(Action::Write { .. })
+    ));
+    assert_plan_and_apply_agree(&dest, &state, &desired);
+}
+
+#[test]
+fn deciding_refuses_an_append_into_a_container_without_a_trailing_newline() {
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author").write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+
+    let plan = plan_result(&dest, &state, &desired).1.expect("decide");
+
+    assert_eq!(
+        plan.actions.get(Utf8Path::new("rc")),
+        Some(&Action::Refuse {
+            refusal: Refusal::Block {
+                fault: BlockFault::ContainerNotNewlineTerminated
+            }
+        })
+    );
+    assert_plan_and_apply_agree(&dest, &state, &desired);
+}
+
+#[test]
+fn deciding_refuses_a_migration_into_a_marker_the_author_already_wrote() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("rc", "author\n# renamed\n")
+        .write_under(dest.root());
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("project under the first marker");
+    let renamed = BTreeMap::from([(
+        Utf8PathBuf::from("rc"),
+        Entry::Block {
+            body: b"managed\n".to_vec(),
+            marker: "# renamed".to_owned(),
+            placement: Placement::Append,
+        },
+    )]);
+
+    let plan = plan_result(&dest, &state, &renamed).1.expect("decide");
+
+    assert_eq!(
+        plan.actions.get(Utf8Path::new("rc")),
+        Some(&Action::Refuse {
+            refusal: Refusal::Block {
+                fault: BlockFault::MarkerInAuthorText
+            }
+        })
+    );
+    assert_plan_and_apply_agree(&dest, &state, &renamed);
 }

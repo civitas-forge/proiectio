@@ -55,6 +55,7 @@ fn on_disk(entry: &Entry) -> Observation {
             hash: Some(sha256_hex(body)),
             newline_terminated: true,
             occurrences: 1,
+            desired: None,
         },
     }
 }
@@ -77,6 +78,7 @@ fn no_region(newline_terminated: bool) -> Observation {
         hash: None,
         newline_terminated,
         occurrences: 0,
+        desired: None,
     }
 }
 
@@ -87,6 +89,7 @@ fn edited_region(body: &str, occurrences: usize) -> Observation {
         hash: Some(sha256_hex(body.as_bytes())),
         newline_terminated: true,
         occurrences,
+        desired: None,
     }
 }
 

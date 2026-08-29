@@ -13,8 +13,8 @@ use cap_std::fs_utf8::Dir;
 
 #[cfg(unix)]
 use crate::{
-    Entry, Error, Manifest, Origin, Plan, PlanOptions, RemovalScope, Result, Status, classify,
-    decide, decide_removal, load_manifest, observe,
+    BlockMarkers, Entry, Error, Manifest, Origin, Plan, PlanOptions, RemovalScope, Result, Status,
+    block_markers, classify, decide, decide_removal, load_manifest, observe,
 };
 
 /// A destination directory paired with the state directory holding its
@@ -94,7 +94,7 @@ impl Projection {
     pub fn status(&self) -> Result<Status> {
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
-        let observations = observe(&dest, &manifest)?;
+        let observations = observe(&dest, &manifest, &BlockMarkers::new())?;
         Ok(classify(&manifest, &observations, self.state_prefix()))
     }
 
@@ -133,7 +133,7 @@ impl Projection {
     ) -> Result<Plan> {
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
-        let observations = observe(&dest, &manifest)?;
+        let observations = observe(&dest, &manifest, &block_markers(desired))?;
         decide(
             owner,
             desired,
@@ -156,7 +156,7 @@ impl Projection {
     ) -> Result<Plan> {
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
-        let observations = observe(&dest, &manifest)?;
+        let observations = observe(&dest, &manifest, &BlockMarkers::new())?;
         Ok(decide_removal(
             owner,
             scope,

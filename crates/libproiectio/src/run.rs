@@ -5,8 +5,9 @@ use cap_std::ambient_authority;
 use cap_std::fs_utf8::Dir;
 
 use crate::{
-    ApplyReport, Entry, Error, Manifest, Origin, Plan, PlanOptions, Projection, RemovalScope,
-    Result, StateLock, apply, decide, decide_removal, load_manifest, observe,
+    ApplyReport, BlockMarkers, Entry, Error, Manifest, Origin, Plan, PlanOptions, Projection,
+    RemovalScope, Result, StateLock, apply, block_markers, decide, decide_removal, load_manifest,
+    observe,
 };
 
 /// One write pass over a projection, holding the single-writer guard from
@@ -89,7 +90,7 @@ impl Run {
         options: PlanOptions,
     ) -> Result<&Plan> {
         self.plan = None;
-        let observations = observe(&self.dest, &self.manifest)?;
+        let observations = observe(&self.dest, &self.manifest, &block_markers(desired))?;
         self.plan = Some(decide(
             owner,
             desired,
@@ -113,7 +114,7 @@ impl Run {
         options: PlanOptions,
     ) -> Result<&Plan> {
         self.plan = None;
-        let observations = observe(&self.dest, &self.manifest)?;
+        let observations = observe(&self.dest, &self.manifest, &BlockMarkers::new())?;
         self.plan = Some(decide_removal(
             owner,
             scope,

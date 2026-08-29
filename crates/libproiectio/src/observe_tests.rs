@@ -8,7 +8,7 @@ use cap_std::fs_utf8::Dir;
 
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree};
-use crate::{EntryKind, ManifestEntry, Placement};
+use crate::{BlockMarkers, EntryKind, ManifestEntry, Placement};
 
 // Opens the destination handle observe takes, rooted at the fixture.
 // Ambient authority is the test's to spend; the library itself never
@@ -36,7 +36,7 @@ fn manifest_of(rows: &[(&str, EntryKind, String)]) -> Manifest {
 }
 
 fn observed(fixture: &Fixture, manifest: &Manifest) -> BTreeMap<Utf8PathBuf, Observation> {
-    observe(&dest(fixture), manifest)
+    observe(&dest(fixture), manifest, &BlockMarkers::new())
         .expect("observe succeeds")
         .paths
 }
@@ -292,7 +292,7 @@ fn a_destination_at_the_depth_limit_observes_and_one_past_it_is_named() {
 
     let past = nest(fixture.root(), MAX_WALK_DEPTH + 1);
     assert!(matches!(
-        observe(&dest(&fixture), &Manifest::new()).unwrap_err(),
+        observe(&dest(&fixture), &Manifest::new(), &BlockMarkers::new()).unwrap_err(),
         Error::DestinationTooDeep { path, limit } if path == past && limit == MAX_WALK_DEPTH
     ));
 }
@@ -389,6 +389,7 @@ fn a_recorded_block_observes_its_region_and_not_the_container() {
             // The author's side ends at the marker's line start.
             newline_terminated: true,
             occurrences: 1,
+            desired: None,
         }
     );
 }
@@ -426,6 +427,7 @@ fn a_container_with_no_marker_line_observes_no_region() {
             // one has no final newline to append after.
             newline_terminated: false,
             occurrences: 0,
+            desired: None,
         }
     );
 }
@@ -449,6 +451,7 @@ fn newline_termination_is_about_the_author_side_alone() {
                 hash: Some(sha256_hex(b"managed\n")),
                 newline_terminated: want,
                 occurrences: 1,
+                desired: None,
             }
         );
     }
