@@ -10,8 +10,8 @@ use crate::{
     RemovalScope,
 };
 
-/// A projection over two fixture directories, the state directory outside
-/// the destination.
+// A projection over two fixture directories, the state directory outside
+// the destination.
 fn projection(dest: &Fixture, state: &Utf8Path) -> Projection {
     Projection::new(dest.root().to_owned(), state.to_owned())
 }
@@ -83,8 +83,8 @@ fn beginning_creates_the_state_directory_a_first_run_has_not_got() {
     assert!(run.manifest().entries.is_empty());
 }
 
-/// The guard covers the whole run, load included: while one lives, no other
-/// writer starts.
+// The guard covers the whole run, load included: while one lives, no other
+// writer starts.
 #[test]
 fn a_second_run_meets_lock_held_while_the_first_lives() {
     let dest = Tree::new().materialize();
@@ -157,9 +157,9 @@ fn deciding_again_replaces_the_kept_plan() {
     assert_tree(dest.root(), &Tree::new().file("second.txt", "two"));
 }
 
-/// The in-dest state directory is created through the destination handle,
-/// which has to reach a prefix with directories above it as the ambient
-/// create did.
+// The in-dest state directory is created through the destination handle,
+// which has to reach a prefix with directories above it as the ambient
+// create did.
 #[test]
 fn beginning_creates_a_nested_in_dest_state_directory() {
     let dest = Tree::new().materialize();
@@ -198,11 +198,11 @@ fn beginning_creates_a_nested_in_dest_state_directory() {
     );
 }
 
-/// A state directory inside the destination is reached through the
-/// destination handle, so a prefix component that is a symlink out of the
-/// target is refused rather than followed — the handle and the prefix
-/// `state_prefix` excludes from classification name one directory or there
-/// is no run.
+// A state directory inside the destination is reached through the
+// destination handle, so a prefix component that is a symlink out of the
+// target is refused rather than followed — the handle and the prefix
+// `state_prefix` excludes from classification name one directory or there
+// is no run.
 #[test]
 fn an_in_dest_state_directory_symlinked_out_of_the_target_refuses() {
     let elsewhere = Tree::new().materialize();
@@ -250,10 +250,10 @@ fn a_removal_run_clears_what_the_owner_holds() {
     assert!(projection.manifest().expect("manifest").entries.is_empty());
 }
 
-/// Deciding discards the kept plan before it decides, so a decision that
-/// fails leaves the run with nothing to apply rather than with the plan the
-/// caller was replacing — which `apply` would otherwise execute in place of
-/// the decision that never happened.
+// Deciding discards the kept plan before it decides, so a decision that
+// fails leaves the run with nothing to apply rather than with the plan the
+// caller was replacing — which `apply` would otherwise execute in place of
+// the decision that never happened.
 #[test]
 fn a_decision_that_fails_leaves_no_plan_behind() {
     let dest = Tree::new().materialize();
@@ -288,8 +288,8 @@ fn a_decision_that_fails_leaves_no_plan_behind() {
     assert!(!dest.path("first.txt").exists(), "nothing was projected");
 }
 
-/// A removal is decided from the manifest, so its plan has no source tree to
-/// name.
+// A removal is decided from the manifest, so its plan has no source tree to
+// name.
 #[test]
 fn a_removal_plan_carries_the_caller_origin() {
     let dest = Tree::new().materialize();
@@ -303,8 +303,8 @@ fn a_removal_plan_carries_the_caller_origin() {
     assert_eq!(plan.origin, Origin::Caller);
 }
 
-/// The refusals apply raises come from deep inside the walk, so this is what
-/// proves the plan's origin reaches them.
+// The refusals apply raises come from deep inside the walk, so this is what
+// proves the plan's origin reaches them.
 #[test]
 fn a_refusal_raised_by_applying_names_the_plans_origin() {
     let dest = Tree::new().materialize();
@@ -356,8 +356,8 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
     assert_tree(dest.root(), &Tree::new());
 }
 
-/// The plan a read returns is a report: it says what applying would do and
-/// carries no lock, so a run can start while a caller still holds one.
+// The plan a read returns is a report: it says what applying would do and
+// carries no lock, so a run can start while a caller still holds one.
 #[test]
 fn a_plan_from_a_read_takes_no_lock() {
     let dest = Tree::new().materialize();

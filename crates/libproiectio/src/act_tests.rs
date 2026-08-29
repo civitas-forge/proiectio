@@ -12,21 +12,21 @@ use crate::{
     decide_removal, observe,
 };
 
-/// Opens a capability handle at a fixture root. Ambient authority is the
-/// test's to spend; the library itself never opens ambient paths.
+// Opens a capability handle at a fixture root. Ambient authority is the
+// test's to spend; the library itself never opens ambient paths.
 fn dir_at(root: &Utf8Path) -> Dir {
     Dir::open_ambient_dir(root, cap_std::ambient_authority()).expect("open fixture root as a Dir")
 }
 
-/// A fresh destination and a fresh state directory, both empty.
+// A fresh destination and a fresh state directory, both empty.
 fn fixtures() -> (Fixture, Fixture) {
     (Tree::new().materialize(), Tree::new().materialize())
 }
 
-/// The observe → decide half of a run: the manifest as loaded from `state`
-/// and the plan decided against it — split out so tests can mutate the disk
-/// in the plan-to-apply gap. `policy` rides the default (refusing)
-/// external-target policy; [`plan_for_with`] takes the options whole.
+// The observe → decide half of a run: the manifest as loaded from `state`
+// and the plan decided against it — split out so tests can mutate the disk
+// in the plan-to-apply gap. `policy` rides the default (refusing)
+// external-target policy; [`plan_for_with`] takes the options whole.
 fn plan_for(
     dest: &Fixture,
     state: &Fixture,
@@ -46,7 +46,7 @@ fn plan_for(
     )
 }
 
-/// [`plan_for`] under options the test chooses whole.
+// [`plan_for`] under options the test chooses whole.
 fn plan_for_with(
     dest: &Fixture,
     state: &Fixture,
@@ -70,8 +70,8 @@ fn plan_for_with(
     (manifest, plan)
 }
 
-/// [`plan_for`] under an origin the test names, for the refusals that have
-/// to say where the offending value came from.
+// [`plan_for`] under an origin the test names, for the refusals that have
+// to say where the offending value came from.
 fn plan_from(
     dest: &Fixture,
     state: &Fixture,
@@ -84,7 +84,7 @@ fn plan_from(
     (manifest, plan)
 }
 
-/// Applies a plan against the fixtures.
+// Applies a plan against the fixtures.
 fn apply_at(
     dest: &Fixture,
     state: &Fixture,
@@ -94,7 +94,7 @@ fn apply_at(
     apply(&dir_at(dest.root()), &dir_at(state.root()), manifest, plan)
 }
 
-/// One full observe → decide → apply run.
+// One full observe → decide → apply run.
 fn pipeline(
     dest: &Fixture,
     state: &Fixture,
@@ -106,7 +106,7 @@ fn pipeline(
     apply_at(dest, state, &manifest, &plan)
 }
 
-/// [`pipeline`] under options the test chooses whole.
+// [`pipeline`] under options the test chooses whole.
 fn pipeline_with(
     dest: &Fixture,
     state: &Fixture,
@@ -118,12 +118,12 @@ fn pipeline_with(
     apply_at(dest, state, &manifest, &plan)
 }
 
-/// The manifest as persisted in the state fixture.
+// The manifest as persisted in the state fixture.
 fn persisted(state: &Fixture) -> Manifest {
     load_manifest(&dir_at(state.root())).expect("load persisted manifest")
 }
 
-/// A hand-built manifest entry under the given owners.
+// A hand-built manifest entry under the given owners.
 fn recorded(kind: EntryKind, hash: String, owners: &[&str]) -> ManifestEntry {
     ManifestEntry {
         kind,
@@ -133,7 +133,7 @@ fn recorded(kind: EntryKind, hash: String, owners: &[&str]) -> ManifestEntry {
     }
 }
 
-/// The names in a fixture directory, sorted.
+// The names in a fixture directory, sorted.
 fn names_in(fixture: &Fixture) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(fixture.root())
         .expect("read fixture dir")
@@ -210,9 +210,6 @@ fn overwrites_changed_content_and_updates_the_exec_bit() {
     assert!(report.manifest.entries[Utf8Path::new("tool")].executable);
 }
 
-// Definition of done: error mid-plan leaves a state a re-run completes
-// cleanly — the manifest persisted on failure records what was actually
-// applied, so the partial run heals instead of wedging behind Foreign.
 #[test]
 fn a_mid_run_failure_persists_the_applied_entries_and_a_rerun_heals() {
     let (dest, state) = fixtures();
@@ -253,8 +250,6 @@ fn a_mid_run_failure_persists_the_applied_entries_and_a_rerun_heals() {
     assert_tree(dest.root(), &tree);
 }
 
-// Definition of done: file mutated between plan and apply → refusal
-// carrying the path.
 #[test]
 fn drift_in_the_plan_to_apply_gap_is_refused_with_the_path() {
     let (dest, state) = fixtures();
@@ -277,8 +272,6 @@ fn drift_in_the_plan_to_apply_gap_is_refused_with_the_path() {
     assert_eq!(persisted(&state), manifest);
 }
 
-// Definition of done: a planted symlinked ancestor is refused — for links
-// the projection does not own, wherever they point.
 #[test]
 fn an_unrecorded_symlinked_ancestor_is_refused() {
     for target in ["real", "../outside", "/etc"] {
@@ -305,8 +298,8 @@ fn an_unrecorded_symlinked_ancestor_is_refused() {
     }
 }
 
-// Definition of done: foreign files are never touched, and failures leave
-// no tempfile behind (assert_tree reports any unexpected entry).
+// A leftover tempfile fails this test: assert_tree reports any entry it
+// was not given.
 #[test]
 fn foreign_files_are_never_touched() {
     let (dest, state) = fixtures();
@@ -375,8 +368,8 @@ fn pruning_keeps_directories_still_holding_anything() {
     assert_tree(dest.root(), &Tree::new().file("a/b/theirs.txt", "foreign"));
 }
 
-/// One observe → [`decide_removal`] → apply run over `scope`: the whole
-/// owner, or the paths named.
+// One observe → [`decide_removal`] → apply run over `scope`: the whole
+// owner, or the paths named.
 fn removal_pipeline(
     dest: &Fixture,
     state: &Fixture,
@@ -409,7 +402,6 @@ fn requested(paths: &[&str]) -> BTreeSet<Utf8PathBuf> {
     paths.iter().map(Utf8PathBuf::from).collect()
 }
 
-// Definition of done: removing a drifted file refuses and names it.
 #[test]
 fn removing_a_drifted_file_refuses_with_the_path() {
     let (dest, state) = fixtures();
@@ -454,8 +446,6 @@ fn removing_a_drifted_file_refuses_with_the_path() {
     assert_tree(dest.root(), &Tree::new());
 }
 
-// Definition of done: pruning empties what removal emptied and keeps a
-// directory still holding a file the projection does not own.
 #[test]
 fn removal_prunes_emptied_dirs_and_keeps_one_holding_a_foreign_file() {
     let (dest, state) = fixtures();
@@ -724,13 +714,13 @@ fn a_hand_built_plan_with_unnormalized_keys_refuses_containment() {
     assert_tree(dest.root(), &Tree::new());
 }
 
-/// A path at the depth observe walks is written; one past it is named and
-/// nothing is written at all. `load_tree` cannot produce the second — its
-/// own walk stops at the same limit — but `load_mapping` can, since it
-/// judges keys for containment and never for depth, so this check is what
-/// the deep mapping key and the hand-built plan both meet. It is what keeps
-/// the projection from creating a destination its own next run could not
-/// observe.
+// A path at the depth observe walks is written; one past it is named and
+// nothing is written at all. `load_tree` cannot produce the second — its
+// own walk stops at the same limit — but `load_mapping` can, since it
+// judges keys for containment and never for depth, so this check is what
+// the deep mapping key and the hand-built plan both meet. It is what keeps
+// the projection from creating a destination its own next run could not
+// observe.
 #[test]
 fn a_plan_writing_past_the_walk_depth_is_named_and_writes_nothing() {
     let (dest, state) = fixtures();
@@ -779,11 +769,11 @@ fn a_plan_writing_past_the_walk_depth_is_named_and_writes_nothing() {
     assert_tree(dest.root(), &Tree::new());
 }
 
-/// A key two directories long that lands 65 deep. Following an owned link
-/// restarts the walk at the link's target, so the depth the plan spells is
-/// not the depth the walk reaches — and it is the walk's depth that decides
-/// whether the next observation can read the node back. The check on the
-/// key cannot see this one; the walk names the directory it stopped at.
+// A key two directories long that lands 65 deep. Following an owned link
+// restarts the walk at the link's target, so the depth the plan spells is
+// not the depth the walk reaches — and it is the walk's depth that decides
+// whether the next observation can read the node back. The check on the
+// key cannot see this one; the walk names the directory it stopped at.
 #[test]
 fn a_write_landing_past_the_walk_depth_through_an_owned_link_is_named() {
     let (dest, state) = fixtures();
@@ -1091,7 +1081,7 @@ fn a_block_whose_container_the_walk_relocates_refuses() {
     assert_tree(dest.root(), &linked);
 }
 
-// The shape the review of #31 named, end to end: a link two owners share is
+// A link two owners share is
 // released — the disk untouched, this owner dropped — and reappears matching
 // its recorded signature before apply reaches the path beneath it. Release
 // checks no disk (and could not: the link matches its record), the walk finds
@@ -1436,7 +1426,7 @@ fn an_owned_link_cycle_refuses_instead_of_looping() {
     }
 }
 
-// --- symlinks: creation, replacement, transitions (issue #8) ---
+// --- symlinks: creation, replacement, transitions ---
 
 #[test]
 fn projects_links_with_their_targets_verbatim_dangling_included() {
@@ -1534,8 +1524,6 @@ fn a_changed_link_target_is_replaced_in_place() {
     );
 }
 
-// Definition of done: both transitions, under the ordinary drift rules —
-// the rename that publishes a node replaces whatever the leaf held.
 #[test]
 fn a_file_becomes_a_link_and_a_link_becomes_a_file() {
     let (dest, state) = fixtures();
@@ -1599,8 +1587,6 @@ fn a_link_edited_on_disk_refuses_as_drift_and_force_replaces_it() {
     assert_tree(dest.root(), &v2);
 }
 
-// Definition of done: an external target refuses with the path unless the
-// caller permits it, and lands byte-exact when it does.
 #[test]
 fn external_targets_refuse_without_the_policy_and_land_verbatim_with_it() {
     let (dest, state) = fixtures();
@@ -1678,9 +1664,6 @@ fn nothing_is_written_through_a_permitted_external_link() {
     assert_tree(dest.root(), &link);
 }
 
-// Definition of done (issue #29): a target reaching outside through a link
-// the destination already holds needs the permission like any other
-// external target.
 #[test]
 fn a_target_escaping_through_a_pivot_link_refuses_without_the_permission() {
     let (dest, state) = fixtures();
@@ -2165,7 +2148,7 @@ fn a_path_beneath_a_link_this_run_removes_is_written_as_an_ordinary_path() {
 
 // --- blocks: splicing a region into somebody else's file ---
 
-/// The marker every block test uses.
+// The marker every block test uses.
 const MARKER: &str = "# proiectio";
 
 fn block_kind(placement: Placement) -> EntryKind {
@@ -2175,7 +2158,7 @@ fn block_kind(placement: Placement) -> EntryKind {
     }
 }
 
-/// A desired block entry under [`MARKER`].
+// A desired block entry under [`MARKER`].
 fn block(body: &str, placement: Placement) -> Entry {
     Entry::Block {
         body: body.as_bytes().to_vec(),
@@ -2184,12 +2167,12 @@ fn block(body: &str, placement: Placement) -> Entry {
     }
 }
 
-/// A desired tree of one block at `path`.
+// A desired tree of one block at `path`.
 fn block_tree(path: &str, body: &str, placement: Placement) -> BTreeMap<Utf8PathBuf, Entry> {
     BTreeMap::from([(Utf8PathBuf::from(path), block(body, placement))])
 }
 
-/// The container's bytes as they stand on disk.
+// The container's bytes as they stand on disk.
 fn container(dest: &Fixture, path: &str) -> String {
     fs::read_to_string(dest.path(path)).expect("read the container")
 }
@@ -2527,9 +2510,9 @@ fn an_ambiguous_container_is_not_adopted() {
     assert_eq!(persisted(&state), Manifest::new());
 }
 
-/// A container carrying the projection's region twice: the extreme
-/// occurrence still hashes to the recorded body, so only counting the
-/// occurrences tells the picture from an ordinary one.
+// A container carrying the projection's region twice: the extreme
+// occurrence still hashes to the recorded body, so only counting the
+// occurrences tells the picture from an ordinary one.
 const DOUBLED: &str = "# proiectio\nmanaged\nauthor\n# proiectio\nmanaged\n";
 
 #[test]
@@ -2840,11 +2823,6 @@ fn the_containers_mode_is_the_authors_and_survives_the_rename() {
 
 #[test]
 fn a_containers_setuid_bits_do_not_survive_the_rename() {
-    // Publishing replaces the inode, so the new file belongs to whoever ran
-    // the projection. Carrying the author's setuid bit across that would
-    // re-create somebody else's privileged file under a new owner — content
-    // widening what content may do, which `docs/security.lex` section 1
-    // forbids and section 4 already forbids for archive members.
     let (dest, state) = fixtures();
     Tree::new().file("rc", "author\n").write_under(dest.root());
     fs::set_permissions(

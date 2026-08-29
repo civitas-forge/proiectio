@@ -1,18 +1,18 @@
-//! Table tests for the region mechanics — pure over bytes, no filesystem
-//! (`docs/implementation.lex` section 2).
+// Table tests for the region mechanics — pure over bytes, no filesystem
+// (`docs/implementation.lex` section 2).
 
 use super::*;
 use Placement::{Append, Prepend};
 
 const MARKER: &str = "# proiectio";
 
-/// The body a located region names, for readability in the tables below.
+// The body a located region names, for readability in the tables below.
 fn located(container: &str, marker: &str, placement: Placement) -> Option<String> {
     let region = locate(container.as_bytes(), marker, placement)?;
     Some(String::from_utf8(container.as_bytes()[region.body].to_vec()).expect("UTF-8 body"))
 }
 
-/// The author's side left after the region is stripped.
+// The author's side left after the region is stripped.
 fn stripped(container: &str, marker: &str, placement: Placement) -> String {
     let region = locate(container.as_bytes(), marker, placement);
     String::from_utf8(strip(container.as_bytes(), region.as_ref())).expect("UTF-8 author")

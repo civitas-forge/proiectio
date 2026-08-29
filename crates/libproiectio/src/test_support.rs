@@ -1,10 +1,10 @@
-//! Test scaffolding: declarative trees, `TempDir` fixtures, and directory
-//! assertions. Every path handed out is absolute and every helper asserts it
-//! was given one — tests never chdir, which `clippy.toml` bans crate-wide,
-//! since `set_current_dir` is process-global and `cargo test` runs in
-//! parallel threads. `Entry::Block` has no [`Node`] counterpart: a block
-//! scenario declares its container as an ordinary file and injects the block
-//! entry into the map by hand.
+// Test scaffolding: declarative trees, `TempDir` fixtures, and directory
+// assertions. Every path handed out is absolute and every helper asserts it
+// was given one — tests never chdir, which `clippy.toml` bans crate-wide,
+// since `set_current_dir` is process-global and `cargo test` runs in
+// parallel threads. `Entry::Block` has no [`Node`] counterpart: a block
+// scenario declares its container as an ordinary file and injects the block
+// entry into the map by hand.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -14,24 +14,19 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::Entry;
 
-/// One node of a declared tree.
+// One node of a declared tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Node {
-    File {
-        contents: Vec<u8>,
-        executable: bool,
-    },
-    /// The target string, written verbatim and never resolved.
-    Symlink {
-        target: String,
-    },
-    /// Needed only for *empty* directories; parents of other nodes are
-    /// implied.
+    File { contents: Vec<u8>, executable: bool },
+    // The target string, written verbatim and never resolved.
+    Symlink { target: String },
+    // Needed only for *empty* directories; parents of other nodes are
+    // implied.
     Dir,
 }
 
-/// A declarative tree: relative paths mapped to [`Node`]s, built in one
-/// chained expression.
+// A declarative tree: relative paths mapped to [`Node`]s, built in one
+// chained expression.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Tree {
     nodes: BTreeMap<Utf8PathBuf, Node>,
@@ -71,8 +66,8 @@ impl Tree {
         )
     }
 
-    /// Only empty directories need this; parents of files and links are
-    /// created implicitly.
+    // Only empty directories need this; parents of files and links are
+    // created implicitly.
     pub(crate) fn dir(self, path: impl AsRef<str>) -> Self {
         self.insert(path, Node::Dir)
     }
@@ -111,7 +106,7 @@ impl Tree {
         self
     }
 
-    /// The desired-tree value `plan` takes; [`Node::Dir`] entries are omitted.
+    // The desired-tree value `plan` takes; [`Node::Dir`] entries are omitted.
     pub(crate) fn entries(&self) -> BTreeMap<Utf8PathBuf, Entry> {
         self.nodes
             .iter()
@@ -134,8 +129,8 @@ impl Tree {
             .collect()
     }
 
-    /// Writes the tree into a fresh temporary directory. The fixture's root
-    /// is absolute and canonicalized.
+    // Writes the tree into a fresh temporary directory. The fixture's root
+    // is absolute and canonicalized.
     // The canonicalize ban guards tree containment; this call resolves the
     // fixture's own temp root (on macOS it sits behind the `/var` symlink).
     #[allow(clippy::disallowed_methods)]
@@ -148,9 +143,9 @@ impl Tree {
         Fixture { _temp: temp, root }
     }
 
-    /// Writes the tree's nodes under an existing absolute `root`, creating
-    /// implied parent directories. A write whose on-disk ancestor is a
-    /// symlink panics instead of following it.
+    // Writes the tree's nodes under an existing absolute `root`, creating
+    // implied parent directories. A write whose on-disk ancestor is a
+    // symlink panics instead of following it.
     pub(crate) fn write_under(&self, root: &Utf8Path) {
         assert!(root.is_absolute(), "write_under takes an absolute root");
         for (path, node) in &self.nodes {
@@ -183,8 +178,8 @@ impl Tree {
     }
 }
 
-/// A materialized tree in a temporary directory; dropping the fixture deletes
-/// the directory. All paths it hands out are absolute.
+// A materialized tree in a temporary directory; dropping the fixture deletes
+// the directory. All paths it hands out are absolute.
 #[derive(Debug)]
 pub(crate) struct Fixture {
     _temp: tempfile::TempDir,
@@ -196,7 +191,7 @@ impl Fixture {
         &self.root
     }
 
-    /// The absolute path of `rel` inside the fixture.
+    // The absolute path of `rel` inside the fixture.
     pub(crate) fn path(&self, rel: impl AsRef<Utf8Path>) -> Utf8PathBuf {
         let rel = rel.as_ref();
         assert_normal_relative(rel);
@@ -204,8 +199,8 @@ impl Fixture {
     }
 }
 
-/// Asserts `path` is relative and made only of normal segments. Checks the
-/// raw string: `Utf8Path::components()` normalizes `.` and empty segments away.
+// Asserts `path` is relative and made only of normal segments. Checks the
+// raw string: `Utf8Path::components()` normalizes `.` and empty segments away.
 fn assert_normal_relative(path: &Utf8Path) {
     let raw = path.as_str();
     assert!(
@@ -218,8 +213,8 @@ fn assert_normal_relative(path: &Utf8Path) {
     );
 }
 
-/// Panics if any on-disk component strictly below `root`, down to `parent`,
-/// exists and is a symlink.
+// Panics if any on-disk component strictly below `root`, down to `parent`,
+// exists and is a symlink.
 fn assert_no_symlink_ancestor(root: &Utf8Path, parent: &Utf8Path) {
     let rel = parent
         .strip_prefix(root)
@@ -236,8 +231,8 @@ fn assert_no_symlink_ancestor(root: &Utf8Path, parent: &Utf8Path) {
     }
 }
 
-/// Unlinks an existing path at `abs` before `node` is written, never
-/// following it. Only a directory over a directory is left in place.
+// Unlinks an existing path at `abs` before `node` is written, never
+// following it. Only a directory over a directory is left in place.
 fn unlink_mismatched_leaf(abs: &Utf8Path, node: &Node) {
     let Ok(meta) = fs::symlink_metadata(abs) else {
         return;
@@ -261,8 +256,8 @@ fn unlink_mismatched_leaf(abs: &Utf8Path, node: &Node) {
     }
 }
 
-/// Diffs the directory at `root` against `expected`, one line per divergence;
-/// empty means it matches. Implied ancestor directories are never reported.
+// Diffs the directory at `root` against `expected`, one line per divergence;
+// empty means it matches. Implied ancestor directories are never reported.
 pub(crate) fn tree_diff(root: &Utf8Path, expected: &Tree) -> Vec<String> {
     assert!(root.is_absolute(), "tree_diff takes an absolute root");
 
