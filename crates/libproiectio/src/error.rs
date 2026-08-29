@@ -393,6 +393,7 @@ pub enum BlockFault {
     /// A plan's expected signature names a marker or placement the manifest
     /// does not record at that path.
     SignatureNotRecorded,
+    MarkerInAuthorText,
 }
 
 impl std::fmt::Display for BlockFault {
@@ -414,6 +415,9 @@ impl std::fmt::Display for BlockFault {
             BlockFault::KindChange => "a path never changes between a whole node and a block",
             BlockFault::SignatureNotRecorded => {
                 "the expected signature names a region the manifest does not record"
+            }
+            BlockFault::MarkerInAuthorText => {
+                "the container's author side already holds the marker being migrated to"
             }
         };
         f.write_str(reason)

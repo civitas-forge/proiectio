@@ -7,8 +7,8 @@ use cap_std::fs_utf8::Dir as Utf8Dir;
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree};
 use crate::{
-    Action, ApplyReport, Manifest, Origin, PlanOptions, Refusal, apply, decide, load_manifest,
-    observe,
+    Action, ApplyReport, Manifest, Origin, PlanOptions, Refusal, apply, block_markers, decide,
+    load_manifest, observe,
 };
 
 // Opens a capability handle at a fixture root. Ambient authority is the
@@ -24,7 +24,8 @@ fn project(dest: &Fixture, state: &Fixture, desired: &BTreeMap<Utf8PathBuf, Entr
     let dest_dir = dir_at(dest.root());
     let state_dir = dir_at(state.root());
     let manifest = load_manifest(&state_dir).expect("load manifest");
-    let observations = observe(&dest_dir, &manifest).expect("observe destination");
+    let observations =
+        observe(&dest_dir, &manifest, &block_markers(desired)).expect("observe destination");
     let plan = decide(
         "tree",
         desired,
@@ -44,7 +45,8 @@ fn actions_for(desired: &BTreeMap<Utf8PathBuf, Entry>) -> BTreeMap<Utf8PathBuf, 
     let dest = Tree::new().materialize();
     let dest_dir = dir_at(dest.root());
     let manifest = Manifest::new();
-    let observations = observe(&dest_dir, &manifest).expect("observe destination");
+    let observations =
+        observe(&dest_dir, &manifest, &block_markers(desired)).expect("observe destination");
     decide(
         "tree",
         desired,

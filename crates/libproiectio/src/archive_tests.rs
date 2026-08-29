@@ -7,7 +7,9 @@ use cap_std::fs_utf8::Dir as Utf8Dir;
 
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree};
-use crate::{Manifest, Origin, PlanOptions, Refusal, apply, decide, load_manifest, observe};
+use crate::{
+    Manifest, Origin, PlanOptions, Refusal, apply, block_markers, decide, load_manifest, observe,
+};
 
 // ---------------------------------------------------------------------------
 // Building archives
@@ -348,7 +350,8 @@ fn an_expanded_archive_projects_and_its_relative_link_resolves() {
     let dest_dir = dir_at(dest.root());
     let state_dir = dir_at(state.root());
     let manifest = load_manifest(&state_dir).expect("load manifest");
-    let observations = observe(&dest_dir, &manifest).expect("observe destination");
+    let observations =
+        observe(&dest_dir, &manifest, &block_markers(&desired)).expect("observe destination");
     let plan = decide(
         "archive",
         &desired,
@@ -730,7 +733,8 @@ fn a_symlink_member_and_a_member_written_through_it_are_refused_together() {
     let dest = Tree::new().materialize();
     let dest_dir = dir_at(dest.root());
     let manifest = Manifest::new();
-    let observations = observe(&dest_dir, &manifest).expect("observe destination");
+    let observations =
+        observe(&dest_dir, &manifest, &block_markers(&desired)).expect("observe destination");
     let plan = decide(
         "archive",
         &desired,

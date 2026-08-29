@@ -93,6 +93,7 @@ pub(crate) enum Observation {
         /// How many whole-line marker occurrences the container holds; more
         /// than one identifies no region.
         occurrences: usize,
+        desired: Option<DesiredRegion>,
     },
 }
 
@@ -166,9 +167,34 @@ pub(crate) fn read_container(dir: &Dir, name: &str, path: &Utf8Path) -> Result<C
 /// `dest` is [`Error::DestinationTooDeep`] naming the directory a level past
 /// that. The projection's own state subtree is not excluded here.
 #[cfg(unix)]
-pub(crate) fn observe(dest: &Dir, manifest: &Manifest) -> Result<Observations> {
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct DesiredRegion {
+    pub(crate) occurrences: usize,
+    pub(crate) hash: Option<String>,
+    pub(crate) author_newline_terminated: bool,
+}
+
+pub(crate) type BlockMarkers = BTreeMap<Utf8PathBuf, (String, crate::Placement)>;
+
+pub(crate) fn block_markers(desired: &BTreeMap<Utf8PathBuf, crate::Entry>) -> BlockMarkers {
+    desired
+        .iter()
+        .filter_map(|(path, entry)| match entry {
+            crate::Entry::Block {
+                marker, placement, ..
+            } => Some((path.clone(), (marker.clone(), *placement))),
+            _ => None,
+        })
+        .collect()
+}
+
+pub(crate) fn observe(
+    dest: &Dir,
+    manifest: &Manifest,
+    wanted: &BlockMarkers,
+) -> Result<Observations> {
     let mut paths = BTreeMap::new();
-    walk(dest, Utf8Path::new(""), 0, manifest, &mut paths)?;
+    walk(dest, Utf8Path::new(""), 0, manifest, wanted, &mut paths)?;
     for path in manifest.entries.keys() {
         paths.entry(path.clone()).or_insert(Observation::Absent);
     }
@@ -184,6 +210,7 @@ fn walk(
     prefix: &Utf8Path,
     depth: usize,
     manifest: &Manifest,
+    wanted: &BlockMarkers,
     into: &mut BTreeMap<Utf8PathBuf, Observation>,
 ) -> Result<()> {
     let dir_path = if prefix.as_str().is_empty() {
@@ -221,16 +248,21 @@ fn walk(
         } else if file_type.is_dir() {
             let sub = entry.open_dir().map_err(io_error(&rel))?;
             into.insert(rel.clone(), Observation::Directory);
-            walk(&sub, &rel, depth + 1, manifest, into)?;
+            walk(&sub, &rel, depth + 1, manifest, wanted, into)?;
             continue;
         } else if file_type.is_file() {
-            match manifest
-                .entries
-                .get(&rel)
-                .and_then(|recorded| crate::block::block_kind(&recorded.kind))
-            {
-                Some((marker, placement)) => observe_region(dir, &name, &rel, marker, placement)?,
-                None => {
+            let recorded = manifest.entries.get(&rel);
+            let recorded_block =
+                recorded.and_then(|recorded| crate::block::block_kind(&recorded.kind));
+            let desired_block = wanted.get(&rel);
+            match (recorded_block, recorded.is_none(), desired_block) {
+                (Some((marker, placement)), _, desired) => {
+                    observe_region(dir, &name, &rel, Some((marker, placement)), desired)?
+                }
+                (None, true, Some(desired)) => {
+                    observe_region(dir, &name, &rel, None, Some(desired))?
+                }
+                _ => {
                     let file = entry.open().map_err(io_error(&rel))?;
                     Observation::File {
                         hash: sha256_hex_of_reader(file).map_err(io_error(&rel))?,
@@ -254,22 +286,36 @@ fn observe_region(
     dir: &Dir,
     name: &str,
     rel: &Utf8Path,
-    marker: &str,
-    placement: crate::Placement,
+    recorded: Option<(&str, crate::Placement)>,
+    desired: Option<&(String, crate::Placement)>,
 ) -> Result<Observation> {
     let Container::File { bytes, .. } = read_container(dir, name, rel)? else {
         return Ok(Observation::Other);
     };
-    let region = crate::block::locate(&bytes, marker, placement);
+    let region =
+        recorded.and_then(|(marker, placement)| crate::block::locate(&bytes, marker, placement));
+    let author = crate::block::strip(&bytes, region.as_ref());
     Ok(Observation::Block {
         hash: region
             .as_ref()
             .map(|region| sha256_hex(&bytes[region.body.clone()])),
-        newline_terminated: crate::block::newline_terminated(&crate::block::strip(
-            &bytes,
-            region.as_ref(),
-        )),
-        occurrences: crate::block::occurrence_count(&bytes, marker),
+        newline_terminated: crate::block::newline_terminated(&author),
+        occurrences: recorded.map_or(0, |(marker, _)| {
+            crate::block::occurrence_count(&bytes, marker)
+        }),
+        desired: desired.map(|(marker, placement)| {
+            let region = crate::block::locate(&bytes, marker, *placement);
+            DesiredRegion {
+                occurrences: crate::block::occurrence_count(&author, marker),
+                hash: region
+                    .as_ref()
+                    .map(|region| sha256_hex(&bytes[region.body.clone()])),
+                author_newline_terminated: crate::block::newline_terminated(&crate::block::strip(
+                    &bytes,
+                    region.as_ref(),
+                )),
+            }
+        }),
     })
 }
 
