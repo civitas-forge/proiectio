@@ -10,8 +10,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 /// `state_dir` may lie inside `target` (as a proper subdirectory, never
 /// `target` itself). The projection's own state subtree is excluded from
 /// classification — the manifest never reads as foreign — and a desired
-/// path entering it is refused as
-/// [`Containment`](crate::Error::Containment).
+/// path overlapping it is refused as
+/// [`Containment`](crate::Error::Containment): one inside the subtree, and
+/// one the state directory sits beneath.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Projection {
     target: Utf8PathBuf,

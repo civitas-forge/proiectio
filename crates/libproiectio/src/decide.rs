@@ -220,6 +220,10 @@ pub fn classify(
 ///
 /// Recorded paths absent from the desired tree:
 ///
+/// - overlapping the state directory — [`Refusal::Containment`], the same
+///   verdict admission gives a desired key or a removal request there:
+///   unlinking a recorded `.local` the manifest lives under would leave the
+///   next run reading no manifest;
 /// - held by other owners too — [`Release`](Action::Release): the departing
 ///   owner drops from the entry, the disk is untouched;
 /// - held by this owner alone — an orphan: [`Remove`](Action::Remove)
@@ -333,7 +337,10 @@ pub fn decide(
 /// a location it does not own is not a location it declines to remove.
 ///
 /// The refusals are every other plan's, produced by the same code paths:
-/// a recorded path drifted on disk refuses as [`Refusal::Drift`] carrying
+/// a recorded path overlapping the state directory refuses as
+/// [`Refusal::Containment`] under either scope, so naming it and sweeping
+/// past it reach the same verdict; a recorded path drifted on disk refuses
+/// as [`Refusal::Drift`] carrying
 /// it, unless `options.drift` is [`DriftPolicy::Overwrite`]; a path other
 /// owners hold too plans a [`Release`](Action::Release) and leaves the disk
 /// alone; a path already gone plans a [`Remove`](Action::Remove) expecting
@@ -442,12 +449,20 @@ fn plan_actions(
     // Admission: every desired key passes the containment gateway, none
     // may claim a location overlapping the projection's own state subtree,
     // and no two admitted keys may claim overlapping on-disk locations.
+    //
+    // `named` is every location the desired tree names, refused or not — the
+    // orphan loop below reads it rather than `claims`, because a location the
+    // tree names is not an orphan whatever verdict admission gave it.
     let mut claims: BTreeMap<Utf8PathBuf, BTreeMap<&Utf8PathBuf, &Entry>> = BTreeMap::new();
+    let mut named: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (key, entry) in desired {
         let Ok(normalized) = contained_normalize(key) else {
+            // No location to name: the gateway refused the key outright, and
+            // a manifest key is always one the gateway admits.
             actions.insert(key.clone(), refuse(Refusal::Containment));
             continue;
         };
+        named.insert(normalized.clone());
         if overlaps_state(&normalized, state_prefix) {
             actions.insert(key.clone(), refuse(Refusal::Containment));
             continue;
@@ -497,21 +512,35 @@ fn plan_actions(
         }
     }
 
-    // Recorded paths the desired tree no longer names. Named means
-    // *claimed*, not admitted: a recorded location under a tree-conflict
-    // refusal is still named by the desired tree, and planning its removal
-    // would overwrite the refusal.
+    // Recorded paths the desired tree no longer names. Named means the
+    // location appeared in the tree, not that admission took it: a recorded
+    // location refused as a tree conflict or for overlapping the state
+    // subtree is still one the tree names, and planning its removal would
+    // overwrite the refusal — with a `Remove` that deletes the very file the
+    // tree asked for, since a plan carrying no refusal applies in full.
     //
     // Judged before the admitted paths because a removal *vacates* its
     // path: a link this plan unlinks is no longer an ancestor the writes
     // below would resolve through, and act runs removals first.
     let mut vacated: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, recorded) in &manifest.entries {
-        if claims.contains_key(path)
+        if named.contains(path)
             || in_state(path, state_prefix)
             || !recorded.owners.contains(owner)
             || !judged.covers(path)
         {
+            continue;
+        }
+        // A recorded location the state directory sits beneath: classified,
+        // so status still reports it, but never acted on. Removing it is
+        // removing the node the state directory hangs from — unlinking a
+        // recorded `.local` that the manifest lives under leaves the next
+        // run reading no manifest and calling every projected file foreign.
+        // It refuses as the same [`Refusal::Containment`] a request naming
+        // it gets, so the verdict does not turn on how the removal was
+        // scoped.
+        if overlaps_state(path, state_prefix) {
+            actions.insert(path.clone(), refuse(Refusal::Containment));
             continue;
         }
         let action = if recorded.owners.len() > 1 {
@@ -557,21 +586,27 @@ fn plan_actions(
 }
 
 /// Whether acting at `path` would touch the projection's own state subtree:
-/// the admission question, asked of every location a plan may write or
-/// remove, and answered symmetrically — the two overlap when either path is
-/// a prefix of the other.
+/// the question asked of every location a plan would write or remove, and
+/// answered symmetrically — the two overlap when either path is a prefix of
+/// the other.
 ///
 /// Both directions name the same collision. `.proiectio/manifest.json` is a
 /// location inside the state directory; `.local`, where the state directory
 /// is `.local/state/proiectio`, is a location the state directory sits
-/// beneath, and a desired file there would stand where that directory
-/// stands. Refusing only the first would let the second reach apply, whose
-/// walk meets a file-versus-directory mismatch and refuses it as
-/// [`Refusal::Foreign`] or [`Refusal::Drift`] — a later stage naming a
-/// different rule, against a plan a dry run had already reported as what
-/// apply would execute (`docs/implementation.lex` section 1). So the
-/// admission points refuse both as [`Refusal::Containment`], keyed by the
-/// key or request verbatim.
+/// beneath — a desired file there would stand where that directory stands,
+/// and a removal there would unlink the node the manifest hangs from,
+/// leaving the next run reading no manifest and calling every projected file
+/// [`Foreign`](PathState::Foreign). Refusing only the first would let the
+/// second reach apply, whose walk meets a file-versus-directory mismatch and
+/// refuses it as [`Refusal::Foreign`] or [`Refusal::Drift`] — a later stage
+/// naming a different rule, against a plan a dry run had already reported as
+/// what apply would execute (`docs/implementation.lex` section 1).
+///
+/// Three places ask it, so one location gets one verdict however a plan
+/// arrives at it: [`plan_actions`]'s desired-key admission and its orphan
+/// loop, and [`decide_removal`]'s requested-path admission. All three refuse
+/// as [`Refusal::Containment`] — keyed by the key or request verbatim where
+/// a caller supplied one, by the recorded path where the manifest did.
 fn overlaps_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
     state_prefix.is_some_and(|prefix| path.starts_with(prefix) || prefix.starts_with(path))
 }
@@ -586,15 +621,19 @@ fn overlaps_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
 /// else the destination puts under it, so an observed `.local` is an
 /// unrecorded directory and classifies [`Foreign`](PathState::Foreign) like
 /// any other, and a `.local` some earlier configuration recorded as a file
-/// classifies as whatever the disk now holds. Excluding either would hide a
-/// node from [`status`](crate::status) and strand a manifest entry no
-/// removal could ever reach — while the state subtree proper is excluded
+/// classifies as whatever the disk now holds. Excluding either would hide
+/// that node from [`status`](crate::status), which reports what the
+/// destination holds and has no business hiding a path the projection is
+/// merely refusing to touch — while the state subtree proper is excluded
 /// because the projection's own files are not the projection's output.
 ///
 /// The orphan loop shares this test with [`classify`] rather than the
 /// admission one because it reads the classification `classify` produced for
 /// every recorded path it judges: a path one skips and the other judges has
-/// no entry to read.
+/// no entry to read. Classifying such a path is not planning an action on
+/// it, though — the loop asks [`overlaps_state`] before it acts, and refuses
+/// there, so a recorded `.local` is reported by status and removed by
+/// nothing.
 fn in_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
     state_prefix.is_some_and(|prefix| path.starts_with(prefix))
 }

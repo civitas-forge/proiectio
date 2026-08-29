@@ -121,7 +121,8 @@ pub enum Error {
     /// climbing out via `..`, empty or `.` components, backslashes, and
     /// component shapes Windows resolves specially — its rustdoc is the
     /// full list), paths resolving through a symlinked ancestor, and paths
-    /// entering the projection's own state directory. The symlink half is
+    /// overlapping the projection's own state directory — inside that
+    /// subtree, or with the state directory beneath them. The symlink half is
     /// two rules, not one applied twice: deciding refuses a desired path
     /// beneath *any* link that outlives the plan, while applying refuses
     /// an ancestor link that is unowned, graded external, or cyclic — and

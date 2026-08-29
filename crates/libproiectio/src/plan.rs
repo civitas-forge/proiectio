@@ -258,7 +258,8 @@ pub enum Refusal {
     /// [`decide`](crate::decide) documents — a link on disk, owned or
     /// foreign, that no action in this plan removes; beneath a *desired*
     /// link the refusal is [`TreeConflict`](Refusal::TreeConflict)), or it
-    /// enters the projection's own state directory.
+    /// overlaps the projection's own state directory — a location inside
+    /// that subtree, or one the state directory sits beneath.
     ///
     /// Applying refuses under the narrower apply-time rule of
     /// `docs/security.lex` section 2, which still lets the walk follow an

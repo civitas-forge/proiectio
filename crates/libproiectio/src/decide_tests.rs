@@ -1096,13 +1096,67 @@ fn a_desired_path_the_state_dir_sits_beneath_refuses_containment() {
 }
 
 #[test]
+fn a_recorded_path_the_state_dir_sits_beneath_is_refused_not_removed() {
+    // A location an earlier configuration recorded, which the state
+    // directory now sits beneath. The orphan loop reaches it — it reads the
+    // prefix the other way, so `.local` is its business — and must not act
+    // on it: removing `.local` unlinks the node the manifest hangs from,
+    // and the next run reads no manifest and calls every projected file
+    // foreign. Every scope gets the containment refusal, so the verdict does
+    // not turn on how the removal was spelled.
+    let entry = file("alpha\n", false);
+    let manifest = manifest_of(&[(".local", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[(".local", on_disk(&entry))]);
+    let refused = Action::Refuse {
+        refusal: Refusal::Containment,
+    };
+
+    let sweep = decide_removal(
+        OWNER,
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        Some(Utf8Path::new(NESTED_STATE)),
+        PlanOptions::default(),
+    );
+    assert_eq!(action(&sweep, ".local"), &refused);
+
+    let named = decide_removal(
+        OWNER,
+        RemovalScope::Paths(&requested(&[".local"])),
+        &manifest,
+        &observations,
+        Some(Utf8Path::new(NESTED_STATE)),
+        PlanOptions::default(),
+    );
+    assert_eq!(action(&named, ".local"), &refused);
+
+    // And a desired entry at that same recorded location keeps the refusal
+    // admission gave it, keyed once: an orphan removal planned over it would
+    // leave a plan carrying nothing to refuse, which apply executes in full
+    // — deleting the file the tree just asked for.
+    let plan = decide(
+        OWNER,
+        &tree(&[("d/../.local", &entry)]),
+        &manifest,
+        &observations,
+        Some(Utf8Path::new(NESTED_STATE)),
+        PlanOptions::default(),
+    );
+
+    assert_eq!(
+        plan.actions,
+        BTreeMap::from([("d/../.local".into(), refused)])
+    );
+}
+
+#[test]
 fn a_path_the_state_dir_sits_beneath_still_classifies() {
     // Classification reads the prefix the other way, and on purpose:
     // `.local` is not the projection's state, it is a directory the state
     // directory sits in, holding whatever else the destination puts there.
-    // Excluding it would hide it from status, and would strand a manifest
-    // entry an earlier configuration recorded at it — nothing would
-    // classify the path, so no plan could judge it.
+    // Excluding it would hide from status a node the destination holds and
+    // the projection is merely refusing to touch.
     let entry = file("alpha\n", false);
     let manifest = manifest_of(&[(".local", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[
@@ -1126,25 +1180,6 @@ fn a_path_the_state_dir_sits_beneath_still_classifies() {
             (".local/share/rc".into(), PathState::Foreign),
             (".local/state".into(), PathState::Foreign),
         ])
-    );
-
-    // And so the recorded entry is judged rather than silently skipped: the
-    // removal refuses the drift by name instead of leaving an entry no plan
-    // can ever clear.
-    let removal = decide_removal(
-        OWNER,
-        RemovalScope::Everything,
-        &manifest,
-        &observations,
-        Some(Utf8Path::new(NESTED_STATE)),
-        PlanOptions::default(),
-    );
-
-    assert_eq!(
-        action(&removal, ".local"),
-        &Action::Refuse {
-            refusal: Refusal::Drift,
-        }
     );
 }
 
