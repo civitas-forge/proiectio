@@ -224,9 +224,11 @@ pub fn classify(
 ///
 /// [`DriftPolicy::Overwrite`] lifts a drift refusal only where the drifted
 /// node carries a [`NodeSignature`] for apply's changed-since-plan
-/// re-check — a file or a symlink. A path whose kind drifted to a
-/// directory or to a node the projection never writes stays refused under
-/// either policy: no signature could express what apply must re-verify.
+/// re-check — a file, a symlink, or a region the recorded marker still
+/// identifies. A path whose kind drifted to a directory or to a node the
+/// projection never writes stays refused under either policy, as does a
+/// container holding the marker on more than one whole line: no signature
+/// could express what apply must re-verify.
 ///
 /// An empty desired tree plans a removal: everything this owner alone holds
 /// removes, everything it shares releases. [`decide_removal`] is that call

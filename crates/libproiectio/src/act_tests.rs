@@ -2260,6 +2260,80 @@ fn an_ambiguous_container_is_not_adopted() {
     assert_eq!(persisted(&state), Manifest::new());
 }
 
+/// A container carrying the projection's region twice: the extreme
+/// occurrence still hashes to the recorded body, so only counting the
+/// occurrences tells the picture from an ordinary one.
+const DOUBLED: &str = "# proiectio\nmanaged\nauthor\n# proiectio\nmanaged\n";
+
+#[test]
+fn a_duplicate_marker_in_the_gap_refuses_every_action_on_the_region() {
+    // Each of the three apply-time block paths, given a container whose
+    // extreme occurrence hashes exactly to what the plan expects. Acting
+    // would strip or replace a range nothing says is the recorded one and
+    // leave the other region standing with the manifest no longer naming it.
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+    let plans: [(&str, BTreeMap<Utf8PathBuf, Entry>); 3] = [
+        // The removal's re-check.
+        ("remove", BTreeMap::new()),
+        // The overwrite's.
+        (
+            "overwrite",
+            block_tree("rc", "different\n", Placement::Append),
+        ),
+        // The skip's — which writes nothing, but would re-record the path.
+        ("skip", desired.clone()),
+    ];
+    for (name, second) in plans {
+        let (dest, state) = fixtures();
+        Tree::new().file("rc", "author\n").write_under(dest.root());
+        pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
+
+        let (manifest, plan) = plan_for(&dest, &state, "own", &second, DriftPolicy::Refuse);
+        fs::write(dest.path("rc"), DOUBLED).expect("duplicate the region in the gap");
+
+        let error =
+            apply_at(&dest, &state, &manifest, &plan).expect_err("the marker identifies no region");
+
+        match error {
+            Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()]), "{name}"),
+            other => panic!("{name}: expected Drift, got {other:?}"),
+        }
+        // Both regions are where the gap left them, and the manifest still
+        // records the one it recorded.
+        assert_eq!(container(&dest, "rc"), DOUBLED, "{name}");
+        assert_eq!(persisted(&state), manifest, "{name}");
+    }
+}
+
+#[test]
+fn a_recorded_region_back_in_the_gap_refuses_even_where_it_matches() {
+    // The plan reached a write by finding the recorded region gone. One back
+    // under the recorded marker is a change since the plan, and an ordinary
+    // write refuses a node that appeared the same way — bytes matching the
+    // desired ones do not make the disk the plan's disk.
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author\n").write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
+
+    // The author strips the region, so the region is Missing and the plan is
+    // a write that heals it.
+    fs::write(dest.path("rc"), "author\n").expect("strip the region");
+    let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
+    // The gap: it comes back, byte for byte.
+    let restored = "author\n# proiectio\nmanaged\n";
+    fs::write(dest.path("rc"), restored).expect("restore in the gap");
+
+    let error =
+        apply_at(&dest, &state, &manifest, &plan).expect_err("the region came back since the plan");
+
+    match error {
+        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+    assert_eq!(container(&dest, "rc"), restored);
+}
+
 #[test]
 fn an_unrecorded_region_carrying_other_bytes_refuses_as_foreign() {
     let (dest, state) = fixtures();

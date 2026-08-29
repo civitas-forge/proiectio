@@ -1072,14 +1072,19 @@ struct OpenContainer {
 ///   creates its container, which is what keeps the projection from owning
 ///   one whole.
 ///
-/// A recorded path is asked one question more, under the *recorded* marker
-/// rather than the entry's. The two differ only where the caller is changing
-/// the marker, and the plan reached a write by finding the recorded region
-/// gone; a recorded region that came back in the gap is a change since the
-/// plan, refused as [`Error::Drift`]. Splicing under the new marker instead
-/// would leave the old region standing with nothing recording it — one
-/// stranded body per marker change, which is the growth the marker exists to
-/// prevent.
+/// A recorded path is asked one question first, under the *recorded* marker
+/// rather than the entry's: the plan reached a write by finding the recorded
+/// region gone, so a region back under that marker is a change since the
+/// plan, refused as [`Error::Drift`] exactly as a node appearing at an
+/// ordinary write's path is ([`write`]). That holds whether or not the caller
+/// is also changing the marker; where they are, splicing under the new marker
+/// would additionally leave the old region standing with nothing recording it
+/// — one stranded body per marker change, which is the growth the marker
+/// exists to prevent.
+///
+/// Adoption is therefore an unrecorded path's alone: a recorded path's
+/// expectation is that no region is here, and apply holds the disk to the
+/// plan's expectations rather than to the outcome it prefers.
 fn write_block(
     dest: &Dir,
     manifest: &Manifest,
@@ -1102,12 +1107,9 @@ fn write_block(
         .get(path)
         .and_then(|recorded| block::block_kind(&recorded.kind))
     {
-        // The recorded region was gone at plan time. Where the caller is
-        // also changing the marker, the splice below would not replace it,
-        // so a region that came back in the gap would be stranded.
-        if (was_marker, was_placement) != (marker.as_str(), *placement)
-            && block::locate(&container.bytes, was_marker, was_placement).is_some()
-        {
+        // The recorded region was gone at plan time; one back under the
+        // recorded marker is a change since the plan.
+        if block::locate(&container.bytes, was_marker, was_placement).is_some() {
             return Err(drift(path));
         }
     }
@@ -1175,8 +1177,15 @@ fn overwrite_block(
     let Some(container) = read_block_container(dest, manifest, path)? else {
         return Err(drift(path));
     };
-    let Some(region) = block::locate(&container.bytes, recorded_marker, recorded_placement) else {
+    // The recorded marker must still identify one region. A duplicate that
+    // appeared since the plan leaves nothing saying which occurrence bounds
+    // the recorded bytes, and the extreme one hashing to `expected` does not
+    // settle it ([`EntryKind::Block`]).
+    if block::occurrence_count(&container.bytes, recorded_marker) != 1 {
         return Err(drift(path));
+    }
+    let Some(region) = block::locate(&container.bytes, recorded_marker, recorded_placement) else {
+        unreachable!("one occurrence locates a region");
     };
     if sha256_hex(&container.bytes[region.body.clone()]) != expected.hash {
         return Err(drift(path));
@@ -1208,6 +1217,11 @@ fn overwrite_block(
 /// change since the plan, refused as [`Error::Drift`] exactly as a node
 /// appearing at a removed path is. A container that is gone leaves nothing to
 /// strip, which is a removal already done rather than a failure to do one.
+///
+/// A container the marker occupies more than one whole line of is refused
+/// under either expectation: it identifies no region ([`EntryKind::Block`]),
+/// and stripping an extreme occurrence there would take a range nobody can
+/// say is the recorded one while the manifest entry goes away regardless.
 fn remove_block(
     dest: &Dir,
     manifest: &Manifest,
@@ -1229,6 +1243,14 @@ fn remove_block(
             Ok(())
         };
     };
+    // A container the marker no longer identifies one region in is refused
+    // whichever expectation the plan carries: stripping an extreme occurrence
+    // there would take a range nobody can say is the recorded one and leave
+    // the other standing with the manifest entry gone
+    // ([`EntryKind::Block`]).
+    if block::occurrence_count(&container.bytes, marker) > 1 {
+        return Err(drift(path));
+    }
     match (expected, block::locate(&container.bytes, marker, placement)) {
         (Some(expected), Some(region)) => {
             if sha256_hex(&container.bytes[region.body.clone()]) != expected.hash {
@@ -1519,8 +1541,13 @@ fn check_leaf(parent: &Dir, leaf: &str, path: &Utf8Path, expected: &NodeSignatur
             let Container::File { bytes, .. } = read_container(parent, leaf, path)? else {
                 return Err(drift(path));
             };
-            let Some(region) = block::locate(&bytes, marker, *placement) else {
+            // One occurrence, or the marker identifies no region to re-check
+            // ([`EntryKind::Block`]).
+            if block::occurrence_count(&bytes, marker) != 1 {
                 return Err(drift(path));
+            }
+            let Some(region) = block::locate(&bytes, marker, *placement) else {
+                unreachable!("one occurrence locates a region");
             };
             if sha256_hex(&bytes[region.body]) != expected.hash {
                 return Err(drift(path));
