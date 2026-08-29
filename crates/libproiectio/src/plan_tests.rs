@@ -128,13 +128,11 @@ fn write_and_overwrite_rows_take_their_facts_from_the_entry() {
     assert_eq!(
         facts(&report, "bin/tool"),
         Some(PathFacts {
-            kind: EntryKind::File,
-            executable: true,
-            target: None,
+            shape: PathShape::File { executable: true },
             owners: BTreeSet::new(),
-            origin: Origin::Mapping {
+            origin: Some(Origin::Mapping {
                 path: Utf8PathBuf::from("/etc/deploy.toml")
-            },
+            }),
         })
     );
 }
@@ -146,11 +144,11 @@ fn a_planned_symlink_carries_its_target() {
     assert_eq!(
         facts(&report, "current"),
         Some(PathFacts {
-            kind: EntryKind::Symlink,
-            executable: false,
-            target: Some("releases/1.2.3".to_owned()),
+            shape: PathShape::Symlink {
+                target: Some("releases/1.2.3".to_owned())
+            },
             owners: BTreeSet::new(),
-            origin: Origin::Caller,
+            origin: Some(Origin::Caller),
         })
     );
 }
@@ -162,16 +160,14 @@ fn skip_and_remove_rows_take_their_facts_from_the_expected_signature() {
     assert_eq!(
         facts(&report, "config/settings.toml"),
         Some(PathFacts {
-            kind: EntryKind::File,
-            executable: false,
-            target: None,
+            shape: PathShape::File { executable: false },
             owners: BTreeSet::new(),
-            origin: Origin::Caller,
+            origin: Some(Origin::Caller),
         })
     );
     assert_eq!(
-        facts(&report, "orphan.txt").map(|facts| facts.kind),
-        Some(EntryKind::File)
+        facts(&report, "orphan.txt").map(|facts| facts.shape),
+        Some(PathShape::File { executable: false })
     );
 }
 
@@ -222,9 +218,7 @@ fn a_report_serializes_with_paths_as_keys_and_no_bytes() {
         json["rows"]["bin/tool"],
         serde_json::json!({
             "facts": {
-                "kind": "File",
-                "executable": true,
-                "target": null,
+                "shape": { "File": { "executable": true } },
                 "owners": [],
                 "origin": { "Mapping": { "path": "/etc/deploy.toml" } },
             },

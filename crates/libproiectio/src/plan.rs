@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
-use crate::{Entry, EntryKind, Origin, PathFacts, Refusal, Refused, Report, Row};
+use crate::{Entry, EntryKind, Origin, PathFacts, PathShape, Refusal, Refused, Report, Row};
 
 /// What planning does when a recorded path's state on disk differs from the
 /// recorded entry — bytes, kind, or executable bit.
@@ -110,35 +110,34 @@ impl Plan {
 }
 
 fn facts_of(action: &Action, origin: Origin) -> Option<PathFacts> {
-    let (kind, executable, target) = match action {
-        Action::Write { entry } | Action::Overwrite { entry, .. } => (
-            entry.kind(),
-            matches!(
-                entry,
-                Entry::File {
-                    executable: true,
-                    ..
-                }
-            ),
-            match entry {
-                Entry::Symlink { target } => Some(target.clone()),
-                _ => None,
+    let shape = match action {
+        Action::Write { entry } | Action::Overwrite { entry, .. } => match entry {
+            Entry::File { executable, .. } => PathShape::File {
+                executable: *executable,
             },
-        ),
+            Entry::Symlink { target } => PathShape::Symlink {
+                target: Some(target.clone()),
+            },
+            Entry::Block { .. } => PathShape::Block,
+        },
         Action::Skip { expected }
         | Action::Remove {
             expected: Some(expected),
-        } => (expected.kind.clone(), expected.executable, None),
+        } => match expected.kind {
+            EntryKind::File => PathShape::File {
+                executable: expected.executable,
+            },
+            EntryKind::Symlink => PathShape::Symlink { target: None },
+            EntryKind::Block { .. } => PathShape::Block,
+        },
         Action::Remove { expected: None } | Action::Release | Action::Refuse { .. } => {
             return None;
         }
     };
     Some(PathFacts {
-        kind,
-        executable,
-        target,
+        shape,
         owners: BTreeSet::new(),
-        origin,
+        origin: Some(origin),
     })
 }
 
