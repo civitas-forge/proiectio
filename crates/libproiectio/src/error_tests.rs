@@ -151,6 +151,13 @@ fn every_variant() -> Vec<Error> {
             path: Utf8PathBuf::from("vendor/a/b/c"),
             limit: 64,
         },
+        Error::FilesDuplicate {
+            name: "motd".to_owned(),
+            paths: BTreeSet::from([
+                Utf8PathBuf::from("/etc/motd"),
+                Utf8PathBuf::from("/var/motd"),
+            ]),
+        },
     ]);
     every
 }
@@ -171,7 +178,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    let (refusals, failures) = (8, 27);
+    let (refusals, failures) = (8, 28);
     assert_eq!(codes.len(), refusals + failures);
     assert!(codes[..refusals].iter().all(|&code| code == 2));
     assert!(codes[refusals..].iter().all(|&code| code == 1));
@@ -468,7 +475,7 @@ fn every_variant_serializes_under_a_kind_of_its_own() {
         })
         .collect();
 
-    let (refusals, failures) = (8, 27);
+    let (refusals, failures) = (8, 28);
     assert_eq!(kinds.len(), refusals + failures);
     assert!(kinds[..refusals].iter().all(|kind| kind == "refused"));
     assert_eq!(

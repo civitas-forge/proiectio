@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use camino::Utf8PathBuf;
 use serde::{Serialize, Serializer};
 use thiserror::Error;
@@ -292,6 +294,24 @@ pub enum Error {
         /// The node's absolute path.
         path: Utf8PathBuf,
     },
+    /// More than one path handed to [`load_files`](crate::load_files) carries
+    /// the same file name, which is the key each would project under. Not a
+    /// refusal.
+    #[error("more than one named path projects as {name}: {}", join(paths))]
+    FilesDuplicate {
+        /// The file name both paths carry.
+        name: String,
+        /// The absolute paths sharing it.
+        paths: BTreeSet<Utf8PathBuf>,
+    },
+}
+
+fn join(paths: &BTreeSet<Utf8PathBuf>) -> String {
+    paths
+        .iter()
+        .map(|path| path.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn display_string<T: std::fmt::Display, S: Serializer>(

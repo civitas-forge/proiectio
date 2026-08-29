@@ -180,7 +180,7 @@ fn io_at(path: Utf8PathBuf) -> impl FnOnce(std::io::Error) -> Error {
 }
 
 /// Whether the source file's owner-executable bit is set.
-fn is_executable(meta: &std::fs::Metadata) -> bool {
+pub(crate) fn is_executable(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     meta.permissions().mode() & 0o100 != 0
 }
