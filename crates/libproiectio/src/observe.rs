@@ -5,9 +5,7 @@ use camino::Utf8PathBuf;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-#[cfg(unix)]
 use camino::Utf8Path;
-#[cfg(unix)]
 use cap_std::fs_utf8::{Dir, MetadataExt};
 
 use crate::{Error, MAX_WALK_DEPTH, Manifest, Result};
@@ -28,7 +26,6 @@ fn to_hex(digest: &[u8]) -> String {
 
 /// [`sha256_hex`] of everything `reader` yields, streamed through a
 /// fixed-size buffer so peak memory never scales with the file.
-#[cfg(unix)]
 pub(crate) fn sha256_hex_of_reader(mut reader: impl std::io::Read) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
@@ -99,7 +96,6 @@ pub(crate) enum Observation {
 
 /// What one container looked like through the single descriptor
 /// [`read_container`] opened.
-#[cfg(unix)]
 pub(crate) enum Container {
     /// A regular file.
     File {
@@ -123,7 +119,6 @@ pub(crate) enum Container {
 /// One file description does the whole read, so a name swapped between a stat
 /// and an open cannot have the verdict describe one file and the bytes
 /// another.
-#[cfg(unix)]
 pub(crate) fn read_container(dir: &Dir, name: &str, path: &Utf8Path) -> Result<Container> {
     use std::io::Read as _;
     use std::os::unix::fs::PermissionsExt as _;
@@ -166,7 +161,6 @@ pub(crate) fn read_container(dir: &Dir, name: &str, path: &Utf8Path) -> Result<C
 /// A destination nesting more than [`MAX_WALK_DEPTH`] directories below
 /// `dest` is [`Error::DestinationTooDeep`] naming the directory a level past
 /// that. The projection's own state subtree is not excluded here.
-#[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct DesiredRegion {
     pub(crate) occurrences: usize,
@@ -204,7 +198,6 @@ pub(crate) fn observe(
 /// Observes every entry of `dir` — the destination subdirectory at `prefix`,
 /// `depth` levels below the root — into `into`, recursing through handles
 /// opened from `dir` so no path is resolved from the ambient filesystem.
-#[cfg(unix)]
 fn walk(
     dir: &Dir,
     prefix: &Utf8Path,
@@ -281,7 +274,6 @@ fn walk(
 /// Observes the region recorded at `rel` inside the container named `name`.
 /// A container that is no longer a regular file observes as
 /// [`Other`](Observation::Other).
-#[cfg(unix)]
 fn observe_region(
     dir: &Dir,
     name: &str,
@@ -320,7 +312,6 @@ fn observe_region(
 }
 
 /// Wraps an OS error as [`Error::Io`] at `path`, relative to the destination.
-#[cfg(unix)]
 pub(crate) fn io_error(path: &Utf8Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
     move |source| Error::Io {
         path: path.to_owned(),
@@ -328,6 +319,6 @@ pub(crate) fn io_error(path: &Utf8Path) -> impl FnOnce(std::io::Error) -> Error 
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "observe_tests.rs"]
 mod tests;

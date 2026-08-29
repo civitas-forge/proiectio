@@ -476,6 +476,6 @@ fn is_executable(mode: u32) -> bool {
     mode & 0o100 != 0
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "archive_tests.rs"]
 mod tests;
