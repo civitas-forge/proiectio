@@ -274,7 +274,7 @@ fn escaping_keys_are_refused_together_each_named_verbatim() {
     let error = parse_at(text).unwrap_err();
     assert!(matches!(
         &error,
-        Error::Refused(refused) if refused.kind == RefusalKind::Containment && origins_of(refused) == want
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment && origins_of(refused) == want
     ));
     let named = want
         .keys()

@@ -29,7 +29,19 @@ fn every_variant() -> Vec<Error> {
         };
         Refused::one(Utf8PathBuf::from("bin/tool"), refusal, Origin::Caller).into()
     };
-    let mut every: Vec<Error> = RefusalKind::PRECEDENCE.into_iter().map(refusal).collect();
+    let mut every: Vec<Error> = [
+        RefusalKind::Containment,
+        RefusalKind::TreeConflict,
+        RefusalKind::Foreign,
+        RefusalKind::Drift,
+        RefusalKind::OwnerConflict,
+        RefusalKind::ExternalTarget,
+        RefusalKind::InvalidTarget,
+        RefusalKind::Block,
+    ]
+    .into_iter()
+    .map(refusal)
+    .collect();
     every.extend([
         Error::Io {
             path: Utf8PathBuf::from("config/settings.toml"),

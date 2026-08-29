@@ -134,7 +134,7 @@ fn escaping_paths_are_refused_with_the_path_verbatim() {
             .expect_err(&format!("{rel:?}: expected refusal"));
         assert!(error.is_refusal(), "{rel:?}");
         match error {
-            Error::Refused(refused) if refused.kind == RefusalKind::Containment => {
+            Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
                 assert_eq!(
                     paths_of(&refused),
                     BTreeSet::from([Utf8PathBuf::from(*rel)]),

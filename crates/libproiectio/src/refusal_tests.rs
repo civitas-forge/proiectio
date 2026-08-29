@@ -53,28 +53,64 @@ fn one_of_each() -> Vec<(Utf8PathBuf, Refusal, Origin)> {
 }
 
 #[test]
-fn precedence_names_every_kind_exactly_once() {
-    let kinds: BTreeSet<RefusalKind> = RefusalKind::PRECEDENCE.into_iter().collect();
-    assert_eq!(kinds.len(), RefusalKind::PRECEDENCE.len());
-    let all: BTreeSet<RefusalKind> = one_of_each().iter().map(|(_, r, _)| r.kind()).collect();
-    assert_eq!(kinds, all);
+fn one_of_each_covers_every_kind() {
+    let kinds: BTreeSet<RefusalKind> = one_of_each().iter().map(|(_, r, _)| r.kind()).collect();
+    // Adding a kind: add it to `one_of_each`, and this arm list fails to
+    // compile until it is named here too.
+    for kind in &kinds {
+        match kind {
+            RefusalKind::Containment
+            | RefusalKind::TreeConflict
+            | RefusalKind::Foreign
+            | RefusalKind::Drift
+            | RefusalKind::OwnerConflict
+            | RefusalKind::ExternalTarget
+            | RefusalKind::InvalidTarget
+            | RefusalKind::Block => {}
+        }
+    }
+    assert_eq!(kinds.len(), 8);
 }
 
 #[test]
-fn aggregate_reports_the_kind_precedence_ranks_first() {
+fn precedence_is_declaration_order() {
+    assert_eq!(
+        one_of_each()
+            .iter()
+            .map(|(_, r, _)| r.kind())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        [
+            RefusalKind::Containment,
+            RefusalKind::TreeConflict,
+            RefusalKind::Foreign,
+            RefusalKind::Drift,
+            RefusalKind::OwnerConflict,
+            RefusalKind::ExternalTarget,
+            RefusalKind::InvalidTarget,
+            RefusalKind::Block,
+        ]
+    );
+}
+
+#[test]
+fn aggregate_reports_the_least_kind() {
     let each = one_of_each();
-    let find = |kind: RefusalKind| {
-        each.iter()
-            .find(|(_, r, _)| r.kind() == kind)
-            .cloned()
-            .expect("one of each")
-    };
-    for pair in RefusalKind::PRECEDENCE.windows(2) {
-        let (first, second) = (pair[0], pair[1]);
+    let mut ranked: Vec<_> = each.clone();
+    ranked.sort_by_key(|(_, r, _)| r.kind());
+    for pair in ranked.windows(2) {
+        let (first, second) = (&pair[0], &pair[1]);
         // Fed lower-ranked first, so insertion order cannot be what decides.
-        let refused = Refused::aggregate([find(second), find(first)]).expect("two refusals");
-        assert_eq!(refused.kind, first, "{first:?} outranks {second:?}");
-        assert_eq!(refused.paths.len(), 1);
+        let refused = Refused::aggregate([second.clone(), first.clone()]).expect("two refusals");
+        assert_eq!(
+            refused.kind(),
+            first.1.kind(),
+            "{:?} outranks {:?}",
+            first.1,
+            second.1
+        );
+        assert_eq!(refused.paths().len(), 1);
     }
 }
 
@@ -86,9 +122,9 @@ fn aggregate_keeps_every_path_of_the_reported_kind_and_drops_the_rest() {
         (path("c"), Refusal::Drift, Origin::Caller),
     ])
     .expect("refusals");
-    assert_eq!(refused.kind, RefusalKind::Foreign);
+    assert_eq!(refused.kind(), RefusalKind::Foreign);
     assert_eq!(refused.keys().collect::<Vec<_>>(), ["a", "b"]);
-    assert_eq!(refused.paths[Utf8Path::new("a")].origin, Origin::Files);
+    assert_eq!(refused.paths()[Utf8Path::new("a")].origin, Origin::Files);
 }
 
 #[test]
@@ -99,7 +135,7 @@ fn aggregate_of_nothing_is_none() {
 #[test]
 fn one_takes_its_kind_from_the_refusal() {
     let refused = Refused::one(path("rc"), Refusal::Foreign, Origin::Caller);
-    assert_eq!(refused.kind, RefusalKind::Foreign);
+    assert_eq!(refused.kind(), RefusalKind::Foreign);
     assert_eq!(refused.keys().collect::<Vec<_>>(), ["rc"]);
 }
 
@@ -152,4 +188,22 @@ fn messages_name_each_path_own_source_after_its_detail() {
         "refusing desired paths that claim overlapping locations: \
          a (with a/b) (from mapping /etc/harness/skills.toml), a/b (with a)"
     );
+}
+
+#[test]
+fn sourced_by_takes_each_origin_from_the_plan() {
+    let plan = crate::Plan {
+        owner: "own".to_owned(),
+        origins: BTreeMap::from([(path("a"), Origin::Files)]),
+        external_targets: Default::default(),
+        actions: BTreeMap::new(),
+    };
+    let refused = Refused::aggregate([
+        (path("a"), Refusal::Drift, Origin::Caller),
+        (path("b"), Refusal::Drift, Origin::Caller),
+    ])
+    .expect("refusals")
+    .sourced_by(&plan);
+    assert_eq!(refused.paths()[Utf8Path::new("a")].origin, Origin::Files);
+    assert_eq!(refused.paths()[Utf8Path::new("b")].origin, Origin::Caller);
 }

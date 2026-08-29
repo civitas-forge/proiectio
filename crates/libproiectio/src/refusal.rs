@@ -152,6 +152,10 @@ impl Refusal {
 }
 
 /// A refusal's name: what a [`Refused`] error is about.
+///
+/// Declared in precedence order, which `Ord` follows: when a plan carries
+/// several kinds, applying reports the least. Adding a kind means placing
+/// it in this list; nothing else ranks it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum RefusalKind {
     /// [`Refusal::Containment`].
@@ -173,19 +177,6 @@ pub enum RefusalKind {
 }
 
 impl RefusalKind {
-    /// Which kind applying reports when a plan carries several: the first
-    /// of these that any refused path has. Every kind appears exactly once.
-    pub const PRECEDENCE: [RefusalKind; 8] = [
-        RefusalKind::Containment,
-        RefusalKind::TreeConflict,
-        RefusalKind::Foreign,
-        RefusalKind::Drift,
-        RefusalKind::OwnerConflict,
-        RefusalKind::ExternalTarget,
-        RefusalKind::InvalidTarget,
-        RefusalKind::Block,
-    ];
-
     /// The sentence a message of this kind opens with.
     fn headline(self) -> &'static str {
         match self {
@@ -205,39 +196,36 @@ impl RefusalKind {
     }
 }
 
-/// Every path one kind of refusal declined — the value
-/// [`Error::Refused`](crate::Error::Refused) carries. Built only by
-/// [`Refused::one`] and [`Refused::aggregate`], so every path arrives with
-/// its reason and the source that named it, and every reason is of `kind`.
+/// Every key one kind of refusal declined — the value
+/// [`Error::Refused`](crate::Error::Refused) carries. Only [`Refused::one`]
+/// and [`Refused::aggregate`] build one, so it is never empty and every
+/// reason in it is of one [`kind`](Refused::kind).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Refused {
-    /// What every path here was refused for.
-    pub kind: RefusalKind,
-    /// The refused paths, relative to the destination.
-    pub paths: BTreeMap<Utf8PathBuf, RefusedPath>,
+    paths: BTreeMap<Utf8PathBuf, RefusedPath>,
 }
 
-/// One refused path's reason and provenance.
+/// One refused key's reason and provenance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RefusedPath {
-    /// Why the path is refused; always of the enclosing [`Refused::kind`].
+    /// Why the key is refused.
     pub refusal: Refusal,
-    /// Which source named the path.
+    /// Which source named the key: the one the plan records for it, or
+    /// [`Origin::Caller`] where the caller named it directly.
     pub origin: Origin,
 }
 
 impl Refused {
-    /// A single refused path, for a refusal met after the plan was
+    /// A single refused key, for a refusal met after the plan was
     /// validated — the disk moved, or a loader declined a key.
     pub fn one(path: Utf8PathBuf, refusal: Refusal, origin: Origin) -> Refused {
         Refused {
-            kind: refusal.kind(),
             paths: BTreeMap::from([(path, RefusedPath { refusal, origin })]),
         }
     }
 
-    /// Everything a plan refused, reduced to the kind
-    /// [`RefusalKind::PRECEDENCE`] ranks first. `None` when nothing was.
+    /// Everything a plan refused, reduced to the least [`RefusalKind`]
+    /// present. `None` when nothing was refused.
     pub fn aggregate(
         refused: impl IntoIterator<Item = (Utf8PathBuf, Refusal, Origin)>,
     ) -> Option<Refused> {
@@ -249,14 +237,37 @@ impl Refused {
                 .or_default()
                 .insert(path, RefusedPath { refusal, origin });
         }
-        let kind = RefusalKind::PRECEDENCE
-            .into_iter()
-            .find(|kind| by_kind.contains_key(kind))?;
-        let paths = by_kind.remove(&kind).expect("found above");
-        Some(Refused { kind, paths })
+        let (_, paths) = by_kind.pop_first()?;
+        Some(Refused { paths })
     }
 
-    /// The refused paths alone, for a caller that only wants to name them.
+    /// The same refusal with each key's origin taken from `plan`, for one
+    /// built where only the key was known.
+    pub fn sourced_by(mut self, plan: &crate::Plan) -> Refused {
+        for (path, refused) in &mut self.paths {
+            refused.origin = plan.origin_of(path);
+        }
+        self
+    }
+
+    /// What every key here was refused for.
+    pub fn kind(&self) -> RefusalKind {
+        self.paths
+            .values()
+            .next()
+            .expect("a Refused is never empty")
+            .refusal
+            .kind()
+    }
+
+    /// The refused keys, verbatim, each with its reason and provenance. A
+    /// containment refusal keeps the absolute or escaping key it declined;
+    /// every other kind's keys are paths relative to the destination.
+    pub fn paths(&self) -> &BTreeMap<Utf8PathBuf, RefusedPath> {
+        &self.paths
+    }
+
+    /// The refused keys alone, for a caller that only wants to name them.
     pub fn keys(&self) -> impl Iterator<Item = &Utf8Path> {
         self.paths.keys().map(Utf8PathBuf::as_path)
     }
@@ -266,7 +277,7 @@ impl std::error::Error for Refused {}
 
 impl fmt::Display for Refused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: ", self.kind.headline())?;
+        write!(f, "{}: ", self.kind().headline())?;
         for (i, (path, RefusedPath { refusal, origin })) in self.paths.iter().enumerate() {
             if i > 0 {
                 f.write_str(", ")?;

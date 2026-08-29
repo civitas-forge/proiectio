@@ -280,7 +280,7 @@ fn names_the_containment_gateway_refuses_are_reported_together_verbatim() {
     // names the root it is spelled against.
     assert!(matches!(
         load_tree(source.root()).unwrap_err(),
-        Error::Refused(refused) if refused.kind == RefusalKind::Containment && origins_of(&refused) == want
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment && origins_of(&refused) == want
     ));
 }
 
@@ -298,7 +298,7 @@ fn a_directory_the_gateway_refuses_is_named_instead_of_its_descendants() {
     let want = refused(&source, &["COM1"]);
     assert!(matches!(
         load_tree(source.root()).unwrap_err(),
-        Error::Refused(refused) if refused.kind == RefusalKind::Containment && origins_of(&refused) == want
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment && origins_of(&refused) == want
     ));
 }
 
@@ -312,7 +312,7 @@ fn a_refused_directory_holding_nothing_is_still_refused() {
     let want = refused(&source, &["weird:name"]);
     assert!(matches!(
         load_tree(source.root()).unwrap_err(),
-        Error::Refused(refused) if refused.kind == RefusalKind::Containment && origins_of(&refused) == want
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment && origins_of(&refused) == want
     ));
 }
 

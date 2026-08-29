@@ -399,13 +399,13 @@ mod tests;
 
 // The refused paths alone.
 pub(crate) fn paths_of(refused: &Refused) -> BTreeSet<Utf8PathBuf> {
-    refused.paths.keys().cloned().collect()
+    refused.paths().keys().cloned().collect()
 }
 
 // Each refused path with the source that named it.
 pub(crate) fn origins_of(refused: &Refused) -> BTreeMap<Utf8PathBuf, Origin> {
     refused
-        .paths
+        .paths()
         .iter()
         .map(|(path, refused)| (path.clone(), refused.origin.clone()))
         .collect()
@@ -414,7 +414,7 @@ pub(crate) fn origins_of(refused: &Refused) -> BTreeMap<Utf8PathBuf, Origin> {
 // Each refused path with its reason.
 pub(crate) fn refusals_of(refused: &Refused) -> BTreeMap<Utf8PathBuf, Refusal> {
     refused
-        .paths
+        .paths()
         .iter()
         .map(|(path, refused)| (path.clone(), refused.refusal.clone()))
         .collect()
@@ -423,7 +423,7 @@ pub(crate) fn refusals_of(refused: &Refused) -> BTreeMap<Utf8PathBuf, Refusal> {
 // Each refused path with its reason and the source that named it.
 pub(crate) fn sourced_of(refused: &Refused) -> BTreeMap<Utf8PathBuf, (Refusal, Origin)> {
     refused
-        .paths
+        .paths()
         .iter()
         .map(|(path, refused)| {
             (

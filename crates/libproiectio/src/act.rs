@@ -93,7 +93,10 @@ pub(crate) fn apply(
             if !outcomes.is_empty() {
                 let _ = save_manifest(state, &manifest);
             }
-            Err(error)
+            Err(match error {
+                Error::Refused(refused) => refused.sourced_by(plan).into(),
+                other => other,
+            })
         }
     }
 }
@@ -368,7 +371,7 @@ fn settle_links(
                         Refusal::ExternalTarget {
                             target: target.clone(),
                         },
-                        plan.origin_of(path),
+                        Origin::Caller,
                     ));
                     held.push((path, action));
                 }
@@ -1131,7 +1134,7 @@ fn at_action_key(path: &Utf8Path, landing: &Utf8Path) -> Result<()> {
 }
 
 /// A refusal met mid-run, once [`validate`] has passed and the disk has
-/// moved: a verdict on what the disk holds, which no source named.
+/// moved. [`apply`] attaches the origin the plan records for the key.
 fn refuse(path: &Utf8Path, refusal: Refusal) -> Error {
     Refused::one(path.to_owned(), refusal, Origin::Caller).into()
 }
