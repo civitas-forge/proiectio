@@ -778,6 +778,35 @@ fn a_plan_writing_past_the_walk_depth_is_named_and_writes_nothing() {
 // whether the next observation can read the node back. The check on the
 // key cannot see this one; the walk names the directory it stopped at.
 #[test]
+fn a_plan_removing_past_the_walk_depth_is_named_and_removes_nothing() {
+    let (dest, state) = fixtures();
+    let past = Utf8PathBuf::from(format!("{}/leaf", ["d"; MAX_WALK_DEPTH + 1].join("/")));
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        past.clone(),
+        recorded(EntryKind::File, sha256_hex(b"deep"), &["own"]),
+    );
+    let plan = Plan {
+        owner: "own".to_owned(),
+        origin: Origin::Caller,
+        actions: BTreeMap::from([(past.clone(), Action::Remove { expected: None })]),
+        external_targets: ExternalTargetPolicy::Refuse,
+    };
+
+    let error = apply_at(&dest, &state, &manifest, &plan)
+        .expect_err("a destination past the limit is not cleaned up either");
+
+    match error {
+        Error::DestinationTooDeep { path, limit } => {
+            assert_eq!(path, past.parent().expect("the leaf has a parent"));
+            assert_eq!(limit, MAX_WALK_DEPTH);
+        }
+        other => panic!("expected DestinationTooDeep, got {other:?}"),
+    }
+    assert_tree(dest.root(), &Tree::new());
+}
+
+#[test]
 fn a_write_landing_past_the_walk_depth_through_an_owned_link_is_named() {
     let (dest, state) = fixtures();
     let at_the_limit = ["d"; MAX_WALK_DEPTH].join("/");
