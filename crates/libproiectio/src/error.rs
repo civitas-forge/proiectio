@@ -292,6 +292,8 @@ pub enum Error {
         /// The node's absolute path.
         path: Utf8PathBuf,
     },
+    #[error("source {path} is a directory: strip drops components of archive members")]
+    StripOnDirectory { path: Utf8PathBuf },
 }
 
 fn display_string<T: std::fmt::Display, S: Serializer>(
