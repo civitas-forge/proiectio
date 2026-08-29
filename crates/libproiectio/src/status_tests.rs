@@ -5,7 +5,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
 use crate::test_support::{Tree, assert_tree};
-use crate::{Entry, Origin, PlanOptions, Projection};
+use crate::{Desired, Entry, PlanOptions, Projection};
 
 fn projection(dest: &Utf8Path, state: &Utf8Path) -> Projection {
     Projection::new(dest.to_owned(), state.to_owned())
@@ -13,10 +13,14 @@ fn projection(dest: &Utf8Path, state: &Utf8Path) -> Projection {
 
 // One full plan → apply pass, so a status test has something recorded to
 // classify.
-fn project(projection: &Projection, owner: &str, desired: &BTreeMap<Utf8PathBuf, Entry>) {
+fn project(projection: &Projection, owner: &str, desired: BTreeMap<Utf8PathBuf, Entry>) {
     let mut run = projection.begin().expect("begin");
-    run.plan(owner, desired, Origin::Caller, PlanOptions::default())
-        .expect("plan");
+    run.plan(
+        owner,
+        &Desired::from_caller(desired),
+        PlanOptions::default(),
+    )
+    .expect("plan");
     run.apply().expect("apply");
 }
 
@@ -81,7 +85,7 @@ fn reports_one_state_per_path_of_the_union() {
         .file("clean.txt", "as written")
         .file("drifted.txt", "as written")
         .file("gone.txt", "as written");
-    project(&projection, "own", &tree.entries());
+    project(&projection, "own", tree.entries());
 
     fs::write(dest.path("drifted.txt"), "edited by hand").expect("edit");
     fs::remove_file(dest.path("gone.txt")).expect("delete");
@@ -104,7 +108,7 @@ fn a_directory_the_projection_created_still_reports_foreign() {
     let state = Tree::new().materialize();
     let projection = projection(dest.root(), state.root());
     let tree = Tree::new().file("a/b/mine.txt", "projected");
-    project(&projection, "own", &tree.entries());
+    project(&projection, "own", tree.entries());
 
     // The manifest records no directories, so the parents apply created
     // for an owned file are unrecorded like any other directory.
@@ -124,7 +128,7 @@ fn status_writes_nothing() {
     let state = Tree::new().materialize();
     let projection = projection(dest.root(), state.root());
     let tree = Tree::new().file("a/b.txt", "alpha");
-    project(&projection, "own", &tree.entries());
+    project(&projection, "own", tree.entries());
     let manifest = fs::read(state.path(crate::MANIFEST_FILE_NAME)).expect("read manifest");
 
     projection.status().expect("status");
@@ -143,7 +147,7 @@ fn the_state_subtree_inside_the_destination_never_classifies() {
     let dest = Tree::new().materialize();
     let projection = projection(dest.root(), &dest.path(".proiectio"));
     let tree = Tree::new().file("a.txt", "alpha");
-    project(&projection, "own", &tree.entries());
+    project(&projection, "own", tree.entries());
 
     let report = projection.status().expect("status");
 

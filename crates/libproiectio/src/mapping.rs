@@ -5,7 +5,7 @@ use std::io::Read;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Deserialize;
 
-use crate::{Entry, Error, Origin, Result};
+use crate::{Desired, Entry, Error, Origin, Result};
 
 /// The mapping format version this crate accepts.
 pub const MAPPING_VERSION: u32 = 1;
@@ -20,7 +20,7 @@ pub const MAPPING_VERSION: u32 = 1;
 /// # Panics
 ///
 /// Panics if `path` is relative.
-pub fn load_mapping(path: &Utf8Path) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
+pub fn load_mapping(path: &Utf8Path) -> Result<Desired> {
     assert!(
         path.is_absolute(),
         "mapping path must be absolute, got {path}"
@@ -32,7 +32,10 @@ pub fn load_mapping(path: &Utf8Path) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     parse(path, &text)
 }
 
-fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
+fn parse(path: &Utf8Path, text: &str) -> Result<Desired> {
+    let mapping_origin = Origin::Mapping {
+        path: path.to_owned(),
+    };
     let probe: VersionProbe = toml::from_str(text).map_err(|source| Error::MappingFormat {
         path: path.to_owned(),
         source,
@@ -82,10 +85,10 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     }
     if !refused.is_empty() {
         return Err(Error::Containment {
-            paths: refused,
-            origin: Origin::Mapping {
-                path: path.to_owned(),
-            },
+            paths: refused
+                .into_iter()
+                .map(|key| (key, mapping_origin.clone()))
+                .collect(),
         });
     }
 
@@ -130,7 +133,7 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     let dir = path
         .parent()
         .expect("an absolute mapping file path has a parent");
-    let mut tree = BTreeMap::new();
+    let mut tree = Desired::new();
     for (normalized, body, executable) in bodies {
         let entry = match body {
             Body::Contents(contents) => Entry::File {
@@ -158,7 +161,7 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
                 }
             }
         };
-        tree.insert(normalized, entry);
+        tree.insert(normalized, entry, mapping_origin.clone());
     }
     for (normalized, table) in links {
         tree.insert(
@@ -166,6 +169,7 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
             Entry::Symlink {
                 target: table.target,
             },
+            mapping_origin.clone(),
         );
     }
     // One byte budget across every table: the expanded trees are all merged
@@ -180,11 +184,15 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
             Some(path),
             &budget,
         )?;
-        for (key, entry) in expanded {
-            if tree.insert(key.clone(), entry).is_some() {
+        let origin = Origin::Archive {
+            path: source.clone(),
+            via: Some(path.to_owned()),
+        };
+        for (key, entry) in expanded.iter() {
+            if !tree.insert(key.clone(), entry.clone(), origin.clone()) {
                 return Err(Error::MappingDuplicate {
                     path: path.to_owned(),
-                    key,
+                    key: key.clone(),
                 });
             }
         }

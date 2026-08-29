@@ -1,14 +1,12 @@
 use camino::{Utf8Path, Utf8PathBuf};
 
-use std::collections::BTreeMap;
-
 use std::io::ErrorKind::NotFound;
 
 use cap_std::ambient_authority;
 use cap_std::fs_utf8::Dir;
 
 use crate::{
-    BlockMarkers, Entry, Error, Manifest, Origin, Plan, PlanOptions, RemovalScope, Result, Status,
+    BlockMarkers, Desired, Error, Manifest, Plan, PlanOptions, RemovalScope, Result, Status,
     block_markers, classify, decide, decide_removal, load_manifest, observe,
 };
 
@@ -118,20 +116,13 @@ impl Projection {
     /// `owner` would perform, decided outside the single-writer guard and so
     /// not applicable. An empty tree plans a removal; `origin` is named by
     /// every refusal the plan carries.
-    pub fn plan(
-        &self,
-        owner: &str,
-        desired: &BTreeMap<Utf8PathBuf, Entry>,
-        origin: Origin,
-        options: PlanOptions,
-    ) -> Result<Plan> {
+    pub fn plan(&self, owner: &str, desired: &Desired, options: PlanOptions) -> Result<Plan> {
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
         let observations = observe(&dest, &manifest, &block_markers(desired))?;
         decide(
             owner,
             desired,
-            origin,
             &manifest,
             &observations,
             self.state_prefix(),

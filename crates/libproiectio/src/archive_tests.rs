@@ -253,10 +253,24 @@ fn zip(members: &[ZipMember]) -> Vec<u8> {
 // Loading them
 // ---------------------------------------------------------------------------
 
-// Puts `bytes` at `name` in a fresh temp directory and expands it.
-fn expand_bytes(name: &str, bytes: &[u8], strip: u32) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
+fn expand_at(name: &str, bytes: &[u8], strip: u32) -> (Fixture, Result<Desired>) {
     let fixture = Tree::new().file(name, bytes.to_vec()).materialize();
-    load_archive(&fixture.path(name), strip)
+    let expanded = load_archive(&fixture.path(name), strip);
+    (fixture, expanded)
+}
+
+fn expand_bytes(name: &str, bytes: &[u8], strip: u32) -> Result<Desired> {
+    expand_at(name, bytes, strip).1
+}
+
+fn from_archive(fixture: &Fixture, name: &str, entries: BTreeMap<Utf8PathBuf, Entry>) -> Desired {
+    Desired::from_source(
+        entries,
+        Origin::Archive {
+            path: fixture.path(name),
+            via: None,
+        },
+    )
 }
 
 // The one logical tree every happy-path format carries: a plain file, an
@@ -314,9 +328,10 @@ fn every_tar_spelling_expands_to_one_tree() {
         ("skeleton.tgz", gzip(&bytes)),
         ("skeleton.tar.zst", zstd_compress(&bytes)),
     ] {
+        let (fixture, expanded) = expand_at(name, &archive, 0);
         assert_eq!(
-            expand_bytes(name, &archive, 0).unwrap(),
-            expected,
+            expanded.unwrap(),
+            from_archive(&fixture, name, expected.clone()),
             "{name} expanded to a different tree"
         );
     }
@@ -324,9 +339,10 @@ fn every_tar_spelling_expands_to_one_tree() {
 
 #[test]
 fn a_zip_expands_to_the_same_tree() {
+    let (fixture, expanded) = expand_at("skeleton.zip", &zip(&zip_members()), 0);
     assert_eq!(
-        expand_bytes("skeleton.zip", &zip(&zip_members()), 0).unwrap(),
-        declared_tree().entries()
+        expanded.unwrap(),
+        from_archive(&fixture, "skeleton.zip", declared_tree().entries())
     );
 }
 
@@ -336,7 +352,7 @@ fn a_zip_expands_to_the_same_tree() {
 #[test]
 fn a_directory_member_projects_nothing() {
     let tree = expand_bytes("only-dirs.tar", &tar(&[Member::dir("empty/")]), 0).unwrap();
-    assert_eq!(tree, BTreeMap::new());
+    assert_eq!(tree, Desired::new());
 }
 
 // The definition of done for the happy path: an archive projects, and the
@@ -355,7 +371,6 @@ fn an_expanded_archive_projects_and_its_relative_link_resolves() {
     let plan = decide(
         "archive",
         &desired,
-        Origin::Caller,
         &manifest,
         &observations,
         None,
@@ -393,12 +408,17 @@ fn strip_drops_the_wrapper_directory() {
         Member::executable("skeleton-1.2/bin/tool", "#!/bin/sh\n"),
         Member::symlink("skeleton-1.2/current", "bin/tool"),
     ];
+    let (fixture, expanded) = expand_at("skeleton-1.2.tar.gz", &gzip(&tar(&members)), 1);
     assert_eq!(
-        expand_bytes("skeleton-1.2.tar.gz", &gzip(&tar(&members)), 1).unwrap(),
-        Tree::new()
-            .executable("bin/tool", "#!/bin/sh\n")
-            .symlink("current", "bin/tool")
-            .entries()
+        expanded.unwrap(),
+        from_archive(
+            &fixture,
+            "skeleton-1.2.tar.gz",
+            Tree::new()
+                .executable("bin/tool", "#!/bin/sh\n")
+                .symlink("current", "bin/tool")
+                .entries()
+        )
     );
 }
 
@@ -408,9 +428,14 @@ fn strip_drops_a_zips_wrapper_directory_too() {
         ZipMember::Dir("skeleton-1.2/".to_owned()),
         zip_file("skeleton-1.2/README", "read me\n"),
     ];
+    let (fixture, expanded) = expand_at("skeleton-1.2.zip", &zip(&members), 1);
     assert_eq!(
-        expand_bytes("skeleton-1.2.zip", &zip(&members), 1).unwrap(),
-        Tree::new().file("README", "read me\n").entries()
+        expanded.unwrap(),
+        from_archive(
+            &fixture,
+            "skeleton-1.2.zip",
+            Tree::new().file("README", "read me\n").entries()
+        )
     );
 }
 
@@ -437,13 +462,18 @@ fn a_member_mode_contributes_only_the_executable_bit() {
         Member::file("setuid", "b").mode(0o4755),
         Member::file("group-only", "c").mode(0o010),
     ];
+    let (fixture, expanded) = expand_at("modes.tar", &tar(&members), 0);
     assert_eq!(
-        expand_bytes("modes.tar", &tar(&members), 0).unwrap(),
-        Tree::new()
-            .file("plain", "a")
-            .executable("setuid", "b")
-            .file("group-only", "c")
-            .entries()
+        expanded.unwrap(),
+        from_archive(
+            &fixture,
+            "modes.tar",
+            Tree::new()
+                .file("plain", "a")
+                .executable("setuid", "b")
+                .file("group-only", "c")
+                .entries()
+        )
     );
 }
 
@@ -492,9 +522,10 @@ fn the_extension_match_ignores_ascii_case() {
         ArchiveFormat::for_path(Utf8Path::new("/a/SKELETON.TAR.GZ")),
         Some(ArchiveFormat::TarGz)
     );
+    let (fixture, expanded) = expand_at("SKELETON.TAR.GZ", &gzip(&tar(&tar_members())), 0);
     assert_eq!(
-        expand_bytes("SKELETON.TAR.GZ", &gzip(&tar(&tar_members())), 0).unwrap(),
-        declared_tree().entries()
+        expanded.unwrap(),
+        from_archive(&fixture, "SKELETON.TAR.GZ", declared_tree().entries())
     );
 }
 
@@ -524,7 +555,7 @@ fn a_tar_split_across_gzip_members_expands_whole() {
     bytes.extend_from_slice(&gzip(tail));
     let tree = expand_bytes("both.tar.gz", &bytes, 0).expect("expand both gzip members");
     assert_eq!(
-        tree.keys().map(|key| key.as_str()).collect::<Vec<_>>(),
+        tree.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
         ["a.txt", "b.txt"]
     );
 }
@@ -564,7 +595,7 @@ fn a_tar_split_across_zstd_frames_expands_whole() {
     bytes.extend_from_slice(&zstd_compress(tail));
     let tree = expand_bytes("both.tar.zst", &bytes, 0).expect("expand both zstd frames");
     assert_eq!(
-        tree.keys().map(|key| key.as_str()).collect::<Vec<_>>(),
+        tree.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
         ["a.txt", "b.txt"]
     );
 }
@@ -588,20 +619,15 @@ fn hostile_member_names_are_refused_and_named() {
     let fixture = Tree::new().file("hostile.tar", tar(&members)).materialize();
     let error = load_archive(&fixture.path("hostile.tar"), 0).unwrap_err();
     let refused = match &error {
-        // No mapping named this archive, so there is no `via` to carry.
-        Error::Containment { paths, origin } => {
-            assert_eq!(
-                *origin,
-                Origin::Archive {
-                    path: fixture.path("hostile.tar"),
-                    via: None,
-                }
-            );
-            paths
-        }
+        Error::Containment { paths } => paths,
         other => panic!("expected a containment refusal, got {other}"),
     };
-    let named: Vec<&str> = refused.iter().map(|path| path.as_str()).collect();
+    assert!(refused.values().all(|origin| *origin
+        == Origin::Archive {
+            path: fixture.path("hostile.tar"),
+            via: None,
+        }));
+    let named: Vec<&str> = refused.keys().map(|path| path.as_str()).collect();
     assert_eq!(
         named,
         vec![
@@ -623,10 +649,10 @@ fn a_zip_with_windows_separators_is_refused_by_name() {
         zip_file("..\\..\\escape", "out\n"),
     ];
     let refused = match expand_bytes("windows.zip", &zip(&members), 0).unwrap_err() {
-        Error::Containment { paths, .. } => paths,
+        Error::Containment { paths } => paths,
         other => panic!("expected a containment refusal, got {other}"),
     };
-    let named: Vec<&str> = refused.iter().map(|path| path.as_str()).collect();
+    let named: Vec<&str> = refused.keys().map(|path| path.as_str()).collect();
     assert_eq!(named, vec!["..\\..\\escape", "dir\\file"]);
 }
 
@@ -665,11 +691,11 @@ fn a_zip_member_strip_would_erase_is_still_judged_for_its_kind() {
 fn a_member_name_carrying_a_nul_is_refused() {
     let members = vec![zip_file("a\u{0}b", "x\n"), zip_file("ok", "kept\n")];
     let refused = match expand_bytes("nul.zip", &zip(&members), 0).unwrap_err() {
-        Error::Containment { paths, .. } => paths,
+        Error::Containment { paths } => paths,
         other => panic!("expected a containment refusal, got {other}"),
     };
     assert_eq!(
-        refused.iter().map(|path| path.as_str()).collect::<Vec<_>>(),
+        refused.keys().map(|path| path.as_str()).collect::<Vec<_>>(),
         vec!["a\u{0}b"]
     );
 }
@@ -726,7 +752,10 @@ fn a_symlink_member_and_a_member_written_through_it_are_refused_together() {
     ];
     let desired = expand_bytes("slip.tar", &tar(&members), 0).unwrap();
     assert_eq!(
-        desired.keys().map(|path| path.as_str()).collect::<Vec<_>>(),
+        desired
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>(),
         vec!["logs", "logs/passwd"]
     );
 
@@ -738,7 +767,6 @@ fn a_symlink_member_and_a_member_written_through_it_are_refused_together() {
     let plan = decide(
         "archive",
         &desired,
-        Origin::Caller,
         &manifest,
         &observations,
         None,
@@ -1058,11 +1086,11 @@ fn a_prefix_never_absorbs_a_climbing_member() {
     )
     .unwrap_err()
     {
-        Error::Containment { paths, .. } => paths,
+        Error::Containment { paths } => paths,
         other => panic!("expected a containment refusal, got {other}"),
     };
     assert_eq!(
-        refused.iter().map(|path| path.as_str()).collect::<Vec<_>>(),
+        refused.keys().map(|path| path.as_str()).collect::<Vec<_>>(),
         vec!["../escape"]
     );
 }

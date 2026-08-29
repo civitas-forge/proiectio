@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -6,8 +6,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree};
 use crate::{
-    Action, ApplyOutcome, Error, LOCK_FILE_NAME, MANIFEST_FILE_NAME, PathState, Refusal,
-    RemovalScope,
+    Action, ApplyOutcome, Desired, Entry, Error, LOCK_FILE_NAME, MANIFEST_FILE_NAME, Origin,
+    PathState, Refusal, RemovalScope,
 };
 
 // A projection over two fixture directories, the state directory outside
@@ -16,8 +16,8 @@ fn projection(dest: &Fixture, state: &Utf8Path) -> Projection {
     Projection::new(dest.root().to_owned(), state.to_owned())
 }
 
-fn desired(tree: &Tree) -> BTreeMap<Utf8PathBuf, Entry> {
-    tree.entries()
+fn desired(tree: &Tree) -> Desired {
+    Desired::from_caller(tree.entries())
 }
 
 // The definition of done: a full begin → plan → apply cycle, with the caller
@@ -33,13 +33,8 @@ fn a_run_projects_a_tree_and_records_it() {
         .executable("bin/run", "#!/bin/sh\n");
 
     let mut run = projection.begin().expect("begin");
-    run.plan(
-        "harness",
-        &desired(&tree),
-        Origin::Caller,
-        PlanOptions::default(),
-    )
-    .expect("plan");
+    run.plan("harness", &desired(&tree), PlanOptions::default())
+        .expect("plan");
     let report = run.apply().expect("apply");
 
     assert_eq!(
@@ -132,14 +127,12 @@ fn deciding_again_replaces_the_kept_plan() {
     run.plan(
         "harness",
         &desired(&Tree::new().file("first.txt", "one")),
-        Origin::Caller,
         PlanOptions::default(),
     )
     .expect("first plan");
     run.plan(
         "harness",
         &desired(&Tree::new().file("second.txt", "two")),
-        Origin::Caller,
         PlanOptions::default(),
     )
     .expect("second plan");
@@ -168,13 +161,8 @@ fn beginning_creates_a_nested_in_dest_state_directory() {
     let tree = Tree::new().file("a.txt", "alpha");
 
     let mut run = projection.begin().expect("begin");
-    run.plan(
-        "harness",
-        &desired(&tree),
-        Origin::Caller,
-        PlanOptions::default(),
-    )
-    .expect("plan");
+    run.plan("harness", &desired(&tree), PlanOptions::default())
+        .expect("plan");
     run.apply().expect("apply");
 
     assert!(state.join(MANIFEST_FILE_NAME).is_file());
@@ -232,13 +220,8 @@ fn a_removal_run_clears_what_the_owner_holds() {
     let tree = Tree::new().file("notes/a.txt", "alpha");
 
     let mut run = projection.begin().expect("begin");
-    run.plan(
-        "harness",
-        &desired(&tree),
-        Origin::Caller,
-        PlanOptions::default(),
-    )
-    .expect("plan");
+    run.plan("harness", &desired(&tree), PlanOptions::default())
+        .expect("plan");
     run.apply().expect("apply");
 
     let mut run = projection.begin().expect("begin the removal");
@@ -264,7 +247,6 @@ fn a_decision_that_fails_leaves_no_plan_behind() {
     run.plan(
         "harness",
         &desired(&Tree::new().file("first.txt", "one")),
-        Origin::Caller,
         PlanOptions::default(),
     )
     .expect("first plan");
@@ -276,7 +258,6 @@ fn a_decision_that_fails_leaves_no_plan_behind() {
         .plan(
             "harness",
             &desired(&Tree::new().file("second.txt", "two")),
-            Origin::Caller,
             PlanOptions::default(),
         )
         .expect_err("the observation fails");
@@ -291,7 +272,7 @@ fn a_decision_that_fails_leaves_no_plan_behind() {
 // A removal is decided from the manifest, so its plan has no source tree to
 // name.
 #[test]
-fn a_removal_plan_carries_the_caller_origin() {
+fn a_removal_plan_names_no_source() {
     let dest = Tree::new().materialize();
     let state = Tree::new().materialize();
     let projection = projection(&dest, state.root());
@@ -300,7 +281,7 @@ fn a_removal_plan_carries_the_caller_origin() {
         .plan_removal("harness", RemovalScope::Everything, PlanOptions::default())
         .expect("plan the removal");
 
-    assert_eq!(plan.origin, Origin::Caller);
+    assert!(plan.origins.is_empty());
 }
 
 // The refusals apply raises come from deep inside the walk, so this is what
@@ -311,24 +292,22 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
     let state = Tree::new().materialize();
     let projection = projection(&dest, state.root());
     let mapping = Utf8PathBuf::from("/etc/harness/skills.toml");
-    let desired = BTreeMap::from([(
-        Utf8PathBuf::from("../escape"),
-        Entry::File {
-            contents: b"out".to_vec(),
-            executable: false,
+    let desired = Desired::from_source(
+        BTreeMap::from([(
+            Utf8PathBuf::from("../escape"),
+            Entry::File {
+                contents: b"out".to_vec(),
+                executable: false,
+            },
+        )]),
+        Origin::Mapping {
+            path: mapping.clone(),
         },
-    )]);
+    );
 
     let mut run = projection.begin().expect("begin");
     let plan = run
-        .plan(
-            "harness",
-            &desired,
-            Origin::Mapping {
-                path: mapping.clone(),
-            },
-            PlanOptions::default(),
-        )
+        .plan("harness", &desired, PlanOptions::default())
         .expect("plan");
     assert_eq!(
         plan.actions.get(Utf8Path::new("../escape")),
@@ -342,16 +321,21 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
         .expect_err("a plan carrying a refusal applies nothing");
 
     match &error {
-        Error::Containment { paths, origin } => {
-            assert_eq!(*paths, BTreeSet::from([Utf8PathBuf::from("../escape")]));
-            assert_eq!(*origin, Origin::Mapping { path: mapping });
+        Error::Containment { paths } => {
+            assert_eq!(
+                *paths,
+                BTreeMap::from([(
+                    Utf8PathBuf::from("../escape"),
+                    Origin::Mapping { path: mapping },
+                )])
+            );
         }
         other => panic!("expected Containment, got {other:?}"),
     }
     assert_eq!(
         error.to_string(),
-        "refusing paths that violate containment \
-         (from mapping /etc/harness/skills.toml): ../escape"
+        "refusing paths that violate containment: \
+         ../escape (from mapping /etc/harness/skills.toml)"
     );
     assert_tree(dest.root(), &Tree::new());
 }
@@ -366,12 +350,7 @@ fn a_plan_from_a_read_takes_no_lock() {
     let tree = Tree::new().file("notes/a.txt", "alpha");
 
     let plan = projection
-        .plan(
-            "harness",
-            &desired(&tree),
-            Origin::Caller,
-            PlanOptions::default(),
-        )
+        .plan("harness", &desired(&tree), PlanOptions::default())
         .expect("plan");
 
     assert_eq!(
@@ -394,13 +373,8 @@ fn applying_persists_the_manifest_the_next_run_loads() {
     let tree = Tree::new().file("notes/a.txt", "alpha");
 
     let mut run = projection.begin().expect("begin");
-    run.plan(
-        "harness",
-        &desired(&tree),
-        Origin::Caller,
-        PlanOptions::default(),
-    )
-    .expect("plan");
+    run.plan("harness", &desired(&tree), PlanOptions::default())
+        .expect("plan");
     let report = run.apply().expect("apply");
 
     assert!(state.path(MANIFEST_FILE_NAME).is_file());

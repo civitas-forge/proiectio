@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use camino::Utf8PathBuf;
 
@@ -7,8 +7,7 @@ use crate::Error;
 
 fn containment(origin: Origin) -> Error {
     Error::Containment {
-        paths: BTreeSet::from([Utf8PathBuf::from("../etc/passwd")]),
-        origin,
+        paths: BTreeMap::from([(Utf8PathBuf::from("../etc/passwd"), origin)]),
     }
 }
 
@@ -67,8 +66,8 @@ fn a_named_source_reaches_the_message() {
             path: "/etc/harness/skills.toml".into(),
         })
         .to_string(),
-        "refusing paths that violate containment (from mapping /etc/harness/skills.toml): \
-         ../etc/passwd"
+        "refusing paths that violate containment: \
+         ../etc/passwd (from mapping /etc/harness/skills.toml)"
     );
 }
 

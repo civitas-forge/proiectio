@@ -52,16 +52,10 @@ pub enum Error {
     /// Refusal: locations the projection may not act at — paths refused by
     /// [`contained_join`](crate::contained_join), paths resolving through a
     /// symlinked ancestor, and paths overlapping the state directory.
-    #[error(
-        "refusing paths that violate containment{}: {}",
-        note(origin),
-        join(paths)
-    )]
+    #[error("refusing paths that violate containment: {}", join_sourced(paths))]
     Containment {
-        /// The offending locations, spelled as whatever named them.
-        paths: BTreeSet<Utf8PathBuf>,
-        /// Where the tree holding them came from.
-        origin: Origin,
+        /// The offending locations, each with the source that named it.
+        paths: BTreeMap<Utf8PathBuf, Origin>,
     },
     /// Refusal: the desired entry for a path — bytes, kind, or executable bit
     /// — differs from what another owner holds there.
@@ -78,44 +72,35 @@ pub enum Error {
     /// parent, land outside the destination. Lifted by
     /// [`ExternalTargetPolicy::Allow`](crate::ExternalTargetPolicy::Allow).
     #[error(
-        "refusing symlinks with targets outside the destination{}: {}",
-        note(origin),
+        "refusing symlinks with targets outside the destination: {}",
         join_links(links)
     )]
     ExternalTarget {
-        /// The offending links: path of each link, relative to the
-        /// destination, mapped to its target string verbatim.
-        links: BTreeMap<Utf8PathBuf, String>,
-        /// Where the tree holding them came from.
-        origin: Origin,
+        /// The offending links: each link's path, with its target verbatim
+        /// and the source that named it.
+        links: BTreeMap<Utf8PathBuf, (String, Origin)>,
     },
     /// Refusal: desired symlinks whose targets are not pathnames on any host
     /// — the empty string, or a string carrying a NUL byte.
     #[error(
-        "refusing symlinks whose targets are not paths{}: {}",
-        note(origin),
+        "refusing symlinks whose targets are not paths: {}",
         join_invalid(links)
     )]
     InvalidTarget {
-        /// The offending links: path of each link, relative to the
-        /// destination, mapped to its target string verbatim.
-        links: BTreeMap<Utf8PathBuf, String>,
-        /// Where the tree holding them came from.
-        origin: Origin,
+        /// The offending links: each link's path, with its target verbatim
+        /// and the source that named it.
+        links: BTreeMap<Utf8PathBuf, (String, Origin)>,
     },
     /// Refusal: desired keys claiming one on-disk location more than once —
     /// two keys normalizing to the same path, or one desired path lying
     /// beneath another. Both sides of a conflict are refused.
     #[error(
-        "refusing desired paths that claim overlapping locations{}: {}",
-        note(origin),
-        join(paths)
+        "refusing desired paths that claim overlapping locations: {}",
+        join_sourced(paths)
     )]
     TreeConflict {
-        /// The conflicting desired keys, verbatim.
-        paths: BTreeSet<Utf8PathBuf>,
-        /// Where the tree holding them came from.
-        origin: Origin,
+        /// The conflicting desired keys, each with the source that named it.
+        paths: BTreeMap<Utf8PathBuf, Origin>,
     },
     /// A filesystem operation failed. Not a refusal.
     #[error("{path}: {source}")]
@@ -463,38 +448,17 @@ impl Error {
             | Error::TreeNodeKind { .. } => false,
         }
     }
-
-    /// Names `origin` as the source of this refusal, where it is one of the
-    /// four that carry an [`Origin`]; every other variant is returned
-    /// unchanged.
-    pub(crate) fn with_origin(self, origin: &Origin) -> Error {
-        match self {
-            Error::Containment { paths, .. } => Error::Containment {
-                paths,
-                origin: origin.clone(),
-            },
-            Error::TreeConflict { paths, .. } => Error::TreeConflict {
-                paths,
-                origin: origin.clone(),
-            },
-            Error::ExternalTarget { links, .. } => Error::ExternalTarget {
-                links,
-                origin: origin.clone(),
-            },
-            Error::InvalidTarget { links, .. } => Error::InvalidTarget {
-                links,
-                origin: origin.clone(),
-            },
-            other => other,
-        }
-    }
 }
 
-fn note(origin: &Origin) -> String {
-    match origin {
-        Origin::Caller => String::new(),
-        named => format!(" ({named})"),
-    }
+fn join_sourced(paths: &BTreeMap<Utf8PathBuf, Origin>) -> String {
+    paths
+        .iter()
+        .map(|(path, origin)| match origin {
+            Origin::Caller => path.to_string(),
+            named => format!("{path} ({named})"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn join(paths: &BTreeSet<Utf8PathBuf>) -> String {
@@ -524,20 +488,26 @@ fn join_blocks(blocks: &BTreeMap<Utf8PathBuf, BlockFault>) -> String {
         .join(", ")
 }
 
-fn join_links(links: &BTreeMap<Utf8PathBuf, String>) -> String {
+fn join_links(links: &BTreeMap<Utf8PathBuf, (String, Origin)>) -> String {
     links
         .iter()
-        .map(|(path, target)| format!("{path} -> {target}"))
+        .map(|(path, (target, origin))| match origin {
+            Origin::Caller => format!("{path} -> {target}"),
+            named => format!("{path} -> {target} ({named})"),
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
 
 /// [`join_links`] with the target quoted and escaped, so an empty string or a
 /// NUL byte renders visibly.
-fn join_invalid(links: &BTreeMap<Utf8PathBuf, String>) -> String {
+fn join_invalid(links: &BTreeMap<Utf8PathBuf, (String, Origin)>) -> String {
     links
         .iter()
-        .map(|(path, target)| format!("{path} -> {target:?}"))
+        .map(|(path, (target, origin))| match origin {
+            Origin::Caller => format!("{path} -> {target:?}"),
+            named => format!("{path} -> {target:?} ({named})"),
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }

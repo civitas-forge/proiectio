@@ -81,7 +81,7 @@ pub(crate) fn apply(
     manifest: &Manifest,
     plan: &Plan,
 ) -> Result<ApplyReport> {
-    validate(manifest, plan).map_err(|error| error.with_origin(&plan.origin))?;
+    validate(manifest, plan)?;
     let mut manifest = manifest.clone();
     let mut outcomes = BTreeMap::new();
     match run(dest, &mut manifest, plan, &mut outcomes) {
@@ -102,10 +102,11 @@ pub(crate) fn apply(
 /// promise: aggregates every fault in `plan` into one error, by the fixed
 /// precedence the returns below spell.
 fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
+    let source = |path: &Utf8Path| plan.origins.get(path).cloned().unwrap_or_default();
     let mut drift = BTreeSet::new();
     let mut foreign = BTreeSet::new();
-    let mut containment = BTreeSet::new();
-    let mut tree_conflict = BTreeSet::new();
+    let mut containment = BTreeMap::new();
+    let mut tree_conflict = BTreeMap::new();
     let mut owner_conflicts = BTreeMap::new();
     let mut external = BTreeMap::new();
     let mut invalid = BTreeMap::new();
@@ -121,19 +122,19 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                     foreign.insert(path.clone());
                 }
                 Refusal::Containment => {
-                    containment.insert(path.clone());
+                    containment.insert(path.clone(), source(path));
                 }
                 Refusal::TreeConflict { .. } => {
-                    tree_conflict.insert(path.clone());
+                    tree_conflict.insert(path.clone(), source(path));
                 }
                 Refusal::OwnerConflict { owners } => {
                     owner_conflicts.insert(path.clone(), owners.clone());
                 }
                 Refusal::ExternalTarget { target } => {
-                    external.insert(path.clone(), target.clone());
+                    external.insert(path.clone(), (target.clone(), source(path)));
                 }
                 Refusal::InvalidTarget { target } => {
-                    invalid.insert(path.clone(), target.clone());
+                    invalid.insert(path.clone(), (target.clone(), source(path)));
                 }
                 Refusal::Block { fault } => {
                     blocks.insert(path.clone(), *fault);
@@ -144,7 +145,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         match contained_normalize(path) {
             Some(normalized) if normalized == *path => {}
             _ => {
-                containment.insert(path.clone());
+                containment.insert(path.clone(), source(path));
                 continue;
             }
         }
@@ -158,7 +159,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         };
         if let Some(Entry::Symlink { target }) = written {
             if !is_pathname(target) {
-                invalid.insert(path.clone(), target.clone());
+                invalid.insert(path.clone(), (target.clone(), source(path)));
                 continue;
             }
         }
@@ -205,15 +206,11 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         }
     }
     if !containment.is_empty() {
-        return Err(Error::Containment {
-            paths: containment,
-            origin: Origin::Caller,
-        });
+        return Err(Error::Containment { paths: containment });
     }
     if !tree_conflict.is_empty() {
         return Err(Error::TreeConflict {
             paths: tree_conflict,
-            origin: Origin::Caller,
         });
     }
     if !foreign.is_empty() {
@@ -228,16 +225,10 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         });
     }
     if !external.is_empty() {
-        return Err(Error::ExternalTarget {
-            links: external,
-            origin: Origin::Caller,
-        });
+        return Err(Error::ExternalTarget { links: external });
     }
     if !invalid.is_empty() {
-        return Err(Error::InvalidTarget {
-            links: invalid,
-            origin: Origin::Caller,
-        });
+        return Err(Error::InvalidTarget { links: invalid });
     }
     if !blocks.is_empty() {
         return Err(Error::Block { blocks });
@@ -402,7 +393,7 @@ fn settle_links(
     while !pending.is_empty() {
         let before = pending.len();
         let mut held: Vec<(&Utf8PathBuf, &Action)> = Vec::new();
-        let mut escaping: BTreeMap<Utf8PathBuf, String> = BTreeMap::new();
+        let mut escaping: BTreeMap<Utf8PathBuf, (String, Origin)> = BTreeMap::new();
         for (path, action) in pending {
             let (entry, fresh, outcome) = match action {
                 Action::Write { entry } => (entry, true, ApplyOutcome::Written),
@@ -422,16 +413,19 @@ fn settle_links(
                     let Entry::Symlink { target } = entry else {
                         unreachable!("only a symlink is ever held");
                     };
-                    escaping.insert(path.clone(), target.clone());
+                    escaping.insert(
+                        path.clone(),
+                        (
+                            target.clone(),
+                            plan.origins.get(path).cloned().unwrap_or_default(),
+                        ),
+                    );
                     held.push((path, action));
                 }
             }
         }
         if held.len() == before {
-            return Err(Error::ExternalTarget {
-                links: escaping,
-                origin: plan.origin.clone(),
-            });
+            return Err(Error::ExternalTarget { links: escaping });
         }
         pending = held;
     }
@@ -474,8 +468,7 @@ fn regrade_recorded_link(
         return Ok(());
     }
     Err(Error::ExternalTarget {
-        links: BTreeMap::from([(path.to_owned(), target.to_owned())]),
-        origin: Origin::Caller,
+        links: BTreeMap::from([(path.to_owned(), (target.to_owned(), Origin::Caller))]),
     })
 }
 
@@ -1200,8 +1193,7 @@ fn drift(path: &Utf8Path) -> Error {
 
 fn containment(path: &Utf8Path) -> Error {
     Error::Containment {
-        paths: BTreeSet::from([path.to_owned()]),
-        origin: Origin::Caller,
+        paths: BTreeMap::from([(path.to_owned(), Origin::Caller)]),
     }
 }
 

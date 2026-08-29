@@ -18,9 +18,26 @@ fn dir_at(root: &Utf8Path) -> Utf8Dir {
     Utf8Dir::open_ambient_dir(root, cap_std::ambient_authority()).expect("open fixture root")
 }
 
+fn walked(source: &Fixture) -> Origin {
+    Origin::Tree {
+        path: source.root().to_owned(),
+    }
+}
+
+fn from_tree(source: &Fixture, entries: BTreeMap<Utf8PathBuf, Entry>) -> Desired {
+    Desired::from_source(entries, walked(source))
+}
+
+fn refused(source: &Fixture, names: &[&str]) -> BTreeMap<Utf8PathBuf, Origin> {
+    names
+        .iter()
+        .map(|name| (Utf8PathBuf::from(name), walked(source)))
+        .collect()
+}
+
 // One observe → decide → apply run of `desired` into a fresh destination,
 // under the strict default policies.
-fn project(dest: &Fixture, state: &Fixture, desired: &BTreeMap<Utf8PathBuf, Entry>) -> ApplyReport {
+fn project(dest: &Fixture, state: &Fixture, desired: &Desired) -> ApplyReport {
     let dest_dir = dir_at(dest.root());
     let state_dir = dir_at(state.root());
     let manifest = load_manifest(&state_dir).expect("load manifest");
@@ -29,7 +46,6 @@ fn project(dest: &Fixture, state: &Fixture, desired: &BTreeMap<Utf8PathBuf, Entr
     let plan = decide(
         "tree",
         desired,
-        Origin::Caller,
         &manifest,
         &observations,
         None,
@@ -41,7 +57,7 @@ fn project(dest: &Fixture, state: &Fixture, desired: &BTreeMap<Utf8PathBuf, Entr
 
 // The action the strict default plan gives each desired path, against an
 // empty destination — how a test asks what deciding makes of a loaded tree.
-fn actions_for(desired: &BTreeMap<Utf8PathBuf, Entry>) -> BTreeMap<Utf8PathBuf, Action> {
+fn actions_for(desired: &Desired) -> BTreeMap<Utf8PathBuf, Action> {
     let dest = Tree::new().materialize();
     let dest_dir = dir_at(dest.root());
     let manifest = Manifest::new();
@@ -50,7 +66,6 @@ fn actions_for(desired: &BTreeMap<Utf8PathBuf, Entry>) -> BTreeMap<Utf8PathBuf, 
     decide(
         "tree",
         desired,
-        Origin::Caller,
         &manifest,
         &observations,
         None,
@@ -72,7 +87,7 @@ fn a_tree_of_files_exec_bits_and_an_in_tree_link_round_trips() {
     let source = declared.materialize();
 
     let desired = load_tree(source.root()).unwrap();
-    assert_eq!(desired, declared.entries());
+    assert_eq!(desired, from_tree(&source, declared.entries()));
 
     let (dest, state) = (Tree::new().materialize(), Tree::new().materialize());
     project(&dest, &state, &desired);
@@ -101,20 +116,23 @@ fn a_link_out_of_the_tree_is_carried_verbatim_and_graded_external() {
     let desired = load_tree(source.root()).unwrap();
     assert_eq!(
         desired,
-        BTreeMap::from([
-            (
-                Utf8PathBuf::from("escape"),
-                Entry::Symlink {
-                    target: target.to_string(),
-                },
-            ),
-            (
-                Utf8PathBuf::from("climb"),
-                Entry::Symlink {
-                    target: "../../elsewhere".to_owned(),
-                },
-            ),
-        ]),
+        from_tree(
+            &source,
+            BTreeMap::from([
+                (
+                    Utf8PathBuf::from("escape"),
+                    Entry::Symlink {
+                        target: target.to_string(),
+                    },
+                ),
+                (
+                    Utf8PathBuf::from("climb"),
+                    Entry::Symlink {
+                        target: "../../elsewhere".to_owned(),
+                    },
+                ),
+            ]),
+        ),
     );
 
     let actions = actions_for(&desired);
@@ -147,8 +165,8 @@ fn a_directory_link_out_of_the_tree_is_carried_not_walked_into() {
 
     let keys: Vec<String> = load_tree(source.root())
         .unwrap()
-        .keys()
-        .map(|key| key.as_str().to_owned())
+        .iter()
+        .map(|(key, _)| key.as_str().to_owned())
         .collect();
     assert_eq!(keys, ["keep.txt", "peek"]);
 }
@@ -181,13 +199,16 @@ fn an_archive_inside_the_tree_is_a_file_copied_byte_for_byte() {
     let desired = load_tree(source.root()).unwrap();
     assert_eq!(
         desired,
-        BTreeMap::from([(
-            Utf8PathBuf::from("vendor/bundle.tar.gz"),
-            Entry::File {
-                contents: ARCHIVE.to_vec(),
-                executable: false,
-            },
-        )]),
+        from_tree(
+            &source,
+            BTreeMap::from([(
+                Utf8PathBuf::from("vendor/bundle.tar.gz"),
+                Entry::File {
+                    contents: ARCHIVE.to_vec(),
+                    executable: false,
+                },
+            )]),
+        ),
     );
 
     let (dest, state) = (Tree::new().materialize(), Tree::new().materialize());
@@ -213,8 +234,8 @@ fn empty_directories_carry_no_entry() {
 
     let keys: Vec<String> = load_tree(source.root())
         .unwrap()
-        .keys()
-        .map(|key| key.as_str().to_owned())
+        .iter()
+        .map(|(key, _)| key.as_str().to_owned())
         .collect();
     assert_eq!(keys, ["deep/nested/file.txt"]);
 }
@@ -223,7 +244,7 @@ fn empty_directories_carry_no_entry() {
 fn a_source_holding_nothing_projects_nothing() {
     let source = Tree::new().materialize();
 
-    assert_eq!(load_tree(source.root()).unwrap(), BTreeMap::new());
+    assert_eq!(load_tree(source.root()).unwrap(), Desired::new());
 }
 
 #[test]
@@ -232,8 +253,8 @@ fn keys_stay_slash_separated_on_every_host() {
 
     let keys: Vec<String> = load_tree(source.root())
         .unwrap()
-        .keys()
-        .map(|key| key.as_str().to_owned())
+        .iter()
+        .map(|(key, _)| key.as_str().to_owned())
         .collect();
     assert_eq!(keys, ["a/b/c.txt"]);
 }
@@ -251,17 +272,15 @@ fn names_the_containment_gateway_refuses_are_reported_together_verbatim() {
         .file("kept", "fine")
         .materialize();
 
-    let want: BTreeSet<Utf8PathBuf> =
-        ["NUL", "dir\\sub", "weird:name", "sub/trailing.", "sub/COM1"]
-            .into_iter()
-            .map(Utf8PathBuf::from)
-            .collect();
+    let want = refused(
+        &source,
+        &["NUL", "dir\\sub", "weird:name", "sub/trailing.", "sub/COM1"],
+    );
     // A walked key is spelled relative to the source root, so the refusal
     // names the root it is spelled against.
     assert!(matches!(
         load_tree(source.root()).unwrap_err(),
-        Error::Containment { paths, origin }
-            if paths == want && origin == Origin::Tree { path: source.root().to_owned() }
+        Error::Containment { paths } if paths == want
     ));
 }
 
@@ -276,10 +295,10 @@ fn a_directory_the_gateway_refuses_is_named_instead_of_its_descendants() {
         .file("kept", "fine")
         .materialize();
 
-    let want: BTreeSet<Utf8PathBuf> = BTreeSet::from([Utf8PathBuf::from("COM1")]);
+    let want = refused(&source, &["COM1"]);
     assert!(matches!(
         load_tree(source.root()).unwrap_err(),
-        Error::Containment { paths, .. } if paths == want
+        Error::Containment { paths } if paths == want
     ));
 }
 
@@ -290,10 +309,10 @@ fn a_refused_directory_holding_nothing_is_still_refused() {
     // projection may not create.
     let source = Tree::new().dir("weird:name").materialize();
 
-    let want: BTreeSet<Utf8PathBuf> = BTreeSet::from([Utf8PathBuf::from("weird:name")]);
+    let want = refused(&source, &["weird:name"]);
     assert!(matches!(
         load_tree(source.root()).unwrap_err(),
-        Error::Containment { paths, .. } if paths == want
+        Error::Containment { paths } if paths == want
     ));
 }
 
@@ -387,22 +406,25 @@ fn executable_bits_come_from_the_source_metadata() {
 
     assert_eq!(
         load_tree(source.root()).unwrap(),
-        BTreeMap::from([
-            (
-                Utf8PathBuf::from("bin/run"),
-                Entry::File {
-                    contents: b"#!/bin/sh\n".to_vec(),
-                    executable: true,
-                },
-            ),
-            (
-                Utf8PathBuf::from("data.txt"),
-                Entry::File {
-                    contents: b"data".to_vec(),
-                    executable: false,
-                },
-            ),
-        ]),
+        from_tree(
+            &source,
+            BTreeMap::from([
+                (
+                    Utf8PathBuf::from("bin/run"),
+                    Entry::File {
+                        contents: b"#!/bin/sh\n".to_vec(),
+                        executable: true,
+                    },
+                ),
+                (
+                    Utf8PathBuf::from("data.txt"),
+                    Entry::File {
+                        contents: b"data".to_vec(),
+                        executable: false,
+                    },
+                ),
+            ]),
+        ),
     );
 }
 

@@ -8,7 +8,7 @@ use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
-use crate::{Entry, Error, MAX_WALK_DEPTH, Origin, Result};
+use crate::{Desired, Entry, Error, MAX_WALK_DEPTH, Origin, Result};
 
 /// Walks `source` into a desired tree: every regular file becomes an
 /// [`Entry::File`] with its bytes and owner-executable bit, every symlink an
@@ -23,7 +23,7 @@ use crate::{Entry, Error, MAX_WALK_DEPTH, Origin, Result};
 /// # Panics
 ///
 /// Panics if `source` is relative.
-pub fn load_tree(source: &Utf8Path) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
+pub fn load_tree(source: &Utf8Path) -> Result<Desired> {
     assert!(
         source.is_absolute(),
         "tree source path must be absolute, got {source}"
@@ -39,14 +39,23 @@ pub fn load_tree(source: &Utf8Path) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     };
     walk.descend(&root, Utf8Path::new(""), 0)?;
     if !walk.refused.is_empty() {
+        let origin = Origin::Tree {
+            path: source.to_owned(),
+        };
         return Err(Error::Containment {
-            paths: walk.refused,
-            origin: Origin::Tree {
-                path: source.to_owned(),
-            },
+            paths: walk
+                .refused
+                .into_iter()
+                .map(|path| (path, origin.clone()))
+                .collect(),
         });
     }
-    Ok(walk.tree)
+    Ok(Desired::from_source(
+        walk.tree,
+        Origin::Tree {
+            path: source.to_owned(),
+        },
+    ))
 }
 
 /// One [`load_tree`] walk: the tree built so far and the keys containment

@@ -6,7 +6,7 @@ use super::*;
 fn a_plan_serializes_with_paths_as_keys() {
     let plan = Plan {
         owner: "site".to_owned(),
-        origin: Origin::Caller,
+        origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Allow,
         actions: BTreeMap::from([
             (

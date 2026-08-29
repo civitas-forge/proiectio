@@ -1,11 +1,10 @@
 use std::collections::BTreeMap;
 
-use camino::Utf8PathBuf;
 use cap_std::ambient_authority;
 use cap_std::fs_utf8::Dir;
 
 use crate::{
-    ApplyReport, BlockMarkers, Entry, Error, Manifest, Origin, Plan, PlanOptions, Projection,
+    ApplyReport, BlockMarkers, Desired, Error, Manifest, Plan, PlanOptions, Projection,
     RemovalScope, Result, StateLock, apply, block_markers, decide, decide_removal, load_manifest,
     observe,
 };
@@ -82,19 +81,12 @@ impl Run {
     /// as the plan [`apply`](Run::apply) will execute; `origin` is named by
     /// every refusal. Deciding again discards the kept plan first, so a
     /// decision that fails partway leaves the run with no plan.
-    pub fn plan(
-        &mut self,
-        owner: &str,
-        desired: &BTreeMap<Utf8PathBuf, Entry>,
-        origin: Origin,
-        options: PlanOptions,
-    ) -> Result<&Plan> {
+    pub fn plan(&mut self, owner: &str, desired: &Desired, options: PlanOptions) -> Result<&Plan> {
         self.plan = None;
         let observations = observe(&self.dest, &self.manifest, &block_markers(desired))?;
         self.plan = Some(decide(
             owner,
             desired,
-            origin,
             &self.manifest,
             &observations,
             self.projection.state_prefix(),
@@ -136,11 +128,11 @@ impl Run {
     ///
     /// ```no_run
     /// # use camino::Utf8PathBuf;
-    /// # use libproiectio::{Origin, PlanOptions, Projection, Result};
+    /// # use libproiectio::{Desired, PlanOptions, Projection, Result};
     /// # fn write(projection: &Projection) -> Result<()> {
-    /// let desired = Default::default();
+    /// let desired = Desired::new();
     /// let mut run = projection.begin()?;
-    /// run.plan("harness", &desired, Origin::Caller, PlanOptions::default())?;
+    /// run.plan("harness", &desired, PlanOptions::default())?;
     /// let report = run.apply()?;
     /// # let _ = report;
     /// # Ok(())
@@ -152,10 +144,10 @@ impl Run {
     ///
     /// ```compile_fail
     /// # use camino::Utf8PathBuf;
-    /// # use libproiectio::{Origin, PlanOptions, Projection, Result};
+    /// # use libproiectio::{Desired, PlanOptions, Projection, Result};
     /// # fn write(projection: &Projection) -> Result<()> {
-    /// let desired = Default::default();
-    /// let plan = projection.plan("harness", &desired, Origin::Caller, PlanOptions::default())?;
+    /// let desired = Desired::new();
+    /// let plan = projection.plan("harness", &desired, PlanOptions::default())?;
     /// let run = projection.begin()?;
     /// let report = run.apply(&plan)?;
     /// # let _ = report;
