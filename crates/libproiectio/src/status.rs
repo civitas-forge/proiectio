@@ -1,7 +1,6 @@
-use std::collections::BTreeMap;
-
-use camino::Utf8PathBuf;
 use serde::Serialize;
+
+use crate::Report;
 
 /// The classification of one path in the union of the manifest and the
 /// destination directory.
@@ -22,12 +21,8 @@ pub enum PathState {
 
 /// The classification of every path in the union of the manifest and the
 /// destination directory, with nothing written. Non-UTF-8 entries on disk
-/// stay outside the map; unrecorded directories read `Foreign`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct Status {
-    /// Per-path states, keyed by path relative to the destination.
-    pub paths: BTreeMap<Utf8PathBuf, PathState>,
-}
+/// stay outside the report; unrecorded directories read `Foreign`.
+pub type Status = Report<PathState>;
 
 #[cfg(test)]
 #[path = "status_tests.rs"]

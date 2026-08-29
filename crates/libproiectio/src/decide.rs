@@ -7,8 +7,9 @@ use crate::block;
 use crate::containment::{Hop, contained_normalize, contained_target_chain, is_pathname};
 use crate::{
     Action, BlockFault, Desired, DriftPolicy, Entry, EntryKind, Error, ExternalTargetPolicy,
-    MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations, PathState,
-    Placement, Plan, PlanOptions, Refusal, Result, Status, sha256_hex,
+    MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations, Origin,
+    PathFacts, PathState, Placement, Plan, PlanOptions, Refusal, Report, Result, Row, Status,
+    sha256_hex,
 };
 
 /// One [`PathState`] per path in the union of the manifest and the
@@ -18,12 +19,13 @@ pub(crate) fn classify(
     observations: &Observations,
     state_prefix: Option<&Utf8Path>,
 ) -> Status {
-    let mut paths = BTreeMap::new();
+    let mut rows = BTreeMap::new();
     for (path, observation) in &observations.paths {
         if in_state(path, state_prefix) {
             continue;
         }
-        let state = match (manifest.entries.get(path), observation) {
+        let recorded = manifest.entries.get(path);
+        let verdict = match (recorded, observation) {
             (Some(_), Observation::Absent) => PathState::Missing,
             (Some(recorded), Observation::Block { hash: None, .. }) if recorded.kind.is_block() => {
                 PathState::Missing
@@ -38,15 +40,34 @@ pub(crate) fn classify(
             (None, Observation::Absent) => continue,
             (None, _) => PathState::Foreign,
         };
-        paths.insert(path.clone(), state);
+        rows.insert(
+            path.clone(),
+            Row {
+                facts: recorded.map(recorded_facts),
+                verdict,
+            },
+        );
     }
-    for path in manifest.entries.keys() {
+    for (path, recorded) in &manifest.entries {
         if in_state(path, state_prefix) {
             continue;
         }
-        paths.entry(path.clone()).or_insert(PathState::Missing);
+        rows.entry(path.clone()).or_insert_with(|| Row {
+            facts: Some(recorded_facts(recorded)),
+            verdict: PathState::Missing,
+        });
     }
-    Status { paths }
+    Report { rows }
+}
+
+fn recorded_facts(recorded: &ManifestEntry) -> PathFacts {
+    PathFacts {
+        kind: recorded.kind.clone(),
+        executable: recorded.executable,
+        target: None,
+        owners: recorded.owners.clone(),
+        origin: Origin::Caller,
+    }
 }
 
 /// The deciding stage: `(desired, manifest, observations) -> Plan`, with no
@@ -258,15 +279,11 @@ fn plan_actions(
             Action::Release
         } else {
             let state = states
-                .paths
+                .rows
                 .get(path)
-                .expect("recorded paths outside the state subtree always classify");
-            orphan_action(
-                recorded,
-                observations.paths.get(path),
-                *state,
-                options.drift,
-            )
+                .expect("recorded paths outside the state subtree always classify")
+                .verdict;
+            orphan_action(recorded, observations.paths.get(path), state, options.drift)
         };
         if matches!(action, Action::Remove { .. }) {
             vacated.insert(path.clone());
@@ -280,7 +297,7 @@ fn plan_actions(
             None => desired_action(
                 owner,
                 entry,
-                states.paths.get(path),
+                states.rows.get(path).map(|row| &row.verdict),
                 manifest.entries.get(path),
                 observations.paths.get(path),
                 options.drift,
