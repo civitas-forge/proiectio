@@ -106,15 +106,31 @@ fn a_name_no_decoder_claims_is_an_error() {
 }
 
 #[test]
-fn a_missing_path_fails_on_the_open() {
+fn a_missing_path_is_an_io_error_whatever_its_name() {
     let fixture = Tree::new().materialize();
-    let path = fixture.path("absent.tar.gz");
 
-    let error = load_source(&path, None).unwrap_err();
+    for name in ["absent.tar.gz", "absent.txt"] {
+        let path = fixture.path(name);
 
-    assert!(matches!(
-        &error,
-        Error::Io { path: named, source }
-            if *named == path && source.kind() == std::io::ErrorKind::NotFound
-    ));
+        let error = load_source(&path, None).unwrap_err();
+
+        assert!(matches!(
+            &error,
+            Error::Io { path: named, source }
+                if *named == path && source.kind() == std::io::ErrorKind::NotFound
+        ));
+    }
+}
+
+#[test]
+fn a_node_kind_no_loader_reads_is_named_and_never_opened() {
+    let fixture = Tree::new().materialize();
+    let socket = fixture.path("sock.tar");
+    // A socket rather than a FIFO: it needs no privileges and no `mknod`, and
+    // both would otherwise reach the archive loader's blocking open.
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind a unix socket");
+
+    let error = load_source(&socket, None).unwrap_err();
+
+    assert!(matches!(&error, Error::TreeNodeKind { path } if *path == socket));
 }
