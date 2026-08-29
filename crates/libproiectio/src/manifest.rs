@@ -11,29 +11,17 @@ pub const MANIFEST_VERSION: u32 = 1;
 /// The manifest's file name inside the caller-chosen state directory.
 pub const MANIFEST_FILE_NAME: &str = "manifest.json";
 
-/// The single-writer lock file's name, the state directory's other file
-/// (`docs/implementation.lex` section 7). It sits here, beside
-/// [`MANIFEST_FILE_NAME`] and outside the `flock(2)`-gated `lock` module, so
-/// every target can name the file: [`Error::LockHeld`](crate::Error::LockHeld)
-/// reports it everywhere, and a caller on a target that builds no `Run`
-/// still knows which file proiectio's own runs contend on.
+/// The single-writer lock file's name, beside [`MANIFEST_FILE_NAME`] in the
+/// state directory.
 pub const LOCK_FILE_NAME: &str = "proiectio.lock";
 
-/// The recorded state of a projection: one JSON file in a caller-chosen
-/// state directory, mapping each projected path to what was last written
-/// there.
-///
-/// The manifest stores, per path, the SHA-256 of the bytes last written — a
-/// hash rather than the bytes, because the caller can always recompute
-/// desired content for a diff, and a projected secret is never copied into
-/// state. It round-trips through JSON, and `BTreeMap` keeps the
-/// serialization stable and diffable.
+/// The recorded state of a projection: one JSON file in a caller-chosen state
+/// directory, mapping each projected path to what was last written there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     /// Format version; see [`MANIFEST_VERSION`].
     pub version: u32,
-    /// Every path the projection owns, keyed by path relative to the
-    /// destination.
+    /// Every path the projection owns, relative to the destination.
     pub entries: BTreeMap<Utf8PathBuf, ManifestEntry>,
 }
 
@@ -48,8 +36,6 @@ impl Manifest {
 }
 
 impl Default for Manifest {
-    /// Same as [`Manifest::new`]: an empty manifest at the current
-    /// [`MANIFEST_VERSION`], never version 0.
     fn default() -> Self {
         Manifest::new()
     }
@@ -61,16 +47,12 @@ pub struct ManifestEntry {
     /// What kind of node was written.
     pub kind: EntryKind,
     /// Lowercase hex SHA-256 of the bytes last written: the file contents,
-    /// the symlink target string, or — for [`EntryKind::Block`] — the
-    /// region's body alone.
+    /// the symlink target string, or a block's region body alone.
     pub hash: String,
-    /// Whether the written file carries the executable bit. Always `false`
-    /// for symlinks and blocks: a block's container keeps the author's mode,
-    /// which this field says nothing about.
+    /// Whether the written file carries the executable bit; always `false`
+    /// for symlinks and blocks.
     pub executable: bool,
-    /// The opaque owner names holding this path. The crate never interprets
-    /// them; two owners may hold one path only while writing identical
-    /// bytes.
+    /// The opaque owner names holding this path.
     pub owners: BTreeSet<String>,
 }
 

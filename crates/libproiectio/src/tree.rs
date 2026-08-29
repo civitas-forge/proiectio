@@ -10,139 +10,19 @@ use cap_std::fs::Dir;
 
 use crate::{Entry, Error, MAX_WALK_DEPTH, Origin, Result};
 
-/// Walks a source directory into the desired tree [planning](crate::Projection::plan)
-/// takes — one of three, beside [`load_mapping`](crate::load_mapping) and
-/// [`load_archive`](crate::load_archive) (`docs/cli-tour.lex` section 1,
-/// <https://github.com/civitas-forge/proiectio/blob/main/docs/cli-tour.lex>:
-/// a directory tree, verbatim, metadata copied from the source).
+/// Walks `source` into a desired tree: every regular file becomes an
+/// [`Entry::File`] with its bytes and owner-executable bit, every symlink an
+/// [`Entry::Symlink`] carrying the target verbatim, keyed relative to
+/// `source`. Directories carry no entry of their own.
 ///
-/// Every regular file under `source` becomes an [`Entry::File`] carrying its
-/// bytes and its owner-executable bit; every symlink becomes an
-/// [`Entry::Symlink`] carrying the target string verbatim — where UTF-8 can
-/// spell it. [`Entry::Symlink`] holds a `String`, as every path in this
-/// crate is UTF-8, so a target whose bytes have no UTF-8 spelling has no
-/// desired-tree representation and fails the load rather than being
-/// rewritten into one ([`Error::TreeTargetNotUtf8`]). Keys are paths
-/// relative to `source`, so the destination reproduces the source's layout —
-/// which is why a relative in-tree target keeps working once projected: the
-/// link and what it points at move together. Targets are neither graded nor
-/// rewritten here. [Planning](crate::Projection::plan) grades every desired link
-/// (`docs/security.lex` section 3), and a target landing outside the
-/// destination — an absolute one, or one climbing out of the tree — is
-/// refused there unless the caller passes
-/// [`ExternalTargetPolicy::Allow`](crate::ExternalTargetPolicy::Allow).
-///
-/// Directories carry no entry of their own: [`Entry`] has no directory
-/// variant, and a desired tree implies its directories from its files'
-/// parent components. A directory the walk finds empty therefore projects
-/// nothing, and no such directory appears at the destination — a source tree
-/// whose only content is an empty directory produces an empty desired tree.
-///
-/// An archive met *inside* the tree is a file like any other and is copied
-/// byte-for-byte. Extraction happens only where it is asked for
-/// (`docs/cli-tour.lex` section 5).
-///
-/// A desired tree carries every file's bytes, so loading one costs the
-/// source's total size in memory — the shape [`Entry`] takes, and what a
-/// caller computing a tree of its own already pays.
-///
-/// # Trust
-///
-/// The trust split of `docs/security.lex` section 1,
-/// <https://github.com/civitas-forge/proiectio/blob/main/docs/security.lex>:
-/// `source` is the invoker's and is trusted — it may point anywhere the
-/// invoker can read and passes no containment check — while everything
-/// under it is content the invoker did not necessarily author.
-///
-/// So the walk never dereferences what it did not choose to descend. Every
-/// entry is judged by its own `lstat`: a symlink is read as a pointer and
-/// carried as one, never opened, so a link inside the source pointing at
-/// `/etc` reaches the desired tree as a link and never as copied content.
-/// Only real directories are descended. `source` is opened once with
-/// ambient authority and every read below rides that capability handle, so
-/// nothing outside the source tree is ever opened.
-///
-/// An entry's `lstat` and its open are two lookups of one name, and a
-/// source tree somebody else can write may change that name in between. So
-/// neither open follows a final symlink: a name that has become a link is
-/// refused at open rather than descended or read through, which is what
-/// keeps a link aimed at an ancestor from recursing without end. The file
-/// open also waits for nothing (`O_NONBLOCK`), so a name that has become a
-/// FIFO cannot park the walk until a writer appears, and the kind is read
-/// back off the opened handle — a name that changed kind under the walk
-/// fails the load instead of being read as whatever it now is.
-///
-/// # Refusals and errors
-///
-/// A key the containment gateway refuses — [`contained_join`]'s lexical
-/// contract, applied to every walked path exactly as it is applied to every
-/// mapping key — is aggregated, and the whole walk reports its offenders in
-/// one [`Error::Containment`] naming each key verbatim, relative to
-/// `source`. A filesystem name is never `.`, `..`, empty, or absolute, so
-/// what a walked key can offend on is the rest of the contract: a backslash
-/// in a name, a colon, a trailing dot or space, and the Windows reserved
-/// device names — all ordinary names on Unix, none of them a path the
-/// projection may create. The verdict is lexical and comes before any
-/// syscall, so a refused key is neither stat-ed nor opened nor read, and a
-/// refused *directory* is refused whole: every key under it would carry the
-/// refused name as a component, so the walk names the directory and never
-/// enters it. That holds however little it contains — a directory the
-/// gateway refuses fails the load even when it is empty, where an empty
-/// directory bearing an ordinary name simply projects nothing.
-///
-/// The two collision refusals a desired tree can otherwise carry cannot
-/// arise here. Two walked keys never name one location: names within a
-/// directory are distinct and each directory contributes its own prefix.
-/// And no key lies beneath another: every key's ancestors are the
-/// directories that produced it, and a directory carries no entry to be
-/// nested under.
-///
-/// The rest are errors, not refusals — a source tree carrying something the
-/// projection cannot express fails the load rather than declining a
-/// destination path:
-///
-/// - a name that is not UTF-8 — [`Error::TreeNameNotUtf8`]. Observation
-///   *skips* such a name, because it can never match a desired or recorded
-///   path; here it is content the caller asked
-///   to project, and skipping it would drop that content silently;
-/// - a symlink whose target is not UTF-8 — [`Error::TreeTargetNotUtf8`]:
-///   [`Entry::Symlink`] carries a `String`, so such a pointer has no
-///   representation in a desired tree;
-/// - a node of a kind the projection never writes — a FIFO, a socket, or a
-///   device node — [`Error::TreeNodeKind`] naming it. A node the `lstat`
-///   found to be one of those is never opened: reading a FIFO with no
-///   writer blocks forever, which is why observation records such nodes
-///   without opening them either;
-/// - anything the filesystem refuses — [`Error::Io`], carrying the absolute
-///   path of what could not be read.
-///
-/// A name that changed kind between its `lstat` and its open lands in
-/// whichever of those two the open produced, and the walk does not
-/// second-guess it. Where the open itself refuses — a name that has become
-/// a symlink, which `O_NOFOLLOW` will not open, or a socket, which the OS
-/// declines to open through the filesystem at all — the OS error is
-/// reported as [`Error::Io`]. Where the open succeeds and the handle turns
-/// out to hold something other than a regular file — a FIFO, which
-/// `O_NONBLOCK` opens for reading without waiting, or a directory — that is
-/// [`Error::TreeNodeKind`], the same answer the `lstat` would have given
-/// had it seen it first.
-///
-/// One more shape fails the load: a source tree nesting more than
-/// [`MAX_WALK_DEPTH`] directories below `source` — [`Error::TreeTooDeep`],
-/// naming the directory a level past that. The walk spends a stack frame
-/// per level and the source tree chooses the depth, so a tree deep enough
-/// would run the stack off its end; a bind mount making a directory its own
-/// ancestor gives the tree no bottom at all, and no symlink check sees that,
-/// because every level of it is a real directory. The destination walk is
-/// bounded by the same constant, which carries the measurement behind the
-/// number.
-///
-/// [`contained_join`]: crate::contained_join
+/// Walked keys the containment gateway refuses are aggregated into one
+/// [`Error::Containment`]; a name or target that is not UTF-8, a node kind
+/// the projection never writes, and a tree nesting past [`MAX_WALK_DEPTH`]
+/// each fail the load.
 ///
 /// # Panics
 ///
-/// Panics if `source` is relative: the crate never consults the current
-/// directory, so a relative path here has no meaning it could honor.
+/// Panics if `source` is relative.
 pub fn load_tree(source: &Utf8Path) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     assert!(
         source.is_absolute(),
@@ -170,12 +50,8 @@ pub fn load_tree(source: &Utf8Path) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
 }
 
 /// One [`load_tree`] walk: the tree built so far and the keys containment
-/// refused, which accumulate so a source tree is reported whole rather than
-/// one offending name at a time.
+/// refused.
 struct Walk<'a> {
-    /// The absolute source root, used to name paths in errors — the invoker
-    /// chose a location that may sit anywhere, so a relative name would not
-    /// say which tree failed.
     source: &'a Utf8Path,
     tree: BTreeMap<Utf8PathBuf, Entry>,
     refused: BTreeSet<Utf8PathBuf>,
@@ -183,9 +59,7 @@ struct Walk<'a> {
 
 impl Walk<'_> {
     /// Walks every entry of `dir` — the source subdirectory at `prefix`,
-    /// `depth` directory levels below the source root — into the tree,
-    /// recursing into real subdirectories through handles opened from
-    /// `dir`, so every open stays anchored to the source handle.
+    /// `depth` levels below the source root — into the tree.
     fn descend(&mut self, dir: &Dir, prefix: &Utf8Path, depth: usize) -> Result<()> {
         if depth > MAX_WALK_DEPTH {
             return Err(Error::TreeTooDeep {
@@ -204,31 +78,16 @@ impl Walk<'_> {
                     name: raw.to_string_lossy().into_owned(),
                 })?;
             let rel = prefix.join(&name);
-            // Containment first: the verdict is lexical, so a refused name
-            // costs no syscall at all and cannot come back as an I/O error
-            // about a name the walk was never going to project. A directory
-            // is refused here too, and refusing it settles its whole
-            // subtree: every key below carries the refused name as a
-            // component, so none of them could be projected either. The
-            // refusal names the directory rather than the descendants it
-            // would have produced, and the walk never enters it.
             let Some(key) = self.admit(&rel) else {
                 continue;
             };
             // `metadata` and not `file_type`: cap-std reads the latter from
             // the directory stream, and where the filesystem leaves that
             // field unset — XFS without `ftype`, some network filesystems —
-            // it answers "unknown" rather than falling back to a stat, which
-            // this walk would have to read as a kind it refuses. `metadata`
-            // is the `lstat` `observe` takes for the same reason, and a
-            // symlink is described by itself, never by what it points at.
+            // it answers "unknown" rather than falling back to a stat.
             let meta = entry.metadata().map_err(io_at(self.absolute(&rel)))?;
             let file_type = meta.file_type();
             let node = if file_type.is_symlink() {
-                // The target string, verbatim — grading it needs the
-                // destination and belongs to `decide`. `read_link_contents`
-                // never resolves the name it is given, so a link is read as
-                // a pointer whatever it points at.
                 let target = dir
                     .read_link_contents(&name)
                     .map_err(io_at(self.absolute(&rel)))?;
@@ -240,21 +99,10 @@ impl Walk<'_> {
                 })?;
                 Entry::Symlink { target }
             } else if file_type.is_dir() {
-                // A directory is a container, not an entry: the tree it
-                // holds implies it. Judged after the symlink arm, in
-                // `observe`'s order — the two answers are exclusive, so what
-                // sends a link to a directory down the symlink arm is the
-                // stat above being a no-follow one, and the order is there
-                // to keep the two walks reading alike.
                 let sub = open_dir_nofollow(dir, &name).map_err(io_at(self.absolute(&rel)))?;
                 self.descend(&sub, &rel, depth + 1)?;
                 continue;
             } else if file_type.is_file() {
-                // One handle for bytes and mode, so both describe the same
-                // file even if the name is swapped mid-read, and the handle
-                // itself says which kind was opened — the `lstat` above was a
-                // separate lookup and by now may describe a name that has
-                // been replaced.
                 let mut file =
                     open_file_nofollow(dir, &name).map_err(io_at(self.absolute(&rel)))?;
                 let meta = file.metadata().map_err(io_at(self.absolute(&rel)))?;
@@ -272,9 +120,6 @@ impl Walk<'_> {
                     executable,
                 }
             } else {
-                // A FIFO, socket, or device node: the projection writes no
-                // such thing, and opening one to find out what it holds can
-                // block forever.
                 return Err(Error::TreeNodeKind {
                     path: self.absolute(&rel),
                 });
@@ -284,9 +129,8 @@ impl Walk<'_> {
         Ok(())
     }
 
-    /// Runs one walked path through the containment gateway's normalize-only
-    /// half; `None` is a refusal, recorded for the aggregated
-    /// [`Error::Containment`] and named verbatim there.
+    /// Normalizes one walked path, recording it among the refused and
+    /// answering `None` where containment declines it.
     fn admit(&mut self, rel: &Utf8Path) -> Option<Utf8PathBuf> {
         match crate::containment::contained_normalize(rel) {
             Some(normalized) => Some(normalized),
@@ -297,12 +141,8 @@ impl Walk<'_> {
         }
     }
 
-    /// Where `rel` sits on the invoker's filesystem. Errors name absolute
-    /// paths because a source tree may live anywhere the invoker can read,
-    /// and a path relative to a root the message does not carry would not
-    /// locate the offending node. The empty `rel` — the walk's own root —
-    /// is the source itself, spelled without the trailing separator a join
-    /// would leave.
+    /// Where `rel` sits on the invoker's filesystem; the empty `rel` is the
+    /// source itself, without a trailing separator.
     fn absolute(&self, rel: &Utf8Path) -> Utf8PathBuf {
         if rel.as_str().is_empty() {
             self.source.to_owned()
@@ -313,34 +153,15 @@ impl Walk<'_> {
 }
 
 /// Opens the directory `name` inside `dir` without following a final
-/// symlink, through cap-primitives' `open_dir_nofollow` — the same door
-/// apply's no-follow walk opens its directories with, public there and not
-/// on `Dir` itself.
-///
-/// The `lstat` that said "directory" and this open are two lookups of one
-/// name, and refusing the follow is what keeps the gap between them closed:
-/// a link swapped in meanwhile is refused at open rather than descended.
-/// Following it would walk a subtree the caller never named, and following
-/// one aimed at an ancestor would recurse until the stack ran out.
+/// symlink.
 fn open_dir_nofollow(dir: &Dir, name: &str) -> std::io::Result<Dir> {
     let start = std::fs::File::from(dir.as_fd().try_clone_to_owned()?);
     let opened = cap_primitives::fs::open_dir_nofollow(&start, Path::new(name))?;
     Ok(Dir::from_std_file(opened))
 }
 
-/// Opens the regular file `name` inside `dir` for reading, following no
-/// final symlink and waiting for nothing.
-///
-/// Same two-lookup gap as [`open_dir_nofollow`], and the same two
-/// substitutions to refuse: a symlink swapped in is refused at open
-/// (`O_NOFOLLOW`) instead of read through, and a FIFO swapped in opens
-/// (`O_NONBLOCK`) instead of parking the walk until some writer appears. The
-/// caller reads the kind back off the returned handle, so what it reads is
-/// what it opened.
-///
-/// The two `_cap_fs_ext_` methods are cap-primitives' public spelling of
-/// both flags; the `cap_fs_ext` traits that wrap them live in a crate this
-/// one does not depend on.
+/// Opens the file `name` inside `dir` for reading with `O_NOFOLLOW` and
+/// `O_NONBLOCK`; the caller reads the kind back off the returned handle.
 pub(crate) fn open_file_nofollow(dir: &Dir, name: &str) -> std::io::Result<std::fs::File> {
     let start = std::fs::File::from(dir.as_fd().try_clone_to_owned()?);
     let mut options = OpenOptions::new();
@@ -355,9 +176,7 @@ fn io_at(path: Utf8PathBuf) -> impl FnOnce(std::io::Error) -> Error {
     move |source| Error::Io { path, source }
 }
 
-/// Whether the source file's owner-executable bit is set — the one piece of
-/// metadata a projected file carries (`docs/cli-tour.lex` section 1). Read
-/// from the opened handle, as `load_mapping` reads a `source` entry's.
+/// Whether the source file's owner-executable bit is set.
 fn is_executable(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     meta.permissions().mode() & 0o100 != 0
