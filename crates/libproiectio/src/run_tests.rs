@@ -13,7 +13,7 @@ use crate::{
 // A projection over two fixture directories, the state directory outside
 // the destination.
 fn projection(dest: &Fixture, state: &Utf8Path) -> Projection {
-    Projection::new(dest.root().to_owned(), state.to_owned())
+    Projection::new(dest.root(), Some(state)).expect("a projection")
 }
 
 fn desired(tree: &Tree) -> Desired {

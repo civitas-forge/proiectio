@@ -453,7 +453,11 @@ fn a_source_that_is_a_file_is_an_io_error_naming_it() {
 }
 
 #[test]
-#[should_panic(expected = "tree source path must be absolute")]
-fn a_relative_source_path_is_rejected() {
-    let _ = load_tree(Utf8Path::new("skeleton"));
+fn a_relative_source_path_resolves_against_the_current_directory() {
+    let expected = crate::absolutize(Utf8Path::new("skeleton")).expect("absolutized");
+
+    assert!(matches!(
+        load_tree(Utf8Path::new("skeleton")).unwrap_err(),
+        Error::Io { path, .. } if path == expected
+    ));
 }

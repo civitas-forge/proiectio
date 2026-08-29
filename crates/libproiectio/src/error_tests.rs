@@ -59,6 +59,15 @@ fn every_variant() -> Vec<Error> {
         Error::LockHeld {
             path: Utf8PathBuf::from(crate::LOCK_FILE_NAME),
         },
+        Error::CurrentDirectory {
+            source: std::io::Error::other("no such directory"),
+        },
+        Error::PathNotUtf8 {
+            path: "/srv/si\u{fffd}te".to_owned(),
+        },
+        Error::StateDirIsTarget {
+            path: Utf8PathBuf::from("/srv/site"),
+        },
         Error::MappingFormat {
             path: Utf8PathBuf::from("deploy.toml"),
             source: toml::from_str::<toml::Table>("not toml").expect_err("parse failure"),
@@ -162,7 +171,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    let (refusals, failures) = (8, 24);
+    let (refusals, failures) = (8, 27);
     assert_eq!(codes.len(), refusals + failures);
     assert!(codes[..refusals].iter().all(|&code| code == 2));
     assert!(codes[refusals..].iter().all(|&code| code == 1));
@@ -309,6 +318,44 @@ fn a_destination_too_deep_names_the_directory_and_exits_1() {
     );
 }
 
+// The paths a caller hands the library are absolutized before anything
+// opens them, and the three ways that can fail are exit-1 failures naming
+// what could not be resolved.
+#[test]
+fn path_resolution_failures_name_the_path_and_exit_1() {
+    let cwd = Error::CurrentDirectory {
+        source: std::io::Error::other("no such directory"),
+    };
+    assert!(!cwd.is_refusal());
+    assert_eq!(
+        cwd.to_string(),
+        "the current directory cannot be read: no such directory"
+    );
+
+    let not_utf8 = Error::PathNotUtf8 {
+        path: "/srv/si\u{fffd}te".to_owned(),
+    };
+    assert!(!not_utf8.is_refusal());
+    assert_eq!(
+        not_utf8.to_string(),
+        "path is not UTF-8: \"/srv/si\u{fffd}te\""
+    );
+
+    let state = Error::StateDirIsTarget {
+        path: Utf8PathBuf::from("/srv/site"),
+    };
+    assert!(!state.is_refusal());
+    assert_eq!(
+        state.to_string(),
+        "state directory /srv/site is the target directory: the projection's \
+         own state files would classify as foreign"
+    );
+    assert_eq!(
+        value(state),
+        serde_json::json!({ "kind": "state_dir_is_target", "path": "/srv/site" })
+    );
+}
+
 #[test]
 fn io_messages_keep_the_os_error_visible() {
     let error = Error::Io {
@@ -421,7 +468,7 @@ fn every_variant_serializes_under_a_kind_of_its_own() {
         })
         .collect();
 
-    let (refusals, failures) = (8, 24);
+    let (refusals, failures) = (8, 27);
     assert_eq!(kinds.len(), refusals + failures);
     assert!(kinds[..refusals].iter().all(|kind| kind == "refused"));
     assert_eq!(

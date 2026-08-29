@@ -1,13 +1,14 @@
-use camino::Utf8PathBuf;
+use camino::Utf8Path;
 
 use super::*;
 
+fn projection(target: &str, state_dir: Option<&str>) -> Result<Projection> {
+    Projection::new(Utf8Path::new(target), state_dir.map(Utf8Path::new))
+}
+
 #[test]
 fn absolute_paths_are_kept_as_given() {
-    let projection = Projection::new(
-        Utf8PathBuf::from("/srv/site"),
-        Utf8PathBuf::from("/srv/site/.proiectio"),
-    );
+    let projection = projection("/srv/site", Some("/srv/site/.proiectio")).expect("a projection");
 
     assert_eq!(projection.target(), "/srv/site");
     assert_eq!(projection.state_dir(), "/srv/site/.proiectio");
@@ -15,69 +16,60 @@ fn absolute_paths_are_kept_as_given() {
 
 #[test]
 fn state_prefix_is_the_state_dirs_path_inside_the_target() {
-    let projection = Projection::new(
-        Utf8PathBuf::from("/srv/site"),
-        Utf8PathBuf::from("/srv/site/.proiectio"),
-    );
+    let projection = projection("/srv/site", Some("/srv/site/.proiectio")).expect("a projection");
 
     assert_eq!(projection.state_prefix(), Some(Utf8Path::new(".proiectio")));
 }
 
 #[test]
 fn state_prefix_is_none_for_a_state_dir_outside_the_target() {
-    let projection = Projection::new(
-        Utf8PathBuf::from("/srv/site"),
-        Utf8PathBuf::from("/var/state/site"),
-    );
+    let projection = projection("/srv/site", Some("/var/state/site")).expect("a projection");
 
     assert_eq!(projection.state_prefix(), None);
 }
 
 #[test]
-#[should_panic(expected = "state_dir must not equal the target")]
+fn an_omitted_state_dir_defaults_to_proiectio_under_the_target() {
+    let projection = projection("/srv/site", None).expect("a projection");
+
+    assert_eq!(projection.state_dir(), "/srv/site/.proiectio");
+    assert_eq!(projection.state_prefix(), Some(Utf8Path::new(".proiectio")));
+}
+
+#[test]
 fn a_state_dir_equal_to_the_target_is_rejected() {
     // The state files would sit at the destination root with no subtree
     // to exclude, and the projection's own manifest would classify as
     // foreign.
-    Projection::new(
-        Utf8PathBuf::from("/srv/site"),
-        Utf8PathBuf::from("/srv/site"),
-    );
+    assert!(matches!(
+        projection("/srv/site", Some("/srv/site")).unwrap_err(),
+        Error::StateDirIsTarget { path } if path == "/srv/site"
+    ));
 }
 
 #[test]
-#[should_panic(expected = "target must be absolute")]
-fn a_relative_target_is_rejected() {
-    Projection::new(
-        Utf8PathBuf::from("site"),
-        Utf8PathBuf::from("/srv/site/.proiectio"),
-    );
+fn a_state_dir_spelling_the_target_through_parent_components_is_rejected() {
+    assert!(matches!(
+        projection("/srv/site", Some("/srv/site/cache/..")).unwrap_err(),
+        Error::StateDirIsTarget { path } if path == "/srv/site"
+    ));
 }
 
 #[test]
-#[should_panic(expected = "state_dir must be absolute")]
-fn a_relative_state_dir_is_rejected() {
-    Projection::new(Utf8PathBuf::from("/srv/site"), Utf8PathBuf::from("state"));
+fn parent_components_collapse_before_the_paths_are_compared() {
+    let projection =
+        projection("/srv/www/../site", Some("/srv/site/./.proiectio")).expect("a projection");
+
+    assert_eq!(projection.target(), "/srv/site");
+    assert_eq!(projection.state_dir(), "/srv/site/.proiectio");
+    assert_eq!(projection.state_prefix(), Some(Utf8Path::new(".proiectio")));
 }
 
 #[test]
-#[should_panic(expected = "target must not carry `..` components")]
-fn a_target_with_parent_components_is_rejected() {
-    // The type reasons about the paths lexically; a `..` in the target
-    // would defeat the prefix check a nested state directory relies on.
-    Projection::new(
-        Utf8PathBuf::from("/srv/www/../site"),
-        Utf8PathBuf::from("/srv/site/.proiectio"),
-    );
-}
+fn relative_paths_resolve_against_the_current_directory() {
+    let cwd = absolutize(Utf8Path::new(".")).expect("a current directory");
+    let projection = projection("site", Some("state")).expect("a projection");
 
-#[test]
-#[should_panic(expected = "state_dir must not carry `..` components")]
-fn a_state_dir_with_parent_components_is_rejected() {
-    // `/srv/site/cache/..` spells the target itself; refusing the
-    // spelling keeps the equality and prefix checks honest.
-    Projection::new(
-        Utf8PathBuf::from("/srv/site"),
-        Utf8PathBuf::from("/srv/site/cache/.."),
-    );
+    assert_eq!(projection.target(), cwd.join("site"));
+    assert_eq!(projection.state_dir(), cwd.join("state"));
 }

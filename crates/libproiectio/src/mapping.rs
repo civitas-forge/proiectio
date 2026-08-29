@@ -16,15 +16,9 @@ pub const MAPPING_VERSION: u32 = 1;
 /// The version, every projected key, and each entry's `contents`/`source`
 /// choice are all judged before any `source` file is read or any archive is
 /// opened.
-///
-/// # Panics
-///
-/// Panics if `path` is relative.
 pub fn load_mapping(path: &Utf8Path) -> Result<Desired> {
-    assert!(
-        path.is_absolute(),
-        "mapping path must be absolute, got {path}"
-    );
+    let path = crate::absolutize(path)?;
+    let path = path.as_path();
     let text = fs::read_to_string(path).map_err(|source| Error::Io {
         path: path.to_owned(),
         source,

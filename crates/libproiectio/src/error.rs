@@ -75,6 +75,18 @@ pub enum Error {
         /// The lock file's path, relative to the state directory.
         path: Utf8PathBuf,
     },
+    #[error("the current directory cannot be read: {source}")]
+    CurrentDirectory {
+        #[serde(serialize_with = "display_string")]
+        source: std::io::Error,
+    },
+    #[error("path is not UTF-8: {path:?}")]
+    PathNotUtf8 { path: String },
+    #[error(
+        "state directory {path} is the target directory: the projection's own \
+         state files would classify as foreign"
+    )]
+    StateDirIsTarget { path: Utf8PathBuf },
     /// The mapping file does not parse as mapping TOML — a syntax error, a
     /// missing required field, or an unknown key. Not a refusal.
     #[error("mapping {path} is not valid: {source}")]

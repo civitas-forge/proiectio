@@ -707,8 +707,14 @@ fn a_missing_mapping_file_is_an_io_error() {
     ));
 }
 
+// A relative path resolves against the current directory rather than
+// failing, so the error names where the load actually looked.
 #[test]
-#[should_panic(expected = "mapping path must be absolute")]
-fn a_relative_mapping_path_is_rejected() {
-    let _ = load_mapping(Utf8Path::new("deploy.toml"));
+fn a_relative_mapping_path_resolves_against_the_current_directory() {
+    let expected = crate::absolutize(Utf8Path::new("deploy.toml")).expect("absolutized");
+
+    assert!(matches!(
+        load_mapping(Utf8Path::new("deploy.toml")).unwrap_err(),
+        Error::Io { path, .. } if path == expected
+    ));
 }

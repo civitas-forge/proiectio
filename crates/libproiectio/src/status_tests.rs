@@ -8,7 +8,7 @@ use crate::test_support::{Tree, assert_tree};
 use crate::{Desired, Entry, PlanOptions, Projection};
 
 fn projection(dest: &Utf8Path, state: &Utf8Path) -> Projection {
-    Projection::new(dest.to_owned(), state.to_owned())
+    Projection::new(dest, Some(state)).expect("a projection")
 }
 
 // One full plan → apply pass, so a status test has something recorded to
