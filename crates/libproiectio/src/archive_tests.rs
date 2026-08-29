@@ -7,7 +7,7 @@ use cap_std::fs_utf8::Dir as Utf8Dir;
 
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree};
-use crate::{Manifest, PlanOptions, Refusal, apply, decide, load_manifest, observe};
+use crate::{Manifest, Origin, PlanOptions, Refusal, apply, decide, load_manifest, observe};
 
 // ---------------------------------------------------------------------------
 // Building archives
@@ -352,6 +352,7 @@ fn an_expanded_archive_projects_and_its_relative_link_resolves() {
     let plan = decide(
         "archive",
         &desired,
+        Origin::Caller,
         &manifest,
         &observations,
         None,
@@ -580,8 +581,20 @@ fn hostile_member_names_are_refused_and_named() {
         Member::file("stream:name", "ads\n"),
         Member::file("ok", "kept\n"),
     ];
-    let refused = match expand_bytes("hostile.tar", &tar(&members), 0).unwrap_err() {
-        Error::Containment { paths } => paths,
+    let fixture = Tree::new().file("hostile.tar", tar(&members)).materialize();
+    let error = load_archive(&fixture.path("hostile.tar"), 0).unwrap_err();
+    let refused = match &error {
+        // No mapping named this archive, so there is no `via` to carry.
+        Error::Containment { paths, origin } => {
+            assert_eq!(
+                *origin,
+                Origin::Archive {
+                    path: fixture.path("hostile.tar"),
+                    via: None,
+                }
+            );
+            paths
+        }
         other => panic!("expected a containment refusal, got {other}"),
     };
     let named: Vec<&str> = refused.iter().map(|path| path.as_str()).collect();
@@ -610,7 +623,7 @@ fn a_zip_with_windows_separators_is_refused_by_name() {
         zip_file("..\\..\\escape", "out\n"),
     ];
     let refused = match expand_bytes("windows.zip", &zip(&members), 0).unwrap_err() {
-        Error::Containment { paths } => paths,
+        Error::Containment { paths, .. } => paths,
         other => panic!("expected a containment refusal, got {other}"),
     };
     let named: Vec<&str> = refused.iter().map(|path| path.as_str()).collect();
@@ -652,7 +665,7 @@ fn a_zip_member_strip_would_erase_is_still_judged_for_its_kind() {
 fn a_member_name_carrying_a_nul_is_refused() {
     let members = vec![zip_file("a\u{0}b", "x\n"), zip_file("ok", "kept\n")];
     let refused = match expand_bytes("nul.zip", &zip(&members), 0).unwrap_err() {
-        Error::Containment { paths } => paths,
+        Error::Containment { paths, .. } => paths,
         other => panic!("expected a containment refusal, got {other}"),
     };
     assert_eq!(
@@ -724,6 +737,7 @@ fn a_symlink_member_and_a_member_written_through_it_are_refused_together() {
     let plan = decide(
         "archive",
         &desired,
+        Origin::Caller,
         &manifest,
         &observations,
         None,
@@ -1011,6 +1025,7 @@ fn a_prefix_places_every_member_beneath_it() {
         &fixture.path("vendor.tar"),
         0,
         Utf8Path::new("vendor/lib"),
+        None,
         &new_budget(),
     )
     .unwrap();
@@ -1038,11 +1053,12 @@ fn a_prefix_never_absorbs_a_climbing_member() {
         &fixture.path("vendor.tar"),
         0,
         Utf8Path::new("vendor"),
+        None,
         &new_budget(),
     )
     .unwrap_err()
     {
-        Error::Containment { paths } => paths,
+        Error::Containment { paths, .. } => paths,
         other => panic!("expected a containment refusal, got {other}"),
     };
     assert_eq!(
@@ -1063,6 +1079,7 @@ fn a_prefix_leaves_a_symlink_target_verbatim() {
         &fixture.path("vendor.tar"),
         0,
         Utf8Path::new("vendor"),
+        None,
         &new_budget(),
     )
     .unwrap();

@@ -3,7 +3,7 @@ use std::convert::Infallible;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use crate::{Error, Result};
+use crate::{Error, Origin, Result};
 
 /// Joins an untrusted tree path onto the destination, refusing everything
 /// that would land outside it.
@@ -54,7 +54,15 @@ use crate::{Error, Result};
 /// containment — no write through a symlinked ancestor — is a check against
 /// the disk and belongs to apply, not to this function.
 pub fn contained_join(dest: &Utf8Path, rel: &Utf8Path) -> Result<Utf8PathBuf> {
-    Ok(dest.join(contained_normalize(rel)?))
+    match contained_normalize(rel) {
+        Some(normalized) => Ok(dest.join(normalized)),
+        // The caller asked about this one path itself, so the refusal has no
+        // source to name beyond the caller ([`Origin`]).
+        None => Err(Error::Containment {
+            paths: BTreeSet::from([rel.to_owned()]),
+            origin: Origin::Caller,
+        }),
+    }
 }
 
 /// The lexical half of [`contained_join`]: judges `rel` by the full
@@ -62,13 +70,43 @@ pub fn contained_join(dest: &Utf8Path, rel: &Utf8Path) -> Result<Utf8PathBuf> {
 /// onto a destination. Deciding admits every desired-tree key through this —
 /// same gateway, same verdicts — because a [`Plan`](crate::Plan) keys its
 /// actions relative to the destination and needs no absolute join.
-pub(crate) fn contained_normalize(rel: &Utf8Path) -> Result<Utf8PathBuf> {
-    match normalize(rel) {
-        Some(normalized) => Ok(normalized),
-        None => Err(Error::Containment {
-            paths: BTreeSet::from([rel.to_owned()]),
-        }),
+///
+/// `None` is the refusal. Each caller aggregates the keys it refused and
+/// raises one [`Error::Containment`] naming the source they came from, so the
+/// verdict travels as an answer rather than as an error with nothing on it.
+///
+/// Hand-rolled rather than `path-absolutize`/`normpath`: both normalize
+/// through `std::path::Path`, whose separator semantics follow the build
+/// platform — on Unix a hostile `..\..\x` is one opaque component to them —
+/// while this split over `/` gives the same verdict everywhere.
+pub(crate) fn contained_normalize(rel: &Utf8Path) -> Option<Utf8PathBuf> {
+    let raw = rel.as_str();
+    // A NUL terminates a pathname rather than appearing in one, on every
+    // host — the same reason `is_pathname` refuses one in a symlink target.
+    // A key carrying it names nothing the projection could ever write, and
+    // without this the refusal would arrive from the OS during apply,
+    // against a plan that had already called the path writable.
+    if raw.contains('\\') || raw.contains('\0') || raw.starts_with('/') {
+        return None;
     }
+    let mut kept: Vec<&str> = Vec::new();
+    for component in raw.split('/') {
+        match component {
+            "" | "." => return None,
+            ".." => {
+                kept.pop()?;
+            }
+            name if windows_resolves_specially(name) => return None,
+            name => kept.push(name),
+        }
+    }
+    if kept.is_empty() {
+        return None;
+    }
+    // Rejoin with `/` explicitly: a normalized key must be byte-identical
+    // on every host, and collecting into a path would separate with the
+    // platform separator.
+    Some(Utf8PathBuf::from(kept.join("/")))
 }
 
 /// What the chain resolution finds at one component of a target's path —
@@ -274,42 +312,6 @@ fn starts_with_drive(target: &str) -> bool {
         (chars.next(), chars.next()),
         (Some(letter), Some(':')) if letter.is_ascii_alphabetic()
     )
-}
-
-/// Lexical normalization of a relative tree path; `None` is a refusal.
-///
-/// Hand-rolled rather than `path-absolutize`/`normpath`: both normalize
-/// through `std::path::Path`, whose separator semantics follow the build
-/// platform — on Unix a hostile `..\..\x` is one opaque component to them —
-/// while this split over `/` gives the same verdict everywhere.
-fn normalize(rel: &Utf8Path) -> Option<Utf8PathBuf> {
-    let raw = rel.as_str();
-    // A NUL terminates a pathname rather than appearing in one, on every
-    // host — the same reason `is_pathname` refuses one in a symlink target.
-    // A key carrying it names nothing the projection could ever write, and
-    // without this the refusal would arrive from the OS during apply,
-    // against a plan that had already called the path writable.
-    if raw.contains('\\') || raw.contains('\0') || raw.starts_with('/') {
-        return None;
-    }
-    let mut kept: Vec<&str> = Vec::new();
-    for component in raw.split('/') {
-        match component {
-            "" | "." => return None,
-            ".." => {
-                kept.pop()?;
-            }
-            name if windows_resolves_specially(name) => return None,
-            name => kept.push(name),
-        }
-    }
-    if kept.is_empty() {
-        return None;
-    }
-    // Rejoin with `/` explicitly: a normalized key must be byte-identical
-    // on every host, and collecting into a path would separate with the
-    // platform separator.
-    Some(Utf8PathBuf::from(kept.join("/")))
 }
 
 /// Component shapes Windows resolves somewhere other than an ordinary file

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::Utf8PathBuf;
 use serde::Serialize;
 
-use crate::{Entry, EntryKind};
+use crate::{Entry, EntryKind, Origin};
 
 /// What planning does when a recorded path's state on disk differs from
 /// the recorded entry — bytes, kind, or executable bit — a user edit.
@@ -38,7 +38,7 @@ pub enum ExternalTargetPolicy {
     Allow,
 }
 
-/// The policy inputs one [`decide`](crate::decide) call runs under: what
+/// The policy inputs one [planning](crate::Projection::plan) call runs under: what
 /// the caller permits, as opposed to what the desired tree, the manifest,
 /// and the disk say.
 ///
@@ -93,6 +93,12 @@ pub struct Plan {
     /// The owner the plan was computed for; applied entries are recorded
     /// under this name in the manifest.
     pub owner: String,
+    /// Where the desired tree came from, named by every refusal this plan
+    /// produces — the ones deciding put in it, and the ones applying it
+    /// raises ([`Origin`]). A removal carries
+    /// [`Origin::Caller`](crate::Origin::Caller): it is decided from the
+    /// manifest, and there is no source tree to name.
+    pub origin: Origin,
     /// Whether the caller permitted external symlink targets when this
     /// plan was decided.
     ///
@@ -252,7 +258,7 @@ pub enum Refusal {
     /// disk — apply's walk follows a link the projection owns — but the
     /// write would land somewhere the plan does not name, which apply
     /// refuses and deciding will not plan (the no-alias rule
-    /// [`decide`](crate::decide) documents). Both sides
+    /// `docs/design.lex` section 2 states). Both sides
     /// of a conflict are refused — there is no deterministic entry to
     /// prefer; see [`Error::TreeConflict`](crate::Error::TreeConflict).
     /// [`load_mapping`](crate::load_mapping) rejects same-path duplicates
@@ -269,7 +275,7 @@ pub enum Refusal {
     /// via `..`, empty or `.` components, backslashes, and component
     /// shapes Windows resolves specially — its rustdoc is the full list),
     /// it lies beneath a symlink that outlives the plan (the no-alias rule
-    /// [`decide`](crate::decide) documents — a link on disk, owned or
+    /// `docs/design.lex` section 2 states — a link on disk, owned or
     /// foreign, that no action in this plan removes; beneath a *desired*
     /// link the refusal is [`TreeConflict`](Refusal::TreeConflict)), or it
     /// overlaps the projection's own state directory — a location inside

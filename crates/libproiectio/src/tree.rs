@@ -8,9 +8,9 @@ use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
-use crate::{Entry, Error, MAX_WALK_DEPTH, Result};
+use crate::{Entry, Error, MAX_WALK_DEPTH, Origin, Result};
 
-/// Walks a source directory into the desired tree [`decide`](crate::decide)
+/// Walks a source directory into the desired tree [planning](crate::Projection::plan)
 /// takes — one of three, beside [`load_mapping`](crate::load_mapping) and
 /// [`load_archive`](crate::load_archive) (`docs/cli-tour.lex` section 1,
 /// <https://github.com/civitas-forge/proiectio/blob/main/docs/cli-tour.lex>:
@@ -26,7 +26,7 @@ use crate::{Entry, Error, MAX_WALK_DEPTH, Result};
 /// relative to `source`, so the destination reproduces the source's layout —
 /// which is why a relative in-tree target keeps working once projected: the
 /// link and what it points at move together. Targets are neither graded nor
-/// rewritten here. [`decide`](crate::decide) grades every desired link
+/// rewritten here. [Planning](crate::Projection::plan) grades every desired link
 /// (`docs/security.lex` section 3), and a target landing outside the
 /// destination — an absolute one, or one climbing out of the tree — is
 /// refused there unless the caller passes
@@ -103,7 +103,7 @@ use crate::{Entry, Error, MAX_WALK_DEPTH, Result};
 ///
 /// - a name that is not UTF-8 — [`Error::TreeNameNotUtf8`]. Observation
 ///   *skips* such a name, because it can never match a desired or recorded
-///   path ([`observe`](crate::observe)); here it is content the caller asked
+///   path; here it is content the caller asked
 ///   to project, and skipping it would drop that content silently;
 /// - a symlink whose target is not UTF-8 — [`Error::TreeTargetNotUtf8`]:
 ///   [`Entry::Symlink`] carries a `String`, so such a pointer has no
@@ -133,9 +133,9 @@ use crate::{Entry, Error, MAX_WALK_DEPTH, Result};
 /// per level and the source tree chooses the depth, so a tree deep enough
 /// would run the stack off its end; a bind mount making a directory its own
 /// ancestor gives the tree no bottom at all, and no symlink check sees that,
-/// because every level of it is a real directory. [`observe`](crate::observe)
-/// bounds its destination walk by the same constant, which carries the
-/// measurement behind the number.
+/// because every level of it is a real directory. The destination walk is
+/// bounded by the same constant, which carries the measurement behind the
+/// number.
 ///
 /// [`contained_join`]: crate::contained_join
 ///
@@ -161,6 +161,9 @@ pub fn load_tree(source: &Utf8Path) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     if !walk.refused.is_empty() {
         return Err(Error::Containment {
             paths: walk.refused,
+            origin: Origin::Tree {
+                path: source.to_owned(),
+            },
         });
     }
     Ok(walk.tree)
@@ -286,8 +289,8 @@ impl Walk<'_> {
     /// [`Error::Containment`] and named verbatim there.
     fn admit(&mut self, rel: &Utf8Path) -> Option<Utf8PathBuf> {
         match crate::containment::contained_normalize(rel) {
-            Ok(normalized) => Some(normalized),
-            Err(_) => {
+            Some(normalized) => Some(normalized),
+            None => {
                 self.refused.insert(rel.to_owned());
                 None
             }

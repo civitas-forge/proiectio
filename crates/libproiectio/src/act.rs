@@ -26,7 +26,7 @@ use crate::observe::{Container, io_error, read_container, sha256_hex_of_reader};
 use crate::{
     Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error, ExternalTargetPolicy,
     MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature,
-    Placement, Plan, Refusal, Result, sha256_hex,
+    Origin, Placement, Plan, Refusal, Result, sha256_hex,
 };
 
 /// Loads the manifest from `state`'s [`MANIFEST_FILE_NAME`]; a state
@@ -38,7 +38,7 @@ use crate::{
 /// know — reports [`Error::ManifestVersion`], not
 /// [`Error::ManifestFormat`]. Error paths are reported relative to the
 /// state directory, which is all the capability handle can name.
-pub fn load_manifest(state: &Dir) -> Result<Manifest> {
+pub(crate) fn load_manifest(state: &Dir) -> Result<Manifest> {
     let path = Utf8Path::new(MANIFEST_FILE_NAME);
     let bytes = match state.read(path) {
         Ok(bytes) => bytes,
@@ -73,7 +73,7 @@ pub fn load_manifest(state: &Dir) -> Result<Manifest> {
 /// a torn write — and a failed persist removes its tempfile on drop, so the
 /// state directory is never littered. Mode `0o644`, set on the open
 /// tempfile handle before the rename, so bytes and mode publish together.
-pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
+pub(crate) fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
     let path = Utf8Path::new(MANIFEST_FILE_NAME);
     let mut json = serde_json::to_vec_pretty(manifest).map_err(|source| Error::ManifestFormat {
         path: path.to_owned(),
@@ -185,10 +185,10 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// also permit a torn write inside somebody else's file and write through a
 /// hard link into whatever else names that inode.
 ///
-/// `StateLock` serializes two proiectio runs sharing a state directory, and
-/// therefore their container writes too. It does not cover the author's
-/// editor, `git checkout`, another tool's installer, a caller that never
-/// takes the lock, or **the window between this read of the container and its
+/// The run's guard serializes two proiectio runs sharing a state directory,
+/// and therefore their container writes too. It does not cover the author's
+/// editor, `git checkout`, another tool's installer, or **the window between
+/// this read of the container and its
 /// rename** — a concurrent write in that window is silently lost, because the
 /// bytes outside the region are never compared to anything. Re-reading before
 /// the rename would narrow that window, not close it, so it is not done. This
@@ -286,7 +286,19 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// fail, the action's error is still the one returned: it is the primary
 /// truth about the run.) A failed write's tempfile is removed on drop —
 /// `dest` is never littered with temp files.
-pub fn apply(dest: &Dir, state: &Dir, manifest: &Manifest, plan: &Plan) -> Result<ApplyReport> {
+pub(crate) fn apply(
+    dest: &Dir,
+    state: &Dir,
+    manifest: &Manifest,
+    plan: &Plan,
+) -> Result<ApplyReport> {
+    execute(dest, state, manifest, plan).map_err(|error| error.with_origin(&plan.origin))
+}
+
+/// [`apply`] without the origin: every refusal below is raised from a path
+/// and a manifest, so the tree they came from is named once, as the error
+/// leaves.
+fn execute(dest: &Dir, state: &Dir, manifest: &Manifest, plan: &Plan) -> Result<ApplyReport> {
     validate(manifest, plan)?;
     let mut manifest = manifest.clone();
     let mut outcomes = BTreeMap::new();
@@ -360,7 +372,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         // plain data, and a hand-built `../escape` or `a/../b` key must
         // refuse here, not resolve.
         match contained_normalize(path) {
-            Ok(normalized) if normalized == *path => {}
+            Some(normalized) if normalized == *path => {}
             _ => {
                 containment.insert(path.clone());
                 continue;
@@ -453,11 +465,15 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         }
     }
     if !containment.is_empty() {
-        return Err(Error::Containment { paths: containment });
+        return Err(Error::Containment {
+            paths: containment,
+            origin: Origin::Caller,
+        });
     }
     if !tree_conflict.is_empty() {
         return Err(Error::TreeConflict {
             paths: tree_conflict,
+            origin: Origin::Caller,
         });
     }
     if !foreign.is_empty() {
@@ -472,10 +488,16 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         });
     }
     if !external.is_empty() {
-        return Err(Error::ExternalTarget { links: external });
+        return Err(Error::ExternalTarget {
+            links: external,
+            origin: Origin::Caller,
+        });
     }
     if !invalid.is_empty() {
-        return Err(Error::InvalidTarget { links: invalid });
+        return Err(Error::InvalidTarget {
+            links: invalid,
+            origin: Origin::Caller,
+        });
     }
     if !blocks.is_empty() {
         return Err(Error::Block { blocks });
@@ -760,7 +782,10 @@ fn settle_links(
             }
         }
         if held.len() == before {
-            return Err(Error::ExternalTarget { links: escaping });
+            return Err(Error::ExternalTarget {
+                links: escaping,
+                origin: Origin::Caller,
+            });
         }
         pending = held;
     }
@@ -813,6 +838,7 @@ fn regrade_recorded_link(
     }
     Err(Error::ExternalTarget {
         links: BTreeMap::from([(path.to_owned(), target.to_owned())]),
+        origin: Origin::Caller,
     })
 }
 
@@ -1815,6 +1841,7 @@ fn drift(path: &Utf8Path) -> Error {
 fn containment(path: &Utf8Path) -> Error {
     Error::Containment {
         paths: BTreeSet::from([path.to_owned()]),
+        origin: Origin::Caller,
     }
 }
 

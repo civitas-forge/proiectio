@@ -4,31 +4,24 @@
 //!
 //! The model compares three trees pairwise: the *desired* tree the caller
 //! passes ([`Entry`] values keyed by relative path), the *recorded* state in
-//! the [`Manifest`], and the files on disk — read once by [`observe()`] into
-//! an [`Observations`] snapshot. Planning ([`decide`]) turns the comparison
-//! into a [`Plan`] of per-path actions; applying executes the plan and
-//! returns an [`ApplyReport`]; [`Status`] is the classification
-//! ([`classify`]) alone, with nothing written.
+//! the [`Manifest`], and the files on disk. Comparing them produces a
+//! [`Plan`] of per-path actions; executing one returns an [`ApplyReport`];
+//! [`Status`] is the classification alone, with nothing written.
 //!
-//! Two entry points ride that cycle rather than adding to it.
-//! [`decide_removal`] plans the clearing of what one owner holds — the
-//! whole owner, or the paths a caller names ([`RemovalScope`]) — which is
-//! [`decide`] against an empty desired tree, refusing exactly what every
-//! other plan refuses. Applying that plan is `apply` as usual: it removes
-//! in reverse order and prunes the directories the removals emptied.
-//! [`status`] is the read-only run: load the manifest, [`observe`],
-//! [`classify`], return the report, write nothing.
+//! [`Projection`] is the whole surface, and it is a validated pair of
+//! absolute paths: the destination, and the state directory holding its
+//! manifest. Nothing public takes or returns a directory handle — the
+//! projection opens what a call needs. The reads take no lock
+//! ([`Projection::status`], [`Projection::manifest`], [`Projection::plan`],
+//! [`Projection::plan_removal`]); [`Projection::begin`] returns the [`Run`]
+//! that holds the single-writer guard and is the only thing that can apply
+//! ([`Run::apply`] takes no plan). `docs/design.lex` section 3 states the
+//! rules that surface keeps, [`Run`] repeats them for a reader in the
+//! rustdoc, and nothing else here restates them.
 //!
-//! Excluding a concurrent writer is the caller's to do: `StateLock` takes a
-//! single-writer advisory lock on the state directory, and a caller that
-//! can race another proiectio process acquires it before
-//! `load_manifest` — the read the whole cycle hangs off — and holds the
-//! guard until the manifest has been persisted. The functions here take
-//! plain capability handles and never acquire it themselves, so the
-//! manifest's read-modify-write survives concurrent runs only when the
-//! caller brackets them that way (`docs/implementation.lex` section 7).
-//! `StateLock` is built where `flock(2)` is; [`LOCK_FILE_NAME`] is spelled
-//! on every target, so a caller elsewhere can coordinate on the same file.
+//! The lock is built where `flock(2)` is, and so is [`Run`];
+//! [`LOCK_FILE_NAME`] is spelled on every target, so a caller elsewhere can
+//! coordinate on the same file.
 //!
 //! The crate carries no consumer vocabulary: content arrives as bytes,
 //! owners are opaque strings, and nothing here names what the files are
@@ -54,7 +47,8 @@
 //! [`Error::OwnerConflict`], [`Error::ExternalTarget`],
 //! [`Error::InvalidTarget`], [`Error::TreeConflict`], [`Error::Block`]) —
 //! from I/O and format failures. A CLI derives its 0/1/2 exit contract from
-//! one match; see [`Error::is_refusal`].
+//! one match; see [`Error::is_refusal`]. Four of the refusals also name the
+//! [`Origin`] of the tree that provoked them.
 
 #![forbid(unsafe_code)]
 
@@ -71,10 +65,9 @@ mod error;
 // has no `flock` at all), so `cfg(unix)` alone would select a module that
 // cannot build there. The list is rustix's own, minus the non-Unix `wasi`,
 // and has to follow `rustix::fs::flock`'s `cfg` when that dependency moves —
-// nothing checks the two against each other. The re-export below repeats the
-// gate because a `use` of a module a `cfg` removed does not compile; the
-// reverse slip, a module built but not re-exported, leaves `StateLock`
-// unreachable and so dead code, which the `-D warnings` clippy run rejects.
+// nothing checks the two against each other. `run`, whose `Run` owns the
+// guard, carries the same gate for the same reason, and the re-exports below
+// repeat it because a `use` of a module a `cfg` removed does not compile.
 #[cfg(all(
     unix,
     not(any(
@@ -88,9 +81,20 @@ mod lock;
 mod manifest;
 mod mapping;
 mod observe;
+mod origin;
 mod plan;
 mod projection;
 mod report;
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "espidf",
+        target_os = "horizon",
+        target_os = "solaris",
+        target_os = "vita"
+    ))
+))]
+mod run;
 mod status;
 #[cfg(all(test, unix))]
 mod test_support;
@@ -98,7 +102,7 @@ mod test_support;
 mod tree;
 
 #[cfg(unix)]
-pub use act::*;
+pub(crate) use act::*;
 pub use archive::*;
 pub use containment::*;
 pub use decide::*;
@@ -113,13 +117,24 @@ pub use error::*;
         target_os = "vita"
     ))
 ))]
-pub use lock::*;
+pub(crate) use lock::*;
 pub use manifest::*;
 pub use mapping::*;
 pub use observe::*;
+pub use origin::*;
 pub use plan::*;
 pub use projection::*;
 pub use report::*;
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "espidf",
+        target_os = "horizon",
+        target_os = "solaris",
+        target_os = "vita"
+    ))
+))]
+pub use run::*;
 pub use status::*;
 #[cfg(unix)]
 pub use tree::*;

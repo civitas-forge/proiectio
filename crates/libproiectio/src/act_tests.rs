@@ -58,7 +58,15 @@ fn plan_for_with(
     let state = dir_at(state.root());
     let manifest = load_manifest(&state).expect("load manifest");
     let observations = observe(&dest, &manifest).expect("observe destination");
-    let plan = decide(owner, desired, &manifest, &observations, None, options);
+    let plan = decide(
+        owner,
+        desired,
+        Origin::Caller,
+        &manifest,
+        &observations,
+        None,
+        options,
+    );
     (manifest, plan)
 }
 
@@ -271,7 +279,7 @@ fn an_unrecorded_symlinked_ancestor_is_refused() {
             .expect_err("no write through an unowned link");
 
         match error {
-            Error::Containment { paths } => {
+            Error::Containment { paths, .. } => {
                 assert_eq!(paths, BTreeSet::from(["logs/x.txt".into()]))
             }
             other => panic!("expected Containment for target {target}, got {other:?}"),
@@ -511,7 +519,7 @@ fn a_subset_removal_refuses_a_path_that_violates_containment() {
 
     assert!(matches!(
         &error,
-        Error::Containment { paths } if paths == &BTreeSet::from([Utf8PathBuf::from("../escape")])
+        Error::Containment { paths, .. } if paths == &BTreeSet::from([Utf8PathBuf::from("../escape")])
     ));
     // Up front, so the admitted path in the same request is untouched.
     assert_tree(dest.root(), &tree);
@@ -677,6 +685,7 @@ fn a_hand_built_plan_with_unnormalized_keys_refuses_containment() {
     };
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([
             (
@@ -693,7 +702,7 @@ fn a_hand_built_plan_with_unnormalized_keys_refuses_containment() {
         apply_at(&dest, &state, &Manifest::new(), &plan).expect_err("the gateway re-judges keys");
 
     match error {
-        Error::Containment { paths } => {
+        Error::Containment { paths, .. } => {
             assert_eq!(paths, BTreeSet::from(["../escape".into(), "a/../b".into()]))
         }
         other => panic!("expected Containment, got {other:?}"),
@@ -720,6 +729,7 @@ fn a_plan_writing_past_the_walk_depth_is_named_and_writes_nothing() {
 
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         actions: BTreeMap::from([(
             at_the_limit.clone(),
             Action::Write {
@@ -737,6 +747,7 @@ fn a_plan_writing_past_the_walk_depth_is_named_and_writes_nothing() {
     let (dest, state) = fixtures();
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         actions: BTreeMap::from([(past.clone(), Action::Write { entry })]),
         external_targets: ExternalTargetPolicy::Refuse,
     };
@@ -778,6 +789,7 @@ fn a_write_landing_past_the_walk_depth_through_an_owned_link_is_named() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         actions: BTreeMap::from([(
             "deep/one-more/leaf".into(),
             Action::Write {
@@ -811,6 +823,7 @@ fn a_forged_remove_of_an_unrecorded_path_refuses_foreign() {
         .write_under(dest.root());
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "victim.txt".into(),
@@ -842,6 +855,7 @@ fn a_forged_skip_of_an_unrecorded_path_refuses_instead_of_adopting() {
         .write_under(dest.root());
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "theirs.txt".into(),
@@ -888,6 +902,7 @@ fn a_hand_built_plan_replacing_a_region_with_a_whole_file_fails_up_front() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([
             (
@@ -951,6 +966,7 @@ fn a_recorded_link_whose_matching_target_is_not_utf8_refuses_containment() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "logs/x.txt".into(),
@@ -967,7 +983,9 @@ fn a_recorded_link_whose_matching_target_is_not_utf8_refuses_containment() {
         .expect_err("an ungradable target is never followed");
 
     match error {
-        Error::Containment { paths } => assert_eq!(paths, BTreeSet::from(["logs/x.txt".into()])),
+        Error::Containment { paths, .. } => {
+            assert_eq!(paths, BTreeSet::from(["logs/x.txt".into()]))
+        }
         other => panic!("expected Containment, got {other:?}"),
     }
 }
@@ -992,6 +1010,7 @@ fn a_file_write_the_walk_would_relocate_through_an_owned_link_refuses() {
     // plan — or from a link that appeared in the plan-to-apply gap.
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "logs/x.txt".into(),
@@ -1008,7 +1027,9 @@ fn a_file_write_the_walk_would_relocate_through_an_owned_link_refuses() {
         apply_at(&dest, &state, &manifest, &plan).expect_err("a file is never written off its key");
 
     match error {
-        Error::Containment { paths } => assert_eq!(paths, BTreeSet::from(["logs/x.txt".into()])),
+        Error::Containment { paths, .. } => {
+            assert_eq!(paths, BTreeSet::from(["logs/x.txt".into()]))
+        }
         other => panic!("expected Containment, got {other:?}"),
     }
     assert_tree(dest.root(), &linked);
@@ -1036,6 +1057,7 @@ fn a_block_whose_container_the_walk_relocates_refuses() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "logs/rc".into(),
@@ -1049,7 +1071,7 @@ fn a_block_whose_container_the_walk_relocates_refuses() {
         .expect_err("a region is never spliced off its key");
 
     match error {
-        Error::Containment { paths } => assert_eq!(paths, BTreeSet::from(["logs/rc".into()])),
+        Error::Containment { paths, .. } => assert_eq!(paths, BTreeSet::from(["logs/rc".into()])),
         other => panic!("expected Containment, got {other:?}"),
     }
     assert_tree(dest.root(), &linked);
@@ -1095,7 +1117,9 @@ fn a_link_released_and_reappearing_in_the_gap_does_not_relocate_the_write() {
         .expect_err("the write refuses rather than land under the link");
 
     match error {
-        Error::Containment { paths } => assert_eq!(paths, BTreeSet::from(["pivot/x.txt".into()])),
+        Error::Containment { paths, .. } => {
+            assert_eq!(paths, BTreeSet::from(["pivot/x.txt".into()]))
+        }
         other => panic!("expected Containment, got {other:?}"),
     }
     assert_tree(
@@ -1165,6 +1189,7 @@ fn a_link_the_walk_would_relocate_through_an_owned_link_refuses() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([
             (
@@ -1190,7 +1215,7 @@ fn a_link_the_walk_would_relocate_through_an_owned_link_refuses() {
         .expect_err("a link is never published off its key");
 
     match error {
-        Error::Containment { paths } => assert_eq!(paths, BTreeSet::from(["pivot/x".into()])),
+        Error::Containment { paths, .. } => assert_eq!(paths, BTreeSet::from(["pivot/x".into()])),
         other => panic!("expected Containment, got {other:?}"),
     }
     // `a` landed — `real/x` is nothing, so it points at `escape` inside the
@@ -1222,6 +1247,7 @@ fn a_removal_through_an_owned_link_prunes_the_resolved_directory() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "logs/x.txt".into(),
@@ -1299,6 +1325,7 @@ fn a_recorded_symlink_ancestor_with_a_changed_target_refuses_drift() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "logs/x.txt".into(),
@@ -1332,6 +1359,7 @@ fn a_recorded_symlink_ancestor_with_an_external_target_refuses_containment() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "logs/x.txt".into(),
@@ -1348,7 +1376,7 @@ fn a_recorded_symlink_ancestor_with_an_external_target_refuses_containment() {
         .expect_err("never write through an external target");
 
     match error {
-        Error::Containment { paths } => {
+        Error::Containment { paths, .. } => {
             assert_eq!(paths, BTreeSet::from(["logs/x.txt".into()]))
         }
         other => panic!("expected Containment, got {other:?}"),
@@ -1373,6 +1401,7 @@ fn an_owned_link_cycle_refuses_instead_of_looping() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "l1/x.txt".into(),
@@ -1388,7 +1417,7 @@ fn an_owned_link_cycle_refuses_instead_of_looping() {
     let error = apply_at(&dest, &state, &manifest, &plan).expect_err("cycles refuse");
 
     match error {
-        Error::Containment { paths } => assert_eq!(paths, BTreeSet::from(["l1/x.txt".into()])),
+        Error::Containment { paths, .. } => assert_eq!(paths, BTreeSet::from(["l1/x.txt".into()])),
         other => panic!("expected Containment, got {other:?}"),
     }
 }
@@ -1429,6 +1458,7 @@ fn a_target_that_is_not_a_pathname_fails_up_front_and_writes_nothing() {
     let (dest, state) = fixtures();
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([
             (
@@ -1455,7 +1485,7 @@ fn a_target_that_is_not_a_pathname_fails_up_front_and_writes_nothing() {
         .expect_err("an empty target is not a path");
 
     match error {
-        Error::InvalidTarget { links } => assert_eq!(
+        Error::InvalidTarget { links, .. } => assert_eq!(
             links,
             BTreeMap::from([(Utf8PathBuf::from("z-link"), String::new())])
         ),
@@ -1569,7 +1599,7 @@ fn external_targets_refuse_without_the_policy_and_land_verbatim_with_it() {
         .expect_err("external targets are opt-in");
 
     match error {
-        Error::ExternalTarget { links } => assert_eq!(
+        Error::ExternalTarget { links, .. } => assert_eq!(
             links,
             BTreeMap::from([
                 (Utf8PathBuf::from("absolute"), "/etc/hosts".to_owned()),
@@ -1626,7 +1656,7 @@ fn nothing_is_written_through_a_permitted_external_link() {
         .expect_err("no write through an external target");
 
     match error {
-        Error::TreeConflict { paths } => {
+        Error::TreeConflict { paths, .. } => {
             assert_eq!(paths, BTreeSet::from(["out".into(), "out/x.txt".into()]))
         }
         other => panic!("expected TreeConflict, got {other:?}"),
@@ -1648,7 +1678,7 @@ fn a_target_escaping_through_a_pivot_link_refuses_without_the_permission() {
         .expect_err("a pointer through a pivot reaches /etc/passwd");
 
     match error {
-        Error::ExternalTarget { links } => assert_eq!(
+        Error::ExternalTarget { links, .. } => assert_eq!(
             links,
             BTreeMap::from([(Utf8PathBuf::from("evil"), "pivot/passwd".to_owned())])
         ),
@@ -1724,7 +1754,7 @@ fn a_pivot_swapped_after_the_plan_refuses_instead_of_publishing_the_pointer() {
         .expect_err("the plan-time verdict no longer holds");
 
     match error {
-        Error::ExternalTarget { links } => assert_eq!(
+        Error::ExternalTarget { links, .. } => assert_eq!(
             links,
             BTreeMap::from([(Utf8PathBuf::from("rc"), "pivot/rc".to_owned())])
         ),
@@ -1751,7 +1781,7 @@ fn a_pointer_escaping_through_a_link_the_same_tree_projects_refuses() {
         .expect_err("the pair dereferences outside the destination");
 
     match error {
-        Error::ExternalTarget { links } => assert_eq!(
+        Error::ExternalTarget { links, .. } => assert_eq!(
             links,
             BTreeMap::from([(Utf8PathBuf::from("a"), "b/../escape".to_owned())])
         ),
@@ -1978,7 +2008,7 @@ fn a_skipped_link_whose_pivot_was_swapped_refuses() {
         .expect_err("the skipped link now resolves outside the destination");
 
     match error {
-        Error::ExternalTarget { links } => assert_eq!(
+        Error::ExternalTarget { links, .. } => assert_eq!(
             links,
             BTreeMap::from([(Utf8PathBuf::from("rc"), "pivot/x".to_owned())])
         ),
@@ -2011,7 +2041,9 @@ fn a_path_beneath_another_owners_link_refuses_containment() {
         .expect_err("a projected path never resolves through a link");
 
     match error {
-        Error::Containment { paths } => assert_eq!(paths, BTreeSet::from(["logs/x.txt".into()])),
+        Error::Containment { paths, .. } => {
+            assert_eq!(paths, BTreeSet::from(["logs/x.txt".into()]))
+        }
         other => panic!("expected Containment, got {other:?}"),
     }
     assert_tree(dest.root(), &linked);
@@ -2949,6 +2981,7 @@ fn a_hand_built_plan_expecting_another_marker_fails_up_front() {
     );
     let plan = Plan {
         owner: "own".to_owned(),
+        origin: Origin::Caller,
         external_targets: ExternalTargetPolicy::Refuse,
         actions: BTreeMap::from([(
             "rc".into(),

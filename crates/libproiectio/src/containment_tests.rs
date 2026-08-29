@@ -132,7 +132,7 @@ fn escaping_paths_are_refused_with_the_path_verbatim() {
             .expect_err(&format!("{rel:?}: expected refusal"));
         assert!(error.is_refusal(), "{rel:?}");
         match error {
-            Error::Containment { paths } => {
+            Error::Containment { paths, .. } => {
                 assert_eq!(paths, BTreeSet::from([Utf8PathBuf::from(*rel)]), "{rel:?}");
             }
             other => panic!("{rel:?}: expected Containment, got {other}"),

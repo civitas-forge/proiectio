@@ -1,17 +1,9 @@
 //! The single-writer lock on the state directory
 //! (`docs/implementation.lex` section 7): two processes applying to one
 //! destination corrupt the manifest's read-modify-write — one loads the
-//! manifest, the other persists, the first persists over it — so a caller
-//! that can race another proiectio process takes [`StateLock::acquire`]
-//! before [`load_manifest`](crate::load_manifest), the read that opens the
-//! cycle, and holds the guard until [`apply`](crate::apply) has persisted
-//! it. Acquiring later — after the load, before
-//! [`observe`](crate::observe) — leaves the read outside the guard: a
-//! writer that finished in between is already recorded on disk, and this
-//! run's persist drops what it recorded. Nothing in the crate acquires the
-//! lock on the caller's behalf: [`apply`](crate::apply) and
-//! [`save_manifest`](crate::save_manifest) take plain `Dir` handles and
-//! write whether or not a guard is alive.
+//! manifest, the other persists, the first persists over it. Where the guard
+//! is taken and how long it is held is the run's
+//! ([`Run`](crate::Run)); this module is the guard itself.
 //!
 //! The lock is an exclusive advisory `flock(2)` on [`LOCK_FILE_NAME`],
 //! beside the manifest in the state directory and opened through the same
@@ -42,15 +34,10 @@ use crate::{Error, LOCK_FILE_NAME, Result};
 
 /// The single-writer guard on a state directory: while a `StateLock` is
 /// alive, no other [`acquire`](StateLock::acquire) on the same state
-/// directory — thread or process — succeeds.
-///
-/// A caller takes the guard before [`load_manifest`](crate::load_manifest)
-/// and keeps it until [`apply`](crate::apply) returns, so the manifest
-/// never moves between this run's load and its persist. Dropping the guard
-/// releases the lock (closing the file description releases its `flock`);
-/// [`release`](StateLock::release) names the same drop explicitly.
+/// directory — thread or process — succeeds. Dropping it releases the lock,
+/// because closing the file description releases its `flock`.
 #[derive(Debug)]
-pub struct StateLock {
+pub(crate) struct StateLock {
     /// Held for the guard's lifetime: the advisory lock belongs to this
     /// open file description, so dropping (closing) the file releases it.
     _file: File,
@@ -68,7 +55,7 @@ impl StateLock {
     /// unlinking would let a late writer create and lock a fresh inode
     /// while an earlier writer still holds the unlinked one. An empty
     /// leftover file costs nothing.
-    pub fn acquire(state: &Dir) -> Result<StateLock> {
+    pub(crate) fn acquire(state: &Dir) -> Result<StateLock> {
         let path = Utf8Path::new(LOCK_FILE_NAME);
         let file = state
             .open_with(path, OpenOptions::new().create(true).write(true))
@@ -82,10 +69,6 @@ impl StateLock {
             Err(errno) => Err(io_error(path)(errno.into())),
         }
     }
-
-    /// Releases the lock — exactly what dropping the guard does; this
-    /// method only names the release point.
-    pub fn release(self) {}
 }
 
 #[cfg(test)]
