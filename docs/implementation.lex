@@ -115,6 +115,32 @@ Implementation Guidelines
       resolved path. Restarts carry a per-walk
       visited set of the links followed: revisiting a link means
       an owned-link cycle, and refuses rather than loops.
+      What a restart earns the action depends on what the action
+      does, and the three answers are these. A write — a file, a
+      symlink, or a block's container — goes down at its action
+      key or nowhere: the key is the path the manifest records, so
+      a write landing elsewhere puts the bytes at one path and the
+      record at another, which is the alias deciding's no-alias
+      rule exists to prevent and no later run can heal — observing
+      never descends a link, so the key reads Missing, the write is
+      planned again, and deciding refuses it under that same rule.
+      A walk that relocated a write is therefore the Containment
+      refusal below, since deciding plans no such write and apply
+      meeting one means the destination moved under the plan. A
+      removal follows the link: it unlinks through the resolved
+      location and reports it, so pruning judges the directory that
+      actually lost a child, and the manifest entry goes away
+      whichever side it removed from — a removal is not a write, so
+      refusing writes leaves it as it was. A release walks nothing
+      and reads no disk: it drops one owner from a manifest entry,
+      and there is nothing a disk check could hold it to — deciding
+      plans it over a shared path clean, drifted, or missing alike,
+      so a check would refuse an owner's departure over a node it
+      is not touching. That is also why a link this run releases
+      can reappear before apply reaches the paths under it: the
+      entry survives while another owner holds it, the link comes
+      back matching its record, and the write's refusal — not a
+      check at the release — is what keeps the alias from forming.
       One boundary the handles do not close: a directory handle
       follows its object, so a process renaming a verified ancestor
       out of dest carries the handle with it. That actor holds
@@ -263,11 +289,12 @@ Implementation Guidelines
     order puts it, which is the ordinary rule with no exception.
 
     What the run is still going to publish a link at is named by
-    action key, so a symlink is the one entry the walk of section 3
-    will not follow an owned link to reach: published anywhere but
-    its key, it would be a link no other link's chain waits for.
-    Deciding's no-alias rule refuses to plan such a link, and a
-    hand-built plan carrying one is refused at apply.
+    action key, which is a second reason a symlink goes down at its
+    key or nowhere (section 3): published anywhere but its key, it
+    would be a link no other link's chain waits for, so a landing
+    already vouched for could still move. Deciding's no-alias rule
+    refuses to plan such a link, and a hand-built plan carrying one
+    is refused at apply.
 
 7. Concurrency
 

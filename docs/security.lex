@@ -42,10 +42,16 @@ Security Model
     "logs -> /etc" followed by a projected file "logs/x" is a write
     to /etc/x — the zip-slip pattern, with the traversal smuggled
     through a pointer instead of a "..". So during apply no ancestor
-    component of a write may be a symlink, unless proiectio itself
-    owns that link and its target resolves inside dest. The refusal
-    is structural: it does not matter where the link came from or
-    when it appeared.
+    component of a write may be a symlink. The refusal is structural:
+    it does not matter where the link came from or when it appeared.
+
+    A link proiectio itself owns whose target resolves inside dest is
+    the one the walk still follows, and following is not writing: a
+    removal travels through such a link, so that pruning judges the
+    directory that actually lost a child, while a write the link
+    relocated is refused — the bytes would land at one path with the
+    manifest recording another. [./implementation.lex] section 3
+    states the answer for each of write, removal and release.
 
 3. Symlinks
 

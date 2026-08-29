@@ -101,14 +101,17 @@ Proiectio Design
     gone, so a projection that wrote through the link would plan the
     write again on every run and then refuse its own file as changed.
     A link this plan removes is not in the way — removals run first.
-    Apply's walk still follows an owned in-dest link, so a plan that
-    names a path recorded beneath one reaches it; planning cannot
-    write such a plan, because observation never descends the link
-    and the path classifies Missing, whose removal expects nothing
-    and refuses as drift when apply finds a node there. Nothing the
-    projection writes lands beneath a link under this rule, so that
-    shape survives only in a manifest predating it — and clearing one
-    means removing the link first.
+    Apply's walk still follows an owned in-dest link, so a removal
+    that names a path recorded beneath one reaches it; planning
+    cannot aim that removal, because observation never descends the
+    link and the path classifies Missing, whose removal expects
+    nothing and refuses as drift when apply finds a node there. A
+    write is the other way: the walk may follow the link, but a write
+    it relocates off its key is refused at apply too
+    ([./implementation.lex] section 3), so nothing the projection
+    writes lands beneath a link on either side of the plan — that
+    shape survives only in a manifest predating the rule, and
+    clearing one means removing the link first.
 
     For a Block entry, every rule above about "the node at a path"
     means the managed region, not the container file the caller does
