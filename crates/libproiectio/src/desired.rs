@@ -67,14 +67,6 @@ impl Desired {
             .iter()
             .map(|(path, (_, origin))| (path, origin))
     }
-
-    pub(crate) fn origins(&self) -> BTreeMap<Utf8PathBuf, Origin> {
-        self.entries
-            .iter()
-            .filter(|(_, (_, origin))| *origin != Origin::Caller)
-            .map(|(path, (_, origin))| (path.clone(), origin.clone()))
-            .collect()
-    }
 }
 
 impl FromIterator<(Utf8PathBuf, Entry)> for Desired {

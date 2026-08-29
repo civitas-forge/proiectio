@@ -7,7 +7,7 @@ use crate::block;
 use crate::containment::{Hop, contained_normalize, contained_target_chain, is_pathname};
 use crate::{
     Action, BlockFault, Desired, DriftPolicy, Entry, EntryKind, Error, ExternalTargetPolicy,
-    MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations,
+    MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations, Origin,
     OverwriteReason, PathState, Placement, Plan, PlanOptions, Refusal, Result, Status, sha256_hex,
 };
 
@@ -76,10 +76,31 @@ pub(crate) fn decide(
     }
     Ok(Plan {
         owner: owner.to_owned(),
-        origins: desired.origins(),
+        origins: origins_of(desired, &actions),
         external_targets: options.external_targets,
         actions,
     })
+}
+
+/// Each sourced desired key under the path its action landed on: the key
+/// itself when an action is keyed by it, and its normalized location when
+/// admission moved the action there.
+fn origins_of(
+    desired: &Desired,
+    actions: &BTreeMap<Utf8PathBuf, Action>,
+) -> BTreeMap<Utf8PathBuf, Origin> {
+    desired
+        .sources()
+        .filter(|(_, origin)| **origin != Origin::Caller)
+        .filter_map(|(key, origin)| {
+            let path = if actions.contains_key(key) {
+                key.clone()
+            } else {
+                contained_normalize(key)?
+            };
+            Some((path, origin.clone()))
+        })
+        .collect()
 }
 
 fn deepest_write(actions: &BTreeMap<Utf8PathBuf, Action>) -> Option<Utf8PathBuf> {

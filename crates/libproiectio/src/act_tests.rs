@@ -1622,6 +1622,76 @@ fn projects_links_with_their_targets_verbatim_dangling_included() {
 }
 
 #[test]
+fn re_applying_an_unchanged_link_reports_the_target_it_left_in_place() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new()
+        .file("notes/a.txt", "alpha")
+        .symlink("latest", "notes/a.txt");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("first apply");
+
+    let report =
+        pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("second apply");
+
+    // A skip touches nothing, and still reports the target the link holds.
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([
+            ("latest".into(), ApplyOutcome::Skipped),
+            ("notes/a.txt".into(), ApplyOutcome::Skipped),
+        ])
+    );
+    assert_eq!(
+        facts_at(&report, "latest"),
+        &PathFacts {
+            shape: PathShape::Symlink {
+                target: Some("notes/a.txt".to_owned()),
+            },
+            owners: BTreeSet::from(["own".to_owned()]),
+            origin: Some(Origin::Caller),
+        }
+    );
+}
+
+#[test]
+fn a_sourced_key_reports_its_source_at_the_path_the_action_lands_on() {
+    let (dest, state) = fixtures();
+    let desired = Desired::from_source(
+        BTreeMap::from([(
+            "a/../b.txt".into(),
+            Entry::File {
+                contents: b"alpha".to_vec(),
+                executable: false,
+            },
+        )]),
+        Origin::Files,
+    );
+    let dest_dir = dir_at(dest.root());
+    let state_dir = dir_at(state.root());
+    let manifest = load_manifest(&state_dir).expect("load manifest");
+    let observations =
+        observe(&dest_dir, &manifest, &block_markers(&desired)).expect("observe destination");
+    let plan = decide(
+        "own",
+        &desired,
+        &manifest,
+        &observations,
+        None,
+        PlanOptions::default(),
+    )
+    .expect("decide");
+
+    let report = apply(&dest_dir, &state_dir, &manifest, &plan).expect("apply");
+
+    // The key normalizes, so the action — and the row — is at `b.txt`; the
+    // origin has to follow it there rather than stay at the spelling.
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([("b.txt".into(), ApplyOutcome::Written)])
+    );
+    assert_eq!(facts_at(&report, "b.txt").origin, Some(Origin::Files));
+}
+
+#[test]
 fn a_target_that_is_not_a_pathname_fails_up_front_and_writes_nothing() {
     // Deciding refuses such a target, so this is the hand-built half: the
     // whole-plan check catches it before any action runs, rather than
