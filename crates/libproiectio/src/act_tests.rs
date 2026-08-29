@@ -2234,6 +2234,33 @@ fn a_region_whose_body_already_matches_is_adopted() {
 }
 
 #[test]
+fn an_ambiguous_container_is_not_adopted() {
+    // Two whole-line marker occurrences identify no region, so the extreme
+    // one's body matching what this run would write is not evidence the
+    // projection wrote it. Adopting would record a region nothing in the
+    // manifest can locate again, and every later run over that path refuses.
+    let (dest, state) = fixtures();
+    let author = "# proiectio\nmanaged\n# proiectio\nmanaged\n";
+    Tree::new().file("rc", author).write_under(dest.root());
+
+    let error = pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect_err("nothing says which occurrence bounds a region");
+
+    match error {
+        Error::Foreign { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        other => panic!("expected Foreign, got {other:?}"),
+    }
+    assert_eq!(container(&dest, "rc"), author);
+    assert_eq!(persisted(&state), Manifest::new());
+}
+
+#[test]
 fn an_unrecorded_region_carrying_other_bytes_refuses_as_foreign() {
     let (dest, state) = fixtures();
     Tree::new()

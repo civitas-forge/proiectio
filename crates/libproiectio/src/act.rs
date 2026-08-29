@@ -1061,6 +1061,12 @@ struct OpenContainer {
 /// - a region carrying anything else — [`Error::Drift`] where the manifest
 ///   records the path (the region changed under the plan) and
 ///   [`Error::Foreign`] where it does not (bytes the projection never wrote);
+/// - the marker on more than one whole line — the same refusal. Such a
+///   container identifies no region at all ([`EntryKind::Block`]), so the
+///   extreme occurrence's body matching what this run would write is not
+///   evidence the projection wrote it. Adopting there would record a region
+///   the recorded marker cannot locate again, which every run after it
+///   refuses, and splicing would add a third occurrence;
 /// - no container — [`Error::Block`] carrying
 ///   [`ContainerMissing`](BlockFault::ContainerMissing): a block never
 ///   creates its container, which is what keeps the projection from owning
@@ -1105,17 +1111,23 @@ fn write_block(
             return Err(drift(path));
         }
     }
-    if let Some(region) = block::locate(&container.bytes, marker, *placement) {
-        if &container.bytes[region.body] == body.as_slice() {
-            return Ok(ApplyOutcome::Skipped);
-        }
-        return Err(if manifest.entries.contains_key(path) {
+    let unidentified = || {
+        if manifest.entries.contains_key(path) {
             drift(path)
         } else {
             Error::Foreign {
                 paths: BTreeSet::from([path.to_owned()]),
             }
-        });
+        }
+    };
+    if block::occurrence_count(&container.bytes, marker) > 1 {
+        return Err(unidentified());
+    }
+    if let Some(region) = block::locate(&container.bytes, marker, *placement) {
+        if &container.bytes[region.body] == body.as_slice() {
+            return Ok(ApplyOutcome::Skipped);
+        }
+        return Err(unidentified());
     }
     if *placement == Placement::Append && !block::newline_terminated(&container.bytes) {
         return Err(block_refusal(
