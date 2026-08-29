@@ -63,157 +63,105 @@ Implementation Guidelines
 
     :: rust ::
 
-    with a crate-internal normalize-only half, contained_normalize,
-    applying the same rules without the join — decide admits desired
-    keys through it, since a Plan keys actions relative to the
-    destination — the sole lexical gateway enforcing the containment
-    rules of
-    [./security.lex] section 2 — that section's refusal list, not
-    any paraphrase elsewhere, is the contract; act's no-follow walk
-    below is the apply-time half of the same rule. Crates are
-    implementation details inside it [1], and two constraints bound
-    the choice:
+    with a normalize-only half, contained_normalize, applying the
+    same rules without the join — decide admits desired keys through
+    it, since a Plan keys actions relative to the destination.
+    [./security.lex] section 2 owns the refusal list. Two constraints
+    bound the implementation:
 
     - Containment wants *lexical* normalization — never
       std::fs::canonicalize, which follows symlinks and requires
-      paths to exist.
+      paths to exist. clippy.toml bans it crate-wide.
     - The check that matters most — no symlinked ancestor at write
       time — is ours to enforce regardless of crate.
 
-    Spiked and decided (issue #3): adopt cap-std. Observe and act do
-    their I/O through a cap_std::fs_utf8::Dir rooted at dest —
-    camino-typed, and every open refuses any path whose resolution
-    escapes that root: an escaping "..", an absolute path, a
-    symlink chain that leaves the Dir [2]. An in-dest ".." still
-    resolves — the refusal is about where a path lands, not how it
-    is spelled. Escapes fail no matter when a hostile link appears,
-    so the plan-to-apply race is closed structurally, not by string
-    checks. What the spike verified:
+    Spiked and decided: adopt cap-std. Observe and act do their I/O
+    through a cap_std::fs_utf8::Dir rooted at dest, and every open
+    refuses a path whose resolution escapes that root — an escaping
+    "..", an absolute path, a symlink chain leaving the Dir. An
+    in-dest ".." still resolves: the refusal is about where a path
+    lands, not how it is spelled. Escapes fail whenever a hostile
+    link appears, so the plan-to-apply race is closed structurally
+    rather than by string checks.
 
-    - A write through an escaping symlinked ancestor — "logs ->
-      ../outside", or an absolute target — fails at open time. The
-      other half of the [./security.lex] rule stays ours: an in-dest
-      symlinked ancestor is followed silently, so refusing links
-      proiectio does not own is still our check — and act enforces
-      it through the handle, not beside it. Each ancestor component
-      is opened with cap-primitives' open_dir_nofollow — public
-      there, not on Dir itself, so cap-primitives joins the
-      dependency list — from the previously verified handle, and
-      the final mutation happens relative to that parent, so a
-      component swapped for a symlink after the check cannot
-      redirect a write to an in-dest path the plan never named.
-      When a no-follow open does report a symlink, act matches it
-      against the manifest before anything else: not recorded — the
-      structured refusal below; recorded, but the on-disk target no
-      longer hashes to the recorded string — the same Drift refusal
-      every stale plan gets (section 1); recorded and matching, but
-      graded external — refused too, an external target is never
-      written through; recorded, matching, and in-dest — act reads
-      the target through the parent handle, resolves it with
-      contained_target, the grading call below, and
-      restarts the no-follow walk from the dest root along the
-      resolved path. Restarts carry a per-walk
-      visited set of the links followed: revisiting a link means
-      an owned-link cycle, and refuses rather than loops.
-      What a restart earns the action depends on what the action
-      does, and the three answers are these. A write — a file, a
-      symlink, or a block's container — goes down at its action
-      key or nowhere: the key is the path the manifest records, so
-      a write landing elsewhere puts the bytes at one path and the
-      record at another, which is the alias deciding's no-alias
-      rule exists to prevent and no later run can heal — observing
-      never descends a link, so the key reads Missing, the write is
-      planned again, and deciding refuses it under that same rule.
-      A walk that relocated a write is therefore the Containment
-      refusal below, since deciding plans no such write and apply
-      meeting one means the destination moved under the plan. A
-      removal follows the link: it unlinks through the resolved
+    cap-std does not close the other half — an in-dest symlinked
+    ancestor is followed silently — so act walks a write's ancestors
+    itself. Each component is opened with cap-primitives'
+    open_dir_nofollow from the previously verified handle, and the
+    final mutation happens relative to that parent, so a component
+    swapped for a symlink after the check cannot redirect a write.
+    When a no-follow open reports a symlink, act matches it against
+    the manifest:
+
+    - not recorded — the Containment refusal;
+    - recorded, but the on-disk target no longer hashes to the
+      recorded string — Drift, like any stale plan (section 1);
+    - recorded and matching, but graded external — refused; an
+      external target is never written through;
+    - recorded, matching, and in-dest — act reads the target through
+      the parent handle, resolves it with contained_target, and
+      restarts the walk from the dest root along the resolved path.
+      Restarts carry a visited set: revisiting a link is an
+      owned-link cycle, and refuses rather than loops.
+
+    What a restart earns depends on the action, and the three answers
+    differ:
+
+    - A write — a file, a symlink, or a block's container — goes
+      down at its action key or nowhere. The key is the path the
+      manifest records, so a write landing elsewhere puts bytes at
+      one path and the record at another. No later run heals that:
+      observation never descends a link, so the key reads Missing,
+      the write is planned again, and deciding refuses it under the
+      no-alias rule. A walk that relocated a write is therefore the
+      Containment refusal.
+    - A removal follows the link. It unlinks through the resolved
       location and reports it, so pruning judges the directory that
-      actually lost a child, and the manifest entry goes away
-      whichever side it removed from — a removal is not a write, so
-      refusing writes leaves it as it was. A release walks nothing
-      and reads no disk: it drops one owner from a manifest entry,
-      and there is nothing a disk check could hold it to — deciding
-      plans it over a shared path clean, drifted, or missing alike,
-      so a check would refuse an owner's departure over a node it
-      is not touching. That is also why a link this run releases
-      can reappear before apply reaches the paths under it: the
-      entry survives while another owner holds it, the link comes
-      back matching its record, and the write's refusal — not a
-      check at the release — is what keeps the alias from forming.
-      One boundary the handles do not close: a directory handle
-      follows its object, so a process renaming a verified ancestor
-      out of dest carries the handle with it. That actor holds
-      invoker-level write access and is trusted by the
-      [./security.lex] split — the structural claim here is about
-      hostile content, paths and pointers, not about a concurrently
-      mutating privileged process, which the single-writer lock
-      (section 7) already rules out for proiectio itself.
+      actually lost a child.
+    - A release walks nothing and reads no disk. It drops one owner
+      from a manifest entry, and deciding plans it over a shared
+      path clean, drifted or missing alike, so a disk check would
+      refuse an owner's departure over a node it is not touching.
+
+    One boundary the handles do not close: a directory handle follows
+    its object, so a process renaming a verified ancestor out of dest
+    carries the handle with it. That actor holds invoker-level write
+    access and is trusted by the [./security.lex] split; the claim
+    here is about hostile content, not about a concurrently mutating
+    privileged process, which section 7's lock rules out for
+    proiectio itself.
+
+    Three more things the handles settle:
+
     - Non-UTF-8 names cannot collide with the projection. Desired
-      and manifest paths are Utf8PathBuf by construction, and a
-      differently-spelled on-disk name is a different entry, so a
-      non-UTF-8 entry is invisible to classification — protected
-      like Foreign in effect, but never a row in the state table,
-      because Status cannot name it. fs_utf8's file_name() fails
-      per entry, so the walk skips what it cannot name;
-      [./design.lex] records the matching scope on the
-      classification contract, and prune treats a not-actually-
-      empty directory (ENOTEMPTY — perhaps holding a skipped entry)
-      as kept, not as an error.
-    - --allow-external-targets coexists: symlink() refuses absolute
+      and manifest paths are Utf8PathBuf by construction, so a
+      differently-spelled on-disk name is a different entry.
+      fs_utf8's file_name() fails per entry and the walk skips what
+      it cannot name; prune treats ENOTEMPTY as kept, not an error.
+    - --allow-external-targets coexists. symlink() refuses absolute
       targets, but symlink_contents() writes any target string
-      verbatim — act uses it for flag-permitted links — and reads
-      through such a link still fail, which is the model exactly: an
+      verbatim, and reads through such a link still fail — an
       external target is a pointer, never written through.
-      read_link_contents() hands observe the string back untouched
-      — via the plain-Dir view (as_cap_std()), because the fs_utf8
-      wrapper errors on a non-UTF-8 target, and a recorded link
-      whose target was edited to such bytes must classify as
-      Drifted, not fail observe.
-      One platform edge: symlink_contents() is Unix-only — a
-      Windows symlink needs a file-or-directory kind the entry does
-      not carry, and dangling targets are allowed, so act could not
-      infer one. Nothing here targets Windows; if that changes, the
-      desired-tree symlink entry grows a kind first.
-    - Tempfile-persist works inside a Dir: cap-tempfile's
-      TempFile::new(dir.as_cap_std()) — its signature takes the
-      plain cap_std::fs::Dir, so the fs_utf8 handle converts at the
-      call — plus replace(name) renames over the path atomically,
-      replaces existing files, and cleans up on drop. Permissions,
-      the exec bit included, go on the open tempfile handle before
-      replace, so bytes and mode publish together in the one rename
-      — never a visible file with a wrong mode.
+      symlink_contents() is Unix-only: a Windows symlink needs a
+      kind the desired entry does not carry.
+    - Tempfile-persist works inside a Dir. cap-tempfile's TempFile
+      plus replace(name) renames over the path atomically and cleans
+      up on drop. Permissions, the exec bit included, go on the open
+      handle before replace, so bytes and mode publish together in
+      the one rename.
 
     Two Dirs, because a capability follows the tree it guards: the
-    dest Dir covers the destination tree, while the manifest and
-    the single-writer lock (section 7) live in the caller-chosen
-    state dir of [./design.lex] — which need not be inside dest —
-    under a second Dir rooted there.
+    dest Dir covers the destination, while the manifest and the
+    single-writer lock (section 7) live in the caller-chosen state
+    dir of [./design.lex], which need not be inside dest.
 
-    contained_join stays the plan-time gateway regardless: cap-std
-    tolerates in-dest "..", and at link creation refuses only an
-    absolute target — an escaping relative target writes fine and
-    fails only when traversed — so grading targets in-dest or
-    external stays ours, in the same module: contained_target_chain,
-    the resolution of a target from the link's parent, following the
-    links dest holds ([./security.lex] section 3). One rule, three
-    callers — decide reads the desired tree and the observation
-    snapshot, so it grades against the destination the run leaves;
-    act re-grades against the live disk before publishing a link, and
-    act's no-follow walk grades the recorded ancestor link it meets
-    one lexical hop at a time, being itself that same resolution
-    against the live disk — so a target one calls in-dest is one the
-    others may follow. The structured Containment refusal, with paths, names
-    its producers: decide — the lexical rules, paths overlapping the
-    projection's own state directory (inside it, or with it sitting
-    beneath them), and desired paths lying beneath a link the plan
-    leaves standing ([./design.lex] section 2)
-    — and act's no-follow walk, on an ancestor symlink that is
-    unowned, cyclic, or graded external; one refusal variant,
-    because [./security.lex] states one rule. (A swapped owned
-    target is the walk's Drift refusal, not Containment.) A Dir
-    escape refusal past that walk means a bug in the walk itself —
-    defense in depth — and surfaces as the I/O error it is.
+    contained_target_chain resolves a target from the link's parent,
+    following the links dest holds ([./security.lex] section 3). One
+    rule, three callers: decide grades against the destination the
+    run leaves, act re-grades against the live disk before publishing
+    a link, and act's no-follow walk grades a recorded ancestor link
+    one hop at a time. A target one caller reads as in-dest is one
+    the others may follow.
 
 4. Standout
 
@@ -294,16 +242,33 @@ Implementation Guidelines
     key or nowhere (section 3): published anywhere but its key, it
     would be a link no other link's chain waits for, so a landing
     already vouched for could still move. Deciding's no-alias rule
-    refuses to plan such a link, and a hand-built plan carrying one
-    is refused at apply.
+    refuses to plan such a link.
 
 7. Concurrency
 
     Two processes applying to one destination corrupt the manifest's
-    read-modify-write. A single-writer lock file in the state dir
-    (fd-lock or equivalent) closes it in a few lines. The harness
-    use case makes concurrent invocations plausible enough to decide
-    this now rather than discover it later.
+    read-modify-write, so a single-writer lock file in the state dir
+    excludes the second. The harness use case makes concurrent
+    invocations plausible.
+
+    Projection::begin opens the destination, creates and opens the
+    state directory, takes the lock, then loads the manifest — in
+    that order. The manifest's read-modify-write begins at the load,
+    so the load is inside the guard: a run that loaded first would
+    persist over whatever a writer finishing in between had recorded.
+    The section ends when the Run is dropped, which is after apply
+    has persisted the manifest.
+
+    Acquisition is try-lock, so a contended lock is Error::LockHeld
+    immediately rather than a wait. The cost is stated rather than
+    hidden: a Run holds the guard for its whole life, so a caller
+    prompting a human between deciding and applying holds it across
+    the prompt, and other runs meet LockHeld. A caller with a plan
+    only to show reads Projection::plan instead, which takes no lock.
+
+    The guard is rustix::fs::flock, which is not compiled on every
+    Unix; LOCK_FILE_NAME is spelled on every target so a caller
+    elsewhere can coordinate on the same file.
 
 Notes
 
