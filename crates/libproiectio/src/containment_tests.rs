@@ -418,8 +418,16 @@ fn absolutize_resolves_a_relative_path_against_the_current_directory() {
         absolutize(Utf8Path::new("deploy.toml")).expect("absolutized"),
         cwd.join("deploy.toml")
     );
+}
+
+#[test]
+fn absolutize_collapses_an_absolute_path_without_the_current_directory() {
     assert_eq!(
-        absolutize(Utf8Path::new("/srv/site/../www")).expect("absolutized"),
-        Utf8Path::new("/srv/www")
+        absolutize(Utf8Path::new("/srv/site/../www/./log")).expect("absolutized"),
+        Utf8Path::new("/srv/www/log")
+    );
+    assert_eq!(
+        absolutize(Utf8Path::new("/../..")).expect("absolutized"),
+        Utf8Path::new("/")
     );
 }
