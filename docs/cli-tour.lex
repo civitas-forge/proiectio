@@ -139,7 +139,7 @@ The CLI
 
     # extracted under the key prefix at plan time; each member
     # becomes an ordinary manifest entry
-    [archives."vendor/"]
+    \[archives."vendor/"]
     source = "./assets/vendor.tar.gz"
     strip = 1
 
@@ -156,7 +156,7 @@ The CLI
     Members are confined like any other tree content
     ([./security.lex]). An archive that appears *inside* a source
     tree is just a file and is copied verbatim; extraction happens
-    only where it is explicitly requested — an [archives.] entry, or
+    only where it is explicitly requested — an \[archives.] entry, or
     --tree pointed at the archive itself.
 
 6. Options
