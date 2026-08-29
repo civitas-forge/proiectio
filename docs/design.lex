@@ -110,12 +110,29 @@ Proiectio Design
     shape survives only in a manifest predating it — and clearing one
     means removing the link first.
 
-    Block entries carry a delimited managed region inside a file the
-    caller does not own whole: apply locates proiectio's delimiter
-    lines, replaces only the body between them, and hashes that body
-    alone, so an edit elsewhere in the file never reads as drift.
-    Removal strips the block, or deletes the file where the manifest
-    owns it whole.
+    For a Block entry, every rule above about "the node at a path"
+    means the managed region, not the container file the caller does
+    not own whole. Clean, Drifted, Missing, Foreign, the apply-time
+    signature re-check and removal all read that way, and the
+    machinery above then runs unchanged: the manifest hashes the
+    region's body alone, so an edit elsewhere in the container is
+    invisible to every comparison, and a container the marker line is
+    gone from reads as Missing exactly as a deleted file does.
+
+    Two consequences a reader otherwise gets wrong. An unrecorded
+    container does not make the path Foreign — a desired block over a
+    file the manifest has never seen plans a write, because writing
+    into a file it does not own whole is what a block is for; an
+    unrecorded region carrying other bytes is Foreign as any other
+    unrecorded node is. And removal strips the region and the marker
+    and leaves the container standing, even when the strip empties it:
+    a block never creates a container, so the manifest never owns one
+    whole, and a file the projection does own whole is a File entry
+    whose removal already deletes it.
+
+    The marker rules, the region's byte layout, and the tradeoff
+    between prepending and appending are EntryKind::Block's rustdoc,
+    not restated here.
 
     plan and apply are separate calls, so before each overwrite or
     removal apply re-checks the target against the signature the plan

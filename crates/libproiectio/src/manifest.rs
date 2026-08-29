@@ -61,11 +61,12 @@ pub struct ManifestEntry {
     /// What kind of node was written.
     pub kind: EntryKind,
     /// Lowercase hex SHA-256 of the bytes last written: the file contents,
-    /// the symlink target string, or — for [`EntryKind::Block`] — the body
-    /// between the delimiter lines alone.
+    /// the symlink target string, or — for [`EntryKind::Block`] — the
+    /// region's body alone.
     pub hash: String,
     /// Whether the written file carries the executable bit. Always `false`
-    /// for symlinks and blocks.
+    /// for symlinks and blocks: a block's container keeps the author's mode,
+    /// which this field says nothing about.
     pub executable: bool,
     /// The opaque owner names holding this path. The crate never interprets
     /// them; two owners may hold one path only while writing identical

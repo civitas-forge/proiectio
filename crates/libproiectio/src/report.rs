@@ -9,12 +9,14 @@ use crate::Manifest;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ApplyOutcome {
     /// The path did not exist and was created. For a
-    /// [`Block`](crate::EntryKind::Block) entry the unit is the delimited
-    /// region: the container file may have existed, the region did not.
+    /// [`Block`](crate::EntryKind::Block) entry the unit is the region: the
+    /// container may have existed, the region did not.
     Written,
     /// The path existed and was replaced.
     Overwritten,
-    /// Disk already matched desired; nothing was written.
+    /// Disk already matched desired; nothing was written. A planned write
+    /// reports this too where it found the region already carrying the
+    /// desired body and adopted it.
     Skipped,
     /// The orphaned path was removed.
     Removed,

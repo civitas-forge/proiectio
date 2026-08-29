@@ -104,13 +104,10 @@ pub enum Error {
     /// policy lifts this.
     ///
     /// Foreignness is judged over what the projection would own. For a
-    /// [`Block`](crate::EntryKind::Block) entry that is the delimited
-    /// region, not the file around it, so a pre-existing container file
-    /// does not make the path foreign. Until block-region classification
-    /// lands, the deciding stage cannot yet see regions and refuses a
-    /// desired block over an unrecorded container with this error —
-    /// conservative, never a wrong write ([`decide`](crate::decide)'s
-    /// rustdoc names the seam).
+    /// [`Block`](crate::EntryKind::Block) entry that is the region, not the
+    /// container around it, so an unrecorded container does not make the path
+    /// foreign — an unrecorded *region* does, unless its body already hashes
+    /// to what the run would write.
     #[error(
         "refusing to touch foreign paths (not written by this projection): {}",
         join(paths)
@@ -581,19 +578,91 @@ pub enum Error {
         /// The node's absolute path.
         path: Utf8PathBuf,
     },
-    /// The plan touches a [`Block`](crate::EntryKind::Block) entry —
-    /// writing one, or re-checking a block signature — and block regions
-    /// are not implemented in [`apply`](crate::apply) yet. Not a refusal:
-    /// the plan is well-formed — this crate cannot honor it yet. Reported
-    /// before anything is written.
-    #[error(
-        "plan touches block entries, which apply does not implement yet: {}",
-        join(paths)
-    )]
-    ApplyBlockUnimplemented {
-        /// The planned block paths, relative to the destination.
-        paths: BTreeSet<Utf8PathBuf>,
+    /// Refusal: [`Block`](crate::EntryKind::Block) entries the projection
+    /// declines, each with the [`BlockFault`] that declined it. One variant
+    /// rather than one per fault, because a caller acts on all of them the
+    /// same way — fix the entry or the container and run again.
+    ///
+    /// Every rule these faults enforce is stated once, on
+    /// [`EntryKind::Block`](crate::EntryKind::Block).
+    #[error("refusing block entries: {}", join_blocks(blocks))]
+    Block {
+        /// The offending paths, relative to the destination, each mapped to
+        /// what is wrong with it.
+        blocks: BTreeMap<Utf8PathBuf, BlockFault>,
     },
+}
+
+/// Why one [`Block`](crate::EntryKind::Block) entry is refused.
+///
+/// [`EntryKind::Block`](crate::EntryKind::Block) states the rules these
+/// report on; each variant here names which one the entry or its container
+/// broke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+pub enum BlockFault {
+    /// The marker is the empty string, which would match every line start.
+    MarkerEmpty,
+    /// The marker carries a `\n` or a `\r`; a marker is one line.
+    MarkerNotOneLine,
+    /// The marker begins or ends with a space or a tab, which a formatter
+    /// stripping trailing whitespace would silently change into a marker no
+    /// later read finds.
+    MarkerEdgeWhitespace,
+    /// A line of the body equals the marker, so the container it would write
+    /// could not be read back.
+    BodyCarriesMarker,
+    /// The placement is [`Prepend`](crate::Placement::Prepend) and the body
+    /// neither is empty nor ends with `\n`, so the marker line would not
+    /// begin at a line start. The projection normalizes neither side's bytes
+    /// to make room.
+    BodyNotNewlineTerminated,
+    /// The placement is [`Append`](crate::Placement::Append) and the author's
+    /// side of the container neither is empty nor ends with `\n`, so the
+    /// marker line would not begin at a line start. The projection normalizes
+    /// neither side's bytes to make room.
+    ContainerNotNewlineTerminated,
+    /// The container, or a directory above it, is not there. A block never
+    /// creates its container: the file is somebody else's, and a projection
+    /// that made one would own it whole.
+    ContainerMissing,
+    /// The path is recorded as a whole node and desired as a block, or the
+    /// other way round. A path never changes between the two, in either
+    /// direction — one side of the change would have the projection own a
+    /// file it must not, or abandon one it does.
+    KindChange,
+    /// A plan's expected signature names a marker or placement the manifest
+    /// does not record at that path. The marker is what tells the
+    /// projection's bytes from the author's, so an expectation naming
+    /// another one would have apply strip or replace lines the projection
+    /// never wrote. The *desired* entry may name a new marker — that is the
+    /// migration a single publish performs — but the expectation is what the
+    /// disk is re-checked against, and it is the record's.
+    SignatureNotRecorded,
+}
+
+impl std::fmt::Display for BlockFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self {
+            BlockFault::MarkerEmpty => "the marker is empty",
+            BlockFault::MarkerNotOneLine => "the marker carries a line break",
+            BlockFault::MarkerEdgeWhitespace => "the marker begins or ends with a space or a tab",
+            BlockFault::BodyCarriesMarker => "a line of the body equals the marker",
+            BlockFault::BodyNotNewlineTerminated => {
+                "prepending needs a body that is empty or ends with a newline"
+            }
+            BlockFault::ContainerNotNewlineTerminated => {
+                "appending needs a container that is empty or ends with a newline"
+            }
+            BlockFault::ContainerMissing => {
+                "the container is not there, and a block never creates one"
+            }
+            BlockFault::KindChange => "a path never changes between a whole node and a block",
+            BlockFault::SignatureNotRecorded => {
+                "the expected signature names a region the manifest does not record"
+            }
+        };
+        f.write_str(reason)
+    }
 }
 
 impl Error {
@@ -603,9 +672,9 @@ impl Error {
     /// [`OwnerConflict`](Error::OwnerConflict),
     /// [`ExternalTarget`](Error::ExternalTarget),
     /// [`InvalidTarget`](Error::InvalidTarget),
-    /// [`TreeConflict`](Error::TreeConflict)) rather than an operation
-    /// failing. A CLI maps refusals to exit 2 and everything else to
-    /// exit 1.
+    /// [`TreeConflict`](Error::TreeConflict), [`Block`](Error::Block))
+    /// rather than an operation failing. A CLI maps refusals to exit 2 and
+    /// everything else to exit 1.
     pub fn is_refusal(&self) -> bool {
         match self {
             Error::Drift { .. }
@@ -614,7 +683,8 @@ impl Error {
             | Error::OwnerConflict { .. }
             | Error::ExternalTarget { .. }
             | Error::InvalidTarget { .. }
-            | Error::TreeConflict { .. } => true,
+            | Error::TreeConflict { .. }
+            | Error::Block { .. } => true,
             Error::Io { .. }
             | Error::ManifestFormat { .. }
             | Error::ManifestVersion { .. }
@@ -638,8 +708,7 @@ impl Error {
             | Error::TreeTargetNotUtf8 { .. }
             | Error::TreeTooDeep { .. }
             | Error::DestinationTooDeep { .. }
-            | Error::TreeNodeKind { .. }
-            | Error::ApplyBlockUnimplemented { .. } => false,
+            | Error::TreeNodeKind { .. } => false,
         }
     }
 }
@@ -659,6 +728,14 @@ fn join_conflicts(conflicts: &BTreeMap<Utf8PathBuf, BTreeSet<String>>) -> String
             let owners = owners.iter().cloned().collect::<Vec<_>>().join("+");
             format!("{path} (held by {owners})")
         })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn join_blocks(blocks: &BTreeMap<Utf8PathBuf, BlockFault>) -> String {
+    blocks
+        .iter()
+        .map(|(path, fault)| format!("{path} ({fault})"))
         .collect::<Vec<_>>()
         .join(", ")
 }

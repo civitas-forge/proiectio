@@ -3,11 +3,12 @@ use std::convert::Infallible;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
+use crate::block;
 use crate::containment::{Hop, contained_normalize, contained_target_chain, is_pathname};
 use crate::{
-    Action, DriftPolicy, Entry, EntryKind, ExternalTargetPolicy, Manifest, ManifestEntry,
-    NodeSignature, Observation, Observations, PathState, Plan, PlanOptions, Refusal, Status,
-    sha256_hex,
+    Action, BlockFault, DriftPolicy, Entry, EntryKind, ExternalTargetPolicy, Manifest,
+    ManifestEntry, NodeSignature, Observation, Observations, PathState, Placement, Plan,
+    PlanOptions, Refusal, Status, sha256_hex,
 };
 
 /// The pure classification: one [`PathState`] per path in the union of the
@@ -45,10 +46,16 @@ use crate::{
 /// subtree under it — the prefix itself included — is the projection's own
 /// state and never classifies.
 ///
-/// Seam: a recorded [`Block`](EntryKind::Block) entry hashes its delimited
-/// body, which no whole-node observation reproduces, so until block-region
-/// classification lands a recorded block always classifies
-/// [`Drifted`](PathState::Drifted) — conservative, since drift refuses.
+/// A recorded [`Block`](EntryKind::Block) classifies over its *region*, not
+/// its container: [`observe`](crate::observe) locates the region with the
+/// recorded marker and placement and hashes the body alone, so a container
+/// edited outside the region reads [`Clean`](PathState::Clean), and a
+/// container whose marker line is gone reads [`Missing`](PathState::Missing)
+/// exactly as a deleted file does (`docs/design.lex` section 2). One holding
+/// the marker on more than one whole line identifies no region at all and
+/// reads [`Drifted`](PathState::Drifted) whatever its extreme occurrence
+/// holds, which is what stops every later stage acting on a guess
+/// ([`EntryKind::Block`]).
 pub fn classify(
     manifest: &Manifest,
     observations: &Observations,
@@ -61,6 +68,15 @@ pub fn classify(
         }
         let state = match (manifest.entries.get(path), observation) {
             (Some(_), Observation::Absent) => PathState::Missing,
+            // A region whose marker line is no longer in the container is a
+            // node gone from disk, which is what Missing means — but only
+            // where the record is the block that region belongs to. This
+            // stage takes the manifest and the observations as two separate
+            // inputs, so a region observed at a path recorded as a whole node
+            // is the kind mismatch below, not an absence.
+            (Some(recorded), Observation::Block { hash: None, .. }) if recorded.kind.is_block() => {
+                PathState::Missing
+            }
             (Some(recorded), observation) => {
                 if observation_matches_recorded(recorded, observation) {
                     PathState::Clean
@@ -208,27 +224,55 @@ pub fn classify(
 ///
 /// [`DriftPolicy::Overwrite`] lifts a drift refusal only where the drifted
 /// node carries a [`NodeSignature`] for apply's changed-since-plan
-/// re-check — a file or a symlink. A path whose kind drifted to a
-/// directory or to a node the projection never writes stays refused under
-/// either policy: no signature could express what apply must re-verify.
+/// re-check — a file, a symlink, or a region the recorded marker still
+/// identifies. A path whose kind drifted to a directory or to a node the
+/// projection never writes stays refused under either policy, as does a
+/// container holding the marker on more than one whole line: no signature
+/// could express what apply must re-verify.
 ///
 /// An empty desired tree plans a removal: everything this owner alone holds
 /// removes, everything it shares releases. [`decide_removal`] is that call
 /// by name, and takes the path subset an empty tree cannot express.
 ///
 /// Kinds compare through the one hash convention ([`sha256_hex`]): a file
-/// hashes its contents, a symlink its target string — so a desired symlink
-/// whose target equals the on-disk link skips, a changed target overwrites
-/// or drifts, and a file replacing a link (or a link replacing a file)
-/// rides the same rules as changed bytes, exactly like file content. One
-/// seam remains: [`Block`](EntryKind::Block) entries flow through the same
-/// generic table, where their body hash matches no whole-node observation
-/// — a desired block over nothing plans a [`Write`](Action::Write), a
-/// pre-existing container refuses as foreign, a recorded block never
-/// classifies clean, and a recorded block's drift is never lifted, since no
-/// whole-node signature can express the region a lifted removal would
-/// strip. Conservative until block-region classification and
-/// container-tolerant writes land.
+/// hashes its contents, a symlink its target string, a block its region's
+/// body — so a desired symlink whose target equals the on-disk link skips, a
+/// changed target overwrites or drifts, and a file replacing a link (or a
+/// link replacing a file) rides the same rules as changed bytes, exactly like
+/// file content.
+///
+/// # Blocks
+///
+/// [`Block`](EntryKind::Block) entries ride that same table, over the region
+/// rather than the container (`docs/design.lex` section 2). Three places are
+/// where the table alone does not settle it, and each follows from a rule
+/// [`EntryKind::Block`] states:
+///
+/// - a desired block over an unrecorded regular file plans a
+///   [`Write`](Action::Write) rather than refusing as foreign: writing into a
+///   file it does not own whole is what a block is for, and only apply's read
+///   can tell an untouched container from one already carrying a region. An
+///   unrecorded container that is *not* a regular file still refuses as
+///   [`Refusal::Foreign`], a symlink included;
+/// - a container that is not there refuses as [`Refusal::Block`] carrying
+///   [`ContainerMissing`](crate::BlockFault::ContainerMissing) — a block
+///   never creates one, so nothing here heals a deleted container the way a
+///   write heals a deleted file;
+/// - a path recorded as a block and desired as a whole node, or the other
+///   way round, refuses as [`Refusal::Block`] carrying
+///   [`KindChange`](crate::BlockFault::KindChange).
+///
+/// The rest is the ordinary table. A desired marker or placement differing
+/// from the recorded pair makes the desired kind differ, so it plans an
+/// [`Overwrite`](Action::Overwrite) expecting the recorded region — apply
+/// strips that region and splices the new one in a single publish. A drifted
+/// region lifts under [`DriftPolicy::Overwrite`] like any other node whose
+/// signature apply can re-verify, which for a block is the body the recorded
+/// marker locates: a container that became a directory carries no such
+/// signature and stays refused under either policy. Neither does a container
+/// holding the marker on more than one whole line — it identifies no region,
+/// so it never reads clean, never skips, and never lifts, until the extra
+/// line is gone ([`EntryKind::Block`]).
 pub fn decide(
     owner: &str,
     desired: &BTreeMap<Utf8PathBuf, Entry>,
@@ -621,9 +665,9 @@ fn target_resolves_in_dest(
 ///   the plan removes.
 /// - the observation snapshot, for everything the run leaves alone.
 ///
-/// Only a symlink continues a chain: an absent path, a file, a directory,
-/// and a kind the projection never writes all end it, and so does a path the
-/// snapshot never mentions. A link whose on-disk target is not UTF-8 is
+/// Only a symlink continues a chain: an absent path, a file — a block's
+/// container included — a directory, and a kind the projection never writes
+/// all end it, and so does a path the snapshot never mentions. A link whose on-disk target is not UTF-8 is
 /// [`Unresolvable`](Hop::Unresolvable): nothing can say where it points, so
 /// nothing can vouch for a chain through it (apply's walk refuses to follow
 /// such a link for the same reason).
@@ -650,6 +694,7 @@ fn planned_hop(
         Some(
             Observation::Absent
             | Observation::File { .. }
+            | Observation::Block { .. }
             | Observation::Directory
             | Observation::Other,
         )
@@ -667,15 +712,42 @@ fn desired_action(
     observation: Option<&Observation>,
     policy: DriftPolicy,
 ) -> Action {
+    if let Some(refusal) = block_refusal(entry, observation) {
+        return refuse(refusal);
+    }
     let Some(state) = state else {
-        return Action::Write {
-            entry: entry.clone(),
+        // Nothing recorded and nothing on disk.
+        return match entry {
+            // A block never creates its container, so there is nothing here
+            // for its region to sit in.
+            Entry::Block { .. } => refuse(Refusal::Block {
+                fault: BlockFault::ContainerMissing,
+            }),
+            Entry::File { .. } | Entry::Symlink { .. } => Action::Write {
+                entry: entry.clone(),
+            },
         };
     };
     if *state == PathState::Foreign {
+        // A block owns the region, not the container around it: an
+        // unrecorded regular file is exactly what a block is for, so it plans
+        // a write and apply's read of the bytes tells splicing a region in
+        // from adopting one already there from refusing one it did not write.
+        if matches!(entry, Entry::Block { .. })
+            && matches!(observation, Some(Observation::File { .. }))
+        {
+            return Action::Write {
+                entry: entry.clone(),
+            };
+        }
         return refuse(Refusal::Foreign);
     }
     let recorded = recorded.expect("Clean, Drifted, and Missing paths are recorded");
+    if recorded.kind.is_block() != matches!(entry, Entry::Block { .. }) {
+        return refuse(Refusal::Block {
+            fault: BlockFault::KindChange,
+        });
+    }
     let others: BTreeSet<String> = recorded
         .owners
         .iter()
@@ -686,12 +758,23 @@ fn desired_action(
         return refuse(Refusal::OwnerConflict { owners: others });
     }
     match state {
-        PathState::Missing => Action::Write {
-            entry: entry.clone(),
+        PathState::Missing => match (entry, observation) {
+            // The region is gone but the container still stands: splice it
+            // back in — write heals. A container that is gone too does not,
+            // since a block never creates one.
+            (Entry::Block { .. }, Some(Observation::Block { .. })) => Action::Write {
+                entry: entry.clone(),
+            },
+            (Entry::Block { .. }, _) => refuse(Refusal::Block {
+                fault: BlockFault::ContainerMissing,
+            }),
+            _ => Action::Write {
+                entry: entry.clone(),
+            },
         },
         PathState::Clean => {
             let observation = observation.expect("a clean path was observed");
-            if observation_matches_desired(entry, observation) {
+            if observation_matches_desired(entry, recorded, observation) {
                 // Clean: the bytes on disk are the recorded bytes.
                 skip(entry)
             } else {
@@ -703,7 +786,7 @@ fn desired_action(
         }
         PathState::Drifted => {
             let observation = observation.expect("a drifted path was observed");
-            if observation_matches_desired(entry, observation) {
+            if observation_matches_desired(entry, recorded, observation) {
                 // Edited into agreement: disk already equals desired.
                 skip(entry)
             } else {
@@ -715,6 +798,46 @@ fn desired_action(
         }
         PathState::Foreign => unreachable!("handled above"),
     }
+}
+
+/// The refusals a desired [`Block`](Entry::Block) earns before its
+/// classification is consulted: the marker and body rules
+/// [`EntryKind::Block`] states, and — for
+/// [`Append`](Placement::Append) — an author's side that does not end
+/// with a newline.
+///
+/// The newline question is asked of the observation because it is about the
+/// container the region would go into. Where a region was observed, the
+/// author's side ends at the marker's line start and is newline-terminated by
+/// construction, so this refuses only a container with no region in it or one
+/// whose caller just moved the region to the other end. An *unrecorded*
+/// container carries no region observation at all, so apply asks the same
+/// question of the bytes it reads.
+fn block_refusal(entry: &Entry, observation: Option<&Observation>) -> Option<Refusal> {
+    let Entry::Block {
+        body,
+        marker,
+        placement,
+    } = entry
+    else {
+        return None;
+    };
+    if let Some(fault) = block::entry_fault(marker, *placement, body) {
+        return Some(Refusal::Block { fault });
+    }
+    let author_ready = !matches!(
+        observation,
+        Some(Observation::Block {
+            newline_terminated: false,
+            ..
+        })
+    );
+    if *placement == Placement::Append && !author_ready {
+        return Some(Refusal::Block {
+            fault: BlockFault::ContainerNotNewlineTerminated,
+        });
+    }
+    None
 }
 
 /// The action for an orphan: a path recorded under this owner alone and
@@ -747,27 +870,19 @@ fn orphan_action(
 /// Resolves a drifted path under `policy`: refuse, or — when the policy
 /// overwrites and the drifted node carries a signature for apply's
 /// changed-since-plan re-check — the destructive action built by `lift`
-/// expecting the drifted node. Refused under either policy:
-///
-/// - a node without a signature — a directory, or a kind the projection
-///   never writes;
-/// - a recorded [`Block`](EntryKind::Block): it owns only its delimited
-///   region, which no whole-node signature expresses — a lifted removal
-///   would read as whole-file deletion of a container the projection does
-///   not own whole. Conservative until block-region classification lands
-///   (the seam in [`decide`]'s rustdoc).
+/// expecting the drifted node. A node without a signature — a directory, a
+/// kind the projection never writes, or a block whose container no longer
+/// holds exactly one region the recorded marker identifies — is refused under
+/// either policy.
 fn lift_or_refuse_drift(
     recorded: &ManifestEntry,
     observation: &Observation,
     policy: DriftPolicy,
     lift: impl FnOnce(NodeSignature) -> Action,
 ) -> Action {
-    if recorded.kind == EntryKind::Block {
-        return refuse(Refusal::Drift);
-    }
     match policy {
         DriftPolicy::Refuse => refuse(Refusal::Drift),
-        DriftPolicy::Overwrite => match observed_signature(observation) {
+        DriftPolicy::Overwrite => match observed_signature(recorded, observation) {
             Some(drifted) => lift(drifted),
             None => refuse(Refusal::Drift),
         },
@@ -794,7 +909,7 @@ fn skip(entry: &Entry) -> Action {
 /// time.
 fn recorded_signature(recorded: &ManifestEntry) -> NodeSignature {
     NodeSignature {
-        kind: recorded.kind,
+        kind: recorded.kind.clone(),
         hash: recorded.hash.clone(),
         executable: recorded.executable,
     }
@@ -809,10 +924,34 @@ fn desired_signature(entry: &Entry) -> NodeSignature {
     }
 }
 
-/// The observed node's signature, where it has one: files and symlinks.
-/// `None` for absent paths, directories, and nodes the projection never
-/// writes — nothing apply could re-check before a destructive action.
-fn observed_signature(observation: &Observation) -> Option<NodeSignature> {
+/// The observed node's signature, where it has one: files, symlinks, and a
+/// region the container still holds. `None` for absent paths, directories,
+/// nodes the projection never writes, and a container whose marker line is
+/// gone — nothing apply could re-check before a destructive action.
+///
+/// `recorded` says which node the observation is about. Where it is a block
+/// the node is the region, so only a container still holding one has a
+/// signature — the body the recorded marker and placement locate, under that
+/// same recorded kind. A container swapped for a symlink or a directory
+/// carries no region, so a lifted drift has nothing to re-verify and the
+/// refusal holds under either policy.
+///
+/// Neither does a container holding the marker on more than one line, which
+/// identifies no region at all ([`identified_region`]): lifting there would
+/// strip a range nobody can say is the recorded one, and the region it
+/// guessed wrong about would stay in the container with the manifest no
+/// longer recording it.
+fn observed_signature(
+    recorded: &ManifestEntry,
+    observation: &Observation,
+) -> Option<NodeSignature> {
+    if recorded.kind.is_block() {
+        return identified_region(observation).map(|hash| NodeSignature {
+            kind: recorded.kind.clone(),
+            hash: hash.clone(),
+            executable: false,
+        });
+    }
     match observation {
         Observation::File { hash, executable } => Some(NodeSignature {
             kind: EntryKind::File,
@@ -824,27 +963,78 @@ fn observed_signature(observation: &Observation) -> Option<NodeSignature> {
             hash: hash.clone(),
             executable: false,
         }),
-        Observation::Absent | Observation::Directory | Observation::Other => None,
+        Observation::Block { .. }
+        | Observation::Absent
+        | Observation::Directory
+        | Observation::Other => None,
     }
 }
 
 /// Whether the observed node is exactly the recorded entry — kind and hash,
-/// plus the executable bit for files. A recorded block matches nothing
-/// until block-region classification lands (its hash covers the delimited
-/// body, which no whole-node observation reproduces).
+/// plus the executable bit for files. For a block that is the region's body:
+/// the container's other bytes are the author's and enter no comparison.
+///
+/// A container holding the marker on more than one whole line matches
+/// nothing, however its extreme occurrence hashes ([`identified_region`]).
 fn observation_matches_recorded(recorded: &ManifestEntry, observation: &Observation) -> bool {
-    match (recorded.kind, observation) {
+    match (&recorded.kind, observation) {
         (EntryKind::File, Observation::File { hash, executable }) => {
             *hash == recorded.hash && *executable == recorded.executable
         }
         (EntryKind::Symlink, Observation::Symlink { hash, .. }) => *hash == recorded.hash,
+        (EntryKind::Block { .. }, observation) => {
+            identified_region(observation) == Some(&recorded.hash)
+        }
         _ => false,
+    }
+}
+
+/// The hash of the region an observation identifies: `None` where the
+/// container holds no marker occurrence, and `None` too where it holds more
+/// than one.
+///
+/// The region is found by taking an extreme occurrence — the last for
+/// [`Append`](Placement::Append), the first for
+/// [`Prepend`](Placement::Prepend) — which is the projection's own only while
+/// every other occurrence is a line outside the region. The body may carry
+/// none, so a container the projection alone has written has exactly one; a
+/// second bare marker line is somebody else's, and the marker is the whole of
+/// a region's identity, so nothing says which of the two bounds the recorded
+/// region. An author line above an `Append` region and a duplicate of the
+/// region below it are the same picture from here, and the safe one cannot be
+/// told from the ruinous one.
+///
+/// So such a container identifies no region. It matches neither the record
+/// nor the desired entry, which classifies it [`Drifted`](PathState::Drifted)
+/// and leaves nothing to skip, and it carries no signature
+/// ([`observed_signature`]), which is what refuses the lift. Every action on
+/// it refuses under either policy until the extra line is gone.
+/// [`EntryKind::Block`]'s rustdoc states the rule and the indented or quoted
+/// spelling that lets a container mention its marker without breaking it.
+fn identified_region(observation: &Observation) -> Option<&String> {
+    match observation {
+        Observation::Block {
+            hash: Some(hash),
+            occurrences: 1,
+            ..
+        } => Some(hash),
+        _ => None,
     }
 }
 
 /// Whether the observed node is exactly the desired entry — same comparison
 /// as [`observation_matches_recorded`], against the desired side.
-fn observation_matches_desired(entry: &Entry, observation: &Observation) -> bool {
+///
+/// `recorded` is the entry the observation was taken against. A region is
+/// located with the *recorded* marker and placement, so an observation
+/// answers about a desired block only where the caller still names that same
+/// pair; changing either asks about a region that is not the one on disk, and
+/// the answer is no.
+fn observation_matches_desired(
+    entry: &Entry,
+    recorded: &ManifestEntry,
+    observation: &Observation,
+) -> bool {
     match (entry, observation) {
         (
             Entry::File {
@@ -858,6 +1048,10 @@ fn observation_matches_desired(entry: &Entry, observation: &Observation) -> bool
         ) => executable == on_disk && *hash == sha256_hex(contents),
         (Entry::Symlink { target }, Observation::Symlink { hash, .. }) => {
             *hash == sha256_hex(target.as_bytes())
+        }
+        (Entry::Block { body, .. }, observation) => {
+            entry.kind() == recorded.kind
+                && identified_region(observation) == Some(&sha256_hex(body))
         }
         _ => false,
     }
@@ -877,7 +1071,7 @@ fn desired_hash(entry: &Entry) -> String {
     match entry {
         Entry::File { contents, .. } => sha256_hex(contents),
         Entry::Symlink { target } => sha256_hex(target.as_bytes()),
-        Entry::Block { body } => sha256_hex(body),
+        Entry::Block { body, .. } => sha256_hex(body),
     }
 }
 

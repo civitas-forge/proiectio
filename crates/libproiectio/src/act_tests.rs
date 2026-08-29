@@ -867,11 +867,11 @@ fn a_forged_skip_of_an_unrecorded_path_refuses_instead_of_adopting() {
 }
 
 #[test]
-fn an_overwrite_expecting_a_block_signature_fails_up_front_and_writes_nothing() {
+fn a_hand_built_plan_replacing_a_region_with_a_whole_file_fails_up_front() {
     let (dest, state) = fixtures();
     Tree::new()
         .file("a.txt", "old")
-        .file("conf", "anything")
+        .file("conf", "author\n# proiectio\nbody\n")
         .write_under(dest.root());
     let mut manifest = Manifest::new();
     manifest.entries.insert(
@@ -880,7 +880,11 @@ fn an_overwrite_expecting_a_block_signature_fails_up_front_and_writes_nothing() 
     );
     manifest.entries.insert(
         "conf".into(),
-        recorded(EntryKind::Block, sha256_hex(b"body"), &["own"]),
+        recorded(
+            block_kind(Placement::Append),
+            sha256_hex(b"body\n"),
+            &["own"],
+        ),
     );
     let plan = Plan {
         owner: "own".to_owned(),
@@ -904,8 +908,8 @@ fn an_overwrite_expecting_a_block_signature_fails_up_front_and_writes_nothing() 
                         executable: false,
                     },
                     expected: NodeSignature {
-                        kind: EntryKind::Block,
-                        hash: sha256_hex(b"body"),
+                        kind: block_kind(Placement::Append),
+                        hash: sha256_hex(b"body\n"),
                         executable: false,
                     },
                 },
@@ -913,19 +917,22 @@ fn an_overwrite_expecting_a_block_signature_fails_up_front_and_writes_nothing() 
         ]),
     };
 
-    let error =
-        apply_at(&dest, &state, &manifest, &plan).expect_err("the block seam reports up front");
+    let error = apply_at(&dest, &state, &manifest, &plan)
+        .expect_err("a path never changes between a whole node and a block");
 
     match error {
-        Error::ApplyBlockUnimplemented { paths } => {
-            assert_eq!(paths, BTreeSet::from(["conf".into()]))
-        }
-        other => panic!("expected ApplyBlockUnimplemented, got {other:?}"),
+        Error::Block { blocks } => assert_eq!(
+            blocks,
+            BTreeMap::from([("conf".into(), BlockFault::KindChange)])
+        ),
+        other => panic!("expected Block, got {other:?}"),
     }
     // Up front means up front: the removal half of the plan did not run.
     assert_tree(
         dest.root(),
-        &Tree::new().file("a.txt", "old").file("conf", "anything"),
+        &Tree::new()
+            .file("a.txt", "old")
+            .file("conf", "author\n# proiectio\nbody\n"),
     );
 }
 
@@ -1925,26 +1932,976 @@ fn a_path_beneath_a_link_this_run_removes_is_written_as_an_ordinary_path() {
     assert_tree(dest.root(), &replaced);
 }
 
+// --- blocks: splicing a region into somebody else's file ---
+
+/// The marker every block test uses.
+const MARKER: &str = "# proiectio";
+
+fn block_kind(placement: Placement) -> EntryKind {
+    EntryKind::Block {
+        marker: MARKER.to_owned(),
+        placement,
+    }
+}
+
+/// A desired block entry under [`MARKER`].
+fn block(body: &str, placement: Placement) -> Entry {
+    Entry::Block {
+        body: body.as_bytes().to_vec(),
+        marker: MARKER.to_owned(),
+        placement,
+    }
+}
+
+/// A desired tree of one block at `path`.
+fn block_tree(path: &str, body: &str, placement: Placement) -> BTreeMap<Utf8PathBuf, Entry> {
+    BTreeMap::from([(Utf8PathBuf::from(path), block(body, placement))])
+}
+
+/// The container's bytes as they stand on disk.
+fn container(dest: &Fixture, path: &str) -> String {
+    fs::read_to_string(dest.path(path)).expect("read the container")
+}
+
 #[test]
-fn a_planned_block_write_is_a_structured_seam_error() {
+fn a_block_splices_a_region_into_a_container_it_does_not_own() {
     let (dest, state) = fixtures();
-    let desired = BTreeMap::from([(
-        Utf8PathBuf::from("shared.conf"),
-        Entry::Block {
-            body: b"managed region\n".to_vec(),
-        },
-    )]);
+    Tree::new()
+        .file("rc", "author line\nsecond\n")
+        .write_under(dest.root());
+
+    let report = pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("the container is unrecorded, which is what a block is for");
+
+    assert_eq!(
+        report.outcomes,
+        BTreeMap::from([("rc".into(), ApplyOutcome::Written)])
+    );
+    assert_eq!(
+        container(&dest, "rc"),
+        "author line\nsecond\n# proiectio\nmanaged\n"
+    );
+    // The manifest records the region's body, never the container's bytes.
+    assert_eq!(
+        report.manifest.entries[Utf8Path::new("rc")],
+        recorded(
+            block_kind(Placement::Append),
+            sha256_hex(b"managed\n"),
+            &["own"]
+        )
+    );
+}
+
+#[test]
+fn prepending_puts_the_region_before_the_author() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("rc", "author line\n")
+        .write_under(dest.root());
+
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Prepend),
+        DriftPolicy::Refuse,
+    )
+    .expect("project");
+
+    assert_eq!(
+        container(&dest, "rc"),
+        "managed\n# proiectio\nauthor line\n"
+    );
+}
+
+#[test]
+fn re_applying_a_block_is_a_no_op() {
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author\n").write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
+    let after_first = container(&dest, "rc");
+
+    let report =
+        pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("re-apply is a no-op");
+
+    assert_eq!(
+        report.outcomes,
+        BTreeMap::from([("rc".into(), ApplyOutcome::Skipped)])
+    );
+    // The marker is what makes this idempotent: without one the second run
+    // could not tell its own bytes from the author's, and would append again.
+    assert_eq!(container(&dest, "rc"), after_first);
+}
+
+#[test]
+fn an_edit_outside_the_region_is_not_drift_and_an_edit_inside_it_is() {
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author\n").write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
+
+    // The author edits their own side and re-runs: nothing to do.
+    fs::write(dest.path("rc"), "author\nand more\n# proiectio\nmanaged\n").expect("edit outside");
+    let report = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
+        .expect("outside is not drift");
+    assert_eq!(
+        report.outcomes,
+        BTreeMap::from([("rc".into(), ApplyOutcome::Skipped)])
+    );
+    assert_eq!(
+        container(&dest, "rc"),
+        "author\nand more\n# proiectio\nmanaged\n"
+    );
+
+    // The author edits inside the region: that is drift, and it refuses.
+    fs::write(dest.path("rc"), "author\nand more\n# proiectio\nedited\n").expect("edit inside");
+    let error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
+        .expect_err("inside the region is drift");
+    match error {
+        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_edit_past_the_regions_outer_edge_is_drift() {
+    // The region runs to the file's edge, so an author appending past an
+    // appended region has written inside it. This is the cost `Prepend`
+    // avoids, and it is why `EntryKind::Block` says so.
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author\n").write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
+    fs::write(
+        dest.path("rc"),
+        "author\n# proiectio\nmanaged\ntheir new line\n",
+    )
+    .expect("append past the region");
 
     let error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
-        .expect_err("block regions are issue #14");
+        .expect_err("past the edge is inside the region");
 
     match error {
-        Error::ApplyBlockUnimplemented { paths } => {
-            assert_eq!(paths, BTreeSet::from(["shared.conf".into()]))
-        }
-        other => panic!("expected ApplyBlockUnimplemented, got {other:?}"),
+        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        other => panic!("expected Drift, got {other:?}"),
     }
+}
+
+#[test]
+fn changing_the_body_replaces_only_the_region() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("rc", "author\nkeep me\n")
+        .write_under(dest.root());
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "v1\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("project v1");
+
+    let report = pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "v2\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("project v2");
+
+    assert_eq!(
+        report.outcomes,
+        BTreeMap::from([("rc".into(), ApplyOutcome::Overwritten)])
+    );
+    assert_eq!(container(&dest, "rc"), "author\nkeep me\n# proiectio\nv2\n");
+}
+
+#[test]
+fn a_changed_marker_migrates_the_region_in_one_publish() {
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author\n").write_under(dest.root());
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("project under the first marker");
+
+    let renamed = BTreeMap::from([(
+        Utf8PathBuf::from("rc"),
+        Entry::Block {
+            body: b"managed\n".to_vec(),
+            marker: "# renamed".to_owned(),
+            placement: Placement::Append,
+        },
+    )]);
+    let report =
+        pipeline(&dest, &state, "own", &renamed, DriftPolicy::Refuse).expect("migrate the marker");
+
+    assert_eq!(
+        report.outcomes,
+        BTreeMap::from([("rc".into(), ApplyOutcome::Overwritten)])
+    );
+    // One publish: the old region is gone, not left beside the new one.
+    assert_eq!(container(&dest, "rc"), "author\n# renamed\nmanaged\n");
+}
+
+#[test]
+fn a_migration_into_a_marker_the_author_already_wrote_refuses() {
+    // Publishing would put the new marker on a second whole line, and the
+    // container would identify no region on the very next run — a refusal the
+    // projection would have written into somebody else's file itself.
+    let (dest, state) = fixtures();
+    let author = "author\n# renamed\n";
+    Tree::new().file("rc", author).write_under(dest.root());
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("project under the first marker");
+    let before = container(&dest, "rc");
+
+    let renamed = BTreeMap::from([(
+        Utf8PathBuf::from("rc"),
+        Entry::Block {
+            body: b"managed\n".to_vec(),
+            marker: "# renamed".to_owned(),
+            placement: Placement::Append,
+        },
+    )]);
+    let error = pipeline(&dest, &state, "own", &renamed, DriftPolicy::Refuse)
+        .expect_err("the author's side already carries the new marker");
+
+    match error {
+        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+    assert_eq!(container(&dest, "rc"), before);
+}
+
+#[test]
+fn removing_a_block_leaves_the_container_byte_identical_apart_from_the_region() {
+    let (dest, state) = fixtures();
+    let author = "author\nkeep me\n";
+    Tree::new().file("rc", author).write_under(dest.root());
+    for placement in [Placement::Append, Placement::Prepend] {
+        pipeline(
+            &dest,
+            &state,
+            "own",
+            &block_tree("rc", "managed\n", placement),
+            DriftPolicy::Refuse,
+        )
+        .expect("project");
+
+        let (manifest, plan) = {
+            let dest_dir = dir_at(dest.root());
+            let state_dir = dir_at(state.root());
+            let manifest = load_manifest(&state_dir).expect("load manifest");
+            let observations = observe(&dest_dir, &manifest).expect("observe");
+            let plan = decide_removal(
+                "own",
+                RemovalScope::Everything,
+                &manifest,
+                &observations,
+                None,
+                PlanOptions::default(),
+            );
+            (manifest, plan)
+        };
+        let report = apply_at(&dest, &state, &manifest, &plan).expect("strip the region");
+
+        assert_eq!(
+            report.outcomes,
+            BTreeMap::from([("rc".into(), ApplyOutcome::Removed)])
+        );
+        // The container stays, and every byte outside the region is where it
+        // was: a block never deletes a file it does not own whole.
+        assert_eq!(container(&dest, "rc"), author, "{placement:?}");
+        assert_eq!(report.manifest, Manifest::new());
+    }
+}
+
+#[test]
+fn a_region_whose_body_already_matches_is_adopted() {
+    // Refusing a destination that is already in the desired state would be
+    // the alternative; the region is recorded and nothing is written.
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("rc", "author\n# proiectio\nmanaged\n")
+        .write_under(dest.root());
+
+    let report = pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("adopt the region already there");
+
+    assert_eq!(
+        report.outcomes,
+        BTreeMap::from([("rc".into(), ApplyOutcome::Skipped)])
+    );
+    assert_eq!(container(&dest, "rc"), "author\n# proiectio\nmanaged\n");
+    assert_eq!(
+        report.manifest.entries[Utf8Path::new("rc")],
+        recorded(
+            block_kind(Placement::Append),
+            sha256_hex(b"managed\n"),
+            &["own"]
+        )
+    );
+}
+
+#[test]
+fn an_ambiguous_container_is_not_adopted() {
+    // Two whole-line marker occurrences identify no region, so the extreme
+    // one's body matching what this run would write is not evidence the
+    // projection wrote it. Adopting would record a region nothing in the
+    // manifest can locate again, and every later run over that path refuses.
+    let (dest, state) = fixtures();
+    let author = "# proiectio\nmanaged\n# proiectio\nmanaged\n";
+    Tree::new().file("rc", author).write_under(dest.root());
+
+    let error = pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect_err("nothing says which occurrence bounds a region");
+
+    match error {
+        Error::Foreign { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        other => panic!("expected Foreign, got {other:?}"),
+    }
+    assert_eq!(container(&dest, "rc"), author);
+    assert_eq!(persisted(&state), Manifest::new());
+}
+
+/// A container carrying the projection's region twice: the extreme
+/// occurrence still hashes to the recorded body, so only counting the
+/// occurrences tells the picture from an ordinary one.
+const DOUBLED: &str = "# proiectio\nmanaged\nauthor\n# proiectio\nmanaged\n";
+
+#[test]
+fn a_duplicate_marker_in_the_gap_refuses_every_action_on_the_region() {
+    // Each apply-time block path, given a container whose extreme occurrence
+    // hashes exactly to what the plan expects. Acting would strip or replace
+    // a range nothing says is the recorded one and leave the other region
+    // standing with the manifest no longer naming it.
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+    let plans: [(&str, BTreeMap<Utf8PathBuf, Entry>); 4] = [
+        // The removal's re-check.
+        ("remove", BTreeMap::new()),
+        // The overwrite's.
+        (
+            "overwrite",
+            block_tree("rc", "different\n", Placement::Append),
+        ),
+        // The overwrite's again, migrating to a marker the duplicate is not
+        // an occurrence of, so only counting the *recorded* marker sees it.
+        (
+            "migration",
+            BTreeMap::from([(
+                Utf8PathBuf::from("rc"),
+                Entry::Block {
+                    body: b"managed\n".to_vec(),
+                    marker: "# renamed".to_owned(),
+                    placement: Placement::Append,
+                },
+            )]),
+        ),
+        // The skip's — which writes nothing, but would re-record the path.
+        ("skip", desired.clone()),
+    ];
+    for (name, second) in plans {
+        let (dest, state) = fixtures();
+        Tree::new().file("rc", "author\n").write_under(dest.root());
+        pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
+
+        let (manifest, plan) = plan_for(&dest, &state, "own", &second, DriftPolicy::Refuse);
+        fs::write(dest.path("rc"), DOUBLED).expect("duplicate the region in the gap");
+
+        let error =
+            apply_at(&dest, &state, &manifest, &plan).expect_err("the marker identifies no region");
+
+        match error {
+            Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()]), "{name}"),
+            other => panic!("{name}: expected Drift, got {other:?}"),
+        }
+        // Both regions are where the gap left them, and the manifest still
+        // records the one it recorded.
+        assert_eq!(container(&dest, "rc"), DOUBLED, "{name}");
+        assert_eq!(persisted(&state), manifest, "{name}");
+    }
+}
+
+#[test]
+fn a_recorded_region_back_in_the_gap_refuses_even_where_it_matches() {
+    // The plan reached a write by finding the recorded region gone. One back
+    // under the recorded marker is a change since the plan, and an ordinary
+    // write refuses a node that appeared the same way — bytes matching the
+    // desired ones do not make the disk the plan's disk.
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author\n").write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
+
+    // The author strips the region, so the region is Missing and the plan is
+    // a write that heals it.
+    fs::write(dest.path("rc"), "author\n").expect("strip the region");
+    let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
+    // The gap: it comes back, byte for byte.
+    let restored = "author\n# proiectio\nmanaged\n";
+    fs::write(dest.path("rc"), restored).expect("restore in the gap");
+
+    let error =
+        apply_at(&dest, &state, &manifest, &plan).expect_err("the region came back since the plan");
+
+    match error {
+        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+    assert_eq!(container(&dest, "rc"), restored);
+}
+
+#[test]
+fn an_unrecorded_region_carrying_other_bytes_refuses_as_foreign() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("rc", "author\n# proiectio\nsomebody else wrote this\n")
+        .write_under(dest.root());
+
+    let error = pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect_err("the region is on disk and unrecorded");
+
+    match error {
+        Error::Foreign { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        other => panic!("expected Foreign, got {other:?}"),
+    }
+    assert_eq!(
+        container(&dest, "rc"),
+        "author\n# proiectio\nsomebody else wrote this\n"
+    );
+}
+
+#[test]
+fn a_block_never_creates_its_container_or_a_directory_for_one() {
+    let (dest, state) = fixtures();
+
+    let error = pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("etc/rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect_err("there is nothing to splice into");
+
+    match error {
+        Error::Block { blocks } => assert_eq!(
+            blocks,
+            BTreeMap::from([("etc/rc".into(), BlockFault::ContainerMissing)])
+        ),
+        other => panic!("expected Block, got {other:?}"),
+    }
+    // No stranded directory either: the walk runs with `create = false`.
     assert_tree(dest.root(), &Tree::new());
+}
+
+#[test]
+fn appending_to_a_container_with_no_final_newline_refuses() {
+    // Ansible appends a newline to the author's last line to make room, which
+    // edits a byte outside the block and makes insert-then-strip lose it.
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("rc", "no newline")
+        .write_under(dest.root());
+
+    let error = pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect_err("neither side's bytes get normalized");
+
+    match error {
+        Error::Block { blocks } => assert_eq!(
+            blocks,
+            BTreeMap::from([("rc".into(), BlockFault::ContainerNotNewlineTerminated)])
+        ),
+        other => panic!("expected Block, got {other:?}"),
+    }
+    assert_eq!(container(&dest, "rc"), "no newline");
+}
+
+#[test]
+fn a_symlink_at_the_container_path_is_foreign_unrecorded_and_drift_recorded() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("real", "author\n")
+        .symlink("rc", "real")
+        .write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+
+    // Unrecorded: the projection never wrote the link, so it is foreign.
+    let unrecorded = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
+        .expect_err("a link is not a container");
+    match unrecorded {
+        Error::Foreign { paths } => assert!(paths.contains(Utf8Path::new("rc"))),
+        other => panic!("expected Foreign, got {other:?}"),
+    }
+
+    // Recorded as a region, and swapped for a link since: drift of kind,
+    // which `--force` does not lift because no signature expresses it.
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "rc".into(),
+        recorded(
+            block_kind(Placement::Append),
+            sha256_hex(b"managed\n"),
+            &["own"],
+        ),
+    );
+    save_manifest(&dir_at(state.root()), &manifest).expect("record the region");
+    let recorded_error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Overwrite)
+        .expect_err("a swapped container is drift");
+    match recorded_error {
+        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+    // Nothing was written through the link.
+    assert_eq!(container(&dest, "real"), "author\n");
+}
+
+#[test]
+fn force_over_a_container_that_became_a_directory_still_refuses() {
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author\n").write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
+    fs::remove_file(dest.path("rc")).expect("remove the container");
+    fs::create_dir(dest.path("rc")).expect("put a directory there");
+
+    let error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Overwrite)
+        .expect_err("no signature expresses a directory");
+
+    match error {
+        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+}
+
+#[test]
+fn force_overwrites_an_edited_region_and_leaves_the_author_alone() {
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author\n").write_under(dest.root());
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "v1\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("project v1");
+    fs::write(dest.path("rc"), "author edited\n# proiectio\nedited\n").expect("drift both sides");
+
+    let report = pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "v2\n", Placement::Append),
+        DriftPolicy::Overwrite,
+    )
+    .expect("--force lifts a drifted region");
+
+    assert_eq!(
+        report.outcomes,
+        BTreeMap::from([("rc".into(), ApplyOutcome::Overwritten)])
+    );
+    // The author's edit outside the region survives; theirs inside it does
+    // not, which is what the placement tradeoff is about.
+    assert_eq!(container(&dest, "rc"), "author edited\n# proiectio\nv2\n");
+}
+
+#[test]
+fn a_deleted_region_is_spliced_back_and_a_deleted_container_refuses() {
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author\n").write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
+
+    // The author deletes the region but keeps the file: write heals.
+    fs::write(dest.path("rc"), "author\n").expect("delete the region");
+    let healed =
+        pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("write heals");
+    assert_eq!(
+        healed.outcomes,
+        BTreeMap::from([("rc".into(), ApplyOutcome::Written)])
+    );
+    assert_eq!(container(&dest, "rc"), "author\n# proiectio\nmanaged\n");
+
+    // The author deletes the whole file: a block never creates one.
+    fs::remove_file(dest.path("rc")).expect("delete the container");
+    let error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
+        .expect_err("a block never creates its container");
+    match error {
+        Error::Block { blocks } => assert_eq!(
+            blocks,
+            BTreeMap::from([("rc".into(), BlockFault::ContainerMissing)])
+        ),
+        other => panic!("expected Block, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_containers_mode_is_the_authors_and_survives_the_rename() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .executable("rc", "#!/bin/sh\n")
+        .write_under(dest.root());
+
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("project");
+
+    let mode = fs::symlink_metadata(dest.path("rc"))
+        .expect("stat the container")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o755);
+    // And the manifest says nothing about it: `executable` is always false
+    // for a block.
+    assert!(!persisted(&state).entries[Utf8Path::new("rc")].executable);
+}
+
+#[test]
+fn a_containers_setuid_bits_do_not_survive_the_rename() {
+    // Publishing replaces the inode, so the new file belongs to whoever ran
+    // the projection. Carrying the author's setuid bit across that would
+    // re-create somebody else's privileged file under a new owner — content
+    // widening what content may do, which `docs/security.lex` section 1
+    // forbids and section 4 already forbids for archive members.
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author\n").write_under(dest.root());
+    fs::set_permissions(
+        dest.path("rc").as_std_path(),
+        fs::Permissions::from_mode(0o4755),
+    )
+    .expect("plant a setuid container");
+
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("project");
+
+    let mode = fs::symlink_metadata(dest.path("rc"))
+        .expect("stat the container")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o7000, 0, "setuid, setgid and sticky are dropped");
+    assert_eq!(mode & 0o777, 0o755, "the permission bits are the author's");
+}
+
+#[test]
+fn the_bytes_outside_a_region_are_never_interpreted() {
+    // conda substitutes its block for a literal sentinel and expands it back,
+    // so an rc file containing that string is corrupted. A byte-range splice
+    // has nothing to substitute: the author's side here carries the marker
+    // text indented, a would-be placeholder, and a stray CR, and comes back
+    // exactly as written.
+    let (dest, state) = fixtures();
+    let author = "  # proiectio\n__CONDA_REPLACE_ME_123__\n{{ handlebars }}\r\n";
+    Tree::new().file("rc", author).write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
+    assert_eq!(
+        container(&dest, "rc"),
+        format!("{author}# proiectio\nmanaged\n")
+    );
+
+    let (manifest, plan) = {
+        let dest_dir = dir_at(dest.root());
+        let state_dir = dir_at(state.root());
+        let manifest = load_manifest(&state_dir).expect("load manifest");
+        let observations = observe(&dest_dir, &manifest).expect("observe");
+        let plan = decide_removal(
+            "own",
+            RemovalScope::Everything,
+            &manifest,
+            &observations,
+            None,
+            PlanOptions::default(),
+        );
+        (manifest, plan)
+    };
+    apply_at(&dest, &state, &manifest, &plan).expect("strip the region");
+
+    assert_eq!(container(&dest, "rc"), author);
+}
+
+#[test]
+fn a_marker_terminated_by_end_of_file_still_reads_and_strips() {
+    // The projection writes `\n` after the marker, but a line-ending
+    // conversion or a hand edit can leave one at the very end of the file.
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("rc", "author\n# proiectio")
+        .write_under(dest.root());
+
+    let report = pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("an empty region already carries the desired body");
+
+    assert_eq!(
+        report.outcomes,
+        BTreeMap::from([("rc".into(), ApplyOutcome::Skipped)])
+    );
+}
+
+#[test]
+fn two_owners_share_a_region_only_while_agreeing_on_the_marker() {
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author\n").write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project as own");
+
+    // Same marker, same body: the second owner joins the entry.
+    let joined = pipeline(&dest, &state, "other", &desired, DriftPolicy::Refuse)
+        .expect("identical entries share a path");
+    assert_eq!(
+        joined.manifest.entries[Utf8Path::new("rc")].owners,
+        BTreeSet::from(["other".to_owned(), "own".to_owned()])
+    );
+
+    // A different marker is a different kind, so it conflicts.
+    let renamed = BTreeMap::from([(
+        Utf8PathBuf::from("rc"),
+        Entry::Block {
+            body: b"managed\n".to_vec(),
+            marker: "# renamed".to_owned(),
+            placement: Placement::Append,
+        },
+    )]);
+    let error = pipeline(&dest, &state, "third", &renamed, DriftPolicy::Refuse)
+        .expect_err("the owners must agree first");
+    match error {
+        Error::OwnerConflict { conflicts } => {
+            assert_eq!(
+                conflicts[Utf8Path::new("rc")],
+                BTreeSet::from(["other".to_owned(), "own".to_owned()])
+            );
+        }
+        other => panic!("expected OwnerConflict, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_second_marker_line_past_the_edge_refuses_and_strands_nothing() {
+    // The last occurrence is the projection's only while every other one is
+    // a line outside the region. A second bare marker line leaves two, and
+    // stripping the last would republish the container with the first region
+    // still in it and the manifest recording only the new one — a stranded
+    // body nothing owns. The second region's body decides nothing: a copy of
+    // the recorded one would otherwise read clean and be overwritten in
+    // place, which is the same stranding by a quieter route.
+    for theirs in ["theirs\n", "managed\n"] {
+        let (dest, state) = fixtures();
+        Tree::new().file("rc", "author\n").write_under(dest.root());
+        let desired = block_tree("rc", "managed\n", Placement::Append);
+        pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
+        let edited = format!("author\n# proiectio\nmanaged\n# proiectio\n{theirs}");
+        fs::write(dest.path("rc"), &edited).expect("append a second marker line past the edge");
+
+        // Nothing has a region it can name: not the ordinary overwrite, not
+        // the forced one, and not the forced removal.
+        let mut errors = vec![
+            pipeline(
+                &dest,
+                &state,
+                "own",
+                &block_tree("rc", "v2\n", Placement::Append),
+                DriftPolicy::Refuse,
+            )
+            .expect_err("no occurrence is known to be the recorded one"),
+        ];
+        errors.push(
+            pipeline(
+                &dest,
+                &state,
+                "own",
+                &block_tree("rc", "v2\n", Placement::Append),
+                DriftPolicy::Overwrite,
+            )
+            .expect_err("and --force lifts nothing it cannot re-verify"),
+        );
+        let (manifest, plan) = {
+            let dest_dir = dir_at(dest.root());
+            let state_dir = dir_at(state.root());
+            let manifest = load_manifest(&state_dir).expect("load manifest");
+            let observations = observe(&dest_dir, &manifest).expect("observe");
+            let plan = decide_removal(
+                "own",
+                RemovalScope::Everything,
+                &manifest,
+                &observations,
+                None,
+                PlanOptions {
+                    drift: DriftPolicy::Overwrite,
+                    ..PlanOptions::default()
+                },
+            );
+            (manifest, plan)
+        };
+        errors.push(apply_at(&dest, &state, &manifest, &plan).expect_err("nor does the removal"));
+
+        for error in errors {
+            match error {
+                Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+                other => panic!("expected Drift, got {other:?}"),
+            }
+        }
+        assert_eq!(container(&dest, "rc"), edited);
+        assert!(persisted(&state).entries.contains_key(Utf8Path::new("rc")));
+    }
+}
+
+#[test]
+fn a_hand_built_plan_expecting_another_marker_fails_up_front() {
+    // The marker is what tells the projection's bytes from the author's, so
+    // an expectation naming a line the author wrote would point the strip at
+    // the author's own tail. The record's marker is the only one an
+    // expectation may name.
+    let (dest, state) = fixtures();
+    let author = "author\n# theirs\ntheir tail\n";
+    Tree::new().file("rc", author).write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "rc".into(),
+        recorded(
+            block_kind(Placement::Append),
+            sha256_hex(b"managed\n"),
+            &["own"],
+        ),
+    );
+    let plan = Plan {
+        owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([(
+            "rc".into(),
+            Action::Remove {
+                expected: Some(NodeSignature {
+                    kind: EntryKind::Block {
+                        marker: "# theirs".to_owned(),
+                        placement: Placement::Append,
+                    },
+                    hash: sha256_hex(b"their tail\n"),
+                    executable: false,
+                }),
+            },
+        )]),
+    };
+
+    let error = apply_at(&dest, &state, &manifest, &plan)
+        .expect_err("the expectation names a region the manifest does not record");
+
+    match error {
+        Error::Block { blocks } => assert_eq!(
+            blocks,
+            BTreeMap::from([("rc".into(), BlockFault::SignatureNotRecorded)])
+        ),
+        other => panic!("expected Block, got {other:?}"),
+    }
+    // Nothing of the author's was stripped.
+    assert_eq!(container(&dest, "rc"), author);
+}
+
+#[test]
+fn a_recorded_region_back_under_the_old_marker_refuses_rather_than_stranding_it() {
+    let (dest, state) = fixtures();
+    let author = "author\n";
+    Tree::new().file("rc", author).write_under(dest.root());
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("project under the first marker");
+
+    // The region goes missing, so changing the marker plans a write rather
+    // than the overwrite that would have migrated it.
+    fs::write(dest.path("rc"), author).expect("strip the region by hand");
+    let renamed = BTreeMap::from([(
+        Utf8PathBuf::from("rc"),
+        Entry::Block {
+            body: b"managed\n".to_vec(),
+            marker: "# renamed".to_owned(),
+            placement: Placement::Append,
+        },
+    )]);
+    let (manifest, plan) = plan_for(&dest, &state, "own", &renamed, DriftPolicy::Refuse);
+    assert!(matches!(
+        plan.actions[Utf8Path::new("rc")],
+        Action::Write { .. }
+    ));
+
+    // And it comes back in the gap. Splicing under the new marker would
+    // leave this one standing with nothing recording it — one stranded body
+    // per marker change.
+    let restored = "author\n# proiectio\nmanaged\n";
+    fs::write(dest.path("rc"), restored).expect("restore the old region");
+
+    let error =
+        apply_at(&dest, &state, &manifest, &plan).expect_err("the region changed under the plan");
+    match error {
+        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+    assert_eq!(container(&dest, "rc"), restored);
 }
 
 #[test]

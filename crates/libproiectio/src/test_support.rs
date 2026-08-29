@@ -47,9 +47,9 @@ use crate::Entry;
 /// One node of a declared tree.
 ///
 /// Distinct from [`Entry`]: a fixture on disk needs plain directories and
-/// carries no `Block` variant — a delimited region only means something once
-/// apply defines the marker format, so scenario container files are declared
-/// as ordinary [`Node::File`]s.
+/// carries no `Block` variant — a region is bytes inside a container, so a
+/// scenario declares the container as an ordinary [`Node::File`] and hands
+/// the block entry to the plan itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Node {
     /// A regular file.

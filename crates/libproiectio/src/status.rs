@@ -28,13 +28,9 @@ pub enum PathState {
     /// Recorded, but gone from disk.
     Missing,
     /// On disk, absent from the manifest. Planning refuses to touch it —
-    /// except where a desired [`Block`](crate::EntryKind::Block) entry
-    /// owns only the delimited region inside it, in which case the
-    /// container stays foreign as a file while the region is a write
-    /// target. Until block-region classification lands, the deciding
-    /// stage cannot yet see regions and refuses that case too —
-    /// conservative, never a wrong write
-    /// ([`decide`](crate::decide)'s rustdoc names the seam).
+    /// except that a [`Block`](crate::EntryKind::Block) is judged over its
+    /// region, so an unrecorded container is a write target rather than a
+    /// refusal (`docs/design.lex` section 2).
     Foreign,
 }
 
