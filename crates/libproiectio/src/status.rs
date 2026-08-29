@@ -29,17 +29,6 @@ pub struct Status {
     pub paths: BTreeMap<Utf8PathBuf, PathState>,
 }
 
-// These tests project through `Run`, so they carry `run`'s target predicate
-// rather than the `cfg(unix)` on `Projection::status`.
-#[cfg(all(
-    test,
-    unix,
-    not(any(
-        target_os = "espidf",
-        target_os = "horizon",
-        target_os = "solaris",
-        target_os = "vita"
-    ))
-))]
+#[cfg(test)]
 #[path = "status_tests.rs"]
 mod tests;

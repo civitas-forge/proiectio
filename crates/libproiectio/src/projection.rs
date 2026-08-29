@@ -1,17 +1,12 @@
 use camino::{Utf8Path, Utf8PathBuf};
 
-#[cfg(unix)]
 use std::collections::BTreeMap;
 
-#[cfg(unix)]
 use std::io::ErrorKind::NotFound;
 
-#[cfg(unix)]
 use cap_std::ambient_authority;
-#[cfg(unix)]
 use cap_std::fs_utf8::Dir;
 
-#[cfg(unix)]
 use crate::{
     BlockMarkers, Entry, Error, Manifest, Origin, Plan, PlanOptions, RemovalScope, Result, Status,
     block_markers, classify, decide, decide_removal, load_manifest, observe,
@@ -86,7 +81,6 @@ impl Projection {
 
 /// The reads: each call opens the destination and the recorded state, takes
 /// no lock, and drops both handles before it returns.
-#[cfg(unix)]
 impl Projection {
     /// The classification of every path in the union of the manifest and the
     /// destination, with nothing written. A missing state directory or

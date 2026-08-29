@@ -237,7 +237,6 @@ struct ArchiveTable {
     strip: Option<u32>,
 }
 
-#[cfg(unix)]
 fn is_executable(meta: &fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     meta.permissions().mode() & 0o100 != 0

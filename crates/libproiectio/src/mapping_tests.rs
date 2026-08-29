@@ -274,7 +274,6 @@ fn two_entries_projecting_one_normalized_key_are_refused() {
 // A well-formed gzipped tar of `(name, contents, executable)` members.
 // Mapping tests need only legitimate archives — the hostile corpus lives
 // beside the expansion it exercises — so the `tar` writer builds them.
-#[cfg(unix)]
 fn targz(members: &[(&str, &str, bool)]) -> Vec<u8> {
     let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
     let mut builder = tar::Builder::new(encoder);
@@ -297,7 +296,6 @@ fn targz(members: &[(&str, &str, bool)]) -> Vec<u8> {
 // A zip carrying one member under the name given, verbatim — the writer
 // does not sanitize what it is handed, which is what lets a mapping test
 // spell a member that climbs out of its prefix.
-#[cfg(unix)]
 fn zip_named(name: &str, body: &str) -> Vec<u8> {
     use std::io::Write;
 
@@ -312,7 +310,6 @@ fn zip_named(name: &str, body: &str) -> Vec<u8> {
 }
 
 #[test]
-#[cfg(unix)]
 fn archive_members_expand_under_their_prefix_as_ordinary_entries() {
     let text = r#"
         version = 1
@@ -347,7 +344,6 @@ fn archive_members_expand_under_their_prefix_as_ordinary_entries() {
 // normalized to `escape` — a projected path outside the prefix the mapping
 // wrote, refused by nothing.
 #[test]
-#[cfg(unix)]
 fn an_archive_member_climbing_out_of_its_prefix_is_refused_by_name() {
     let text = r#"
         version = 1
@@ -370,7 +366,6 @@ fn an_archive_member_climbing_out_of_its_prefix_is_refused_by_name() {
 // member path says neither which archive to open nor which file to edit.
 // The refusal names both.
 #[test]
-#[cfg(unix)]
 fn a_refused_member_names_its_archive_and_the_mapping_that_named_it() {
     let text = r#"
         version = 1
@@ -414,7 +409,6 @@ fn a_refused_member_names_its_archive_and_the_mapping_that_named_it() {
 // An expanded member is an ordinary projected path, so one colliding with
 // another entry's key is the same double claim two `[files]` keys would be.
 #[test]
-#[cfg(unix)]
 fn an_archive_member_colliding_with_another_entry_is_a_duplicate() {
     let text = r#"
         version = 1
@@ -461,7 +455,6 @@ fn two_archive_tables_naming_one_prefix_are_a_duplicate() {
 // multiple of the bound by naming one small bomb from several tables, with
 // every expanded tree live at once because they all merge into one.
 #[test]
-#[cfg(unix)]
 fn archive_tables_in_one_mapping_share_one_byte_budget() {
     // Two halves of the budget, each fine alone and not together.
     let half = usize::try_from(crate::archive::MAX_EXPANDED_BYTES / 2 + (1 << 20)).unwrap();
@@ -514,7 +507,6 @@ strip = 1
 "#;
 
 #[test]
-#[cfg(unix)]
 fn the_cli_tour_example_parses_to_its_tree_archive_included() {
     let tool = "#!/bin/sh\necho tool\n";
     let vendor = targz(&[
@@ -543,7 +535,6 @@ fn the_cli_tour_example_parses_to_its_tree_archive_included() {
 }
 
 #[test]
-#[cfg(unix)]
 fn relative_sources_resolve_against_the_mapping_files_directory() {
     // The mapping sits in a subdirectory; its sources resolve beside it —
     // including one climbing out of that subdirectory, because reads may
@@ -571,7 +562,6 @@ fn relative_sources_resolve_against_the_mapping_files_directory() {
 }
 
 #[test]
-#[cfg(unix)]
 fn an_absolute_source_is_read_as_given() {
     let fixture = crate::test_support::Tree::new()
         .file("elsewhere/content.txt", "anywhere the invoker can read")
@@ -589,7 +579,6 @@ fn an_absolute_source_is_read_as_given() {
 }
 
 #[test]
-#[cfg(unix)]
 fn source_metadata_is_copied_and_the_override_wins() {
     let text = r#"
         version = 1
@@ -619,7 +608,6 @@ fn source_metadata_is_copied_and_the_override_wins() {
 }
 
 #[test]
-#[cfg(unix)]
 fn a_missing_source_is_an_io_error_naming_the_resolved_path() {
     let text = r#"
         version = 1
@@ -637,7 +625,6 @@ fn a_missing_source_is_an_io_error_naming_the_resolved_path() {
 }
 
 #[test]
-#[cfg(unix)]
 fn a_missing_mapping_file_is_an_io_error() {
     let fixture = crate::test_support::Tree::new().materialize();
 

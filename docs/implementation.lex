@@ -267,9 +267,9 @@ Implementation Guidelines
     the prompt, and other runs meet LockHeld. A caller with a plan
     only to show reads Projection::plan instead, which takes no lock.
 
-    The guard is rustix::fs::flock, which is not compiled on every
-    Unix; LOCK_FILE_NAME is spelled on every target so a caller
-    elsewhere can coordinate on the same file.
+    The guard is rustix::fs::flock, and the crate requires it. A
+    target without flock(2), or without Unix at all, fails to compile
+    rather than offering reads it cannot pair with a write.
 
 Notes
 

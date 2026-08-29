@@ -18,7 +18,12 @@
 
 #![forbid(unsafe_code)]
 
-#[cfg(unix)]
+#[cfg(not(unix))]
+compile_error!(
+    "libproiectio requires a Unix target: it projects through cap-std directory \
+     handles and guards writes with flock(2)"
+);
+
 mod act;
 mod archive;
 mod block;
@@ -26,17 +31,6 @@ mod containment;
 mod decide;
 mod entry;
 mod error;
-// `rustix::fs::flock` is compiled out on the targets named here (Solaris has
-// no `flock` at all); the list is rustix's own, minus the non-Unix `wasi`.
-#[cfg(all(
-    unix,
-    not(any(
-        target_os = "espidf",
-        target_os = "horizon",
-        target_os = "solaris",
-        target_os = "vita"
-    ))
-))]
 mod lock;
 mod manifest;
 mod mapping;
@@ -45,38 +39,18 @@ mod origin;
 mod plan;
 mod projection;
 mod report;
-#[cfg(all(
-    unix,
-    not(any(
-        target_os = "espidf",
-        target_os = "horizon",
-        target_os = "solaris",
-        target_os = "vita"
-    ))
-))]
 mod run;
 mod status;
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod test_support;
-#[cfg(unix)]
 mod tree;
 
-#[cfg(unix)]
 pub(crate) use act::*;
 pub use archive::*;
 pub use containment::*;
 pub use decide::*;
 pub use entry::*;
 pub use error::*;
-#[cfg(all(
-    unix,
-    not(any(
-        target_os = "espidf",
-        target_os = "horizon",
-        target_os = "solaris",
-        target_os = "vita"
-    ))
-))]
 pub(crate) use lock::*;
 pub use manifest::*;
 pub use mapping::*;
@@ -85,16 +59,6 @@ pub use origin::*;
 pub use plan::*;
 pub use projection::*;
 pub use report::*;
-#[cfg(all(
-    unix,
-    not(any(
-        target_os = "espidf",
-        target_os = "horizon",
-        target_os = "solaris",
-        target_os = "vita"
-    ))
-))]
 pub use run::*;
 pub use status::*;
-#[cfg(unix)]
 pub use tree::*;
