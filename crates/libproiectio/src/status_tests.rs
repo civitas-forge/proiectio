@@ -43,11 +43,11 @@ fn a_destination_with_no_manifest_reports_nothing() {
     // The state directory exists and holds no manifest file: nothing has
     // been projected yet.
     assert_eq!(fs::read_dir(state.root()).expect("read state").count(), 0);
-    assert!(
+    assert_eq!(
         projection(dest.root(), state.root())
             .status()
-            .expect("status")
-            .is_empty()
+            .expect("status"),
+        Status::default()
     );
 }
 
@@ -60,7 +60,7 @@ fn a_missing_state_directory_reports_nothing() {
 
     let report = projection(dest.root(), &missing).status().expect("status");
 
-    assert!(report.is_empty());
+    assert_eq!(report, Status::default());
     assert!(
         !missing.exists(),
         "a read never creates the state directory"

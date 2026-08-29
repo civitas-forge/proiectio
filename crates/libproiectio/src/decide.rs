@@ -12,8 +12,8 @@ use crate::{
     sha256_hex,
 };
 
-/// One [`PathState`] per path in the union of the manifest and the
-/// observations, skipping the state subtree named by `state_prefix`.
+/// One row per path in the union of the manifest and the observations,
+/// skipping the state subtree named by `state_prefix`.
 pub(crate) fn classify(
     manifest: &Manifest,
     observations: &Observations,
