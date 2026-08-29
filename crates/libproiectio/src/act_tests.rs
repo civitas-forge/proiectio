@@ -2458,6 +2458,38 @@ fn the_containers_mode_is_the_authors_and_survives_the_rename() {
 }
 
 #[test]
+fn a_containers_setuid_bits_do_not_survive_the_rename() {
+    // Publishing replaces the inode, so the new file belongs to whoever ran
+    // the projection. Carrying the author's setuid bit across that would
+    // re-create somebody else's privileged file under a new owner — content
+    // widening what content may do, which `docs/security.lex` section 1
+    // forbids and section 4 already forbids for archive members.
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author\n").write_under(dest.root());
+    fs::set_permissions(
+        dest.path("rc").as_std_path(),
+        fs::Permissions::from_mode(0o4755),
+    )
+    .expect("plant a setuid container");
+
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("project");
+
+    let mode = fs::symlink_metadata(dest.path("rc"))
+        .expect("stat the container")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o7000, 0, "setuid, setgid and sticky are dropped");
+    assert_eq!(mode & 0o777, 0o755, "the permission bits are the author's");
+}
+
+#[test]
 fn the_bytes_outside_a_region_are_never_interpreted() {
     // conda substitutes its block for a literal sentinel and expands it back,
     // so an rc file containing that string is corrupted. A byte-range splice

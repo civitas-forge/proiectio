@@ -978,8 +978,10 @@ fn persist(
 }
 
 /// [`persist`] with the mode named outright, for the one node whose mode is
-/// not the entry's: a block's container keeps the author's, read off the same
-/// descriptor the bytes came from.
+/// not the entry's: a block's container keeps the author's permission bits,
+/// read off the same descriptor the bytes came from. setuid, setgid and
+/// sticky are not among them — [`read_container`](crate::observe::read_container)
+/// drops them, and says why.
 fn persist_mode(dir: &Dir, leaf: &str, path: &Utf8Path, contents: &[u8], mode: u32) -> Result<()> {
     let mut temp = TempFile::new(dir.as_cap_std()).map_err(io_error(path))?;
     temp.write_all(contents).map_err(io_error(path))?;

@@ -185,7 +185,14 @@ pub(crate) fn read_container(dir: &Dir, name: &str, path: &Utf8Path) -> Result<C
     file.read_to_end(&mut bytes).map_err(io_error(path))?;
     Ok(Container::File {
         bytes,
-        mode: meta.permissions().mode() & 0o7777,
+        // Permission bits only. setuid, setgid and sticky are dropped: the
+        // container is untrusted content, and `docs/security.lex` section 1
+        // says content never widens what content may do — the same rule that
+        // lets an archive member contribute its executable bit and nothing
+        // else (section 4). Publishing replaces the inode, so preserving them
+        // would re-create somebody else's setuid file under the invoker's
+        // ownership.
+        mode: meta.permissions().mode() & 0o0777,
     })
 }
 
