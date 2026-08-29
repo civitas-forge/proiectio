@@ -335,3 +335,97 @@ fn lock_held_exits_1_and_names_the_lock_path() {
         "state lock proiectio.lock is held by another writer"
     );
 }
+
+fn value(error: Error) -> serde_json::Value {
+    serde_json::to_value(&error).expect("serializes")
+}
+
+#[test]
+fn each_variant_family_serializes_as_a_map_tagged_by_its_kind() {
+    assert_eq!(
+        value(
+            Refused::one(
+                Utf8PathBuf::from("bin/tool"),
+                Refusal::Drift,
+                Origin::Caller
+            )
+            .into()
+        ),
+        serde_json::json!({
+            "kind": "refused",
+            "paths": { "bin/tool": { "refusal": "Drift", "origin": "Caller" } },
+        })
+    );
+
+    assert_eq!(
+        value(Error::Io {
+            path: Utf8PathBuf::from("config/settings.toml"),
+            source: std::io::Error::other("disk full"),
+        }),
+        serde_json::json!({
+            "kind": "io",
+            "path": "config/settings.toml",
+            "source": "disk full",
+        })
+    );
+
+    let mapping = value(Error::MappingFormat {
+        path: Utf8PathBuf::from("deploy.toml"),
+        source: toml::from_str::<crate::Manifest>("not toml").expect_err("parse failure"),
+    });
+    assert_eq!(mapping["kind"], "mapping_format");
+    assert_eq!(mapping["path"], "deploy.toml");
+    assert!(
+        mapping["source"]
+            .as_str()
+            .expect("a string")
+            .contains("key with no value")
+    );
+
+    assert_eq!(
+        value(Error::ArchiveDecode {
+            path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+            format: crate::ArchiveFormat::TarGz,
+            source: std::io::Error::other("invalid gzip header"),
+        }),
+        serde_json::json!({
+            "kind": "archive_decode",
+            "path": "/assets/vendor.tar.gz",
+            "format": "TarGz",
+            "source": "invalid gzip header",
+        })
+    );
+
+    assert_eq!(
+        value(Error::TreeTooDeep {
+            path: Utf8PathBuf::from("/srv/skeleton/a/b/c"),
+            limit: crate::MAX_WALK_DEPTH,
+        }),
+        serde_json::json!({
+            "kind": "tree_too_deep",
+            "path": "/srv/skeleton/a/b/c",
+            "limit": 64,
+        })
+    );
+}
+
+#[test]
+fn every_variant_serializes_under_a_kind_of_its_own() {
+    let kinds: Vec<String> = every_variant()
+        .into_iter()
+        .map(|error| {
+            value(error)["kind"]
+                .as_str()
+                .expect("a kind tag")
+                .to_owned()
+        })
+        .collect();
+
+    let (refusals, failures) = (8, 24);
+    assert_eq!(kinds.len(), refusals + failures);
+    assert!(kinds[..refusals].iter().all(|kind| kind == "refused"));
+    assert_eq!(
+        kinds.into_iter().collect::<BTreeSet<String>>().len(),
+        1 + failures
+    );
+}

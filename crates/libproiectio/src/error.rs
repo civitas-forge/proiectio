@@ -1,4 +1,5 @@
 use camino::Utf8PathBuf;
+use serde::{Serialize, Serializer};
 use thiserror::Error;
 
 use crate::Refused;
@@ -27,7 +28,8 @@ pub const MAX_WALK_DEPTH: usize = 64;
 ///     }
 /// }
 /// ```
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Error {
     /// A refusal: the projection declining to touch paths. Everything else
     /// is an operation failing.
@@ -39,6 +41,7 @@ pub enum Error {
         /// The path the operation touched.
         path: Utf8PathBuf,
         /// The OS error, unchanged.
+        #[serde(serialize_with = "display_string")]
         source: std::io::Error,
     },
     /// The manifest file exists but does not parse as manifest JSON. Not a
@@ -48,6 +51,7 @@ pub enum Error {
         /// The manifest file's location.
         path: Utf8PathBuf,
         /// The parse error, unchanged.
+        #[serde(serialize_with = "display_string")]
         source: serde_json::Error,
     },
     /// The manifest parses but declares a version this crate does not
@@ -78,6 +82,7 @@ pub enum Error {
         /// The mapping file's location.
         path: Utf8PathBuf,
         /// The parse error, unchanged.
+        #[serde(serialize_with = "display_string")]
         source: toml::de::Error,
     },
     /// The mapping parses but declares a version this crate does not support.
@@ -131,6 +136,7 @@ pub enum Error {
         /// The format the extension picked.
         format: crate::ArchiveFormat,
         /// The decoder's error, unchanged.
+        #[serde(serialize_with = "display_string")]
         source: std::io::Error,
     },
     /// An archive holds a member whose name is not UTF-8. Not a refusal.
@@ -274,6 +280,13 @@ pub enum Error {
         /// The node's absolute path.
         path: Utf8PathBuf,
     },
+}
+
+fn display_string<T: std::fmt::Display, S: Serializer>(
+    value: &T,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
 }
 
 impl Error {
