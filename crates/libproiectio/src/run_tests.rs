@@ -38,7 +38,12 @@ fn a_run_projects_a_tree_and_records_it() {
     let report = run.apply().expect("apply");
 
     assert_eq!(
-        report.outcomes,
+        report
+            .report
+            .rows
+            .iter()
+            .map(|(path, row)| (path.clone(), row.verdict))
+            .collect::<BTreeMap<Utf8PathBuf, ApplyOutcome>>(),
         BTreeMap::from([
             ("bin/run".into(), ApplyOutcome::Written),
             ("notes/a.txt".into(), ApplyOutcome::Written),
@@ -110,7 +115,7 @@ fn a_run_that_decided_no_plan_writes_nothing() {
     assert!(run.planned().is_none());
     let report = run.apply().expect("apply");
 
-    assert!(report.outcomes.is_empty());
+    assert!(report.report.is_empty());
     assert!(report.manifest.entries.is_empty());
     assert_tree(dest.root(), &Tree::new().file("theirs.txt", "not ours"));
     // `begin` created the lock file; nothing else was written.
@@ -265,7 +270,7 @@ fn a_decision_that_fails_leaves_no_plan_behind() {
 
     assert!(run.planned().is_none(), "the replaced plan is gone");
     let report = run.apply().expect("apply");
-    assert!(report.outcomes.is_empty());
+    assert!(report.report.is_empty());
     assert!(!dest.path("first.txt").exists(), "nothing was projected");
 }
 

@@ -5,8 +5,8 @@ use cap_std::fs_utf8::Dir;
 
 use crate::{
     ApplyReport, BlockMarkers, Desired, Error, Manifest, Plan, PlanOptions, Projection,
-    RemovalScope, Result, StateLock, apply, block_markers, decide, decide_removal, load_manifest,
-    observe,
+    RemovalScope, Report, Result, StateLock, apply, block_markers, decide, decide_removal,
+    load_manifest, observe,
 };
 
 /// One write pass over a projection, holding the single-writer guard from
@@ -160,7 +160,9 @@ impl Run {
     pub fn apply(self) -> Result<ApplyReport> {
         let Some(plan) = &self.plan else {
             return Ok(ApplyReport {
-                outcomes: BTreeMap::new(),
+                report: Report {
+                    rows: BTreeMap::new(),
+                },
                 manifest: self.manifest,
             });
         };
