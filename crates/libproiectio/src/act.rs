@@ -297,7 +297,7 @@ fn run(
                 record(manifest, path, entry, &plan.owner);
                 rows.insert(
                     path.clone(),
-                    written_row(manifest, plan, path, entry, outcome),
+                    entry_row(manifest, plan, path, entry, outcome),
                 );
             }
             Action::Overwrite {
@@ -309,7 +309,7 @@ fn run(
                 record(manifest, path, entry, &plan.owner);
                 rows.insert(
                     path.clone(),
-                    written_row(manifest, plan, path, entry, ApplyOutcome::Overwritten),
+                    entry_row(manifest, plan, path, entry, ApplyOutcome::Overwritten),
                 );
             }
             Action::Write { entry } => {
@@ -319,7 +319,7 @@ fn run(
                 record(manifest, path, entry, &plan.owner);
                 rows.insert(
                     path.clone(),
-                    written_row(manifest, plan, path, entry, ApplyOutcome::Written),
+                    entry_row(manifest, plan, path, entry, ApplyOutcome::Written),
                 );
             }
             Action::Overwrite {
@@ -332,15 +332,18 @@ fn run(
                 record(manifest, path, entry, &plan.owner);
                 rows.insert(
                     path.clone(),
-                    written_row(manifest, plan, path, entry, ApplyOutcome::Overwritten),
+                    entry_row(manifest, plan, path, entry, ApplyOutcome::Overwritten),
                 );
             }
-            Action::Skip { expected, .. } => {
+            Action::Skip { entry, expected } => {
                 acting_on(plan, path, || {
                     check_expected(dest, manifest, path, expected)
                 })?;
                 skip(manifest, path, expected, &plan.owner);
-                rows.insert(path.clone(), skipped_row(manifest, plan, path, expected));
+                rows.insert(
+                    path.clone(),
+                    entry_row(manifest, plan, path, entry, ApplyOutcome::Skipped),
+                );
             }
             Action::Release => {
                 let recorded = manifest.entries.get(path).cloned();
@@ -389,7 +392,7 @@ fn owners_of(manifest: &Manifest, path: &Utf8Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-fn written_row(
+fn entry_row(
     manifest: &Manifest,
     plan: &Plan,
     path: &Utf8Path,
@@ -411,22 +414,6 @@ fn written_row(
             origin: Some(plan.origin_of(path)),
         }),
         verdict,
-    }
-}
-
-fn skipped_row(
-    manifest: &Manifest,
-    plan: &Plan,
-    path: &Utf8Path,
-    expected: &NodeSignature,
-) -> Row<ApplyOutcome> {
-    Row {
-        facts: Some(PathFacts {
-            shape: recorded_shape(&expected.kind, expected.executable),
-            owners: owners_of(manifest, path),
-            origin: Some(plan.origin_of(path)),
-        }),
-        verdict: ApplyOutcome::Skipped,
     }
 }
 
@@ -482,7 +469,7 @@ fn settle_links(
                     record(manifest, path, entry, &plan.owner);
                     rows.insert(
                         path.clone(),
-                        written_row(manifest, plan, path, entry, outcome),
+                        entry_row(manifest, plan, path, entry, outcome),
                     );
                 }
                 Written::Held => {
@@ -508,7 +495,7 @@ fn settle_links(
         pending = held;
     }
     for (path, action) in skips {
-        let Action::Skip { expected, .. } = action else {
+        let Action::Skip { entry, expected } = action else {
             unreachable!("only skips are left here");
         };
         acting_on(plan, path, || {
@@ -516,7 +503,10 @@ fn settle_links(
             regrade_recorded_link(dest, manifest, plan, path)
         })?;
         skip(manifest, path, expected, &plan.owner);
-        rows.insert(path.clone(), skipped_row(manifest, plan, path, expected));
+        rows.insert(
+            path.clone(),
+            entry_row(manifest, plan, path, entry, ApplyOutcome::Skipped),
+        );
     }
     Ok(())
 }
