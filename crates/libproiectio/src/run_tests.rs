@@ -157,6 +157,47 @@ fn deciding_again_replaces_the_kept_plan() {
     assert_tree(dest.root(), &Tree::new().file("second.txt", "two"));
 }
 
+/// The in-dest state directory is created through the destination handle,
+/// which has to reach a prefix with directories above it as the ambient
+/// create did.
+#[test]
+fn beginning_creates_a_nested_in_dest_state_directory() {
+    let dest = Tree::new().materialize();
+    let state = dest.path(".local/state/proiectio");
+    let projection = projection(&dest, &state);
+    let tree = Tree::new().file("a.txt", "alpha");
+
+    let mut run = projection.begin().expect("begin");
+    run.plan(
+        "harness",
+        &desired(&tree),
+        Origin::Caller,
+        PlanOptions::default(),
+    )
+    .expect("plan");
+    run.apply().expect("apply");
+
+    assert!(state.join(MANIFEST_FILE_NAME).is_file());
+    // The state subtree itself never classifies. The directories above it
+    // are unrecorded directories like any other and read Foreign, which is
+    // what keeps the manifest and the lock file out of the report while
+    // nothing pretends the projection owns `.local`.
+    assert_eq!(
+        projection
+            .status()
+            .expect("status")
+            .paths
+            .into_iter()
+            .map(|(path, state)| (path.to_string(), state))
+            .collect::<Vec<_>>(),
+        vec![
+            (".local".to_owned(), PathState::Foreign),
+            (".local/state".to_owned(), PathState::Foreign),
+            ("a.txt".to_owned(), PathState::Clean),
+        ]
+    );
+}
+
 /// A state directory inside the destination is reached through the
 /// destination handle, so a prefix component that is a symlink out of the
 /// target is refused rather than followed — the handle and the prefix
