@@ -409,6 +409,7 @@ fn clean_disk_with_changed_desired_overwrites() {
         &Action::Overwrite {
             entry: new,
             expected: signature(&old),
+            reason: OverwriteReason::ContentChanged,
         }
     );
 }
@@ -456,6 +457,7 @@ fn drift_policy_overwrite_lifts_the_drift_refusal() {
         &Action::Overwrite {
             entry: new,
             expected: signature(&drifted),
+            reason: OverwriteReason::ForcedDrift,
         }
     );
 }
@@ -701,6 +703,7 @@ fn an_executable_bit_change_alone_overwrites() {
         &Action::Overwrite {
             entry: new,
             expected: signature(&old),
+            reason: OverwriteReason::ContentChanged,
         }
     );
 }
@@ -1724,6 +1727,7 @@ fn a_pivot_this_run_replaces_is_graded_as_the_link_it_becomes() {
         &Action::Overwrite {
             entry: landing.clone(),
             expected: signature(&escaping),
+            reason: OverwriteReason::ContentChanged,
         }
     );
     assert_eq!(
@@ -1966,6 +1970,7 @@ fn a_changed_desired_link_target_overwrites_a_clean_link() {
         &Action::Overwrite {
             entry: new,
             expected: signature(&old),
+            reason: OverwriteReason::ContentChanged,
         }
     );
 }
@@ -2234,6 +2239,7 @@ fn a_changed_marker_overwrites_the_recorded_region() {
         &Action::Overwrite {
             entry: now,
             expected: signature(&was),
+            reason: OverwriteReason::ContentChanged,
         }
     );
 }
@@ -2296,6 +2302,7 @@ fn a_drifted_region_lifts_under_force_and_a_lost_container_does_not() {
                 hash: sha256_hex(b"edited\n"),
                 executable: false,
             },
+            reason: OverwriteReason::ForcedDrift,
         }
     );
     assert_eq!(

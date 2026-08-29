@@ -104,6 +104,7 @@ pub enum Action {
         /// signature, or the drifted node observed at plan time when
         /// [`DriftPolicy::Overwrite`] lifted a drift refusal.
         expected: NodeSignature,
+        reason: OverwriteReason,
     },
     /// Disk already equals desired: nothing is written, the mtime survives,
     /// and apply records the signature under this plan's owner.
@@ -129,6 +130,12 @@ pub enum Action {
         /// Why the path is refused.
         refusal: Refusal,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum OverwriteReason {
+    ContentChanged,
+    ForcedDrift,
 }
 
 /// The on-disk node an action expects at apply time. Apply re-checks all
