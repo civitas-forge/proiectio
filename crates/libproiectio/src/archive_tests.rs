@@ -531,6 +531,16 @@ fn the_extension_match_ignores_ascii_case() {
 }
 
 #[test]
+fn a_relative_archive_path_resolves_against_the_current_directory() {
+    let expected = crate::absolutize(Utf8Path::new("vendor.tar")).expect("absolutized");
+
+    assert!(matches!(
+        load_archive(Utf8Path::new("vendor.tar"), 0).unwrap_err(),
+        Error::Io { path, .. } if path == expected
+    ));
+}
+
+#[test]
 fn a_truncated_stream_reports_the_decoders_own_error() {
     let bytes = gzip(&tar(&tar_members()));
     let truncated = &bytes[..bytes.len() / 2];

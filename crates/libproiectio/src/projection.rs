@@ -7,8 +7,10 @@ use cap_std::fs_utf8::Dir;
 
 use crate::{
     BlockMarkers, Desired, Error, Manifest, Plan, PlanOptions, RemovalScope, Result, Status,
-    block_markers, classify, decide, decide_removal, load_manifest, observe,
+    absolutize, block_markers, classify, decide, decide_removal, load_manifest, observe,
 };
+
+const DEFAULT_STATE_DIR: &str = ".proiectio";
 
 /// A destination directory paired with the state directory holding its
 /// manifest. The reads here return reports nothing can apply;
@@ -25,35 +27,17 @@ pub struct Projection {
 
 impl Projection {
     /// A projection writing into `target`, with its manifest kept in
-    /// `state_dir`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if either path is relative or carries `..` components, or if
-    /// `state_dir` equals `target`.
-    pub fn new(target: Utf8PathBuf, state_dir: Utf8PathBuf) -> Self {
-        assert!(
-            target.is_absolute(),
-            "projection target must be absolute, got {target}"
-        );
-        assert!(
-            state_dir.is_absolute(),
-            "projection state_dir must be absolute, got {state_dir}"
-        );
-        assert!(
-            is_normalized(&target),
-            "projection target must not carry `..` components, got {target}"
-        );
-        assert!(
-            is_normalized(&state_dir),
-            "projection state_dir must not carry `..` components, got {state_dir}"
-        );
-        assert!(
-            state_dir != target,
-            "projection state_dir must not equal the target ({target}): \
-             the projection's own state files would classify as foreign"
-        );
-        Projection { target, state_dir }
+    /// `state_dir`, which defaults to `<target>/.proiectio`.
+    pub fn new(target: &Utf8Path, state_dir: Option<&Utf8Path>) -> Result<Projection> {
+        let target = absolutize(target)?;
+        let state_dir = match state_dir {
+            Some(state_dir) => absolutize(state_dir)?,
+            None => target.join(DEFAULT_STATE_DIR),
+        };
+        if state_dir == target {
+            return Err(Error::StateDirIsTarget { path: target });
+        }
+        Ok(Projection { target, state_dir })
     }
 
     /// The directory the projection writes into.
@@ -190,12 +174,6 @@ impl Projection {
             })),
         }
     }
-}
-
-/// Whether an absolute path is free of `..` components.
-fn is_normalized(path: &Utf8Path) -> bool {
-    path.components()
-        .all(|component| component != camino::Utf8Component::ParentDir)
 }
 
 #[cfg(test)]

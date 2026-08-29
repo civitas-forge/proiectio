@@ -3,7 +3,7 @@ use std::convert::Infallible;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use crate::{Origin, Refusal, Refused, Result};
+use crate::{Error, Origin, Refusal, Refused, Result};
 
 /// Normalizes `rel` lexically and joins it onto `dest`, refusing as
 /// [`Refusal::Containment`] any path that would land outside the destination.
@@ -36,6 +36,29 @@ pub(crate) fn contained_normalize(rel: &Utf8Path) -> Option<Utf8PathBuf> {
         return None;
     }
     Some(Utf8PathBuf::from(kept.join("/")))
+}
+
+pub fn absolutize(path: &Utf8Path) -> Result<Utf8PathBuf> {
+    let cwd = std::env::current_dir().map_err(|source| Error::CurrentDirectory { source })?;
+    let cwd = Utf8PathBuf::from_path_buf(cwd).map_err(|cwd| Error::PathNotUtf8 {
+        path: cwd.to_string_lossy().into_owned(),
+    })?;
+    Ok(absolutize_from(&cwd, path))
+}
+
+fn absolutize_from(cwd: &Utf8Path, path: &Utf8Path) -> Utf8PathBuf {
+    let joined = cwd.join(path);
+    let mut kept: Vec<&str> = Vec::new();
+    for component in joined.as_str().split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                kept.pop();
+            }
+            name => kept.push(name),
+        }
+    }
+    Utf8PathBuf::from(format!("/{}", kept.join("/")))
 }
 
 /// What [`contained_target_chain`]'s caller finds at one component of a
