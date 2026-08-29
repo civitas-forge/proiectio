@@ -63,9 +63,9 @@ impl Projection {
     /// state directory, takes the single-writer lock, and loads the manifest
     /// — in that order ([`Run`]).
     ///
-    /// The destination must already exist. The state directory is created if
-    /// it does not, together with any parent of it inside the target, because
-    /// a first run has nothing to record into yet.
+    /// The destination must already exist. The state directory is created
+    /// where it does not, together with the directories above it, because a
+    /// first run has nothing to record into yet.
     ///
     /// Fails with [`Error::LockHeld`] where another writer holds the lock:
     /// acquisition is try-lock, never blocking.
