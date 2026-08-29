@@ -2158,6 +2158,42 @@ fn a_changed_marker_migrates_the_region_in_one_publish() {
 }
 
 #[test]
+fn a_migration_into_a_marker_the_author_already_wrote_refuses() {
+    // Publishing would put the new marker on a second whole line, and the
+    // container would identify no region on the very next run — a refusal the
+    // projection would have written into somebody else's file itself.
+    let (dest, state) = fixtures();
+    let author = "author\n# renamed\n";
+    Tree::new().file("rc", author).write_under(dest.root());
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("project under the first marker");
+    let before = container(&dest, "rc");
+
+    let renamed = BTreeMap::from([(
+        Utf8PathBuf::from("rc"),
+        Entry::Block {
+            body: b"managed\n".to_vec(),
+            marker: "# renamed".to_owned(),
+            placement: Placement::Append,
+        },
+    )]);
+    let error = pipeline(&dest, &state, "own", &renamed, DriftPolicy::Refuse)
+        .expect_err("the author's side already carries the new marker");
+
+    match error {
+        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+    assert_eq!(container(&dest, "rc"), before);
+}
+
+#[test]
 fn removing_a_block_leaves_the_container_byte_identical_apart_from_the_region() {
     let (dest, state) = fixtures();
     let author = "author\nkeep me\n";
@@ -2267,18 +2303,31 @@ const DOUBLED: &str = "# proiectio\nmanaged\nauthor\n# proiectio\nmanaged\n";
 
 #[test]
 fn a_duplicate_marker_in_the_gap_refuses_every_action_on_the_region() {
-    // Each of the three apply-time block paths, given a container whose
-    // extreme occurrence hashes exactly to what the plan expects. Acting
-    // would strip or replace a range nothing says is the recorded one and
-    // leave the other region standing with the manifest no longer naming it.
+    // Each apply-time block path, given a container whose extreme occurrence
+    // hashes exactly to what the plan expects. Acting would strip or replace
+    // a range nothing says is the recorded one and leave the other region
+    // standing with the manifest no longer naming it.
     let desired = block_tree("rc", "managed\n", Placement::Append);
-    let plans: [(&str, BTreeMap<Utf8PathBuf, Entry>); 3] = [
+    let plans: [(&str, BTreeMap<Utf8PathBuf, Entry>); 4] = [
         // The removal's re-check.
         ("remove", BTreeMap::new()),
         // The overwrite's.
         (
             "overwrite",
             block_tree("rc", "different\n", Placement::Append),
+        ),
+        // The overwrite's again, migrating to a marker the duplicate is not
+        // an occurrence of, so only counting the *recorded* marker sees it.
+        (
+            "migration",
+            BTreeMap::from([(
+                Utf8PathBuf::from("rc"),
+                Entry::Block {
+                    body: b"managed\n".to_vec(),
+                    marker: "# renamed".to_owned(),
+                    placement: Placement::Append,
+                },
+            )]),
         ),
         // The skip's — which writes nothing, but would re-record the path.
         ("skip", desired.clone()),

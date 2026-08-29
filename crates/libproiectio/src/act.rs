@@ -1191,6 +1191,15 @@ fn overwrite_block(
         return Err(drift(path));
     }
     let author = block::strip(&container.bytes, Some(&region));
+    // A migration writes a marker the author's side has never had to be free
+    // of. One already there would make the publish leave two occurrences of
+    // the new marker, and the container would identify no region on the very
+    // next run ([`EntryKind::Block`]) — a refusal the projection would have
+    // written itself. Unreachable where the marker is unchanged: its one
+    // occurrence bounded the region that was just stripped.
+    if block::occurrence_count(&author, marker) > 0 {
+        return Err(drift(path));
+    }
     if *placement == Placement::Append && !block::newline_terminated(&author) {
         return Err(block_refusal(
             path,
