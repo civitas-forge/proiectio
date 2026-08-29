@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
@@ -80,10 +80,16 @@ fn a_named_directory_fails_the_load() {
     let source = Tree::new().file("skeleton/motd", "welcome\n").materialize();
     let directory = source.path("skeleton");
 
+    let error = load_files(std::slice::from_ref(&directory)).unwrap_err();
+
     assert!(matches!(
-        load_files(std::slice::from_ref(&directory)).unwrap_err(),
-        Error::TreeNodeKind { path } if path == directory
+        &error,
+        Error::FilesNodeKind { path } if *path == directory
     ));
+    assert_eq!(
+        error.to_string(),
+        format!("{directory}: named files must be regular files or symlinks")
+    );
 }
 
 #[test]
@@ -99,8 +105,10 @@ fn two_paths_sharing_a_file_name_fail_naming_both() {
     assert!(!error.is_refusal());
     assert!(matches!(
         &error,
-        Error::FilesDuplicate { name, paths }
-            if name == "motd" && *paths == BTreeSet::from([first.clone(), second.clone()])
+        Error::FilesDuplicate {
+            first: one,
+            second: two,
+        } if *one == first && *two == second
     ));
     assert_eq!(
         error.to_string(),
@@ -140,7 +148,7 @@ fn a_named_node_the_projection_never_writes_is_named_and_never_opened() {
 
     assert!(matches!(
         load_files(std::slice::from_ref(&socket)).unwrap_err(),
-        Error::TreeNodeKind { path } if path == socket
+        Error::FilesNodeKind { path } if path == socket
     ));
 }
 
@@ -160,6 +168,6 @@ fn a_path_that_is_not_there_fails_at_the_path_it_names() {
 fn the_root_carries_no_name_to_project_under() {
     assert!(matches!(
         load_files(&[Utf8PathBuf::from("/")]).unwrap_err(),
-        Error::TreeNodeKind { path } if path == Utf8Path::new("/")
+        Error::FilesNodeKind { path } if path == Utf8Path::new("/")
     ));
 }

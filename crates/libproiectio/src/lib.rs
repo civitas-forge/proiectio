@@ -9,9 +9,9 @@
 //! returns the [`Run`] that holds the single-writer guard and applies.
 //!
 //! A caller computes the desired tree of [`Entry`] values itself, or builds
-//! one with [`load_mapping`], [`load_tree`], or [`load_archive`]. Content is
-//! bytes and owners are opaque strings; nothing here names what the files
-//! are for.
+//! one with [`load_mapping`], [`load_tree`], [`load_archive`], or
+//! [`load_files`]. Content is bytes and owners are opaque strings; nothing
+//! here names what the files are for.
 //!
 //! [`Error::is_refusal`] splits refusals from runtime failures, which a CLI's
 //! 0/1/2 exit contract matches on.

@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use camino::Utf8PathBuf;
 use serde::{Serialize, Serializer};
 use thiserror::Error;
@@ -294,24 +292,27 @@ pub enum Error {
         /// The node's absolute path.
         path: Utf8PathBuf,
     },
+    /// A path handed to [`load_files`](crate::load_files) is neither a regular
+    /// file nor a symlink, or carries no file name to project under. Not a
+    /// refusal.
+    #[error("{path}: named files must be regular files or symlinks")]
+    FilesNodeKind {
+        /// The path's absolute spelling.
+        path: Utf8PathBuf,
+    },
     /// More than one path handed to [`load_files`](crate::load_files) carries
     /// the same file name, which is the key each would project under. Not a
     /// refusal.
-    #[error("more than one named path projects as {name}: {}", join(paths))]
+    #[error(
+        "more than one named path projects as {}: {first}, {second}",
+        first.file_name().unwrap_or_default()
+    )]
     FilesDuplicate {
-        /// The file name both paths carry.
-        name: String,
-        /// The absolute paths sharing it.
-        paths: BTreeSet<Utf8PathBuf>,
+        /// The first path carrying the shared file name.
+        first: Utf8PathBuf,
+        /// The next path carrying it.
+        second: Utf8PathBuf,
     },
-}
-
-fn join(paths: &BTreeSet<Utf8PathBuf>) -> String {
-    paths
-        .iter()
-        .map(|path| path.as_str())
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn display_string<T: std::fmt::Display, S: Serializer>(

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Read;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -9,24 +9,28 @@ use crate::tree::{is_executable, open_file_nofollow};
 use crate::{Desired, Entry, Error, Origin, Result};
 
 pub fn load_files(paths: &[Utf8PathBuf]) -> Result<Desired> {
-    let mut named: BTreeMap<String, BTreeSet<Utf8PathBuf>> = BTreeMap::new();
+    let mut named: BTreeMap<String, Utf8PathBuf> = BTreeMap::new();
     for path in paths {
         let path = crate::absolutize(path)?;
         let Some(name) = path.file_name().map(str::to_owned) else {
-            return Err(Error::TreeNodeKind { path });
+            return Err(Error::FilesNodeKind { path });
         };
-        named.entry(name).or_default().insert(path);
-    }
-    if let Some((name, paths)) = named.iter().find(|(_, paths)| paths.len() > 1) {
-        return Err(Error::FilesDuplicate {
-            name: name.clone(),
-            paths: paths.clone(),
-        });
+        match named.get(&name) {
+            Some(first) if *first == path => {}
+            Some(first) => {
+                return Err(Error::FilesDuplicate {
+                    first: first.clone(),
+                    second: path,
+                });
+            }
+            None => {
+                named.insert(name, path);
+            }
+        }
     }
 
     let mut tree = BTreeMap::new();
-    for (name, paths) in named {
-        let path = paths.into_iter().next().expect("a name holds one path");
+    for (name, path) in named {
         tree.insert(Utf8PathBuf::from(name), load_one(&path)?);
     }
     Ok(Desired::from_source(tree, Origin::Files))
@@ -58,7 +62,7 @@ fn load_one(path: &Utf8Path) -> Result<Entry> {
         return Ok(Entry::Symlink { target });
     }
     if !file_type.is_file() {
-        return Err(Error::TreeNodeKind {
+        return Err(Error::FilesNodeKind {
             path: path.to_owned(),
         });
     }
@@ -66,7 +70,7 @@ fn load_one(path: &Utf8Path) -> Result<Entry> {
     let mut file = open_file_nofollow(&dir, name).map_err(io)?;
     let meta = file.metadata().map_err(io)?;
     if !meta.is_file() {
-        return Err(Error::TreeNodeKind {
+        return Err(Error::FilesNodeKind {
             path: path.to_owned(),
         });
     }
