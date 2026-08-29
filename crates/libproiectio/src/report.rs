@@ -1,39 +1,48 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
-use crate::Manifest;
+use crate::{EntryKind, Origin};
 
-/// What apply did to one path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum ApplyOutcome {
-    /// The path did not exist and was created; for a block entry, the region
-    /// did not exist.
-    Written,
-    /// The path existed and was replaced.
-    Overwritten,
-    /// Disk already matched desired; nothing was written. A planned write
-    /// reports this too where it found the region already carrying the
-    /// desired body and adopted it.
-    Skipped,
-    /// The orphaned path was removed.
-    Removed,
-    /// This owner was dropped from the path's manifest entry; other owners
-    /// still hold the path, so the disk was not touched.
-    Released,
-}
-
-/// What a successful apply run did: one outcome per path, and the manifest as
-/// persisted at the end of the run.
-///
-/// A failed apply returns an [`Error`](crate::Error) and no report; the
-/// on-disk manifest still records the entries applied before the error, so a
-/// partial run heals on re-run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ApplyReport {
-    /// Per-path outcomes, keyed by path relative to the destination.
-    pub outcomes: BTreeMap<Utf8PathBuf, ApplyOutcome>,
-    /// The manifest as written after the run.
-    pub manifest: Manifest,
+pub struct PathFacts {
+    pub kind: EntryKind,
+    pub executable: bool,
+    pub target: Option<String>,
+    pub owners: BTreeSet<String>,
+    pub origin: Origin,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Row<V> {
+    pub facts: Option<PathFacts>,
+    pub verdict: V,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Report<V> {
+    pub rows: BTreeMap<Utf8PathBuf, Row<V>>,
+}
+
+impl<V: Ord + Clone> Report<V> {
+    pub fn summary(&self) -> BTreeMap<V, usize> {
+        let mut counts = BTreeMap::new();
+        for row in self.rows.values() {
+            *counts.entry(row.verdict.clone()).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Utf8Path, &Row<V>)> {
+        self.rows.iter().map(|(path, row)| (path.as_path(), row))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
+#[cfg(test)]
+#[path = "report_tests.rs"]
+mod tests;

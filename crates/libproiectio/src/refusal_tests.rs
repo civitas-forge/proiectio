@@ -216,3 +216,19 @@ fn sourced_by_takes_the_keys_origin_or_else_the_acted_on_keys() {
         .sourced_by(&plan, Utf8Path::new("elsewhere"));
     assert_eq!(unplanned.paths()[Utf8Path::new("d")].origin, Origin::Caller);
 }
+
+// A `Report<Refusal>` summary orders by `Refusal`, an error's aggregate by
+// `RefusalKind`. The two agree only while the variants are declared in the
+// same order.
+#[test]
+fn refusals_sort_in_the_same_order_as_their_kinds() {
+    let mut refusals: Vec<Refusal> = one_of_each().into_iter().map(|(_, r, _)| r).collect();
+    refusals.sort();
+    let mut kinds: Vec<RefusalKind> = one_of_each().iter().map(|(_, r, _)| r.kind()).collect();
+    kinds.sort();
+
+    assert_eq!(
+        refusals.iter().map(Refusal::kind).collect::<Vec<_>>(),
+        kinds
+    );
+}
