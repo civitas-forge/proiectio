@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# The run .github/workflows/quality-checks.yml makes, so a commit and a branch
+# are held to one contract.
+
+set -euo pipefail
+
+for tool in cargo lexd; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        printf 'E_NO_TOOL: %s is required by scripts/quality\n' "$tool" >&2
+        exit 1
+    fi
+done
+
+printf 'Checking Lex documents\n'
+git ls-files -z -- '*.lex' | xargs -0 lexd check
+
+printf 'Checking Rust formatting\n'
+cargo fmt --all -- --check
+
+printf 'Checking Rust with Clippy\n'
+cargo clippy --all-targets -- -D warnings
+
+printf 'Running Rust tests\n'
+cargo test --quiet
+
+printf 'Checking Rust documentation\n'
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --quiet

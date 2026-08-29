@@ -1,12 +1,14 @@
-# lexd runs against the whole tree, not staged files only: a staged-only pass
-# can lie about unstaged edits. The docs hook is staged-diff by design — it
-# reports on what the commit adds — except its link check, which is whole-tree.
+# scripts/quality runs against the whole tree, not staged files only: a
+# staged-only pass can lie about unstaged edits, and it is the run GitHub
+# Actions makes, so a commit and a branch are held to one contract. The docs
+# hook holds what only a staged diff can answer: what this commit adds.
 
 pre-commit:
   commands:
     docs:
       priority: 1
       run: .agents/hooks/pre-commit
-    lex:
+    quality:
       priority: 2
-      run: git ls-files -z '*.lex' | xargs -0 lexd check
+      run: scripts/quality
+      fail_text: Run scripts/quality, fix every failure, and stage the result.
