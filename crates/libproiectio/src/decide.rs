@@ -7,8 +7,8 @@ use crate::block;
 use crate::containment::{Hop, contained_normalize, contained_target_chain, is_pathname};
 use crate::{
     Action, BlockFault, Desired, DriftPolicy, Entry, EntryKind, Error, ExternalTargetPolicy,
-    MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations, Origin,
-    PathFacts, PathState, Placement, Plan, PlanOptions, Refusal, Report, Result, Row, Status,
+    MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations, PathFacts,
+    PathShape, PathState, Placement, Plan, PlanOptions, Refusal, Report, Result, Row, Status,
     sha256_hex,
 };
 
@@ -61,12 +61,17 @@ pub(crate) fn classify(
 }
 
 fn recorded_facts(recorded: &ManifestEntry) -> PathFacts {
+    let shape = match recorded.kind {
+        EntryKind::File => PathShape::File {
+            executable: recorded.executable,
+        },
+        EntryKind::Symlink => PathShape::Symlink { target: None },
+        EntryKind::Block { .. } => PathShape::Block,
+    };
     PathFacts {
-        kind: recorded.kind.clone(),
-        executable: recorded.executable,
-        target: None,
+        shape,
         owners: recorded.owners.clone(),
-        origin: Origin::Caller,
+        origin: None,
     }
 }
 

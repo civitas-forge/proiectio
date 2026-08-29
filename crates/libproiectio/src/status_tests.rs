@@ -5,7 +5,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
 use crate::test_support::{Tree, assert_tree};
-use crate::{Desired, Entry, EntryKind, Origin, PathFacts, PlanOptions, Projection};
+use crate::{Desired, Entry, PathFacts, PathShape, PlanOptions, Projection};
 
 fn projection(dest: &Utf8Path, state: &Utf8Path) -> Projection {
     Projection::new(dest.to_owned(), state.to_owned())
@@ -110,7 +110,9 @@ fn a_recorded_row_carries_the_manifest_entry_and_a_foreign_one_carries_nothing()
     let dest = Tree::new().materialize();
     let state = Tree::new().materialize();
     let projection = projection(dest.root(), state.root());
-    let tree = Tree::new().executable("bin/tool", "#!/bin/sh\n");
+    let tree = Tree::new()
+        .executable("bin/tool", "#!/bin/sh\n")
+        .symlink("current", "bin/tool");
     project(&projection, "site", tree.entries());
     project(&projection, "harness", tree.entries());
     fs::write(dest.path("theirs.txt"), "never ours").expect("plant a foreign file");
@@ -120,13 +122,19 @@ fn a_recorded_row_carries_the_manifest_entry_and_a_foreign_one_carries_nothing()
     assert_eq!(
         facts(&report, "bin/tool"),
         &Some(PathFacts {
-            kind: EntryKind::File,
-            executable: true,
-            // A link's target the manifest records only as a hash, so no
-            // status row carries one.
-            target: None,
+            shape: PathShape::File { executable: true },
             owners: BTreeSet::from(["harness".to_owned(), "site".to_owned()]),
-            origin: Origin::Caller,
+            origin: None,
+        })
+    );
+    // The manifest records a link's target only as a hash, so no status row
+    // carries one back.
+    assert_eq!(
+        facts(&report, "current"),
+        &Some(PathFacts {
+            shape: PathShape::Symlink { target: None },
+            owners: BTreeSet::from(["harness".to_owned(), "site".to_owned()]),
+            origin: None,
         })
     );
     assert_eq!(facts(&report, "theirs.txt"), &None);
@@ -152,21 +160,17 @@ fn a_status_serializes_one_row_per_path() {
             "rows": {
                 "clean.txt": {
                     "facts": {
-                        "kind": "File",
-                        "executable": false,
-                        "target": null,
+                        "shape": { "File": { "executable": false } },
                         "owners": ["site"],
-                        "origin": "Caller",
+                        "origin": null,
                     },
                     "verdict": "Clean",
                 },
                 "gone.txt": {
                     "facts": {
-                        "kind": "File",
-                        "executable": false,
-                        "target": null,
+                        "shape": { "File": { "executable": false } },
                         "owners": ["site"],
-                        "origin": "Caller",
+                        "origin": null,
                     },
                     "verdict": "Missing",
                 },
