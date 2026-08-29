@@ -98,7 +98,7 @@ impl Run {
             &observations,
             self.projection.state_prefix(),
             options,
-        ));
+        )?);
         Ok(self.planned().expect("just decided"))
     }
 

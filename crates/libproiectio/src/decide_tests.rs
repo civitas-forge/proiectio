@@ -151,6 +151,7 @@ fn plan_with(
         None,
         options,
     )
+    .expect("decide")
 }
 
 fn action<'plan>(plan: &'plan Plan, path: &str) -> &'plan Action {
@@ -1039,7 +1040,8 @@ fn a_desired_path_entering_the_state_dir_refuses_containment() {
         &observed(&[]),
         Some(Utf8Path::new(".proiectio")),
         PlanOptions::default(),
-    );
+    )
+    .expect("decide");
 
     for refused in [".proiectio/manifest.json", ".proiectio"] {
         assert_eq!(
@@ -1086,7 +1088,8 @@ fn a_desired_path_the_state_dir_sits_beneath_refuses_containment() {
         &observed(&[]),
         Some(Utf8Path::new(NESTED_STATE)),
         PlanOptions::default(),
-    );
+    )
+    .expect("decide");
 
     for refused in [
         ".local",
@@ -1153,7 +1156,8 @@ fn a_recorded_path_the_state_dir_sits_beneath_is_refused_not_removed() {
         &observations,
         Some(Utf8Path::new(NESTED_STATE)),
         PlanOptions::default(),
-    );
+    )
+    .expect("decide");
 
     assert_eq!(
         plan.actions,
@@ -1225,7 +1229,8 @@ fn the_state_subtree_is_invisible_to_planning() {
         &observations,
         Some(Utf8Path::new(".proiectio")),
         PlanOptions::default(),
-    );
+    )
+    .expect("decide");
 
     assert_eq!(
         plan.actions.keys().collect::<Vec<_>>(),
