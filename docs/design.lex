@@ -286,6 +286,14 @@ Proiectio Design
     change. Origin::Caller — a caller-computed tree, and every removal —
     renders as nothing, so the no-source case reads as a plain refusal.
 
+    "Whose offending value the desired tree chose" is the test, and applying
+    applies it: whole-plan validation reads nothing but the plan's actions,
+    so its refusals carry the origin. The walk that follows refuses over
+    what it finds on disk — a link a past run wrote whose target now
+    resolves outside, an ancestor nobody recorded — and those name no
+    source, because the offending string is in no file this plan came from
+    and naming one would send a reader somewhere it is not.
+
     Dependencies: serde, serde_json, thiserror, camino, sha2, cap-std,
     cap-primitives and cap-tempfile for the stages
     ([./implementation.lex] section 3), rustix for the lock, toml for

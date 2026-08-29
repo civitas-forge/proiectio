@@ -45,7 +45,10 @@ use crate::{
 /// [`ExternalTarget`](Error::ExternalTarget) and
 /// [`InvalidTarget`](Error::InvalidTarget) — name the [`Origin`] the plan was
 /// decided with, so the message says which mapping, tree, or archive to go
-/// and edit. Everything else on [`Error`] is a runtime failure;
+/// and edit. A refusal the apply-time walk raises over what it finds on
+/// disk — a link a past run wrote, an ancestor nobody recorded — names no
+/// source instead, since the offending string is in no file this plan came
+/// from. Everything else on [`Error`] is a runtime failure;
 /// [`Error::is_refusal`] is the split a CLI's 0/1/2 exit contract matches on.
 #[derive(Debug)]
 pub struct Run {

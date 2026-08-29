@@ -70,6 +70,20 @@ fn plan_for_with(
     (manifest, plan)
 }
 
+/// [`plan_for`] under an origin the test names, for the refusals that have
+/// to say where the offending value came from.
+fn plan_from(
+    dest: &Fixture,
+    state: &Fixture,
+    owner: &str,
+    desired: &BTreeMap<Utf8PathBuf, Entry>,
+    origin: Origin,
+) -> (Manifest, Plan) {
+    let (manifest, mut plan) = plan_for(dest, state, owner, desired, DriftPolicy::Refuse);
+    plan.origin = origin;
+    (manifest, plan)
+}
+
 /// Applies a plan against the fixtures.
 fn apply_at(
     dest: &Fixture,
@@ -2014,6 +2028,70 @@ fn a_skipped_link_whose_pivot_was_swapped_refuses() {
         ),
         other => panic!("expected ExternalTarget, got {other:?}"),
     }
+}
+
+// Which apply-time refusals name the plan's source, and which do not. The
+// two pivot-swap scenarios above differ in exactly the way that decides it:
+// one refuses a target string the desired tree chose, the other a string
+// read off a link a past run wrote.
+#[test]
+fn a_refusal_names_the_plans_source_only_where_the_tree_chose_the_target() {
+    let mapping = || Origin::Mapping {
+        path: "/maps/deploy.toml".into(),
+    };
+
+    // The tree chose "pivot/rc": the message says which file to edit.
+    let (dest, state) = fixtures();
+    Tree::new()
+        .dir("real")
+        .symlink("pivot", "real")
+        .write_under(dest.root());
+    let desired = Tree::new().symlink("rc", "pivot/rc").entries();
+    let (manifest, plan) = plan_from(&dest, &state, "own", &desired, mapping());
+    Tree::new()
+        .symlink("pivot", "/etc")
+        .write_under(dest.root());
+
+    let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the pointer escapes");
+    match &error {
+        Error::ExternalTarget { origin, .. } => assert_eq!(*origin, mapping()),
+        other => panic!("expected ExternalTarget, got {other:?}"),
+    }
+    assert!(
+        error
+            .to_string()
+            .contains("(from mapping /maps/deploy.toml)"),
+        "{error}"
+    );
+
+    // The link is already on disk and the plan only skips it, so the
+    // offending string is in no file this plan came from and the refusal
+    // names none.
+    let (dest, state) = fixtures();
+    Tree::new()
+        .dir("real")
+        .symlink("pivot", "real")
+        .write_under(dest.root());
+    let desired = Tree::new().symlink("rc", "pivot/x").entries();
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("the chain lands in dest");
+    let (manifest, plan) = plan_from(&dest, &state, "own", &desired, mapping());
+    assert!(
+        matches!(plan.actions[Utf8Path::new("rc")], Action::Skip { .. }),
+        "an unchanged link is skipped"
+    );
+    Tree::new()
+        .symlink("pivot", "/etc")
+        .write_under(dest.root());
+
+    let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the skipped link escapes");
+    match &error {
+        Error::ExternalTarget { origin, .. } => assert_eq!(*origin, Origin::Caller),
+        other => panic!("expected ExternalTarget, got {other:?}"),
+    }
+    assert_eq!(
+        error.to_string(),
+        "refusing symlinks with targets outside the destination: rc -> pivot/x"
+    );
 }
 
 // The no-alias rule end to end: a path resolving through a link the plan

@@ -739,11 +739,14 @@ impl Error {
     /// four that carry an [`Origin`]; every other variant is returned
     /// unchanged.
     ///
-    /// Applying is where this earns its keep: the refusals apply produces
-    /// come from deep inside the walk, which knows a path and a manifest and
-    /// nothing about the tree the plan was decided from, so the plan's origin
-    /// is named as the error leaves
-    /// ([`Run::apply`](crate::Run::apply)).
+    /// Applying is where this earns its keep, and only over the refusals
+    /// whose offending value the plan supplied: whole-plan validation reads
+    /// nothing but the plan's actions, so a refusal it raises is named with
+    /// the plan's origin as it leaves. The walk that follows refuses over
+    /// what it finds on disk — a link a *past* run wrote, an ancestor
+    /// nobody recorded — and those keep [`Origin::Caller`], because naming
+    /// this plan's source would send a reader to a file the offending
+    /// string is not in ([`Run::apply`](crate::Run::apply)).
     pub(crate) fn with_origin(self, origin: &Origin) -> Error {
         match self {
             Error::Containment { paths, .. } => Error::Containment {

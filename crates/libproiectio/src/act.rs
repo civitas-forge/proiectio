@@ -292,14 +292,14 @@ pub(crate) fn apply(
     manifest: &Manifest,
     plan: &Plan,
 ) -> Result<ApplyReport> {
-    execute(dest, state, manifest, plan).map_err(|error| error.with_origin(&plan.origin))
-}
-
-/// [`apply`] without the origin: every refusal below is raised from a path
-/// and a manifest, so the tree they came from is named once, as the error
-/// leaves.
-fn execute(dest: &Dir, state: &Dir, manifest: &Manifest, plan: &Plan) -> Result<ApplyReport> {
-    validate(manifest, plan)?;
+    // Whole-plan validation reads nothing but `plan.actions`, so every
+    // offending value it names is one the desired tree chose and the plan's
+    // origin is the file to go and edit. The walk below is the other case:
+    // it refuses over what it finds on disk, and those refusals keep
+    // `Origin::Caller` — see `regrade_recorded_link`, which reads a target
+    // string off a link a *past* run wrote, so naming this plan's mapping
+    // would send a reader to a file the string is not in.
+    validate(manifest, plan).map_err(|error| error.with_origin(&plan.origin))?;
     let mut manifest = manifest.clone();
     let mut outcomes = BTreeMap::new();
     match run(dest, &mut manifest, plan, &mut outcomes) {
@@ -782,9 +782,11 @@ fn settle_links(
             }
         }
         if held.len() == before {
+            // These targets are the plan's own desired entries, so the tree
+            // that chose them is the one to name.
             return Err(Error::ExternalTarget {
                 links: escaping,
-                origin: Origin::Caller,
+                origin: plan.origin.clone(),
             });
         }
         pending = held;
@@ -836,6 +838,10 @@ fn regrade_recorded_link(
     if link_settles(dest, plan, &BTreeSet::new(), &resolved_parent, target)? {
         return Ok(());
     }
+    // The target string was read off the disk, not out of this plan's tree:
+    // the link is one a past run wrote, and a `Skip` carries only its
+    // signature. So the refusal names no source — this plan's origin would
+    // point a reader at a file the string is not in.
     Err(Error::ExternalTarget {
         links: BTreeMap::from([(path.to_owned(), target.to_owned())]),
         origin: Origin::Caller,
