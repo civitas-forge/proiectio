@@ -101,8 +101,9 @@ Implementation Guidelines
     - recorded, matching, and in-dest — act reads the target through
       the parent handle, resolves it with contained_target, and
       restarts the walk from the dest root along the resolved path.
-      Restarts carry a visited set: revisiting a link is an
-      owned-link cycle, and refuses rather than loops.
+      Restarts carry a visited set, and meeting any link twice
+      refuses rather than resolving further: a chain that walks
+      one link twice ends outside, as a loop does.
 
     What a restart earns depends on the action, and the three answers
     differ:

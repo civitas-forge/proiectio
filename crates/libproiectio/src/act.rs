@@ -162,11 +162,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                 continue;
             }
         }
-        // Removals are exempt: this check judges only what the run creates.
-        if matches!(action, Action::Write { .. } | Action::Overwrite { .. })
-            && too_deep.is_none()
-            && path.components().count() - 1 > MAX_WALK_DEPTH
-        {
+        if too_deep.is_none() && path.components().count() - 1 > MAX_WALK_DEPTH {
             let mut offender = Vec::new();
             for component in path.components().take(MAX_WALK_DEPTH + 1) {
                 offender.push(component.as_str());
