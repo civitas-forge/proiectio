@@ -1,6 +1,7 @@
 use camino::Utf8PathBuf;
 
 use super::*;
+use crate::Placement;
 
 fn entry(kind: EntryKind, hash: &str, executable: bool, owners: &[&str]) -> ManifestEntry {
     ManifestEntry {
@@ -23,7 +24,15 @@ fn manifest() -> Manifest {
     );
     manifest.entries.insert(
         Utf8PathBuf::from("shared/.zshrc"),
-        entry(EntryKind::Block, "cc33", false, &["dotfiles"]),
+        entry(
+            EntryKind::Block {
+                marker: "# proiectio".to_owned(),
+                placement: Placement::Prepend,
+            },
+            "cc33",
+            false,
+            &["dotfiles"],
+        ),
     );
     manifest
 }

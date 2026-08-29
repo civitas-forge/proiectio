@@ -8,7 +8,7 @@ use cap_std::fs_utf8::Dir;
 
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree};
-use crate::{EntryKind, ManifestEntry};
+use crate::{EntryKind, ManifestEntry, Placement};
 
 /// Opens the destination handle observe takes, rooted at the fixture.
 /// Ambient authority is the test's to spend; the library itself never
@@ -25,7 +25,7 @@ fn manifest_of(rows: &[(&str, EntryKind, String)]) -> Manifest {
         manifest.entries.insert(
             Utf8PathBuf::from(*path),
             ManifestEntry {
-                kind: *kind,
+                kind: kind.clone(),
                 hash: hash.clone(),
                 executable: false,
                 owners: BTreeSet::from(["test".to_owned()]),
@@ -356,4 +356,140 @@ fn observe_writes_nothing() {
     // The zero-writes discipline: after a full observation the tree is
     // byte-for-byte what was declared — nothing created, changed, or removed.
     assert_tree(fixture.root(), &tree);
+}
+
+// --- blocks: observing the region, not the container ---
+
+/// A manifest recording a region at `path` under `marker` and `placement`,
+/// whose body hashes to `body`.
+fn block_manifest(path: &str, marker: &str, placement: Placement, body: &str) -> Manifest {
+    manifest_of(&[(
+        path,
+        EntryKind::Block {
+            marker: marker.to_owned(),
+            placement,
+        },
+        sha256_hex(body.as_bytes()),
+    )])
+}
+
+#[test]
+fn a_recorded_block_observes_its_region_and_not_the_container() {
+    let fixture = Tree::new()
+        .file("rc", "author\n# proiectio\nmanaged\n")
+        .materialize();
+    let manifest = block_manifest("rc", "# proiectio", Placement::Append, "managed\n");
+
+    let observations = observed(&fixture, &manifest);
+
+    assert_eq!(
+        observations[Utf8Path::new("rc")],
+        Observation::Block {
+            hash: Some(sha256_hex(b"managed\n")),
+            // The author's side ends at the marker's line start.
+            newline_terminated: true,
+        }
+    );
+}
+
+#[test]
+fn an_edit_outside_the_region_leaves_its_hash_alone() {
+    // The whole point: the container's other bytes enter no comparison, so
+    // the region hashes the same before and after the author's edit.
+    let before = Tree::new()
+        .file("rc", "author\n# proiectio\nmanaged\n")
+        .materialize();
+    let after = Tree::new()
+        .file("rc", "author\nand a new line\n# proiectio\nmanaged\n")
+        .materialize();
+    let manifest = block_manifest("rc", "# proiectio", Placement::Append, "managed\n");
+
+    assert_eq!(
+        observed(&before, &manifest)[Utf8Path::new("rc")],
+        observed(&after, &manifest)[Utf8Path::new("rc")]
+    );
+}
+
+#[test]
+fn a_container_with_no_marker_line_observes_no_region() {
+    let fixture = Tree::new().file("rc", "author only").materialize();
+    let manifest = block_manifest("rc", "# proiectio", Placement::Append, "managed\n");
+
+    let observations = observed(&fixture, &manifest);
+
+    assert_eq!(
+        observations[Utf8Path::new("rc")],
+        Observation::Block {
+            hash: None,
+            // No region, so the author's side is the whole file — and this
+            // one has no final newline to append after.
+            newline_terminated: false,
+        }
+    );
+}
+
+#[test]
+fn newline_termination_is_about_the_author_side_alone() {
+    // Under `Prepend` the author's side follows the region, so whether it
+    // ends with a newline is a fact about the container's last bytes.
+    let terminated = Tree::new()
+        .file("rc", "managed\n# proiectio\nauthor\n")
+        .materialize();
+    let bare = Tree::new()
+        .file("rc", "managed\n# proiectio\nauthor")
+        .materialize();
+    let manifest = block_manifest("rc", "# proiectio", Placement::Prepend, "managed\n");
+
+    for (fixture, want) in [(&terminated, true), (&bare, false)] {
+        assert_eq!(
+            observed(fixture, &manifest)[Utf8Path::new("rc")],
+            Observation::Block {
+                hash: Some(sha256_hex(b"managed\n")),
+                newline_terminated: want,
+            }
+        );
+    }
+}
+
+#[test]
+fn an_unrecorded_container_observes_as_an_ordinary_file() {
+    // Observation takes the marker off the manifest, so a container nothing
+    // records is a file like any other — foreignness is decided later, over
+    // the region.
+    let contents = "author\n# proiectio\nmanaged\n";
+    let fixture = Tree::new().file("rc", contents).materialize();
+
+    let observations = observed(&fixture, &Manifest::new());
+
+    assert_eq!(
+        observations[Utf8Path::new("rc")],
+        Observation::File {
+            hash: sha256_hex(contents.as_bytes()),
+            executable: false,
+        }
+    );
+}
+
+#[test]
+fn a_container_swapped_for_another_kind_observes_as_that_kind() {
+    let manifest = block_manifest("rc", "# proiectio", Placement::Append, "managed\n");
+    let as_link = Tree::new()
+        .file("real", "x")
+        .symlink("rc", "real")
+        .materialize();
+    let as_dir = Tree::new().dir("rc").materialize();
+
+    // A symlink is observed as itself and never opened through — the read
+    // refuses to follow a final link rather than resolving it.
+    assert_eq!(
+        observed(&as_link, &manifest)[Utf8Path::new("rc")],
+        Observation::Symlink {
+            hash: sha256_hex(b"real"),
+            target: Some("real".to_owned()),
+        }
+    );
+    assert_eq!(
+        observed(&as_dir, &manifest)[Utf8Path::new("rc")],
+        Observation::Directory
+    );
 }

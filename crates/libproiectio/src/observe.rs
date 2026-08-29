@@ -15,8 +15,7 @@ use crate::{Error, MAX_WALK_DEPTH, Manifest, Result};
 /// Lowercase hex SHA-256 of `bytes` — the one hash convention, everywhere a
 /// hash is recorded or compared ([`ManifestEntry::hash`]): a file hashes
 /// its contents whole, a symlink hashes its target string, and a
-/// [`Block`](crate::EntryKind::Block) entry hashes the body between the
-/// delimiter lines alone.
+/// [`Block`](crate::EntryKind::Block) entry hashes its region's body alone.
 ///
 /// [`ManifestEntry::hash`]: crate::ManifestEntry::hash
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -102,6 +101,82 @@ pub enum Observation {
     /// would block forever); observed so the deciding stage sees the path
     /// is occupied rather than mistaking it for absent.
     Other,
+    /// The managed region inside a regular file recorded as a
+    /// [`Block`](crate::EntryKind::Block) — never the container around it.
+    /// Observing a region takes the manifest's marker and placement, so this
+    /// variant appears at recorded block paths alone; an unrecorded container
+    /// is an ordinary [`File`](Self::File).
+    Block {
+        /// [`sha256_hex`] of the region's body, or `None` where the container
+        /// holds no marker occurrence — the region is gone, which classifies
+        /// [`Missing`](crate::PathState::Missing) like any other absent node.
+        hash: Option<String>,
+        /// Whether the author's side — the container with the region stripped
+        /// — is empty or ends with `\n`, which is what
+        /// [`Append`](crate::Placement::Append) requires of it. Free from the
+        /// same read.
+        newline_terminated: bool,
+    },
+}
+
+/// What one container looked like through the single descriptor
+/// [`read_container`] opened.
+#[cfg(unix)]
+pub(crate) enum Container {
+    /// A regular file: its bytes and the mode to preserve across the rename
+    /// that republishes it, both taken from that one descriptor.
+    File {
+        /// The container's bytes, read whole — locating a marker line and
+        /// splicing a region both need them together.
+        bytes: Vec<u8>,
+        /// The container's permission bits. The mode is the author's: it is
+        /// never taken from the entry, and a `chmod` of the container is not
+        /// drift.
+        mode: u32,
+    },
+    /// Nothing at the path.
+    Absent,
+    /// Something that is not a regular file — a directory, a FIFO, or a
+    /// symlink, which `O_NOFOLLOW` declines to open rather than resolve.
+    Other,
+}
+
+/// Opens the container at `name` inside `dir` and takes the regular-file
+/// verdict, the mode, and the bytes from that one descriptor.
+///
+/// One file description does the whole read, rather than a stat followed by
+/// an open followed by a read: a name swapped between two of those lookups
+/// would have the verdict describe one file and the bytes another. The open
+/// refuses to follow a final symlink and waits for no writer, so a link or a
+/// FIFO substituted for the container is answered rather than resolved or
+/// parked on.
+///
+/// `path` is where errors are reported at, relative to the destination.
+#[cfg(unix)]
+pub(crate) fn read_container(dir: &Dir, name: &str, path: &Utf8Path) -> Result<Container> {
+    use std::io::Read as _;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mut file = match crate::tree::open_file_nofollow(dir.as_cap_std(), name) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Container::Absent),
+        // `O_NOFOLLOW` met a symlink at the final component. Spelled as the
+        // raw errno because `ErrorKind::FilesystemLoop` is still unstable.
+        Err(e) if e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) => {
+            return Ok(Container::Other);
+        }
+        Err(e) => return Err(io_error(path)(e)),
+    };
+    let meta = file.metadata().map_err(io_error(path))?;
+    if !meta.is_file() {
+        return Ok(Container::Other);
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(io_error(path))?;
+    Ok(Container::File {
+        bytes,
+        mode: meta.permissions().mode() & 0o7777,
+    })
 }
 
 /// The read-only stage: walks the union of the destination directory and
@@ -123,6 +198,11 @@ pub enum Observation {
 ///   never sees the desired tree, so it cannot know which paths deciding
 ///   will need to compare — streaming each file through the hasher, so
 ///   peak memory never scales with file size;
+/// - reads the *region* rather than the file at a path the manifest records
+///   as a [`Block`](crate::EntryKind::Block): the manifest carries the marker
+///   and the placement, so the walk hashes the body alone and an edit
+///   elsewhere in the container never reads as drift. That container is read
+///   whole, since locating a marker line needs its bytes together;
 /// - skips entries whose names are not UTF-8: desired and recorded paths
 ///   are `Utf8PathBuf` by construction, so such an entry can never match a
 ///   row of the classification and stays invisible to it;
@@ -161,7 +241,7 @@ pub enum Observation {
 #[cfg(unix)]
 pub fn observe(dest: &Dir, manifest: &Manifest) -> Result<Observations> {
     let mut paths = BTreeMap::new();
-    walk(dest, Utf8Path::new(""), 0, &mut paths)?;
+    walk(dest, Utf8Path::new(""), 0, manifest, &mut paths)?;
     for path in manifest.entries.keys() {
         paths.entry(path.clone()).or_insert(Observation::Absent);
     }
@@ -182,6 +262,7 @@ fn walk(
     dir: &Dir,
     prefix: &Utf8Path,
     depth: usize,
+    manifest: &Manifest,
     into: &mut BTreeMap<Utf8PathBuf, Observation>,
 ) -> Result<()> {
     let dir_path = if prefix.as_str().is_empty() {
@@ -222,13 +303,22 @@ fn walk(
         } else if file_type.is_dir() {
             let sub = entry.open_dir().map_err(io_error(&rel))?;
             into.insert(rel.clone(), Observation::Directory);
-            walk(&sub, &rel, depth + 1, into)?;
+            walk(&sub, &rel, depth + 1, manifest, into)?;
             continue;
         } else if file_type.is_file() {
-            let file = entry.open().map_err(io_error(&rel))?;
-            Observation::File {
-                hash: sha256_hex_of_reader(file).map_err(io_error(&rel))?,
-                executable: meta.mode() & 0o100 != 0,
+            match manifest
+                .entries
+                .get(&rel)
+                .and_then(|recorded| crate::block::block_kind(&recorded.kind))
+            {
+                Some((marker, placement)) => observe_region(dir, &name, &rel, marker, placement)?,
+                None => {
+                    let file = entry.open().map_err(io_error(&rel))?;
+                    Observation::File {
+                        hash: sha256_hex_of_reader(file).map_err(io_error(&rel))?,
+                        executable: meta.mode() & 0o100 != 0,
+                    }
+                }
             }
         } else {
             Observation::Other
@@ -236,6 +326,38 @@ fn walk(
         into.insert(rel, observation);
     }
     Ok(())
+}
+
+/// Observes the region recorded at `rel` inside the container named `name`:
+/// the body's hash where the container holds a marker occurrence, and whether
+/// the author's side is newline-terminated either way.
+///
+/// The container is read whole rather than streamed, because locating a
+/// marker line needs the bytes together — so this is the one read whose peak
+/// memory is a file's size, and it happens only at paths the manifest already
+/// records as blocks. A container that is no longer a regular file observes
+/// as [`Other`](Observation::Other), which drifts against the record.
+#[cfg(unix)]
+fn observe_region(
+    dir: &Dir,
+    name: &str,
+    rel: &Utf8Path,
+    marker: &str,
+    placement: crate::Placement,
+) -> Result<Observation> {
+    let Container::File { bytes, .. } = read_container(dir, name, rel)? else {
+        return Ok(Observation::Other);
+    };
+    let region = crate::block::locate(&bytes, marker, placement);
+    Ok(Observation::Block {
+        hash: region
+            .as_ref()
+            .map(|region| sha256_hex(&bytes[region.body.clone()])),
+        newline_terminated: crate::block::newline_terminated(&crate::block::strip(
+            &bytes,
+            region.as_ref(),
+        )),
+    })
 }
 
 /// Wraps an OS error as [`Error::Io`] at `path` (relative to the

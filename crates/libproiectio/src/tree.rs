@@ -338,7 +338,7 @@ fn open_dir_nofollow(dir: &Dir, name: &str) -> std::io::Result<Dir> {
 /// The two `_cap_fs_ext_` methods are cap-primitives' public spelling of
 /// both flags; the `cap_fs_ext` traits that wrap them live in a crate this
 /// one does not depend on.
-fn open_file_nofollow(dir: &Dir, name: &str) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_file_nofollow(dir: &Dir, name: &str) -> std::io::Result<std::fs::File> {
     let start = std::fs::File::from(dir.as_fd().try_clone_to_owned()?);
     let mut options = OpenOptions::new();
     options.read(true);

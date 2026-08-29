@@ -18,14 +18,15 @@ use cap_std::fs_utf8::{Dir, MetadataExt};
 use cap_tempfile::TempFile;
 use serde::Deserialize;
 
+use crate::block;
 use crate::containment::{
     Hop, contained_normalize, contained_target, contained_target_chain, is_pathname,
 };
-use crate::observe::{io_error, sha256_hex_of_reader};
+use crate::observe::{Container, io_error, read_container, sha256_hex_of_reader};
 use crate::{
-    Action, ApplyOutcome, ApplyReport, Entry, EntryKind, Error, ExternalTargetPolicy,
+    Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error, ExternalTargetPolicy,
     MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature,
-    Plan, Refusal, Result, sha256_hex,
+    Placement, Plan, Refusal, Result, sha256_hex,
 };
 
 /// Loads the manifest from `state`'s [`MANIFEST_FILE_NAME`]; a state
@@ -119,8 +120,8 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 ///   never wrote. Where refusals of several kinds appear in one plan, the
 ///   variant reported first is fixed: [`Error::Containment`],
 ///   [`Error::TreeConflict`], [`Error::Foreign`], [`Error::Drift`],
-///   [`Error::OwnerConflict`], [`Error::ExternalTarget`], then
-///   [`Error::InvalidTarget`];
+///   [`Error::OwnerConflict`], [`Error::ExternalTarget`],
+///   [`Error::InvalidTarget`], then [`Error::Block`];
 /// - a plan writing a symlink whose target is not a pathname on any host —
 ///   the empty string, or one carrying a NUL byte — fails as
 ///   [`Error::InvalidTarget`]. Such a target would reach the OS and come
@@ -140,9 +141,42 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 ///   declined, the projection simply cannot write what it could not read
 ///   back. Removals are exempt, since they add no directory and are the
 ///   way back from a destination already too deep;
-/// - a plan touching a [`Block`](EntryKind::Block) entry — writing one, or
-///   re-checking a block signature — fails as
-///   [`Error::ApplyBlockUnimplemented`] (issue #14).
+/// - a plan whose [`Block`](EntryKind::Block) entry breaks one of the marker
+///   or body rules [`EntryKind::Block`] states, or whose block entry or block
+///   signature disagrees with the manifest about whether the path holds a
+///   region, fails as [`Error::Block`]. The deciding stage refuses both
+///   already; a plan is plain data, so a hand-built one meets them here.
+///
+/// # Blocks
+///
+/// A [`Block`](EntryKind::Block) action never reaches the generic write or
+/// re-check below. Its container is opened once through the no-follow walk,
+/// with `create = false` — a block never creates a directory or a container —
+/// and the regular-file verdict, the mode and the bytes all come from that
+/// one file description, so nothing can be substituted between the check and
+/// the read. That same read serves the changed-since-plan re-check *and* the
+/// splice, so an overwrite or a removal of a region has no window between
+/// deciding the disk still matches and writing it. The bytes outside the
+/// region are copied through by range — never parsed, compared, or passed
+/// through a pattern substitution — and the container is republished with the
+/// author's mode, taken off that descriptor rather than from the entry.
+///
+/// # What a block costs
+///
+/// Publishing by rename replaces the container's inode. The mode survives;
+/// ownership, ACLs, extended attributes, the inode number and any other hard
+/// link to the file do not. Writing in place would preserve them, and would
+/// also permit a torn write inside somebody else's file and write through a
+/// hard link into whatever else names that inode.
+///
+/// `StateLock` serializes two proiectio runs sharing a state directory, and
+/// therefore their container writes too. It does not cover the author's
+/// editor, `git checkout`, another tool's installer, a caller that never
+/// takes the lock, or **the window between this read of the container and its
+/// rename** — a concurrent write in that window is silently lost, because the
+/// bytes outside the region are never compared to anything. Re-reading before
+/// the rename would narrow that window, not close it, so it is not done. This
+/// is the largest thing a block adds over a whole-file write.
 ///
 /// # Execution
 ///
@@ -259,7 +293,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
     let mut owner_conflicts = BTreeMap::new();
     let mut external = BTreeMap::new();
     let mut invalid = BTreeMap::new();
-    let mut block_unimplemented = BTreeSet::new();
+    let mut blocks: BTreeMap<Utf8PathBuf, BlockFault> = BTreeMap::new();
     let mut too_deep = None;
     for (path, action) in &plan.actions {
         // Refusals are keyed by the desired key verbatim — possibly a
@@ -287,6 +321,9 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                 }
                 Refusal::InvalidTarget { target } => {
                     invalid.insert(path.clone(), target.clone());
+                }
+                Refusal::Block { fault } => {
+                    blocks.insert(path.clone(), *fault);
                 }
             }
             continue;
@@ -347,29 +384,42 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
             // as `contained_normalize` spells the keys this one prefixes.
             too_deep = Some(Utf8PathBuf::from(offender.join("/")));
         }
+        // A block entry's own rules, and the one distinction a path never
+        // crosses: the entry apply would write and the signature it would
+        // re-check must both agree with the record about whether the node
+        // here is a region rather than a whole node
+        // ([`EntryKind::Block`](crate::EntryKind::Block)). A recorded path is
+        // guaranteed above for every action but `Write`.
+        let record_is_block = manifest
+            .entries
+            .get(path)
+            .is_some_and(|recorded| recorded.kind.is_block());
         match action {
             Action::Write { entry } => {
-                if matches!(entry, Entry::Block { .. }) {
-                    block_unimplemented.insert(path.clone());
+                if let Some(fault) = entry_block_fault(entry) {
+                    blocks.insert(path.clone(), fault);
+                }
+                if manifest.entries.contains_key(path) && record_is_block != entry.kind().is_block()
+                {
+                    blocks.insert(path.clone(), BlockFault::KindChange);
                 }
             }
             Action::Overwrite { entry, expected } => {
-                if matches!(entry, Entry::Block { .. }) {
-                    block_unimplemented.insert(path.clone());
+                if let Some(fault) = entry_block_fault(entry) {
+                    blocks.insert(path.clone(), fault);
                 }
-                // The re-check side too: check_leaf cannot honor a block
-                // signature, and finding that out mid-run would break the
-                // up-front promise.
-                if expected.kind == EntryKind::Block {
-                    block_unimplemented.insert(path.clone());
+                if record_is_block != entry.kind().is_block()
+                    || record_is_block != expected.kind.is_block()
+                {
+                    blocks.insert(path.clone(), BlockFault::KindChange);
                 }
             }
             Action::Skip { expected }
             | Action::Remove {
                 expected: Some(expected),
             } => {
-                if expected.kind == EntryKind::Block {
-                    block_unimplemented.insert(path.clone());
+                if record_is_block != expected.kind.is_block() {
+                    blocks.insert(path.clone(), BlockFault::KindChange);
                 }
             }
             Action::Remove { expected: None } | Action::Release => {}
@@ -401,18 +451,30 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
     if !invalid.is_empty() {
         return Err(Error::InvalidTarget { links: invalid });
     }
+    if !blocks.is_empty() {
+        return Err(Error::Block { blocks });
+    }
     if let Some(path) = too_deep {
         return Err(Error::DestinationTooDeep {
             path,
             limit: MAX_WALK_DEPTH,
         });
     }
-    if !block_unimplemented.is_empty() {
-        return Err(Error::ApplyBlockUnimplemented {
-            paths: block_unimplemented,
-        });
-    }
     Ok(())
+}
+
+/// The plan-time refusals a written [`Block`](Entry::Block) entry earns from
+/// its own fields — the same check the deciding stage runs, repeated here
+/// because a plan is plain data and a hand-built one must meet it too.
+fn entry_block_fault(entry: &Entry) -> Option<BlockFault> {
+    match entry {
+        Entry::Block {
+            body,
+            marker,
+            placement,
+        } => block::entry_fault(marker, *placement, body),
+        Entry::File { .. } | Entry::Symlink { .. } => None,
+    }
 }
 
 /// Executes a validated plan's actions in the documented order, recording
@@ -430,11 +492,20 @@ fn run(
     let mut removed_dirs_candidates: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, action) in plan.actions.iter().rev() {
         if let Action::Remove { expected } = action {
-            // Only an actual disk removal can have emptied ancestors — and
-            // the ancestors that lost a child are the *resolved* location's,
-            // which differs from the action key's when the walk followed an
-            // owned link.
-            if let Some(resolved) = remove(dest, manifest, path, expected.as_ref())? {
+            // A block's removal strips its region out of a container that
+            // stays, so it empties no directory and its re-check rides the
+            // splice's own read rather than a separate one.
+            if manifest
+                .entries
+                .get(path)
+                .is_some_and(|recorded| recorded.kind.is_block())
+            {
+                remove_block(dest, manifest, path, expected.as_ref())?;
+            } else if let Some(resolved) = remove(dest, manifest, path, expected.as_ref())? {
+                // Only an actual disk removal can have emptied ancestors —
+                // and the ancestors that lost a child are the *resolved*
+                // location's, which differs from the action key's when the
+                // walk followed an owned link.
                 for ancestor in resolved.ancestors().skip(1) {
                     if !ancestor.as_str().is_empty() {
                         removed_dirs_candidates.insert(ancestor.to_owned());
@@ -472,6 +543,19 @@ fn run(
             Action::Write { entry } | Action::Overwrite { entry, .. }
                 if matches!(entry, Entry::Symlink { .. }) => {}
             Action::Skip { expected } if expected.kind == EntryKind::Symlink => {}
+            // Blocks before the generic arms: a region's re-check and its
+            // splice share one read of the container, so neither goes through
+            // `write` or `check_expected`.
+            Action::Write { entry } if matches!(entry, Entry::Block { .. }) => {
+                let outcome = write_block(dest, manifest, path, entry)?;
+                record(manifest, path, entry, &plan.owner);
+                outcomes.insert(path.clone(), outcome);
+            }
+            Action::Overwrite { entry, expected } if matches!(entry, Entry::Block { .. }) => {
+                overwrite_block(dest, manifest, path, entry, expected)?;
+                record(manifest, path, entry, &plan.owner);
+                outcomes.insert(path.clone(), ApplyOutcome::Overwritten);
+            }
             Action::Write { entry } => {
                 write(dest, manifest, path, entry, true, plan, &unpublished)?;
                 record(manifest, path, entry, &plan.owner);
@@ -517,7 +601,7 @@ fn skip(manifest: &mut Manifest, path: &Utf8Path, expected: &NodeSignature, owne
     manifest.entries.insert(
         path.to_owned(),
         ManifestEntry {
-            kind: expected.kind,
+            kind: expected.kind.clone(),
             hash: expected.hash.clone(),
             executable: expected.executable,
             owners,
@@ -766,10 +850,9 @@ fn prune(dest: &Dir, manifest: &Manifest, candidates: &BTreeSet<Utf8PathBuf>) ->
 /// reach: settling names what it is still going to publish by action key, so
 /// a link going down anywhere else is one no other link's chain can wait for.
 /// Deciding's no-alias rule refuses to plan such a link, and a hand-built
-/// plan carrying one is refused here as [`Error::Containment`]. Block entries
-/// were rejected by
-/// [`validate`]; reaching one here is a bug, but still errors rather than
-/// panics.
+/// plan carrying one is refused here as [`Error::Containment`]. A block never
+/// reaches this function: [`run`] splices its region instead, through a walk
+/// that creates nothing.
 fn write(
     dest: &Dir,
     manifest: &Manifest,
@@ -820,9 +903,7 @@ fn write(
             publish_link(&parent, &leaf, path, target)?;
         }
         Entry::Block { .. } => {
-            return Err(Error::ApplyBlockUnimplemented {
-                paths: BTreeSet::from([path.to_owned()]),
-            });
+            unreachable!("`run` splices a region rather than reaching this write")
         }
     }
     Ok(Written::Published)
@@ -850,15 +931,254 @@ fn persist(
     contents: &[u8],
     executable: bool,
 ) -> Result<()> {
+    persist_mode(
+        dir,
+        leaf,
+        path,
+        contents,
+        if executable { 0o755 } else { 0o644 },
+    )
+}
+
+/// [`persist`] with the mode named outright, for the one node whose mode is
+/// not the entry's: a block's container keeps the author's, read off the same
+/// descriptor the bytes came from.
+fn persist_mode(dir: &Dir, leaf: &str, path: &Utf8Path, contents: &[u8], mode: u32) -> Result<()> {
     let mut temp = TempFile::new(dir.as_cap_std()).map_err(io_error(path))?;
     temp.write_all(contents).map_err(io_error(path))?;
-    let mode = if executable { 0o755 } else { 0o644 };
     let permissions =
         cap_std::fs::Permissions::from_std(std::os::unix::fs::PermissionsExt::from_mode(mode));
     temp.as_file()
         .set_permissions(permissions)
         .map_err(io_error(path))?;
     temp.replace(leaf).map_err(io_error(path))
+}
+
+/// Opens the container of the block at `path` through the no-follow ancestor
+/// walk and reads it once ([`read_container`]): the verified parent handle,
+/// the leaf name, the container's bytes, and the author's mode.
+///
+/// `None` means nothing stands at the path — the container itself, or a
+/// directory above it, is gone — which each caller reads differently. The
+/// walk runs with `create = false`: a block never creates a directory, so it
+/// can neither deepen the destination nor strand one on a refusal.
+///
+/// A node that is not a regular file — a directory, a FIFO, or a symlink,
+/// which the open declines to follow — is refused here rather than handed
+/// back: [`Error::Drift`] where the manifest records the path, since the node
+/// changed under the plan, and [`Error::Foreign`] where it does not, since
+/// the projection never wrote it.
+fn read_block_container(
+    dest: &Dir,
+    manifest: &Manifest,
+    path: &Utf8Path,
+) -> Result<Option<OpenContainer>> {
+    let Some((parent, leaf, _)) = verified_parent(dest, manifest, path, false)? else {
+        return Ok(None);
+    };
+    match read_container(&parent, &leaf, path)? {
+        Container::File { bytes, mode } => Ok(Some(OpenContainer {
+            parent,
+            leaf,
+            bytes,
+            mode,
+        })),
+        Container::Absent => Ok(None),
+        Container::Other => Err(if manifest.entries.contains_key(path) {
+            drift(path)
+        } else {
+            Error::Foreign {
+                paths: BTreeSet::from([path.to_owned()]),
+            }
+        }),
+    }
+}
+
+/// A block's container as one read described it, together with the handle
+/// and name its republish renames through.
+struct OpenContainer {
+    /// The verified parent directory the container sits in.
+    parent: Dir,
+    /// The container's name inside that directory.
+    leaf: String,
+    /// The container's bytes.
+    bytes: Vec<u8>,
+    /// The author's permission bits, carried onto the tempfile so the mode
+    /// survives the rename.
+    mode: u32,
+}
+
+/// Executes an [`Action::Write`] whose entry is a block: splices the region
+/// into a container that already exists, leaving every byte outside it
+/// exactly where it was.
+///
+/// The plan says no region was there, and this read is what settles what is
+/// there now:
+///
+/// - no marker occurrence — splice, which is the ordinary case;
+/// - a region already carrying the desired body — adopt it: record the path
+///   and report [`Skipped`](ApplyOutcome::Skipped), writing nothing, rather
+///   than refuse a destination that is already in the desired state;
+/// - a region carrying anything else — [`Error::Drift`] where the manifest
+///   records the path (the region changed under the plan) and
+///   [`Error::Foreign`] where it does not (bytes the projection never wrote);
+/// - no container — [`Error::Block`] carrying
+///   [`ContainerMissing`](BlockFault::ContainerMissing): a block never
+///   creates its container, which is what keeps the projection from owning
+///   one whole.
+fn write_block(
+    dest: &Dir,
+    manifest: &Manifest,
+    path: &Utf8Path,
+    entry: &Entry,
+) -> Result<ApplyOutcome> {
+    let Entry::Block {
+        body,
+        marker,
+        placement,
+    } = entry
+    else {
+        unreachable!("dispatched on a block entry");
+    };
+    let Some(container) = read_block_container(dest, manifest, path)? else {
+        return Err(block_refusal(path, BlockFault::ContainerMissing));
+    };
+    if let Some(region) = block::locate(&container.bytes, marker, *placement) {
+        if &container.bytes[region.body] == body.as_slice() {
+            return Ok(ApplyOutcome::Skipped);
+        }
+        return Err(if manifest.entries.contains_key(path) {
+            drift(path)
+        } else {
+            Error::Foreign {
+                paths: BTreeSet::from([path.to_owned()]),
+            }
+        });
+    }
+    if *placement == Placement::Append && !block::newline_terminated(&container.bytes) {
+        return Err(block_refusal(
+            path,
+            BlockFault::ContainerNotNewlineTerminated,
+        ));
+    }
+    let spliced = block::splice(&container.bytes, marker, *placement, body);
+    persist_mode(
+        &container.parent,
+        &container.leaf,
+        path,
+        &spliced,
+        container.mode,
+    )?;
+    Ok(ApplyOutcome::Written)
+}
+
+/// Executes an [`Action::Overwrite`] whose entry is a block: one read of the
+/// container both re-checks the recorded region against `expected` and
+/// supplies the bytes the new region is spliced into, so nothing can be
+/// substituted between the check and the write.
+///
+/// The old region is located with `expected`'s marker and placement and the
+/// new one written with the entry's, so a caller who changed either migrates
+/// the region in this single publish.
+fn overwrite_block(
+    dest: &Dir,
+    manifest: &Manifest,
+    path: &Utf8Path,
+    entry: &Entry,
+    expected: &NodeSignature,
+) -> Result<()> {
+    let Entry::Block {
+        body,
+        marker,
+        placement,
+    } = entry
+    else {
+        unreachable!("dispatched on a block entry");
+    };
+    let Some((recorded_marker, recorded_placement)) = block::block_kind(&expected.kind) else {
+        unreachable!("validate pairs a block entry with a block signature");
+    };
+    let Some(container) = read_block_container(dest, manifest, path)? else {
+        return Err(drift(path));
+    };
+    let Some(region) = block::locate(&container.bytes, recorded_marker, recorded_placement) else {
+        return Err(drift(path));
+    };
+    if sha256_hex(&container.bytes[region.body.clone()]) != expected.hash {
+        return Err(drift(path));
+    }
+    let author = block::strip(&container.bytes, Some(&region));
+    if *placement == Placement::Append && !block::newline_terminated(&author) {
+        return Err(block_refusal(
+            path,
+            BlockFault::ContainerNotNewlineTerminated,
+        ));
+    }
+    let spliced = block::splice(&author, marker, *placement, body);
+    persist_mode(
+        &container.parent,
+        &container.leaf,
+        path,
+        &spliced,
+        container.mode,
+    )
+}
+
+/// Executes an [`Action::Remove`] whose record is a block: strips the region
+/// and its marker out and republishes the container, which stays even when
+/// the strip empties it. The same one read re-checks the region against
+/// `expected` and supplies the bytes.
+///
+/// Expecting `None` — the region was already gone at plan time — verifies
+/// that none has appeared and writes nothing; a region found there is a
+/// change since the plan, refused as [`Error::Drift`] exactly as a node
+/// appearing at a removed path is. A container that is gone leaves nothing to
+/// strip, which is a removal already done rather than a failure to do one.
+fn remove_block(
+    dest: &Dir,
+    manifest: &Manifest,
+    path: &Utf8Path,
+    expected: Option<&NodeSignature>,
+) -> Result<()> {
+    let recorded = manifest
+        .entries
+        .get(path)
+        .expect("validate refuses a removal the manifest does not record");
+    let kind = expected.map_or(&recorded.kind, |expected| &expected.kind);
+    let Some((marker, placement)) = block::block_kind(kind) else {
+        unreachable!("dispatched on a block record, and validate pairs it with a block signature");
+    };
+    let Some(container) = read_block_container(dest, manifest, path)? else {
+        return if expected.is_some() {
+            Err(drift(path))
+        } else {
+            Ok(())
+        };
+    };
+    match (expected, block::locate(&container.bytes, marker, placement)) {
+        (Some(expected), Some(region)) => {
+            if sha256_hex(&container.bytes[region.body.clone()]) != expected.hash {
+                return Err(drift(path));
+            }
+            let author = block::strip(&container.bytes, Some(&region));
+            persist_mode(
+                &container.parent,
+                &container.leaf,
+                path,
+                &author,
+                container.mode,
+            )
+        }
+        (Some(_), None) | (None, Some(_)) => Err(drift(path)),
+        (None, None) => Ok(()),
+    }
+}
+
+/// [`Error::Block`] over one path and one fault.
+fn block_refusal(path: &Utf8Path, fault: BlockFault) -> Error {
+    Error::Block {
+        blocks: BTreeMap::from([(path.to_owned(), fault)]),
+    }
 }
 
 /// The changed-since-plan re-check for a symlink's target: grades `target`
@@ -1053,7 +1373,7 @@ fn record(manifest: &mut Manifest, path: &Utf8Path, entry: &Entry, owner: &str) 
             executable,
         } => (sha256_hex(contents), *executable),
         Entry::Symlink { target } => (sha256_hex(target.as_bytes()), false),
-        Entry::Block { body } => (sha256_hex(body), false),
+        Entry::Block { body, .. } => (sha256_hex(body), false),
     };
     let mut owners = manifest
         .entries
@@ -1090,16 +1410,18 @@ fn check_expected(
 
 /// Compares the node at `leaf` (inside the verified `parent`) against
 /// `expected` — kind, hash, executable bit — with lstat semantics; any
-/// difference, absence included, is [`Error::Drift`] at `path`. Block
-/// signatures never reach here ([`validate`] rejects them); the arm errors
-/// rather than panics all the same.
+/// difference, absence included, is [`Error::Drift`] at `path`.
+///
+/// The block arm serves [`Action::Skip`] alone, which writes nothing: an
+/// overwrite or a removal of a region re-checks it inside the splice's own
+/// read instead, so no window separates its check from its write.
 fn check_leaf(parent: &Dir, leaf: &str, path: &Utf8Path, expected: &NodeSignature) -> Result<()> {
     let meta = match parent.symlink_metadata(leaf) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(drift(path)),
         Err(e) => return Err(io_error(path)(e)),
     };
-    match expected.kind {
+    match &expected.kind {
         EntryKind::File => {
             if !meta.file_type().is_file() {
                 return Err(drift(path));
@@ -1119,10 +1441,16 @@ fn check_leaf(parent: &Dir, leaf: &str, path: &Utf8Path, expected: &NodeSignatur
                 return Err(drift(path));
             }
         }
-        EntryKind::Block => {
-            return Err(Error::ApplyBlockUnimplemented {
-                paths: BTreeSet::from([path.to_owned()]),
-            });
+        EntryKind::Block { marker, placement } => {
+            let Container::File { bytes, .. } = read_container(parent, leaf, path)? else {
+                return Err(drift(path));
+            };
+            let Some(region) = block::locate(&bytes, marker, *placement) else {
+                return Err(drift(path));
+            };
+            if sha256_hex(&bytes[region.body]) != expected.hash {
+                return Err(drift(path));
+            }
         }
     }
     Ok(())

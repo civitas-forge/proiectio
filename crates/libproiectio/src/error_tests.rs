@@ -35,6 +35,12 @@ fn every_variant() -> Vec<Error> {
         Error::TreeConflict {
             paths: paths(&["a", "a/b"]),
         },
+        Error::Block {
+            blocks: BTreeMap::from([(
+                Utf8PathBuf::from("shared/.zshrc"),
+                BlockFault::ContainerMissing,
+            )]),
+        },
         Error::Io {
             path: Utf8PathBuf::from("config/settings.toml"),
             source: std::io::Error::other("disk full"),
@@ -134,9 +140,6 @@ fn every_variant() -> Vec<Error> {
             path: Utf8PathBuf::from("vendor/a/b/c"),
             limit: 64,
         },
-        Error::ApplyBlockUnimplemented {
-            paths: paths(&["shared/.zshrc"]),
-        },
     ]
 }
 
@@ -156,7 +159,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    let (refusals, failures) = (7, 25);
+    let (refusals, failures) = (8, 24);
     assert_eq!(codes.len(), refusals + failures);
     assert!(codes[..refusals].iter().all(|&code| code == 2));
     assert!(codes[refusals..].iter().all(|&code| code == 1));

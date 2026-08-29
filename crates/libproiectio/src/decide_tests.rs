@@ -49,7 +49,32 @@ fn on_disk(entry: &Entry) -> Observation {
             hash: sha256_hex(target.as_bytes()),
             target: Some(target.clone()),
         },
-        Entry::Block { .. } => panic!("no whole-node observation holds a block"),
+        // A region on disk: the author's side ends at the marker's line
+        // start, which is newline-terminated by construction.
+        Entry::Block { body, .. } => Observation::Block {
+            hash: Some(sha256_hex(body)),
+            newline_terminated: true,
+        },
+    }
+}
+
+/// The marker every block test uses.
+const MARKER: &str = "# proiectio";
+
+fn block(body: &str, placement: Placement) -> Entry {
+    Entry::Block {
+        body: body.as_bytes().to_vec(),
+        marker: MARKER.to_owned(),
+        placement,
+    }
+}
+
+/// The observation of a container the region is gone from, whose author's
+/// side is newline-terminated or not.
+fn no_region(newline_terminated: bool) -> Observation {
+    Observation::Block {
+        hash: None,
+        newline_terminated,
     }
 }
 
@@ -262,26 +287,34 @@ fn a_link_target_edited_to_non_utf8_classifies_drifted() {
 }
 
 #[test]
-fn a_recorded_block_classifies_drifted_until_region_classification() {
-    // Seam: a block's hash covers its delimited body, which no whole-node
-    // observation reproduces — conservative drift until the block issue
-    // replaces this with region classification.
-    let body = b"managed\n".to_vec();
-    let container = "before\nmanaged\nafter\n";
-    let manifest = manifest_of(&[(
-        "conf",
-        ManifestEntry {
-            kind: EntryKind::Block,
-            hash: sha256_hex(&body),
-            executable: false,
-            owners: BTreeSet::from([OWNER.to_owned()]),
-        },
-    )]);
-    let observations = observed(&[("conf", on_disk(&file(container, false)))]);
-
-    let status = classify(&manifest, &observations, None);
-
-    assert_eq!(status.paths[Utf8Path::new("conf")], PathState::Drifted);
+fn a_recorded_block_classifies_over_its_region() {
+    // The region is the node: the container's other bytes enter no
+    // comparison, and a container the marker line is gone from reads as a
+    // node gone from disk.
+    let entry = block("managed\n", Placement::Append);
+    let manifest = manifest_of(&[("conf", recorded(&entry, &[OWNER]))]);
+    let cases: &[(Observation, PathState)] = &[
+        (on_disk(&entry), PathState::Clean),
+        (
+            Observation::Block {
+                hash: Some(sha256_hex(b"edited\n")),
+                newline_terminated: true,
+            },
+            PathState::Drifted,
+        ),
+        (no_region(true), PathState::Missing),
+        (Observation::Absent, PathState::Missing),
+        // The container is no longer a file at all: drift of kind.
+        (Observation::Directory, PathState::Drifted),
+    ];
+    for (observation, want) in cases {
+        let status = classify(&manifest, &observed(&[("conf", observation.clone())]), None);
+        assert_eq!(
+            status.paths[Utf8Path::new("conf")],
+            *want,
+            "{observation:?}"
+        );
+    }
 }
 
 #[test]
@@ -1796,57 +1829,341 @@ fn a_drifted_orphan_now_a_directory_stays_refused_under_overwrite_policy() {
     );
 }
 
-// --- blocks: the generic-table seam ---
+// --- blocks: the region, not the container ---
 
 #[test]
-fn a_drifted_recorded_block_is_never_lifted() {
-    // A recorded block owns only its delimited region, which no
-    // whole-node signature expresses: lifting would plan whole-file
-    // actions against a container the projection does not own whole, so
-    // the drift refusal holds under either policy — for a changed desired
-    // block and for an orphaned one alike.
-    let recorded_block = Entry::Block {
-        body: b"v1\n".to_vec(),
-    };
-    let desired_block = Entry::Block {
-        body: b"v2\n".to_vec(),
-    };
-    let container = file("# config\nmanaged v1\n", false);
-    let manifest = manifest_of(&[("conf", recorded(&recorded_block, &[OWNER]))]);
-    let observations = observed(&[("conf", on_disk(&container))]);
+fn a_desired_block_over_an_unrecorded_container_writes() {
+    // Writing into a file it does not own whole is what a block is for, so
+    // an unrecorded container is not a foreign refusal. Only apply's read of
+    // the bytes can tell an untouched container from one already carrying a
+    // region, so the plan is a write either way.
+    let entry = block("managed\n", Placement::Append);
+    let container = file("author\n", false);
 
-    let changed = plan(
-        &tree(&[("conf", &desired_block)]),
-        &manifest,
-        &observations,
-        DriftPolicy::Overwrite,
+    let plan = plan(
+        &tree(&[("conf", &entry)]),
+        &Manifest::new(),
+        &observed(&[("conf", on_disk(&container))]),
+        DriftPolicy::Refuse,
     );
-    let orphaned = plan(&tree(&[]), &manifest, &observations, DriftPolicy::Overwrite);
 
-    for plan in [&changed, &orphaned] {
+    assert_eq!(action(&plan, "conf"), &Action::Write { entry });
+}
+
+#[test]
+fn a_desired_block_over_an_unrecorded_non_file_refuses_as_foreign() {
+    let entry = block("managed\n", Placement::Append);
+    for observation in [
+        on_disk(&link("elsewhere")),
+        Observation::Directory,
+        Observation::Other,
+    ] {
+        let plan = plan(
+            &tree(&[("conf", &entry)]),
+            &Manifest::new(),
+            &observed(&[("conf", observation.clone())]),
+            DriftPolicy::Refuse,
+        );
+
         assert_eq!(
-            action(plan, "conf"),
+            action(&plan, "conf"),
             &Action::Refuse {
-                refusal: Refusal::Drift,
+                refusal: Refusal::Foreign,
+            },
+            "{observation:?}"
+        );
+    }
+}
+
+#[test]
+fn a_block_never_creates_its_container() {
+    // Neither over a path nothing was ever at, nor over a recorded region
+    // whose container was deleted: a projection that made the file would own
+    // it whole, which is what a `File` entry is for.
+    let entry = block("managed\n", Placement::Append);
+    let recorded_block = manifest_of(&[("conf", recorded(&entry, &[OWNER]))]);
+    let cases: &[(Manifest, Observations)] = &[
+        (Manifest::new(), observed(&[])),
+        (recorded_block, observed(&[("conf", Observation::Absent)])),
+    ];
+
+    for (manifest, observations) in cases {
+        let plan = plan(
+            &tree(&[("conf", &entry)]),
+            manifest,
+            observations,
+            DriftPolicy::Refuse,
+        );
+
+        assert_eq!(
+            action(&plan, "conf"),
+            &Action::Refuse {
+                refusal: Refusal::Block {
+                    fault: BlockFault::ContainerMissing,
+                },
             }
         );
     }
 }
 
 #[test]
-fn a_desired_block_over_nothing_writes() {
-    let entry = Entry::Block {
-        body: b"managed\n".to_vec(),
-    };
+fn a_region_gone_from_a_standing_container_is_written_again() {
+    // Missing, so write heals — the container is still there to splice into.
+    let entry = block("managed\n", Placement::Append);
+    let manifest = manifest_of(&[("conf", recorded(&entry, &[OWNER]))]);
 
     let plan = plan(
         &tree(&[("conf", &entry)]),
-        &Manifest::new(),
-        &observed(&[]),
+        &manifest,
+        &observed(&[("conf", no_region(true))]),
         DriftPolicy::Refuse,
     );
 
     assert_eq!(action(&plan, "conf"), &Action::Write { entry });
+}
+
+#[test]
+fn the_marker_and_body_rules_refuse_before_any_classification() {
+    let cases: &[(Entry, BlockFault)] = &[
+        (
+            Entry::Block {
+                body: b"managed\n".to_vec(),
+                marker: String::new(),
+                placement: Placement::Append,
+            },
+            BlockFault::MarkerEmpty,
+        ),
+        (
+            Entry::Block {
+                body: b"managed\n".to_vec(),
+                marker: "# a\n# b".to_owned(),
+                placement: Placement::Append,
+            },
+            BlockFault::MarkerNotOneLine,
+        ),
+        (
+            Entry::Block {
+                body: b"managed\n".to_vec(),
+                marker: "# proiectio ".to_owned(),
+                placement: Placement::Append,
+            },
+            BlockFault::MarkerEdgeWhitespace,
+        ),
+        (
+            block("a\n# proiectio\nb\n", Placement::Append),
+            BlockFault::BodyCarriesMarker,
+        ),
+        (
+            block("managed", Placement::Prepend),
+            BlockFault::BodyNotNewlineTerminated,
+        ),
+    ];
+
+    for (entry, fault) in cases {
+        let plan = plan(
+            &tree(&[("conf", entry)]),
+            &Manifest::new(),
+            &observed(&[("conf", on_disk(&file("author\n", false)))]),
+            DriftPolicy::Refuse,
+        );
+
+        assert_eq!(
+            action(&plan, "conf"),
+            &Action::Refuse {
+                refusal: Refusal::Block { fault: *fault },
+            },
+            "{entry:?}"
+        );
+    }
+}
+
+#[test]
+fn appending_needs_an_author_side_that_ends_with_a_newline() {
+    // Neither side's bytes get normalized to make room, so a container whose
+    // last line has no terminator refuses rather than gaining one.
+    let entry = block("managed\n", Placement::Append);
+    let manifest = manifest_of(&[("conf", recorded(&entry, &[OWNER]))]);
+
+    let refused = plan(
+        &tree(&[("conf", &entry)]),
+        &manifest,
+        &observed(&[("conf", no_region(false))]),
+        DriftPolicy::Refuse,
+    );
+    let prepended = plan(
+        &tree(&[("conf", &block("managed\n", Placement::Prepend))]),
+        &Manifest::new(),
+        &observed(&[("conf", on_disk(&file("author", false)))]),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&refused, "conf"),
+        &Action::Refuse {
+            refusal: Refusal::Block {
+                fault: BlockFault::ContainerNotNewlineTerminated,
+            },
+        }
+    );
+    // Prepending puts the author's side last, so its terminator is theirs.
+    assert!(matches!(action(&prepended, "conf"), Action::Write { .. }));
+}
+
+#[test]
+fn a_changed_marker_overwrites_the_recorded_region() {
+    // The desired kind carries the marker, so changing it makes the desired
+    // entry differ from the recorded one: apply strips the region the old
+    // marker locates and splices the new one in a single publish.
+    let was = block("managed\n", Placement::Append);
+    let now = Entry::Block {
+        body: b"managed\n".to_vec(),
+        marker: "# renamed".to_owned(),
+        placement: Placement::Append,
+    };
+    let manifest = manifest_of(&[("conf", recorded(&was, &[OWNER]))]);
+
+    let plan = plan(
+        &tree(&[("conf", &now)]),
+        &manifest,
+        &observed(&[("conf", on_disk(&was))]),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "conf"),
+        &Action::Overwrite {
+            entry: now,
+            expected: signature(&was),
+        }
+    );
+}
+
+#[test]
+fn a_region_matching_desired_skips() {
+    let entry = block("managed\n", Placement::Append);
+    let manifest = manifest_of(&[("conf", recorded(&entry, &[OWNER]))]);
+
+    let plan = plan(
+        &tree(&[("conf", &entry)]),
+        &manifest,
+        &observed(&[("conf", on_disk(&entry))]),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "conf"),
+        &Action::Skip {
+            expected: signature(&entry),
+        }
+    );
+}
+
+#[test]
+fn a_drifted_region_lifts_under_force_and_a_lost_container_does_not() {
+    // The crate's ordinary rule: a drift lifts where the observed node
+    // carries a signature apply can re-verify, which for a block is the body
+    // the recorded marker locates. A container that became a directory
+    // carries no such signature, so `--force` still refuses it.
+    let entry = block("v2\n", Placement::Append);
+    let manifest = manifest_of(&[(
+        "conf",
+        recorded(&block("v1\n", Placement::Append), &[OWNER]),
+    )]);
+    let edited = Observation::Block {
+        hash: Some(sha256_hex(b"edited\n")),
+        newline_terminated: true,
+    };
+
+    let lifted = plan(
+        &tree(&[("conf", &entry)]),
+        &manifest,
+        &observed(&[("conf", edited)]),
+        DriftPolicy::Overwrite,
+    );
+    let refused = plan(
+        &tree(&[("conf", &entry)]),
+        &manifest,
+        &observed(&[("conf", Observation::Directory)]),
+        DriftPolicy::Overwrite,
+    );
+
+    assert_eq!(
+        action(&lifted, "conf"),
+        &Action::Overwrite {
+            entry,
+            expected: NodeSignature {
+                kind: EntryKind::Block {
+                    marker: MARKER.to_owned(),
+                    placement: Placement::Append,
+                },
+                hash: sha256_hex(b"edited\n"),
+                executable: false,
+            },
+        }
+    );
+    assert_eq!(
+        action(&refused, "conf"),
+        &Action::Refuse {
+            refusal: Refusal::Drift,
+        }
+    );
+}
+
+#[test]
+fn a_path_never_changes_between_a_whole_node_and_a_block() {
+    let as_file = file("whole\n", false);
+    let as_block = block("managed\n", Placement::Append);
+    let cases: &[(&Entry, &Entry)] = &[(&as_file, &as_block), (&as_block, &as_file)];
+
+    for (was, now) in cases {
+        let manifest = manifest_of(&[("conf", recorded(was, &[OWNER]))]);
+        let plan = plan(
+            &tree(&[("conf", now)]),
+            &manifest,
+            &observed(&[("conf", on_disk(was))]),
+            DriftPolicy::Refuse,
+        );
+
+        assert_eq!(
+            action(&plan, "conf"),
+            &Action::Refuse {
+                refusal: Refusal::Block {
+                    fault: BlockFault::KindChange,
+                },
+            },
+            "{was:?} -> {now:?}"
+        );
+    }
+}
+
+#[test]
+fn an_orphaned_region_is_removed_and_a_vanished_one_expects_nothing() {
+    let entry = block("managed\n", Placement::Append);
+    let manifest = manifest_of(&[("conf", recorded(&entry, &[OWNER]))]);
+
+    let present = plan(
+        &tree(&[]),
+        &manifest,
+        &observed(&[("conf", on_disk(&entry))]),
+        DriftPolicy::Refuse,
+    );
+    let vanished = plan(
+        &tree(&[]),
+        &manifest,
+        &observed(&[("conf", no_region(true))]),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&present, "conf"),
+        &Action::Remove {
+            expected: Some(signature(&entry)),
+        }
+    );
+    assert_eq!(
+        action(&vanished, "conf"),
+        &Action::Remove { expected: None }
+    );
 }
 
 // --- removal: whole owner, or a subset by path ---

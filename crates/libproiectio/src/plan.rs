@@ -121,13 +121,13 @@ pub enum Action {
     /// recorded but gone ([`PathState::Missing`](crate::PathState)) that
     /// the desired tree still wants.
     ///
-    /// For a [`Entry::Block`] entry, "on disk" means the projection's
-    /// delimited region, not the container file: a pre-existing container
-    /// without this projection's markers plans a `Write`, which inserts
-    /// the region and leaves the rest of the file alone. Until block-region
-    /// classification lands, the deciding stage does not yet produce that
-    /// plan — it refuses the pre-existing container as foreign
-    /// ([`decide`](crate::decide)'s rustdoc names the seam).
+    /// For an [`Entry::Block`] entry, "on disk" means the region, not the
+    /// container: a container without this projection's marker plans a
+    /// `Write`, which splices the region in and leaves the rest of the file
+    /// byte for byte. The container itself is never created — apply refuses
+    /// as [`Error::Block`](crate::Error::Block) where it is gone — and a
+    /// region apply finds already carrying the desired body is adopted and
+    /// reported [`Skipped`](crate::ApplyOutcome::Skipped) instead.
     Write {
         /// What to write.
         entry: Entry,
@@ -196,10 +196,13 @@ pub enum Action {
 /// ([`PathState::Drifted`](crate::PathState::Drifted)).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NodeSignature {
-    /// The node's kind.
+    /// The node's kind. For a [`Block`](EntryKind::Block) it carries the
+    /// marker and placement the region is located with, so a caller who
+    /// changed either has apply strip the old region and splice the new one
+    /// in the same publish.
     pub kind: EntryKind,
-    /// [`sha256_hex`](crate::sha256_hex) of the node — file contents, or
-    /// the link target string.
+    /// [`sha256_hex`](crate::sha256_hex) of the node — file contents, the
+    /// link target string, or a region's body.
     pub hash: String,
     /// The executable bit; always `false` for symlinks and blocks
     /// ([`ManifestEntry::executable`](crate::ManifestEntry::executable)).
@@ -283,6 +286,15 @@ pub enum Refusal {
     InvalidTarget {
         /// The offending target string, verbatim.
         target: String,
+    },
+    /// A [`Block`](EntryKind::Block) entry the projection declines — a
+    /// marker or body the rules on [`EntryKind::Block`] forbid, a container
+    /// that is not there, or a path changing between a whole node and a
+    /// block. No policy lifts any of them; see
+    /// [`Error::Block`](crate::Error::Block).
+    Block {
+        /// Which rule the entry or its container broke.
+        fault: crate::BlockFault,
     },
 }
 
