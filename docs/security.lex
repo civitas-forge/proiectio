@@ -29,15 +29,28 @@ Security Model
     destination and the state directory. What it never does is
     narrower:
 
-    No path computed from content the crate did not author is ever
-    resolved against ambient authority, and nothing resolves against
-    the process's current directory. Desired-tree keys, symlink
-    targets, archive member names and mapping keys reach the
-    filesystem only as relative paths, through a directory handle
-    whose root the invoker named, after passing the lexical
-    containment gateway of section 2.
+    No path content chose as a place to *write* is ever resolved
+    against ambient authority, and nothing resolves against the
+    process's current directory. Desired-tree keys, symlink targets,
+    archive member names and mapping keys reach the filesystem only
+    as relative paths, through a directory handle whose root the
+    invoker named, after passing the lexical containment gateway of
+    section 2.
 
-    So an embedder chooses where the projection may read and write by
+    The paths content chooses as places to *read* are the other half,
+    and they are not covered: a mapping's [files] and [archives]
+    source values are joined onto the mapping file's own directory
+    and opened against ambient authority, and a rooted source
+    supplants that directory. That is the paragraph above applied to
+    a mapping — read from anywhere the invoker can read — and the
+    invoker grants it by choosing to run that mapping. The
+    consequence is worth saying plainly: a mapping can name any file
+    the process can read and project its bytes into the destination,
+    so a mapping from a third party is read before it is run, on the
+    same terms as a script from a third party. What it cannot do is
+    choose where those bytes land.
+
+    So an embedder chooses where the projection may write by
     choosing those paths, and chooses what content may do by passing
     DriftPolicy and ExternalTargetPolicy — the library-side spellings
     of --force and --allow-external-targets. It cannot hand out the

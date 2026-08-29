@@ -234,12 +234,19 @@ Proiectio Design
     ([./security.lex] section 1), which reads from anywhere the invoker
     can read. The rule the crate keeps is the narrower one:
 
-    No path computed from content the crate did not author is ever
-    resolved against ambient authority, and nothing resolves against the
-    process's current directory. Desired-tree keys, symlink targets,
-    archive member names and mapping keys reach the filesystem only as
-    relative paths, through a directory handle whose root the invoker
-    named, after passing the lexical containment gateway.
+    No path content chose as a place to write is ever resolved against
+    ambient authority, and nothing resolves against the process's current
+    directory. Desired-tree keys, symlink targets, archive member names
+    and mapping keys reach the filesystem only as relative paths, through
+    a directory handle whose root the invoker named, after passing the
+    lexical containment gateway.
+
+    Places content chooses to read are not covered, and section 1 of
+    [./security.lex] says why: a mapping's [files] and [archives] source
+    values are joined onto the mapping file's directory and opened against
+    ambient authority, a rooted one supplanting that directory. Reading
+    from anywhere the invoker can read is the trust split, and running a
+    mapping is what grants it.
 
     Two passes. Reads take no lock and write nothing: status, manifest,
     plan and plan_removal. The Plan they return is a report of what
