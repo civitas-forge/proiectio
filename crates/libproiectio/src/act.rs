@@ -93,10 +93,7 @@ pub(crate) fn apply(
             if !outcomes.is_empty() {
                 let _ = save_manifest(state, &manifest);
             }
-            Err(match error {
-                Error::Refused(refused) => refused.sourced_by(plan).into(),
-                other => other,
-            })
+            Err(error)
         }
     }
 }
@@ -231,19 +228,22 @@ fn run(
     let mut removed_dirs_candidates: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, action) in plan.actions.iter().rev() {
         if let Action::Remove { expected } = action {
-            if manifest
-                .entries
-                .get(path)
-                .is_some_and(|recorded| recorded.kind.is_block())
-            {
-                remove_block(dest, manifest, path, expected.as_ref())?;
-            } else if let Some(resolved) = remove(dest, manifest, path, expected.as_ref())? {
-                for ancestor in resolved.ancestors().skip(1) {
-                    if !ancestor.as_str().is_empty() {
-                        removed_dirs_candidates.insert(ancestor.to_owned());
+            acting_on(plan, path, || {
+                if manifest
+                    .entries
+                    .get(path)
+                    .is_some_and(|recorded| recorded.kind.is_block())
+                {
+                    remove_block(dest, manifest, path, expected.as_ref())?;
+                } else if let Some(resolved) = remove(dest, manifest, path, expected.as_ref())? {
+                    for ancestor in resolved.ancestors().skip(1) {
+                        if !ancestor.as_str().is_empty() {
+                            removed_dirs_candidates.insert(ancestor.to_owned());
+                        }
                     }
                 }
-            }
+                Ok(())
+            })?;
             manifest.entries.remove(path);
             outcomes.insert(path.clone(), ApplyOutcome::Removed);
         }
@@ -272,28 +272,36 @@ fn run(
                 if matches!(entry, Entry::Symlink { .. }) => {}
             Action::Skip { expected } if expected.kind == EntryKind::Symlink => {}
             Action::Write { entry } if matches!(entry, Entry::Block { .. }) => {
-                let outcome = write_block(dest, manifest, path, entry)?;
+                let outcome = acting_on(plan, path, || write_block(dest, manifest, path, entry))?;
                 record(manifest, path, entry, &plan.owner);
                 outcomes.insert(path.clone(), outcome);
             }
             Action::Overwrite { entry, expected } if matches!(entry, Entry::Block { .. }) => {
-                overwrite_block(dest, manifest, path, entry, expected)?;
+                acting_on(plan, path, || {
+                    overwrite_block(dest, manifest, path, entry, expected)
+                })?;
                 record(manifest, path, entry, &plan.owner);
                 outcomes.insert(path.clone(), ApplyOutcome::Overwritten);
             }
             Action::Write { entry } => {
-                write(dest, manifest, path, entry, true, plan, &unpublished)?;
+                acting_on(plan, path, || {
+                    write(dest, manifest, path, entry, true, plan, &unpublished)
+                })?;
                 record(manifest, path, entry, &plan.owner);
                 outcomes.insert(path.clone(), ApplyOutcome::Written);
             }
             Action::Overwrite { entry, expected } => {
-                check_expected(dest, manifest, path, expected)?;
-                write(dest, manifest, path, entry, false, plan, &unpublished)?;
+                acting_on(plan, path, || {
+                    check_expected(dest, manifest, path, expected)?;
+                    write(dest, manifest, path, entry, false, plan, &unpublished)
+                })?;
                 record(manifest, path, entry, &plan.owner);
                 outcomes.insert(path.clone(), ApplyOutcome::Overwritten);
             }
             Action::Skip { expected } => {
-                check_expected(dest, manifest, path, expected)?;
+                acting_on(plan, path, || {
+                    check_expected(dest, manifest, path, expected)
+                })?;
                 skip(manifest, path, expected, &plan.owner);
                 outcomes.insert(path.clone(), ApplyOutcome::Skipped);
             }
@@ -350,13 +358,16 @@ fn settle_links(
         for (path, action) in pending {
             let (entry, fresh, outcome) = match action {
                 Action::Write { entry } => (entry, true, ApplyOutcome::Written),
-                Action::Overwrite { entry, expected } => {
-                    check_expected(dest, manifest, path, expected)?;
-                    (entry, false, ApplyOutcome::Overwritten)
-                }
+                Action::Overwrite { entry, .. } => (entry, false, ApplyOutcome::Overwritten),
                 _ => unreachable!("only writes and overwrites are pending here"),
             };
-            match write(dest, manifest, path, entry, fresh, plan, &unpublished)? {
+            let written = acting_on(plan, path, || {
+                if let Action::Overwrite { expected, .. } = action {
+                    check_expected(dest, manifest, path, expected)?;
+                }
+                write(dest, manifest, path, entry, fresh, plan, &unpublished)
+            })?;
+            match written {
                 Written::Published => {
                     unpublished.remove(path);
                     record(manifest, path, entry, &plan.owner);
@@ -371,7 +382,7 @@ fn settle_links(
                         Refusal::ExternalTarget {
                             target: target.clone(),
                         },
-                        Origin::Caller,
+                        plan.origin_of(path),
                     ));
                     held.push((path, action));
                 }
@@ -388,8 +399,10 @@ fn settle_links(
         let Action::Skip { expected } = action else {
             unreachable!("only skips are left here");
         };
-        check_expected(dest, manifest, path, expected)?;
-        regrade_recorded_link(dest, manifest, plan, path)?;
+        acting_on(plan, path, || {
+            check_expected(dest, manifest, path, expected)?;
+            regrade_recorded_link(dest, manifest, plan, path)
+        })?;
         skip(manifest, path, expected, &plan.owner);
         outcomes.insert(path.clone(), ApplyOutcome::Skipped);
     }
@@ -1133,8 +1146,18 @@ fn at_action_key(path: &Utf8Path, landing: &Utf8Path) -> Result<()> {
     }
 }
 
+/// Runs one action's fallible part and attributes any refusal it meets to
+/// the source that named `path` — the refused key is `path` itself, or an
+/// ancestor the walk to it found changed, which no source names on its own.
+fn acting_on<T>(plan: &Plan, path: &Utf8Path, act: impl FnOnce() -> Result<T>) -> Result<T> {
+    act().map_err(|error| match error {
+        Error::Refused(refused) => refused.sourced_by(plan, path).into(),
+        other => other,
+    })
+}
+
 /// A refusal met mid-run, once [`validate`] has passed and the disk has
-/// moved. [`apply`] attaches the origin the plan records for the key.
+/// moved; [`acting_on`] attributes it.
 fn refuse(path: &Utf8Path, refusal: Refusal) -> Error {
     Refused::one(path.to_owned(), refusal, Origin::Caller).into()
 }

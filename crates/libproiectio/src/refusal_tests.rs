@@ -191,19 +191,28 @@ fn messages_name_each_path_own_source_after_its_detail() {
 }
 
 #[test]
-fn sourced_by_takes_each_origin_from_the_plan() {
+fn sourced_by_takes_the_keys_origin_or_else_the_acted_on_keys() {
+    let mapping = Origin::Mapping {
+        path: "/maps/deploy.toml".into(),
+    };
     let plan = crate::Plan {
         owner: "own".to_owned(),
-        origins: BTreeMap::from([(path("a"), Origin::Files)]),
+        origins: BTreeMap::from([(path("a"), Origin::Files), (path("d/f"), mapping.clone())]),
         external_targets: Default::default(),
         actions: BTreeMap::new(),
     };
     let refused = Refused::aggregate([
         (path("a"), Refusal::Drift, Origin::Caller),
-        (path("b"), Refusal::Drift, Origin::Caller),
+        (path("d"), Refusal::Drift, Origin::Caller),
     ])
     .expect("refusals")
-    .sourced_by(&plan);
+    .sourced_by(&plan, Utf8Path::new("d/f"));
+    // `a` is a planned key with its own origin; `d` is not planned, so it
+    // takes the origin of the key that was being acted on.
     assert_eq!(refused.paths()[Utf8Path::new("a")].origin, Origin::Files);
-    assert_eq!(refused.paths()[Utf8Path::new("b")].origin, Origin::Caller);
+    assert_eq!(refused.paths()[Utf8Path::new("d")].origin, mapping);
+
+    let unplanned = Refused::one(path("d"), Refusal::Foreign, Origin::Caller)
+        .sourced_by(&plan, Utf8Path::new("elsewhere"));
+    assert_eq!(unplanned.paths()[Utf8Path::new("d")].origin, Origin::Caller);
 }

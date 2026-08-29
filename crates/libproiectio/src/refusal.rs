@@ -210,8 +210,9 @@ pub struct Refused {
 pub struct RefusedPath {
     /// Why the key is refused.
     pub refusal: Refusal,
-    /// Which source named the key: the one the plan records for it, or
-    /// [`Origin::Caller`] where the caller named it directly.
+    /// Which source named the key: the one the plan records for it — or,
+    /// for an ancestor refused while acting on a planned key, for that key
+    /// — and [`Origin::Caller`] where the caller named it directly.
     pub origin: Origin,
 }
 
@@ -242,10 +243,16 @@ impl Refused {
     }
 
     /// The same refusal with each key's origin taken from `plan`, for one
-    /// built where only the key was known.
-    pub fn sourced_by(mut self, plan: &crate::Plan) -> Refused {
+    /// built where only the key was known: the origin the plan records for
+    /// the key, or for `acting_on` — the planned key being acted on when
+    /// the refusal was met — where the plan records none for the key.
+    pub fn sourced_by(mut self, plan: &crate::Plan, acting_on: &Utf8Path) -> Refused {
         for (path, refused) in &mut self.paths {
-            refused.origin = plan.origin_of(path);
+            refused.origin = plan
+                .origins
+                .get(path)
+                .cloned()
+                .unwrap_or_else(|| plan.origin_of(acting_on));
         }
         self
     }

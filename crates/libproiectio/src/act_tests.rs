@@ -2184,6 +2184,41 @@ fn a_skipped_link_whose_pivot_was_swapped_refuses() {
     }
 }
 
+// An ancestor the walk finds changed is refused under its own key, which no
+// source names; the refusal is attributed to the planned key being acted on.
+#[test]
+fn a_refused_ancestor_is_attributed_to_the_planned_key_beneath_it() {
+    let mapping = Origin::Mapping {
+        path: "/maps/deploy.toml".into(),
+    };
+    let (dest, state) = fixtures();
+    let desired = Tree::new().file("dir/file", "one").entries();
+    let (manifest, plan) = plan_from(&dest, &state, "own", &desired, mapping.clone());
+    assert!(matches!(
+        plan.actions[Utf8Path::new("dir/file")],
+        Action::Write { .. }
+    ));
+    // Between planning and applying, `dir` appears as a file nobody
+    // recorded.
+    Tree::new().file("dir", "squatter").write_under(dest.root());
+
+    let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the ancestor is foreign");
+
+    assert_eq!(
+        error.to_string(),
+        "refusing to touch foreign paths (not written by this projection): \
+         dir (from mapping /maps/deploy.toml)"
+    );
+    match error {
+        Error::Refused(refused) => assert_eq!(
+            sourced_of(&refused),
+            BTreeMap::from([("dir".into(), (Refusal::Foreign, mapping))])
+        ),
+        other => panic!("expected Foreign, got {other:?}"),
+    }
+    assert_tree(dest.root(), &Tree::new().file("dir", "squatter"));
+}
+
 // An apply-time refusal names the source the plan records for its key,
 // whether the plan writes the link or only skips it: in both pivot-swap
 // scenarios above the mapping is the file that named `rc`, so the message
