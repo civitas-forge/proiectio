@@ -44,14 +44,8 @@ use crate::{
 /// the destination, when it lies inside it
 /// ([`Projection::state_prefix`](crate::Projection::state_prefix)); the
 /// subtree under it — the prefix itself included — is the projection's own
-/// state and never classifies. A path the state directory sits *beneath* is
-/// not that subtree and classifies like any other: `.local`, with the state
-/// directory at `.local/state/proiectio`, holds whatever else the
-/// destination puts under it. Deciding still refuses a *desired* path
-/// there — writing one would stand where the state directory stands — so
-/// the two readings of the prefix are separate tests, `in_state` here and
-/// `overlaps_state` at the admission points, each documented where it
-/// lives.
+/// state and never classifies (`in_state`, whose rustdoc says why this reading is
+/// narrower than the one admission applies).
 ///
 /// A recorded [`Block`](EntryKind::Block) classifies over its *region*, not
 /// its container: [`observe`](crate::observe) locates the region with the
@@ -113,11 +107,9 @@ pub fn classify(
 ///
 /// Every desired-tree key is admitted through the containment gateway
 /// ([`contained_join`](crate::contained_join)'s lexical contract): a key the
-/// gateway refuses, or one claiming a location that overlaps the
-/// state-directory subtree named by `state_prefix`
-/// ([`Projection::state_prefix`](crate::Projection::state_prefix)) — a
-/// location inside that subtree, or one the state directory sits beneath —
-/// gets [`Refusal::Containment`] keyed by the key verbatim. Admitted keys
+/// gateway refuses, or one overlapping the state subtree named by
+/// `state_prefix` (`overlaps_state`), gets [`Refusal::Containment`] keyed
+/// by the key verbatim. Admitted keys
 /// land in the plan lexically normalized (`a/../b` plans as `b`), so one
 /// on-disk location has one action — and a tree claiming one location
 /// twice (two keys normalizing to the same path, or one desired path lying
@@ -220,10 +212,8 @@ pub fn classify(
 ///
 /// Recorded paths absent from the desired tree:
 ///
-/// - overlapping the state directory — [`Refusal::Containment`], the same
-///   verdict admission gives a desired key or a removal request there:
-///   unlinking a recorded `.local` the manifest lives under would leave the
-///   next run reading no manifest;
+/// - overlapping the state subtree (`overlaps_state`) —
+///   [`Refusal::Containment`];
 /// - held by other owners too — [`Release`](Action::Release): the departing
 ///   owner drops from the entry, the disk is untouched;
 /// - held by this owner alone — an orphan: [`Remove`](Action::Remove)
@@ -322,11 +312,9 @@ pub fn decide(
 ///
 /// Each requested path is admitted through the same containment gateway
 /// every desired key passes ([`contained_join`](crate::contained_join)'s
-/// lexical contract): a path the gateway refuses, or one naming a location
-/// that overlaps the state-directory subtree named by `state_prefix` —
-/// inside it, or with the state directory beneath it — gets
-/// [`Refusal::Containment`] keyed by the request verbatim and is judged no
-/// further. Admitted requests are matched against the manifest lexically
+/// lexical contract): a path the gateway refuses, or one overlapping the
+/// state subtree (`overlaps_state`), gets [`Refusal::Containment`] keyed
+/// by the request verbatim and is judged no further. Admitted requests are matched against the manifest lexically
 /// normalized, so `a/../b` names the recorded `b`.
 ///
 /// A requested path the manifest does not record under `owner` yields no
@@ -337,12 +325,8 @@ pub fn decide(
 /// a location it does not own is not a location it declines to remove.
 ///
 /// The refusals are every other plan's, produced by the same code paths:
-/// a recorded path the state directory sits beneath refuses as
-/// [`Refusal::Containment`] under either scope, so naming it and sweeping
-/// past it reach the same verdict — a recorded path *inside* the state
-/// subtree is a different question, invisible to planning under
-/// [`RemovalScope::Everything`] because the subtree never classifies, and
-/// refused here only where a request names it; a recorded path drifted on
+/// a recorded path overlapping the state subtree refuses as
+/// [`Refusal::Containment`] (`overlaps_state`); a recorded path drifted on
 /// disk refuses as [`Refusal::Drift`] carrying
 /// it, unless `options.drift` is [`DriftPolicy::Overwrite`]; a path other
 /// owners hold too plans a [`Release`](Action::Release) and leaves the disk
@@ -588,62 +572,36 @@ fn plan_actions(
     }
 }
 
-/// Whether acting at `path` would touch the projection's own state subtree:
-/// the question asked of every location a plan would write or remove, and
-/// answered symmetrically — the two overlap when either path is a prefix of
-/// the other.
+/// Whether acting at `path` would touch the projection's own state subtree —
+/// the question every location a plan would write or remove is admitted
+/// through. Symmetric: the two overlap when either is a prefix of the other,
+/// because both directions are the same collision. `.proiectio/manifest.json`
+/// sits inside the state directory; `.local`, where the state directory is
+/// `.local/state/proiectio`, is a location it sits beneath, and writing a
+/// file there would stand where that directory stands while removing it would
+/// unlink the node the manifest hangs from.
 ///
-/// Both directions name the same collision. `.proiectio/manifest.json` is a
-/// location inside the state directory; `.local`, where the state directory
-/// is `.local/state/proiectio`, is a location the state directory sits
-/// beneath — a desired file there would stand where that directory stands,
-/// and a removal there would unlink the node the manifest hangs from,
-/// leaving the next run reading no manifest and calling every projected file
-/// [`Foreign`](PathState::Foreign). Refusing only the first would let the
-/// second reach apply, whose walk meets a file-versus-directory mismatch and
-/// refuses it as [`Refusal::Foreign`] or [`Refusal::Drift`] — a later stage
-/// naming a different rule, against a plan a dry run had already reported as
-/// what apply would execute (`docs/implementation.lex` section 1).
-///
-/// Three places ask it: [`plan_actions`]'s desired-key admission and its
-/// orphan loop, and [`decide_removal`]'s requested-path admission. All three
-/// refuse as [`Refusal::Containment`] — keyed by the key or request verbatim
-/// where a caller supplied one, by the recorded path where the manifest did
-/// — so a location the state directory sits beneath gets that same verdict
-/// however a plan arrives at it.
-///
-/// The orphan loop asks it only of paths [`in_state`] did not already
-/// exclude, which is what the two tests are for: a location *inside* the
-/// state subtree is invisible to planning entirely (`docs/design.lex`
-/// section 2), so a sweep passes over one the manifest records rather than
-/// refusing it, and only a request naming it meets a refusal.
+/// Refusing only the inside case would let the other reach apply and refuse
+/// there under a different rule, against a plan a dry run had already reported
+/// as what apply would execute (`docs/implementation.lex` section 1). All
+/// callers refuse as [`Refusal::Containment`], keyed by whatever named the
+/// path.
 fn overlaps_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
     state_prefix.is_some_and(|prefix| path.starts_with(prefix) || prefix.starts_with(path))
 }
 
-/// Whether `path` is itself in the projection's own state subtree — the
-/// prefix included — which is the exclusion [`classify`]'s two loops and the
-/// orphan loop of [`plan_actions`] apply.
+/// Whether `path` is itself in the projection's own state subtree, the prefix
+/// included — the exclusion [`classify`] applies, and deliberately not
+/// `overlaps_state`.
 ///
-/// Asymmetric on purpose, and deliberately not [`overlaps_state`]: a path
-/// the state directory sits *beneath* is not the projection's state. Where
-/// the state directory is `.local/state/proiectio`, `.local` holds whatever
-/// else the destination puts under it, so an observed `.local` is an
-/// unrecorded directory and classifies [`Foreign`](PathState::Foreign) like
-/// any other, and a `.local` some earlier configuration recorded as a file
-/// classifies as whatever the disk now holds. Excluding either would hide
-/// that node from [`status`](crate::status), which reports what the
-/// destination holds and has no business hiding a path the projection is
-/// merely refusing to touch — while the state subtree proper is excluded
-/// because the projection's own files are not the projection's output.
-///
-/// The orphan loop shares this test with [`classify`] rather than the
-/// admission one because it reads the classification `classify` produced for
-/// every recorded path it judges: a path one skips and the other judges has
-/// no entry to read. Classifying such a path is not planning an action on
-/// it, though — the loop asks [`overlaps_state`] before it acts, and refuses
-/// there, so a recorded `.local` is reported by status and removed by
-/// nothing.
+/// Asymmetric on purpose: a path the state directory sits *beneath* is not
+/// the projection's state. Where the state directory is
+/// `.local/state/proiectio`, `.local` holds whatever else the destination
+/// puts under it, so it classifies like any other unrecorded path. Excluding
+/// it would hide it from [`status`](crate::status), which reports what the
+/// destination holds and has no business hiding a path the projection merely
+/// refuses to touch — while the state subtree proper is excluded because the
+/// projection's own files are not its output.
 fn in_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
     state_prefix.is_some_and(|prefix| path.starts_with(prefix))
 }
