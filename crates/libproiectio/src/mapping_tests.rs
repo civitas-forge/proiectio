@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
@@ -8,7 +8,7 @@ use super::*;
 // inline `contents` never read the filesystem, so the file need not exist.
 const MAPPING: &str = "/maps/deploy.toml";
 
-fn parse_at(text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
+fn parse_at(text: &str) -> Result<Desired> {
     parse(Utf8Path::new(MAPPING), text)
 }
 
@@ -23,6 +23,27 @@ fn link(target: &str) -> Entry {
     Entry::Symlink {
         target: target.to_owned(),
     }
+}
+
+fn from_mapping(path: &Utf8Path, entries: &[(&str, Entry)]) -> Desired {
+    Desired::from_source(
+        tree(entries),
+        Origin::Mapping {
+            path: path.to_owned(),
+        },
+    )
+}
+
+fn mapped(entries: &[(&str, Entry)]) -> Desired {
+    from_mapping(Utf8Path::new(MAPPING), entries)
+}
+
+fn sourced(entries: &[(&str, Entry, Origin)]) -> Desired {
+    let mut desired = Desired::new();
+    for (key, entry, origin) in entries {
+        desired.insert(Utf8PathBuf::from(*key), entry.clone(), origin.clone());
+    }
+    desired
 }
 
 fn tree(entries: &[(&str, Entry)]) -> BTreeMap<Utf8PathBuf, Entry> {
@@ -46,7 +67,7 @@ fn a_minimal_mapping_parses_to_its_tree() {
 
     assert_eq!(
         parse_at(text).unwrap(),
-        tree(&[
+        mapped(&[
             ("config/settings.toml", file("listen\n", false)),
             ("current", link("releases/1.2.3")),
         ])
@@ -55,7 +76,7 @@ fn a_minimal_mapping_parses_to_its_tree() {
 
 #[test]
 fn a_mapping_without_tables_projects_nothing() {
-    assert_eq!(parse_at("version = 1").unwrap(), BTreeMap::new());
+    assert_eq!(parse_at("version = 1").unwrap(), Desired::new());
 }
 
 #[test]
@@ -66,7 +87,7 @@ fn keys_are_lexically_normalized() {
         contents = "x"
     "#;
 
-    assert_eq!(parse_at(text).unwrap(), tree(&[("b", file("x", false))]));
+    assert_eq!(parse_at(text).unwrap(), mapped(&[("b", file("x", false))]));
 }
 
 #[test]
@@ -82,8 +103,8 @@ fn keys_stay_slash_separated_on_every_host() {
 
     let keys: Vec<String> = parse_at(text)
         .unwrap()
-        .keys()
-        .map(|key| key.as_str().to_owned())
+        .iter()
+        .map(|(key, _)| key.as_str().to_owned())
         .collect();
     assert_eq!(keys, ["a/c/d"]);
 }
@@ -101,7 +122,7 @@ fn inline_contents_default_to_non_executable_and_the_override_wins() {
 
     assert_eq!(
         parse_at(text).unwrap(),
-        tree(&[("plain", file("a", false)), ("tool", file("b", true))])
+        mapped(&[("plain", file("a", false)), ("tool", file("b", true))])
     );
 }
 
@@ -119,7 +140,7 @@ fn link_targets_are_carried_verbatim_absolute_included() {
 
     assert_eq!(
         parse_at(text).unwrap(),
-        tree(&[
+        mapped(&[
             ("toolchain", link("/opt/toolchains/rust-1.80")),
             ("escape", link("../outside")),
         ])
@@ -231,7 +252,7 @@ fn escaping_keys_are_refused_together_each_named_verbatim() {
         source = "./v.tar"
     "#;
 
-    let want: BTreeSet<Utf8PathBuf> = [
+    let want: BTreeMap<Utf8PathBuf, Origin> = [
         "/etc/passwd",
         "../sibling",
         "a//b",
@@ -239,18 +260,28 @@ fn escaping_keys_are_refused_together_each_named_verbatim() {
         "../../outside/",
     ]
     .into_iter()
-    .map(Utf8PathBuf::from)
+    .map(|key| {
+        (
+            Utf8PathBuf::from(key),
+            Origin::Mapping {
+                path: MAPPING.into(),
+            },
+        )
+    })
     .collect();
     let error = parse_at(text).unwrap_err();
     assert!(matches!(
         &error,
-        Error::Containment { paths, origin }
-            if *paths == want && *origin == Origin::Mapping { path: MAPPING.into() }
+        Error::Containment { paths } if *paths == want
     ));
-    assert!(
-        error.to_string().starts_with(
-            "refusing paths that violate containment (from mapping /maps/deploy.toml)"
-        ),
+    let named = want
+        .keys()
+        .map(|key| format!("{key} (from mapping {MAPPING})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert_eq!(
+        error.to_string(),
+        format!("refusing paths that violate containment: {named}"),
         "the refusal names the file to edit: {error}"
     );
 }
@@ -329,12 +360,20 @@ fn archive_members_expand_under_their_prefix_as_ordinary_entries() {
         .file("assets/plugins.zip", zip_named("hello.lua", "print()\n"))
         .materialize();
 
+    let plugins = Origin::Archive {
+        path: fixture.path("assets/plugins.zip"),
+        via: Some(fixture.path("deploy.toml")),
+    };
+    let vendor = Origin::Archive {
+        path: fixture.path("assets/vendor.tar.gz"),
+        via: Some(fixture.path("deploy.toml")),
+    };
     assert_eq!(
         load_mapping(&fixture.path("deploy.toml")).unwrap(),
-        tree(&[
-            ("plugins/hello.lua", file("print()\n", false)),
-            ("vendor/bin/run", file("#!/bin/sh\n", true)),
-            ("vendor/lib/tool.so", file("so\n", false)),
+        sourced(&[
+            ("plugins/hello.lua", file("print()\n", false), plugins),
+            ("vendor/bin/run", file("#!/bin/sh\n", true), vendor.clone()),
+            ("vendor/lib/tool.so", file("so\n", false), vendor),
         ])
     );
 }
@@ -357,8 +396,14 @@ fn an_archive_member_climbing_out_of_its_prefix_is_refused_by_name() {
 
     assert!(matches!(
         load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
-        Error::Containment { paths, .. }
-            if paths == BTreeSet::from([Utf8PathBuf::from("../escape")])
+        Error::Containment { paths }
+            if paths == BTreeMap::from([(
+                Utf8PathBuf::from("../escape"),
+                Origin::Archive {
+                    path: fixture.path("assets/vendor.zip"),
+                    via: Some(fixture.path("deploy.toml")),
+                },
+            )])
     ));
 }
 
@@ -383,14 +428,16 @@ fn a_refused_member_names_its_archive_and_the_mapping_that_named_it() {
     let error = load_mapping(&fixture.path("deploy.toml")).unwrap_err();
 
     match &error {
-        Error::Containment { paths, origin } => {
-            assert_eq!(*paths, BTreeSet::from([Utf8PathBuf::from("../escape")]));
+        Error::Containment { paths } => {
             assert_eq!(
-                *origin,
-                Origin::Archive {
-                    path: fixture.path("assets/second.zip"),
-                    via: Some(fixture.path("deploy.toml")),
-                }
+                *paths,
+                BTreeMap::from([(
+                    Utf8PathBuf::from("../escape"),
+                    Origin::Archive {
+                        path: fixture.path("assets/second.zip"),
+                        via: Some(fixture.path("deploy.toml")),
+                    },
+                )])
             );
         }
         other => panic!("expected Containment, got {other:?}"),
@@ -398,8 +445,8 @@ fn a_refused_member_names_its_archive_and_the_mapping_that_named_it() {
     assert_eq!(
         error.to_string(),
         format!(
-            "refusing paths that violate containment (from archive {}, named by mapping {}): \
-             ../escape",
+            "refusing paths that violate containment: \
+             ../escape (from archive {}, named by mapping {})",
             fixture.path("assets/second.zip"),
             fixture.path("deploy.toml"),
         )
@@ -521,15 +568,30 @@ fn the_cli_tour_example_parses_to_its_tree_archive_included() {
 
     // The archive's members are ordinary entries beside the mapping's own,
     // keyed under the table's prefix with the wrapper directory stripped.
+    let mapping = Origin::Mapping {
+        path: fixture.path("deploy.toml"),
+    };
+    let vendor_origin = Origin::Archive {
+        path: fixture.path("assets/vendor.tar.gz"),
+        via: Some(fixture.path("deploy.toml")),
+    };
     assert_eq!(
         load_mapping(&fixture.path("deploy.toml")).unwrap(),
-        tree(&[
-            ("config/settings.toml", file("listen = \":8080\"\n", false)),
-            ("bin/tool", file(tool, true)),
-            ("current", link("releases/1.2.3")),
-            ("toolchain", link("/opt/toolchains/rust-1.80")),
-            ("vendor/bin/vendor", file("#!/bin/sh\n", true)),
-            ("vendor/lib/libv.so", file("elf\n", false)),
+        sourced(&[
+            (
+                "config/settings.toml",
+                file("listen = \":8080\"\n", false),
+                mapping.clone(),
+            ),
+            ("bin/tool", file(tool, true), mapping.clone()),
+            ("current", link("releases/1.2.3"), mapping.clone()),
+            ("toolchain", link("/opt/toolchains/rust-1.80"), mapping),
+            (
+                "vendor/bin/vendor",
+                file("#!/bin/sh\n", true),
+                vendor_origin.clone(),
+            ),
+            ("vendor/lib/libv.so", file("elf\n", false), vendor_origin),
         ])
     );
 }
@@ -554,10 +616,13 @@ fn relative_sources_resolve_against_the_mapping_files_directory() {
 
     assert_eq!(
         load_mapping(&fixture.path("nested/deploy.toml")).unwrap(),
-        tree(&[
-            ("beside", file("beside", false)),
-            ("above", file("above", false)),
-        ])
+        from_mapping(
+            &fixture.path("nested/deploy.toml"),
+            &[
+                ("beside", file("beside", false)),
+                ("above", file("above", false)),
+            ],
+        )
     );
 }
 
@@ -574,7 +639,10 @@ fn an_absolute_source_is_read_as_given() {
 
     assert_eq!(
         load_mapping(&mapping.path("deploy.toml")).unwrap(),
-        tree(&[("x", file("anywhere the invoker can read", false))])
+        from_mapping(
+            &mapping.path("deploy.toml"),
+            &[("x", file("anywhere the invoker can read", false))],
+        )
     );
 }
 
@@ -599,11 +667,14 @@ fn source_metadata_is_copied_and_the_override_wins() {
 
     assert_eq!(
         load_mapping(&fixture.path("deploy.toml")).unwrap(),
-        tree(&[
-            ("copied", file("#!/bin/sh\n", true)),
-            ("cleared", file("#!/bin/sh\n", false)),
-            ("raised", file("data", true)),
-        ])
+        from_mapping(
+            &fixture.path("deploy.toml"),
+            &[
+                ("copied", file("#!/bin/sh\n", true)),
+                ("cleared", file("#!/bin/sh\n", false)),
+                ("raised", file("data", true)),
+            ],
+        )
     );
 }
 

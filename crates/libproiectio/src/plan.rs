@@ -59,9 +59,9 @@ pub struct Plan {
     /// The owner the plan was computed for; applied entries are recorded
     /// under this name in the manifest.
     pub owner: String,
-    /// Where the desired tree came from, named by every refusal this plan
-    /// produces. A removal carries [`Origin::Caller`](crate::Origin::Caller).
-    pub origin: Origin,
+    /// Where each path came from, for the paths a source named. Absent means
+    /// [`Origin::Caller`](crate::Origin::Caller).
+    pub origins: BTreeMap<Utf8PathBuf, Origin>,
     /// Whether the caller permitted external symlink targets when this plan
     /// was decided; apply re-grades each target against this.
     pub external_targets: ExternalTargetPolicy,

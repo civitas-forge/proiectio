@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::{BTreeSet, VecDeque};
 use std::convert::Infallible;
 
@@ -11,8 +12,7 @@ pub fn contained_join(dest: &Utf8Path, rel: &Utf8Path) -> Result<Utf8PathBuf> {
     match contained_normalize(rel) {
         Some(normalized) => Ok(dest.join(normalized)),
         None => Err(Error::Containment {
-            paths: BTreeSet::from([rel.to_owned()]),
-            origin: Origin::Caller,
+            paths: BTreeMap::from([(rel.to_owned(), Origin::Caller)]),
         }),
     }
 }

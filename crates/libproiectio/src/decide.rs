@@ -6,8 +6,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use crate::block;
 use crate::containment::{Hop, contained_normalize, contained_target_chain, is_pathname};
 use crate::{
-    Action, BlockFault, DriftPolicy, Entry, EntryKind, Error, ExternalTargetPolicy, MAX_WALK_DEPTH,
-    Manifest, ManifestEntry, NodeSignature, Observation, Observations, Origin, PathState,
+    Action, BlockFault, Desired, DriftPolicy, Entry, EntryKind, Error, ExternalTargetPolicy,
+    MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations, PathState,
     Placement, Plan, PlanOptions, Refusal, Result, Status, sha256_hex,
 };
 
@@ -53,8 +53,7 @@ pub(crate) fn classify(
 /// filesystem access.
 pub(crate) fn decide(
     owner: &str,
-    desired: &BTreeMap<Utf8PathBuf, Entry>,
-    origin: Origin,
+    desired: &Desired,
     manifest: &Manifest,
     observations: &Observations,
     state_prefix: Option<&Utf8Path>,
@@ -77,7 +76,7 @@ pub(crate) fn decide(
     }
     Ok(Plan {
         owner: owner.to_owned(),
-        origin,
+        origins: desired.origins(),
         external_targets: options.external_targets,
         actions,
     })
@@ -130,7 +129,7 @@ pub(crate) fn decide_removal(
     };
     let mut actions = plan_actions(
         owner,
-        &BTreeMap::new(),
+        &Desired::new(),
         manifest,
         observations,
         state_prefix,
@@ -140,7 +139,7 @@ pub(crate) fn decide_removal(
     actions.extend(refused);
     Plan {
         owner: owner.to_owned(),
-        origin: Origin::Caller,
+        origins: BTreeMap::new(),
         external_targets: options.external_targets,
         actions,
     }
@@ -176,7 +175,7 @@ impl Judged {
 /// narrowing which of the owner's recorded paths it judges.
 fn plan_actions(
     owner: &str,
-    desired: &BTreeMap<Utf8PathBuf, Entry>,
+    desired: &Desired,
     manifest: &Manifest,
     observations: &Observations,
     state_prefix: Option<&Utf8Path>,
@@ -189,7 +188,7 @@ fn plan_actions(
     // `named` is every location the desired tree names, refused or not.
     let mut claims: BTreeMap<Utf8PathBuf, BTreeMap<&Utf8PathBuf, &Entry>> = BTreeMap::new();
     let mut named: BTreeSet<Utf8PathBuf> = BTreeSet::new();
-    for (key, entry) in desired {
+    for (key, entry) in desired.iter() {
         let Some(normalized) = contained_normalize(key) else {
             actions.insert(key.clone(), refuse(Refusal::Containment));
             continue;

@@ -8,7 +8,7 @@ use std::rc::Rc;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
-use crate::{Entry, Error, Origin, Result};
+use crate::{Desired, Entry, Error, Origin, Result};
 
 /// How many bytes one load may expand archives to, summed over every member
 /// it keeps and, on a tar, over every byte the parser consumes.
@@ -75,8 +75,14 @@ pub(crate) const ARCHIVE_EXTENSIONS: &str = ".tar, .tar.gz, .tgz, .tar.zst, .zip
 /// # Panics
 ///
 /// Panics if `source` is relative.
-pub fn load_archive(source: &Utf8Path, strip: u32) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
-    expand(source, strip, Utf8Path::new(""), None, &new_budget())
+pub fn load_archive(source: &Utf8Path, strip: u32) -> Result<Desired> {
+    Ok(Desired::from_source(
+        expand(source, strip, Utf8Path::new(""), None, &new_budget())?,
+        Origin::Archive {
+            path: source.to_owned(),
+            via: None,
+        },
+    ))
 }
 
 /// The byte budget one load spends, shared by every archive expanded into a
@@ -141,12 +147,16 @@ pub(crate) fn expand(
         ArchiveFormat::Zip => expansion.read_zip(reader)?,
     }
     if !expansion.refused.is_empty() {
+        let origin = Origin::Archive {
+            path: source.to_owned(),
+            via: via.map(Utf8Path::to_owned),
+        };
         return Err(Error::Containment {
-            paths: expansion.refused,
-            origin: Origin::Archive {
-                path: source.to_owned(),
-                via: via.map(Utf8Path::to_owned),
-            },
+            paths: expansion
+                .refused
+                .into_iter()
+                .map(|path| (path, origin.clone()))
+                .collect(),
         });
     }
     Ok(expansion.tree)

@@ -9,6 +9,13 @@ fn paths(names: &[&str]) -> BTreeSet<Utf8PathBuf> {
     names.iter().map(Utf8PathBuf::from).collect()
 }
 
+fn sourced(names: &[&str], origin: Origin) -> BTreeMap<Utf8PathBuf, Origin> {
+    names
+        .iter()
+        .map(|name| (Utf8PathBuf::from(name), origin.clone()))
+        .collect()
+}
+
 fn every_variant() -> Vec<Error> {
     vec![
         Error::Drift {
@@ -18,8 +25,7 @@ fn every_variant() -> Vec<Error> {
             paths: paths(&["notes.txt"]),
         },
         Error::Containment {
-            paths: paths(&["../escape", "/etc/passwd"]),
-            origin: Origin::Caller,
+            paths: sourced(&["../escape", "/etc/passwd"], Origin::Caller),
         },
         Error::OwnerConflict {
             conflicts: BTreeMap::from([(
@@ -28,16 +34,16 @@ fn every_variant() -> Vec<Error> {
             )]),
         },
         Error::ExternalTarget {
-            links: BTreeMap::from([(Utf8PathBuf::from("toolchain"), "/opt/rust".to_owned())]),
-            origin: Origin::Caller,
+            links: BTreeMap::from([(
+                Utf8PathBuf::from("toolchain"),
+                ("/opt/rust".to_owned(), Origin::Caller),
+            )]),
         },
         Error::InvalidTarget {
-            links: BTreeMap::from([(Utf8PathBuf::from("rc"), String::new())]),
-            origin: Origin::Caller,
+            links: BTreeMap::from([(Utf8PathBuf::from("rc"), (String::new(), Origin::Caller))]),
         },
         Error::TreeConflict {
-            paths: paths(&["a", "a/b"]),
-            origin: Origin::Caller,
+            paths: sourced(&["a", "a/b"], Origin::Caller),
         },
         Error::Block {
             blocks: BTreeMap::from([(
@@ -181,8 +187,10 @@ fn refusal_messages_name_the_offending_paths() {
     );
 
     let external = Error::ExternalTarget {
-        links: BTreeMap::from([(Utf8PathBuf::from("toolchain"), "/opt/rust".to_owned())]),
-        origin: Origin::Caller,
+        links: BTreeMap::from([(
+            Utf8PathBuf::from("toolchain"),
+            ("/opt/rust".to_owned(), Origin::Caller),
+        )]),
     };
     assert_eq!(
         external.to_string(),
@@ -192,10 +200,12 @@ fn refusal_messages_name_the_offending_paths() {
     // Quoted, because these are the targets a bare rendering would hide.
     let invalid = Error::InvalidTarget {
         links: BTreeMap::from([
-            (Utf8PathBuf::from("rc"), String::new()),
-            (Utf8PathBuf::from("zed"), "a\0b".to_owned()),
+            (Utf8PathBuf::from("rc"), (String::new(), Origin::Caller)),
+            (
+                Utf8PathBuf::from("zed"),
+                ("a\0b".to_owned(), Origin::Caller),
+            ),
         ]),
-        origin: Origin::Caller,
     };
     assert_eq!(
         invalid.to_string(),
@@ -217,12 +227,78 @@ fn refusal_messages_name_the_offending_paths() {
     );
 
     let tree_conflict = Error::TreeConflict {
-        paths: paths(&["a", "a/b"]),
-        origin: Origin::Caller,
+        paths: sourced(&["a", "a/b"], Origin::Caller),
     };
     assert_eq!(
         tree_conflict.to_string(),
         "refusing desired paths that claim overlapping locations: a, a/b"
+    );
+}
+
+#[test]
+fn refusal_messages_name_each_path_own_source() {
+    let mapping = Origin::Mapping {
+        path: "/etc/harness/skills.toml".into(),
+    };
+    let tree = Origin::Tree {
+        path: "/srv/skeleton".into(),
+    };
+
+    let containment = Error::Containment {
+        paths: BTreeMap::from([
+            (Utf8PathBuf::from("../escape"), mapping.clone()),
+            (Utf8PathBuf::from("/etc/passwd"), Origin::Caller),
+        ]),
+    };
+    assert_eq!(
+        containment.to_string(),
+        "refusing paths that violate containment: \
+         /etc/passwd, ../escape (from mapping /etc/harness/skills.toml)"
+    );
+
+    let tree_conflict = Error::TreeConflict {
+        paths: BTreeMap::from([
+            (Utf8PathBuf::from("a"), tree.clone()),
+            (Utf8PathBuf::from("a/b"), Origin::Caller),
+        ]),
+    };
+    assert_eq!(
+        tree_conflict.to_string(),
+        "refusing desired paths that claim overlapping locations: \
+         a (from tree /srv/skeleton), a/b"
+    );
+
+    let external = Error::ExternalTarget {
+        links: BTreeMap::from([
+            (
+                Utf8PathBuf::from("rc"),
+                ("/etc/rc".to_owned(), Origin::Caller),
+            ),
+            (
+                Utf8PathBuf::from("toolchain"),
+                ("/opt/rust".to_owned(), mapping),
+            ),
+        ]),
+    };
+    assert_eq!(
+        external.to_string(),
+        "refusing symlinks with targets outside the destination: rc -> /etc/rc, \
+         toolchain -> /opt/rust (from mapping /etc/harness/skills.toml)"
+    );
+
+    let invalid = Error::InvalidTarget {
+        links: BTreeMap::from([
+            (Utf8PathBuf::from("rc"), (String::new(), tree)),
+            (
+                Utf8PathBuf::from("zed"),
+                ("a\0b".to_owned(), Origin::Caller),
+            ),
+        ]),
+    };
+    assert_eq!(
+        invalid.to_string(),
+        "refusing symlinks whose targets are not paths: \
+         rc -> \"\" (from tree /srv/skeleton), zed -> \"a\\0b\""
     );
 }
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::{Desired, Origin};
 
 // The owner every test plans for unless it says otherwise.
 const OWNER: &str = "site";
@@ -93,11 +94,13 @@ fn edited_region(body: &str, occurrences: usize) -> Observation {
     }
 }
 
-fn tree(entries: &[(&str, &Entry)]) -> BTreeMap<Utf8PathBuf, Entry> {
-    entries
-        .iter()
-        .map(|(path, entry)| (Utf8PathBuf::from(*path), (*entry).clone()))
-        .collect()
+fn tree(entries: &[(&str, &Entry)]) -> Desired {
+    Desired::from_caller(
+        entries
+            .iter()
+            .map(|(path, entry)| (Utf8PathBuf::from(*path), (*entry).clone()))
+            .collect(),
+    )
 }
 
 fn manifest_of(entries: &[(&str, ManifestEntry)]) -> Manifest {
@@ -122,7 +125,7 @@ fn observed(paths: &[(&str, Observation)]) -> Observations {
 // [`decide`] for [`OWNER`] with no in-dest state prefix, under `policy`
 // and the default (refusing) external-target policy.
 fn plan(
-    desired: &BTreeMap<Utf8PathBuf, Entry>,
+    desired: &Desired,
     manifest: &Manifest,
     observations: &Observations,
     policy: DriftPolicy,
@@ -140,21 +143,12 @@ fn plan(
 
 // [`plan`] under options the test chooses whole.
 fn plan_with(
-    desired: &BTreeMap<Utf8PathBuf, Entry>,
+    desired: &Desired,
     manifest: &Manifest,
     observations: &Observations,
     options: PlanOptions,
 ) -> Plan {
-    decide(
-        OWNER,
-        desired,
-        Origin::Caller,
-        manifest,
-        observations,
-        None,
-        options,
-    )
-    .expect("decide")
+    decide(OWNER, desired, manifest, observations, None, options).expect("decide")
 }
 
 fn action<'plan>(plan: &'plan Plan, path: &str) -> &'plan Action {
@@ -1038,7 +1032,6 @@ fn a_desired_path_entering_the_state_dir_refuses_containment() {
             (".proiectio", &entry),
             ("elsewhere/.proiectio", &entry),
         ]),
-        Origin::Caller,
         &Manifest::new(),
         &observed(&[]),
         Some(Utf8Path::new(".proiectio")),
@@ -1086,7 +1079,6 @@ fn a_desired_path_the_state_dir_sits_beneath_refuses_containment() {
             (".local/state/proiectio/manifest.json", &entry),
             (".local/share/rc", &entry),
         ]),
-        Origin::Caller,
         &Manifest::new(),
         &observed(&[]),
         Some(Utf8Path::new(NESTED_STATE)),
@@ -1154,7 +1146,6 @@ fn a_recorded_path_the_state_dir_sits_beneath_is_refused_not_removed() {
     let plan = decide(
         OWNER,
         &tree(&[("d/../.local", &entry)]),
-        Origin::Caller,
         &manifest,
         &observations,
         Some(Utf8Path::new(NESTED_STATE)),
@@ -1227,7 +1218,6 @@ fn the_state_subtree_is_invisible_to_planning() {
     let plan = decide(
         OWNER,
         &tree(&[("a.txt", &entry)]),
-        Origin::Caller,
         &manifest,
         &observations,
         Some(Utf8Path::new(".proiectio")),
@@ -2752,4 +2742,34 @@ fn plans_are_byte_identical_for_identical_inputs() {
     let first = serde_json::to_vec(&first).expect("serialize");
     let second = serde_json::to_vec(&second).expect("serialize");
     assert_eq!(first, second);
+}
+
+#[test]
+fn a_plan_carries_the_source_of_each_path_a_source_named() {
+    let entry = file("x\n", false);
+    let mapping = Origin::Mapping {
+        path: "/maps/deploy.toml".into(),
+    };
+    let walked = Origin::Tree {
+        path: "/srv/skeleton".into(),
+    };
+    let mut desired = Desired::new();
+    desired.insert("a.txt".into(), entry.clone(), Origin::Caller);
+    desired.insert("b.txt".into(), entry.clone(), mapping.clone());
+    desired.insert("c.txt".into(), entry, walked.clone());
+
+    let plan = plan(
+        &desired,
+        &Manifest::new(),
+        &observed(&[]),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        plan.origins,
+        BTreeMap::from([
+            (Utf8PathBuf::from("b.txt"), mapping),
+            (Utf8PathBuf::from("c.txt"), walked),
+        ])
+    );
 }

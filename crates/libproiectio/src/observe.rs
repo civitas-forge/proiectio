@@ -170,7 +170,7 @@ pub(crate) struct DesiredRegion {
 
 pub(crate) type BlockMarkers = BTreeMap<Utf8PathBuf, (String, crate::Placement)>;
 
-pub(crate) fn block_markers(desired: &BTreeMap<Utf8PathBuf, crate::Entry>) -> BlockMarkers {
+pub(crate) fn block_markers(desired: &crate::Desired) -> BlockMarkers {
     desired
         .iter()
         .filter_map(|(path, entry)| match entry {
