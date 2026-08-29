@@ -116,7 +116,7 @@ pub enum Error {
         /// The foreign paths, relative to the destination.
         paths: BTreeSet<Utf8PathBuf>,
     },
-    /// Refusal: desired-tree paths the projection may not write — paths
+    /// Refusal: locations the projection may not act at — paths
     /// refused by [`contained_join`](crate::contained_join) (absolute,
     /// climbing out via `..`, empty or `.` components, backslashes, and
     /// component shapes Windows resolves specially — its rustdoc is the
@@ -132,7 +132,9 @@ pub enum Error {
     /// [`Drift`](Error::Drift), not this.
     #[error("refusing paths that violate containment: {}", join(paths))]
     Containment {
-        /// The offending paths as given by the desired tree.
+        /// The offending locations, spelled as whatever named them: a
+        /// desired key or a removal request verbatim, or — where the plan
+        /// refused a location its own manifest records — the recorded path.
         paths: BTreeSet<Utf8PathBuf>,
     },
     /// Refusal: the desired entry for a path — bytes, kind, or executable

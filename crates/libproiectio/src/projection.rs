@@ -76,10 +76,10 @@ impl Projection {
     /// The state directory's path relative to the target, when it lies
     /// inside the target — the in-dest state prefix that
     /// [`decide`](crate::decide) and [`classify`](crate::classify) take:
-    /// the subtree under it never classifies, and a desired path claiming a
-    /// location that overlaps it — inside the subtree, or with the state
-    /// directory beneath the location — refuses as
-    /// [`Containment`](crate::Error::Containment).
+    /// the subtree under it never classifies, and a location that overlaps
+    /// it — inside the subtree, or with the state directory beneath the
+    /// location — refuses as [`Containment`](crate::Error::Containment)
+    /// wherever a plan would write or remove there.
     ///
     /// `None` when the state directory lives outside the target — nothing
     /// in the destination is the projection's own state, so nothing is

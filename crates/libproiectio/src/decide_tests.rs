@@ -1121,7 +1121,7 @@ fn a_recorded_path_the_state_dir_sits_beneath_is_refused_not_removed() {
     );
     assert_eq!(action(&sweep, ".local"), &refused);
 
-    let named = decide_removal(
+    let by_name = decide_removal(
         OWNER,
         RemovalScope::Paths(&requested(&[".local"])),
         &manifest,
@@ -1129,7 +1129,7 @@ fn a_recorded_path_the_state_dir_sits_beneath_is_refused_not_removed() {
         Some(Utf8Path::new(NESTED_STATE)),
         PlanOptions::default(),
     );
-    assert_eq!(action(&named, ".local"), &refused);
+    assert_eq!(action(&by_name, ".local"), &refused);
 
     // And a desired entry at that same recorded location keeps the refusal
     // admission gave it, keyed once: an orphan removal planned over it would
@@ -1186,9 +1186,17 @@ fn a_path_the_state_dir_sits_beneath_still_classifies() {
 #[test]
 fn the_state_subtree_is_invisible_to_planning() {
     // The state directory's own files observe as on-disk nodes, but never
-    // classify — so they are not foreign and get no action.
+    // classify — so they are not foreign and get no action. A manifest entry
+    // inside the subtree is passed over the same way, sweep included: the
+    // subtree is out of planning's sight, not a location planning refuses.
+    // That is where the two readings of the prefix part company — a request
+    // naming such a path is refused at admission, since a caller naming a
+    // location is asking about that location.
     let entry = file("alpha\n", false);
-    let manifest = manifest_of(&[("a.txt", recorded(&entry, &[OWNER]))]);
+    let manifest = manifest_of(&[
+        ("a.txt", recorded(&entry, &[OWNER])),
+        (".proiectio/old", recorded(&entry, &[OWNER])),
+    ]);
     let observations = observed(&[
         ("a.txt", on_disk(&entry)),
         (".proiectio", Observation::Directory),
@@ -1210,6 +1218,36 @@ fn the_state_subtree_is_invisible_to_planning() {
     assert_eq!(
         plan.actions.keys().collect::<Vec<_>>(),
         [Utf8Path::new("a.txt")]
+    );
+
+    let sweep = decide_removal(
+        OWNER,
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        Some(Utf8Path::new(".proiectio")),
+        PlanOptions::default(),
+    );
+
+    assert_eq!(
+        sweep.actions.keys().collect::<Vec<_>>(),
+        [Utf8Path::new("a.txt")]
+    );
+
+    let by_name = decide_removal(
+        OWNER,
+        RemovalScope::Paths(&requested(&[".proiectio/old"])),
+        &manifest,
+        &observations,
+        Some(Utf8Path::new(".proiectio")),
+        PlanOptions::default(),
+    );
+
+    assert_eq!(
+        action(&by_name, ".proiectio/old"),
+        &Action::Refuse {
+            refusal: Refusal::Containment,
+        }
     );
 }
 

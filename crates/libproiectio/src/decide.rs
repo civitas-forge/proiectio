@@ -337,10 +337,13 @@ pub fn decide(
 /// a location it does not own is not a location it declines to remove.
 ///
 /// The refusals are every other plan's, produced by the same code paths:
-/// a recorded path overlapping the state directory refuses as
+/// a recorded path the state directory sits beneath refuses as
 /// [`Refusal::Containment`] under either scope, so naming it and sweeping
-/// past it reach the same verdict; a recorded path drifted on disk refuses
-/// as [`Refusal::Drift`] carrying
+/// past it reach the same verdict — a recorded path *inside* the state
+/// subtree is a different question, invisible to planning under
+/// [`RemovalScope::Everything`] because the subtree never classifies, and
+/// refused here only where a request names it; a recorded path drifted on
+/// disk refuses as [`Refusal::Drift`] carrying
 /// it, unless `options.drift` is [`DriftPolicy::Overwrite`]; a path other
 /// owners hold too plans a [`Release`](Action::Release) and leaves the disk
 /// alone; a path already gone plans a [`Remove`](Action::Remove) expecting
@@ -531,14 +534,14 @@ fn plan_actions(
         {
             continue;
         }
-        // A recorded location the state directory sits beneath: classified,
-        // so status still reports it, but never acted on. Removing it is
-        // removing the node the state directory hangs from — unlinking a
-        // recorded `.local` that the manifest lives under leaves the next
-        // run reading no manifest and calling every projected file foreign.
-        // It refuses as the same [`Refusal::Containment`] a request naming
-        // it gets, so the verdict does not turn on how the removal was
-        // scoped.
+        // A recorded location the state directory sits beneath — `in_state`
+        // above has already taken the ones inside it. Classified, so status
+        // still reports it, but never acted on: removing it is removing the
+        // node the state directory hangs from, and unlinking a recorded
+        // `.local` the manifest lives under leaves the next run reading no
+        // manifest and calling every projected file foreign. It refuses as
+        // the same Containment a request naming it gets, so the verdict does
+        // not turn on how the removal was scoped.
         if overlaps_state(path, state_prefix) {
             actions.insert(path.clone(), refuse(Refusal::Containment));
             continue;
@@ -602,11 +605,18 @@ fn plan_actions(
 /// naming a different rule, against a plan a dry run had already reported as
 /// what apply would execute (`docs/implementation.lex` section 1).
 ///
-/// Three places ask it, so one location gets one verdict however a plan
-/// arrives at it: [`plan_actions`]'s desired-key admission and its orphan
-/// loop, and [`decide_removal`]'s requested-path admission. All three refuse
-/// as [`Refusal::Containment`] — keyed by the key or request verbatim where
-/// a caller supplied one, by the recorded path where the manifest did.
+/// Three places ask it: [`plan_actions`]'s desired-key admission and its
+/// orphan loop, and [`decide_removal`]'s requested-path admission. All three
+/// refuse as [`Refusal::Containment`] — keyed by the key or request verbatim
+/// where a caller supplied one, by the recorded path where the manifest did
+/// — so a location the state directory sits beneath gets that same verdict
+/// however a plan arrives at it.
+///
+/// The orphan loop asks it only of paths [`in_state`] did not already
+/// exclude, which is what the two tests are for: a location *inside* the
+/// state subtree is invisible to planning entirely (`docs/design.lex`
+/// section 2), so a sweep passes over one the manifest records rather than
+/// refusing it, and only a request naming it meets a refusal.
 fn overlaps_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
     state_prefix.is_some_and(|prefix| path.starts_with(prefix) || prefix.starts_with(path))
 }
