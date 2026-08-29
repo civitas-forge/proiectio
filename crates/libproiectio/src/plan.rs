@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
-use crate::{Entry, EntryKind, Origin};
+use crate::{Entry, EntryKind, Origin, Refusal};
 
 /// What planning does when a recorded path's state on disk differs from the
 /// recorded entry — bytes, kind, or executable bit.
@@ -69,6 +69,23 @@ pub struct Plan {
     pub actions: BTreeMap<Utf8PathBuf, Action>,
 }
 
+impl Plan {
+    /// Which source named `path`; [`Origin::Caller`] for one no source did.
+    pub fn origin_of(&self, path: &Utf8Path) -> Origin {
+        self.origins.get(path).cloned().unwrap_or_default()
+    }
+
+    /// Every refused path with its reason and the source that named it.
+    pub fn refusals(&self) -> impl Iterator<Item = (&Utf8Path, &Refusal, Origin)> {
+        self.actions
+            .iter()
+            .filter_map(|(path, action)| match action {
+                Action::Refuse { refusal } => Some((path.as_path(), refusal, self.origin_of(path))),
+                _ => None,
+            })
+    }
+}
+
 /// One planned per-path action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Action {
@@ -107,7 +124,7 @@ pub enum Action {
     /// alone: other owners still hold it. Apply re-checks nothing on disk.
     Release,
     /// The path is named and left untouched. Applying a plan containing
-    /// refusals fails with the matching variant of [`Error`](crate::Error).
+    /// refusals fails with [`Error::Refused`](crate::Error::Refused).
     Refuse {
         /// Why the path is refused.
         refusal: Refusal,
@@ -126,53 +143,6 @@ pub struct NodeSignature {
     pub hash: String,
     /// The executable bit; always `false` for symlinks and blocks.
     pub executable: bool,
-}
-
-/// Why a planned path is refused rather than acted on. Each value
-/// corresponds to one refusal variant of [`Error`](crate::Error).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum Refusal {
-    /// The recorded path was edited on disk. Lifted per-plan by
-    /// [`DriftPolicy::Overwrite`].
-    Drift,
-    /// The path is on disk but absent from the manifest.
-    Foreign,
-    /// The desired entry — bytes, kind, or executable bit — differs from what
-    /// another owner holds at this path.
-    OwnerConflict {
-        /// The other owners holding the path.
-        owners: BTreeSet<String>,
-    },
-    /// The desired tree claims one on-disk location more than once: this key
-    /// shares a normalized path with another desired key, or its path lies
-    /// beneath another desired path. Both sides of a conflict are refused.
-    TreeConflict {
-        /// The other desired keys, verbatim, claiming the same or an
-        /// overlapping location.
-        paths: BTreeSet<Utf8PathBuf>,
-    },
-    /// The projection may not write the path — it is refused by
-    /// [`contained_join`](crate::contained_join), it lies beneath a symlink
-    /// that outlives the plan, or it overlaps the state directory.
-    Containment,
-    /// A desired symlink whose target, resolved from the link's parent
-    /// through the destination's own links, lands outside the destination.
-    /// Lifted per-plan by [`ExternalTargetPolicy::Allow`].
-    ExternalTarget {
-        /// The offending target string, verbatim.
-        target: String,
-    },
-    /// A desired symlink whose target is not a pathname on any host: the
-    /// empty string, or one carrying a NUL byte.
-    InvalidTarget {
-        /// The offending target string, verbatim.
-        target: String,
-    },
-    /// A [`Block`](EntryKind::Block) entry the projection declines.
-    Block {
-        /// Which rule the entry or its container broke.
-        fault: crate::BlockFault,
-    },
 }
 
 #[cfg(test)]

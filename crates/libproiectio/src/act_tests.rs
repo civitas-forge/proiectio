@@ -6,10 +6,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs_utf8::Dir;
 
 use super::*;
-use crate::test_support::{Fixture, Tree, assert_tree};
+use crate::test_support::{Fixture, Tree, assert_tree, paths_of, refusals_of, sourced_of};
 use crate::{
     BlockMarkers, Desired, DriftPolicy, EntryKind, ExternalTargetPolicy, Origin, PlanOptions,
-    RemovalScope, block_markers, decide, decide_removal, observe,
+    RefusalKind, RemovalScope, block_markers, decide, decide_removal, observe,
 };
 
 // Opens a capability handle at a fixture root. Ambient authority is the
@@ -261,7 +261,9 @@ fn drift_in_the_plan_to_apply_gap_is_refused_with_the_path() {
     let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the re-check refuses");
 
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["m.txt".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["m.txt".into()]))
+        }
         other => panic!("expected Drift, got {other:?}"),
     }
     // The edit survives, and nothing else was written or littered.
@@ -283,11 +285,8 @@ fn an_unrecorded_symlinked_ancestor_is_refused() {
             .expect_err("no write through an unowned link");
 
         match error {
-            Error::Containment { paths, .. } => {
-                assert_eq!(
-                    paths.into_keys().collect::<BTreeSet<_>>(),
-                    BTreeSet::from(["logs/x.txt".into()])
-                )
+            Error::Refused(refused) if refused.kind == RefusalKind::Containment => {
+                assert_eq!(paths_of(&refused), BTreeSet::from(["logs/x.txt".into()]))
             }
             other => panic!("expected Containment for target {target}, got {other:?}"),
         }
@@ -426,7 +425,7 @@ fn removing_a_drifted_file_refuses_with_the_path() {
 
     assert!(matches!(
         &error,
-        Error::Drift { paths } if paths == &BTreeSet::from([Utf8PathBuf::from("a/b.txt")])
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift && paths_of(refused) == BTreeSet::from([Utf8PathBuf::from("a/b.txt")])
     ));
     // The refusal is up front: nothing was removed, the manifest is whole.
     assert_tree(dest.root(), &edited);
@@ -524,7 +523,7 @@ fn a_subset_removal_refuses_a_path_that_violates_containment() {
 
     assert!(matches!(
         &error,
-        Error::Containment { paths, .. } if paths.keys().cloned().collect::<BTreeSet<_>>() == BTreeSet::from([Utf8PathBuf::from("../escape")])
+        Error::Refused(refused) if refused.kind == RefusalKind::Containment && paths_of(refused) == BTreeSet::from([Utf8PathBuf::from("../escape")])
     ));
     // Up front, so the admitted path in the same request is untouched.
     assert_tree(dest.root(), &tree);
@@ -569,7 +568,9 @@ fn removing_a_missing_path_refuses_if_a_node_appeared_in_the_gap() {
     let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the appearance refuses");
 
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["gone.txt".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["gone.txt".into()]))
+        }
         other => panic!("expected Drift, got {other:?}"),
     }
     assert_tree(dest.root(), &Tree::new().file("gone.txt", "reappeared"));
@@ -654,7 +655,9 @@ fn a_plan_carrying_refusals_fails_up_front_and_writes_nothing() {
     .expect_err("the drifted path refuses the whole plan");
 
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["keep.txt".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["keep.txt".into()]))
+        }
         other => panic!("expected Drift, got {other:?}"),
     }
     // Up front means up front: the writable half of the plan did not run.
@@ -675,10 +678,58 @@ fn a_write_target_appearing_in_the_gap_refuses_as_foreign() {
     let error = apply_at(&dest, &state, &manifest, &plan).expect_err("never overwrite it");
 
     match error {
-        Error::Foreign { paths } => assert_eq!(paths, BTreeSet::from(["a.txt".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Foreign => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["a.txt".into()]))
+        }
         other => panic!("expected Foreign, got {other:?}"),
     }
     assert_tree(dest.root(), &Tree::new().file("a.txt", "squatter"));
+}
+
+// A plan carrying two kinds of refusal reports one, chosen by
+// `RefusalKind::PRECEDENCE`; `refusal_tests` pins the whole order, this pins
+// that applying goes through it. The drifted path sorts first, so map order
+// is not what decides.
+#[test]
+fn applying_a_plan_with_two_refusal_kinds_reports_the_one_precedence_ranks_first() {
+    let (dest, state) = fixtures();
+    let plan = Plan {
+        owner: "own".to_owned(),
+        origins: BTreeMap::from([("z/escape".into(), Origin::Files)]),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([
+            (
+                "a.txt".into(),
+                Action::Refuse {
+                    refusal: Refusal::Drift,
+                },
+            ),
+            (
+                "z/escape".into(),
+                Action::Refuse {
+                    refusal: Refusal::Containment,
+                },
+            ),
+        ]),
+    };
+
+    let error =
+        apply_at(&dest, &state, &Manifest::new(), &plan).expect_err("refusals apply nothing");
+
+    assert_eq!(
+        error.to_string(),
+        "refusing paths that violate containment: z/escape (from individually named files)"
+    );
+    match error {
+        Error::Refused(refused) => {
+            assert_eq!(refused.kind, RefusalKind::Containment);
+            assert_eq!(
+                sourced_of(&refused),
+                BTreeMap::from([("z/escape".into(), (Refusal::Containment, Origin::Files))])
+            );
+        }
+        other => panic!("expected Containment, got {other:?}"),
+    }
 }
 
 #[test]
@@ -707,9 +758,9 @@ fn a_hand_built_plan_with_unnormalized_keys_refuses_containment() {
         apply_at(&dest, &state, &Manifest::new(), &plan).expect_err("the gateway re-judges keys");
 
     match error {
-        Error::Containment { paths, .. } => {
+        Error::Refused(refused) if refused.kind == RefusalKind::Containment => {
             assert_eq!(
-                paths.into_keys().collect::<BTreeSet<_>>(),
+                paths_of(&refused),
                 BTreeSet::from(["../escape".into(), "a/../b".into()])
             )
         }
@@ -878,7 +929,9 @@ fn a_forged_remove_of_an_unrecorded_path_refuses_foreign() {
         .expect_err("a matching signature is not authorization");
 
     match error {
-        Error::Foreign { paths } => assert_eq!(paths, BTreeSet::from(["victim.txt".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Foreign => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["victim.txt".into()]))
+        }
         other => panic!("expected Foreign, got {other:?}"),
     }
     assert_tree(dest.root(), &Tree::new().file("victim.txt", "precious"));
@@ -910,7 +963,9 @@ fn a_forged_skip_of_an_unrecorded_path_refuses_instead_of_adopting() {
         .expect_err("adoption would put a foreign file on the removal path");
 
     match error {
-        Error::Foreign { paths } => assert_eq!(paths, BTreeSet::from(["theirs.txt".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Foreign => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["theirs.txt".into()]))
+        }
         other => panic!("expected Foreign, got {other:?}"),
     }
     // Never adopted: the state dir records nothing.
@@ -973,9 +1028,14 @@ fn a_hand_built_plan_replacing_a_region_with_a_whole_file_fails_up_front() {
         .expect_err("a path never changes between a whole node and a block");
 
     match error {
-        Error::Block { blocks } => assert_eq!(
-            blocks,
-            BTreeMap::from([("conf".into(), BlockFault::KindChange)])
+        Error::Refused(refused) => assert_eq!(
+            refusals_of(&refused),
+            BTreeMap::from([(
+                "conf".into(),
+                Refusal::Block {
+                    fault: BlockFault::KindChange
+                }
+            )])
         ),
         other => panic!("expected Block, got {other:?}"),
     }
@@ -1020,11 +1080,8 @@ fn a_recorded_link_whose_matching_target_is_not_utf8_refuses_containment() {
         .expect_err("an ungradable target is never followed");
 
     match error {
-        Error::Containment { paths, .. } => {
-            assert_eq!(
-                paths.into_keys().collect::<BTreeSet<_>>(),
-                BTreeSet::from(["logs/x.txt".into()])
-            )
+        Error::Refused(refused) if refused.kind == RefusalKind::Containment => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["logs/x.txt".into()]))
         }
         other => panic!("expected Containment, got {other:?}"),
     }
@@ -1067,11 +1124,8 @@ fn a_file_write_the_walk_would_relocate_through_an_owned_link_refuses() {
         apply_at(&dest, &state, &manifest, &plan).expect_err("a file is never written off its key");
 
     match error {
-        Error::Containment { paths, .. } => {
-            assert_eq!(
-                paths.into_keys().collect::<BTreeSet<_>>(),
-                BTreeSet::from(["logs/x.txt".into()])
-            )
+        Error::Refused(refused) if refused.kind == RefusalKind::Containment => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["logs/x.txt".into()]))
         }
         other => panic!("expected Containment, got {other:?}"),
     }
@@ -1114,10 +1168,9 @@ fn a_block_whose_container_the_walk_relocates_refuses() {
         .expect_err("a region is never spliced off its key");
 
     match error {
-        Error::Containment { paths, .. } => assert_eq!(
-            paths.into_keys().collect::<BTreeSet<_>>(),
-            BTreeSet::from(["logs/rc".into()])
-        ),
+        Error::Refused(refused) if refused.kind == RefusalKind::Containment => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["logs/rc".into()]))
+        }
         other => panic!("expected Containment, got {other:?}"),
     }
     assert_tree(dest.root(), &linked);
@@ -1163,11 +1216,8 @@ fn a_link_released_and_reappearing_in_the_gap_does_not_relocate_the_write() {
         .expect_err("the write refuses rather than land under the link");
 
     match error {
-        Error::Containment { paths, .. } => {
-            assert_eq!(
-                paths.into_keys().collect::<BTreeSet<_>>(),
-                BTreeSet::from(["pivot/x.txt".into()])
-            )
+        Error::Refused(refused) if refused.kind == RefusalKind::Containment => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["pivot/x.txt".into()]))
         }
         other => panic!("expected Containment, got {other:?}"),
     }
@@ -1264,10 +1314,9 @@ fn a_link_the_walk_would_relocate_through_an_owned_link_refuses() {
         .expect_err("a link is never published off its key");
 
     match error {
-        Error::Containment { paths, .. } => assert_eq!(
-            paths.into_keys().collect::<BTreeSet<_>>(),
-            BTreeSet::from(["pivot/x".into()])
-        ),
+        Error::Refused(refused) if refused.kind == RefusalKind::Containment => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["pivot/x".into()]))
+        }
         other => panic!("expected Containment, got {other:?}"),
     }
     // `a` landed — `real/x` is nothing, so it points at `escape` inside the
@@ -1355,8 +1404,11 @@ fn deciding_cannot_aim_that_removal_because_the_path_observes_absent() {
         Some(&Action::Remove { expected: None })
     );
     match apply_at(&dest, &state, &loaded, &plan) {
-        Err(Error::Drift { paths }) => {
-            assert_eq!(paths, BTreeSet::from([Utf8PathBuf::from("logs/x.txt")]));
+        Err(Error::Refused(refused)) if refused.kind == RefusalKind::Drift => {
+            assert_eq!(
+                paths_of(&refused),
+                BTreeSet::from([Utf8PathBuf::from("logs/x.txt")])
+            );
         }
         other => panic!("expected Drift, got {other:?}"),
     }
@@ -1393,7 +1445,9 @@ fn a_recorded_symlink_ancestor_with_a_changed_target_refuses_drift() {
     let error = apply_at(&dest, &state, &manifest, &plan).expect_err("a swapped target is drift");
 
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["logs".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["logs".into()]))
+        }
         other => panic!("expected Drift, got {other:?}"),
     }
 }
@@ -1428,11 +1482,8 @@ fn a_recorded_symlink_ancestor_with_an_external_target_refuses_containment() {
         .expect_err("never write through an external target");
 
     match error {
-        Error::Containment { paths, .. } => {
-            assert_eq!(
-                paths.into_keys().collect::<BTreeSet<_>>(),
-                BTreeSet::from(["logs/x.txt".into()])
-            )
+        Error::Refused(refused) if refused.kind == RefusalKind::Containment => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["logs/x.txt".into()]))
         }
         other => panic!("expected Containment, got {other:?}"),
     }
@@ -1472,10 +1523,9 @@ fn an_owned_link_cycle_refuses_instead_of_looping() {
     let error = apply_at(&dest, &state, &manifest, &plan).expect_err("cycles refuse");
 
     match error {
-        Error::Containment { paths, .. } => assert_eq!(
-            paths.into_keys().collect::<BTreeSet<_>>(),
-            BTreeSet::from(["l1/x.txt".into()])
-        ),
+        Error::Refused(refused) if refused.kind == RefusalKind::Containment => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["l1/x.txt".into()]))
+        }
         other => panic!("expected Containment, got {other:?}"),
     }
 }
@@ -1543,9 +1593,17 @@ fn a_target_that_is_not_a_pathname_fails_up_front_and_writes_nothing() {
         .expect_err("an empty target is not a path");
 
     match error {
-        Error::InvalidTarget { links, .. } => assert_eq!(
-            links,
-            BTreeMap::from([(Utf8PathBuf::from("z-link"), (String::new(), Origin::Caller))])
+        Error::Refused(refused) => assert_eq!(
+            sourced_of(&refused),
+            BTreeMap::from([(
+                Utf8PathBuf::from("z-link"),
+                (
+                    Refusal::InvalidTarget {
+                        target: String::new()
+                    },
+                    Origin::Caller
+                )
+            )])
         ),
         other => panic!("expected InvalidTarget, got {other:?}"),
     }
@@ -1629,7 +1687,9 @@ fn a_link_edited_on_disk_refuses_as_drift_and_force_replaces_it() {
     let error = pipeline(&dest, &state, "own", &v2.entries(), DriftPolicy::Refuse)
         .expect_err("an edited target is a user edit like any other");
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["current".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["current".into()]))
+        }
         other => panic!("expected Drift, got {other:?}"),
     }
     assert_tree(
@@ -1653,16 +1713,26 @@ fn external_targets_refuse_without_the_policy_and_land_verbatim_with_it() {
         .expect_err("external targets are opt-in");
 
     match error {
-        Error::ExternalTarget { links } => assert_eq!(
-            links,
+        Error::Refused(refused) => assert_eq!(
+            sourced_of(&refused),
             BTreeMap::from([
                 (
                     Utf8PathBuf::from("absolute"),
-                    ("/etc/hosts".to_owned(), Origin::Caller),
+                    (
+                        Refusal::ExternalTarget {
+                            target: "/etc/hosts".to_owned()
+                        },
+                        Origin::Caller
+                    ),
                 ),
                 (
                     Utf8PathBuf::from("escape"),
-                    ("../outside".to_owned(), Origin::Caller),
+                    (
+                        Refusal::ExternalTarget {
+                            target: "../outside".to_owned()
+                        },
+                        Origin::Caller
+                    ),
                 ),
             ])
         ),
@@ -1716,9 +1786,9 @@ fn nothing_is_written_through_a_permitted_external_link() {
         .expect_err("no write through an external target");
 
     match error {
-        Error::TreeConflict { paths, .. } => {
+        Error::Refused(refused) if refused.kind == RefusalKind::TreeConflict => {
             assert_eq!(
-                paths.into_keys().collect::<BTreeSet<_>>(),
+                paths_of(&refused),
                 BTreeSet::from(["out".into(), "out/x.txt".into()])
             )
         }
@@ -1738,11 +1808,16 @@ fn a_target_escaping_through_a_pivot_link_refuses_without_the_permission() {
         .expect_err("a pointer through a pivot reaches /etc/passwd");
 
     match error {
-        Error::ExternalTarget { links, .. } => assert_eq!(
-            links,
+        Error::Refused(refused) => assert_eq!(
+            sourced_of(&refused),
             BTreeMap::from([(
                 Utf8PathBuf::from("evil"),
-                ("pivot/passwd".to_owned(), Origin::Caller)
+                (
+                    Refusal::ExternalTarget {
+                        target: "pivot/passwd".to_owned()
+                    },
+                    Origin::Caller
+                )
             )])
         ),
         other => panic!("expected ExternalTarget, got {other:?}"),
@@ -1817,11 +1892,16 @@ fn a_pivot_swapped_after_the_plan_refuses_instead_of_publishing_the_pointer() {
         .expect_err("the plan-time verdict no longer holds");
 
     match error {
-        Error::ExternalTarget { links, .. } => assert_eq!(
-            links,
+        Error::Refused(refused) => assert_eq!(
+            sourced_of(&refused),
             BTreeMap::from([(
                 Utf8PathBuf::from("rc"),
-                ("pivot/rc".to_owned(), Origin::Caller)
+                (
+                    Refusal::ExternalTarget {
+                        target: "pivot/rc".to_owned()
+                    },
+                    Origin::Caller
+                )
             )])
         ),
         other => panic!("expected ExternalTarget, got {other:?}"),
@@ -1847,11 +1927,16 @@ fn a_pointer_escaping_through_a_link_the_same_tree_projects_refuses() {
         .expect_err("the pair dereferences outside the destination");
 
     match error {
-        Error::ExternalTarget { links, .. } => assert_eq!(
-            links,
+        Error::Refused(refused) => assert_eq!(
+            sourced_of(&refused),
             BTreeMap::from([(
                 Utf8PathBuf::from("a"),
-                ("b/../escape".to_owned(), Origin::Caller)
+                (
+                    Refusal::ExternalTarget {
+                        target: "b/../escape".to_owned()
+                    },
+                    Origin::Caller
+                )
             )])
         ),
         other => panic!("expected ExternalTarget, got {other:?}"),
@@ -1963,7 +2048,10 @@ fn a_held_link_is_not_published_when_the_pivot_it_waits_for_refuses() {
     let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the pivot drifted");
 
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from([Utf8PathBuf::from("pivot")])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => assert_eq!(
+            paths_of(&refused),
+            BTreeSet::from([Utf8PathBuf::from("pivot")])
+        ),
         other => panic!("expected Drift, got {other:?}"),
     }
     assert_tree(dest.root(), &Tree::new().symlink("pivot", "/tmp"));
@@ -2034,7 +2122,10 @@ fn a_link_waiting_on_a_pivot_that_refuses_is_never_published() {
     let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the deepest pivot drifted");
 
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from([Utf8PathBuf::from("c/c")])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => assert_eq!(
+            paths_of(&refused),
+            BTreeSet::from([Utf8PathBuf::from("c/c")])
+        ),
         other => panic!("expected Drift, got {other:?}"),
     }
     // Neither link above it moved, so nothing points out of the destination.
@@ -2077,11 +2168,16 @@ fn a_skipped_link_whose_pivot_was_swapped_refuses() {
         .expect_err("the skipped link now resolves outside the destination");
 
     match error {
-        Error::ExternalTarget { links, .. } => assert_eq!(
-            links,
+        Error::Refused(refused) => assert_eq!(
+            sourced_of(&refused),
             BTreeMap::from([(
                 Utf8PathBuf::from("rc"),
-                ("pivot/x".to_owned(), Origin::Caller)
+                (
+                    Refusal::ExternalTarget {
+                        target: "pivot/x".to_owned()
+                    },
+                    Origin::Caller
+                )
             )])
         ),
         other => panic!("expected ExternalTarget, got {other:?}"),
@@ -2112,9 +2208,17 @@ fn a_refusal_names_the_plans_source_only_where_the_tree_chose_the_target() {
 
     let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the pointer escapes");
     match &error {
-        Error::ExternalTarget { links } => assert_eq!(
-            *links,
-            BTreeMap::from([(Utf8PathBuf::from("rc"), ("pivot/rc".to_owned(), mapping()),)])
+        Error::Refused(refused) => assert_eq!(
+            sourced_of(refused),
+            BTreeMap::from([(
+                Utf8PathBuf::from("rc"),
+                (
+                    Refusal::ExternalTarget {
+                        target: "pivot/rc".to_owned()
+                    },
+                    mapping()
+                ),
+            )])
         ),
         other => panic!("expected ExternalTarget, got {other:?}"),
     }
@@ -2145,11 +2249,16 @@ fn a_refusal_names_the_plans_source_only_where_the_tree_chose_the_target() {
 
     let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the skipped link escapes");
     match &error {
-        Error::ExternalTarget { links } => assert_eq!(
-            *links,
+        Error::Refused(refused) => assert_eq!(
+            sourced_of(refused),
             BTreeMap::from([(
                 Utf8PathBuf::from("rc"),
-                ("pivot/x".to_owned(), Origin::Caller),
+                (
+                    Refusal::ExternalTarget {
+                        target: "pivot/x".to_owned()
+                    },
+                    Origin::Caller
+                ),
             )])
         ),
         other => panic!("expected ExternalTarget, got {other:?}"),
@@ -2185,11 +2294,8 @@ fn a_path_beneath_another_owners_link_refuses_containment() {
         .expect_err("a projected path never resolves through a link");
 
     match error {
-        Error::Containment { paths, .. } => {
-            assert_eq!(
-                paths.into_keys().collect::<BTreeSet<_>>(),
-                BTreeSet::from(["logs/x.txt".into()])
-            )
+        Error::Refused(refused) if refused.kind == RefusalKind::Containment => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["logs/x.txt".into()]))
         }
         other => panic!("expected Containment, got {other:?}"),
     }
@@ -2365,7 +2471,9 @@ fn an_edit_outside_the_region_is_not_drift_and_an_edit_inside_it_is() {
     let error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
         .expect_err("inside the region is drift");
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["rc".into()]))
+        }
         other => panic!("expected Drift, got {other:?}"),
     }
 }
@@ -2389,7 +2497,9 @@ fn an_edit_past_the_regions_outer_edge_is_drift() {
         .expect_err("past the edge is inside the region");
 
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["rc".into()]))
+        }
         other => panic!("expected Drift, got {other:?}"),
     }
 }
@@ -2487,9 +2597,14 @@ fn a_migration_into_a_marker_the_author_already_wrote_refuses() {
         .expect_err("the author's side already carries the new marker");
 
     match error {
-        Error::Block { blocks } => assert_eq!(
-            blocks,
-            BTreeMap::from([("rc".into(), BlockFault::MarkerInAuthorText)])
+        Error::Refused(refused) => assert_eq!(
+            refusals_of(&refused),
+            BTreeMap::from([(
+                "rc".into(),
+                Refusal::Block {
+                    fault: BlockFault::MarkerInAuthorText
+                }
+            )])
         ),
         other => panic!("expected Block, got {other:?}"),
     }
@@ -2593,7 +2708,9 @@ fn an_ambiguous_container_is_not_adopted() {
     .expect_err("nothing says which occurrence bounds a region");
 
     match error {
-        Error::Foreign { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Foreign => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["rc".into()]))
+        }
         other => panic!("expected Foreign, got {other:?}"),
     }
     assert_eq!(container(&dest, "rc"), author);
@@ -2648,7 +2765,9 @@ fn a_duplicate_marker_in_the_gap_refuses_every_action_on_the_region() {
             apply_at(&dest, &state, &manifest, &plan).expect_err("the marker identifies no region");
 
         match error {
-            Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()]), "{name}"),
+            Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+                assert_eq!(paths_of(&refused), BTreeSet::from(["rc".into()]), "{name}")
+            }
             other => panic!("{name}: expected Drift, got {other:?}"),
         }
         // Both regions are where the gap left them, and the manifest still
@@ -2681,7 +2800,9 @@ fn a_recorded_region_back_in_the_gap_refuses_even_where_it_matches() {
         apply_at(&dest, &state, &manifest, &plan).expect_err("the region came back since the plan");
 
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["rc".into()]))
+        }
         other => panic!("expected Drift, got {other:?}"),
     }
     assert_eq!(container(&dest, "rc"), restored);
@@ -2704,7 +2825,9 @@ fn an_unrecorded_region_carrying_other_bytes_refuses_as_foreign() {
     .expect_err("the region is on disk and unrecorded");
 
     match error {
-        Error::Foreign { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Foreign => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["rc".into()]))
+        }
         other => panic!("expected Foreign, got {other:?}"),
     }
     assert_eq!(
@@ -2727,9 +2850,14 @@ fn a_block_never_creates_its_container_or_a_directory_for_one() {
     .expect_err("there is nothing to splice into");
 
     match error {
-        Error::Block { blocks } => assert_eq!(
-            blocks,
-            BTreeMap::from([("etc/rc".into(), BlockFault::ContainerMissing)])
+        Error::Refused(refused) => assert_eq!(
+            refusals_of(&refused),
+            BTreeMap::from([(
+                "etc/rc".into(),
+                Refusal::Block {
+                    fault: BlockFault::ContainerMissing
+                }
+            )])
         ),
         other => panic!("expected Block, got {other:?}"),
     }
@@ -2756,9 +2884,14 @@ fn appending_to_a_container_with_no_final_newline_refuses() {
     .expect_err("neither side's bytes get normalized");
 
     match error {
-        Error::Block { blocks } => assert_eq!(
-            blocks,
-            BTreeMap::from([("rc".into(), BlockFault::ContainerNotNewlineTerminated)])
+        Error::Refused(refused) => assert_eq!(
+            refusals_of(&refused),
+            BTreeMap::from([(
+                "rc".into(),
+                Refusal::Block {
+                    fault: BlockFault::ContainerNotNewlineTerminated
+                }
+            )])
         ),
         other => panic!("expected Block, got {other:?}"),
     }
@@ -2778,7 +2911,9 @@ fn a_symlink_at_the_container_path_is_foreign_unrecorded_and_drift_recorded() {
     let unrecorded = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
         .expect_err("a link is not a container");
     match unrecorded {
-        Error::Foreign { paths } => assert!(paths.contains(Utf8Path::new("rc"))),
+        Error::Refused(refused) if refused.kind == RefusalKind::Foreign => {
+            assert!(paths_of(&refused).contains(Utf8Path::new("rc")))
+        }
         other => panic!("expected Foreign, got {other:?}"),
     }
 
@@ -2797,7 +2932,9 @@ fn a_symlink_at_the_container_path_is_foreign_unrecorded_and_drift_recorded() {
     let recorded_error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Overwrite)
         .expect_err("a swapped container is drift");
     match recorded_error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["rc".into()]))
+        }
         other => panic!("expected Drift, got {other:?}"),
     }
     // Nothing was written through the link.
@@ -2817,7 +2954,9 @@ fn force_over_a_container_that_became_a_directory_still_refuses() {
         .expect_err("no signature expresses a directory");
 
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["rc".into()]))
+        }
         other => panic!("expected Drift, got {other:?}"),
     }
 }
@@ -2876,9 +3015,14 @@ fn a_deleted_region_is_spliced_back_and_a_deleted_container_refuses() {
     let error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
         .expect_err("a block never creates its container");
     match error {
-        Error::Block { blocks } => assert_eq!(
-            blocks,
-            BTreeMap::from([("rc".into(), BlockFault::ContainerMissing)])
+        Error::Refused(refused) => assert_eq!(
+            refusals_of(&refused),
+            BTreeMap::from([(
+                "rc".into(),
+                Refusal::Block {
+                    fault: BlockFault::ContainerMissing
+                }
+            )])
         ),
         other => panic!("expected Block, got {other:?}"),
     }
@@ -3027,10 +3171,12 @@ fn two_owners_share_a_region_only_while_agreeing_on_the_marker() {
     let error = pipeline(&dest, &state, "third", &renamed, DriftPolicy::Refuse)
         .expect_err("the owners must agree first");
     match error {
-        Error::OwnerConflict { conflicts } => {
+        Error::Refused(refused) => {
             assert_eq!(
-                conflicts[Utf8Path::new("rc")],
-                BTreeSet::from(["other".to_owned(), "own".to_owned()])
+                refusals_of(&refused)[Utf8Path::new("rc")],
+                Refusal::OwnerConflict {
+                    owners: BTreeSet::from(["other".to_owned(), "own".to_owned()])
+                }
             );
         }
         other => panic!("expected OwnerConflict, got {other:?}"),
@@ -3099,7 +3245,9 @@ fn a_second_marker_line_past_the_edge_refuses_and_strands_nothing() {
 
         for error in errors {
             match error {
-                Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+                Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+                    assert_eq!(paths_of(&refused), BTreeSet::from(["rc".into()]))
+                }
                 other => panic!("expected Drift, got {other:?}"),
             }
         }
@@ -3149,9 +3297,14 @@ fn a_hand_built_plan_expecting_another_marker_fails_up_front() {
         .expect_err("the expectation names a region the manifest does not record");
 
     match error {
-        Error::Block { blocks } => assert_eq!(
-            blocks,
-            BTreeMap::from([("rc".into(), BlockFault::SignatureNotRecorded)])
+        Error::Refused(refused) => assert_eq!(
+            refusals_of(&refused),
+            BTreeMap::from([(
+                "rc".into(),
+                Refusal::Block {
+                    fault: BlockFault::SignatureNotRecorded
+                }
+            )])
         ),
         other => panic!("expected Block, got {other:?}"),
     }
@@ -3199,7 +3352,9 @@ fn a_recorded_region_back_under_the_old_marker_refuses_rather_than_stranding_it(
     let error =
         apply_at(&dest, &state, &manifest, &plan).expect_err("the region changed under the plan");
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["rc".into()]))
+        }
         other => panic!("expected Drift, got {other:?}"),
     }
     assert_eq!(container(&dest, "rc"), restored);
@@ -3229,7 +3384,9 @@ fn drift_policy_overwrite_lifts_the_refusal_but_still_guards_the_gap() {
     fs::write(dest.path("m.txt"), "yet another edit").expect("edit in the gap");
     let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the gap re-check holds");
     match error {
-        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["m.txt".into()])),
+        Error::Refused(refused) if refused.kind == RefusalKind::Drift => {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["m.txt".into()]))
+        }
         other => panic!("expected Drift, got {other:?}"),
     }
 }

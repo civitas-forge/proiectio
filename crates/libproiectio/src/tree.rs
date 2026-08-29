@@ -8,7 +8,7 @@ use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
-use crate::{Desired, Entry, Error, MAX_WALK_DEPTH, Origin, Result};
+use crate::{Desired, Entry, Error, MAX_WALK_DEPTH, Origin, Refusal, Refused, Result};
 
 /// Walks `source` into a desired tree: every regular file becomes an
 /// [`Entry::File`] with its bytes and owner-executable bit, every symlink an
@@ -16,7 +16,7 @@ use crate::{Desired, Entry, Error, MAX_WALK_DEPTH, Origin, Result};
 /// `source`. Directories carry no entry of their own.
 ///
 /// Walked keys the containment gateway refuses are aggregated into one
-/// [`Error::Containment`]; a name or target that is not UTF-8, a node kind
+/// [`Refusal::Containment`]; a name or target that is not UTF-8, a node kind
 /// the projection never writes, and a tree nesting past [`MAX_WALK_DEPTH`]
 /// each fail the load.
 ///
@@ -42,13 +42,13 @@ pub fn load_tree(source: &Utf8Path) -> Result<Desired> {
         let origin = Origin::Tree {
             path: source.to_owned(),
         };
-        return Err(Error::Containment {
-            paths: walk
-                .refused
+        return Err(Refused::aggregate(
+            walk.refused
                 .into_iter()
-                .map(|path| (path, origin.clone()))
-                .collect(),
-        });
+                .map(|path| (path, Refusal::Containment, origin.clone())),
+        )
+        .expect("refused is not empty")
+        .into());
     }
     Ok(Desired::from_source(
         walk.tree,

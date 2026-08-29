@@ -22,7 +22,7 @@ use crate::observe::{Container, io_error, read_container, sha256_hex_of_reader};
 use crate::{
     Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error, ExternalTargetPolicy,
     MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature,
-    Origin, Placement, Plan, Refusal, Result, sha256_hex,
+    Origin, Placement, Plan, Refusal, Refused, Result, sha256_hex,
 };
 
 /// Loads the manifest from `state`'s [`MANIFEST_FILE_NAME`]; a state
@@ -99,58 +99,30 @@ pub(crate) fn apply(
 }
 
 /// The up-front whole-plan check behind [`apply`]'s "nothing is written"
-/// promise: aggregates every fault in `plan` into one error, by the fixed
-/// precedence the returns below spell.
+/// promise: every refusal in `plan` — the ones it carries and the ones a
+/// forged plan would slip past — reduced by [`Refused::aggregate`] to one
+/// error, with a too-deep destination reported only when nothing refused.
 fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
-    let source = |path: &Utf8Path| plan.origins.get(path).cloned().unwrap_or_default();
-    let mut drift = BTreeSet::new();
-    let mut foreign = BTreeSet::new();
-    let mut containment = BTreeMap::new();
-    let mut tree_conflict = BTreeMap::new();
-    let mut owner_conflicts = BTreeMap::new();
-    let mut external = BTreeMap::new();
-    let mut invalid = BTreeMap::new();
-    let mut blocks: BTreeMap<Utf8PathBuf, BlockFault> = BTreeMap::new();
+    let mut refused: Vec<(Utf8PathBuf, Refusal, Origin)> = plan
+        .refusals()
+        .map(|(path, refusal, origin)| (path.to_owned(), refusal.clone(), origin))
+        .collect();
     let mut too_deep = None;
     for (path, action) in &plan.actions {
-        if let Action::Refuse { refusal } = action {
-            match refusal {
-                Refusal::Drift => {
-                    drift.insert(path.clone());
-                }
-                Refusal::Foreign => {
-                    foreign.insert(path.clone());
-                }
-                Refusal::Containment => {
-                    containment.insert(path.clone(), source(path));
-                }
-                Refusal::TreeConflict { .. } => {
-                    tree_conflict.insert(path.clone(), source(path));
-                }
-                Refusal::OwnerConflict { owners } => {
-                    owner_conflicts.insert(path.clone(), owners.clone());
-                }
-                Refusal::ExternalTarget { target } => {
-                    external.insert(path.clone(), (target.clone(), source(path)));
-                }
-                Refusal::InvalidTarget { target } => {
-                    invalid.insert(path.clone(), (target.clone(), source(path)));
-                }
-                Refusal::Block { fault } => {
-                    blocks.insert(path.clone(), *fault);
-                }
-            }
+        let mut refuse =
+            |refusal: Refusal| refused.push((path.clone(), refusal, plan.origin_of(path)));
+        if matches!(action, Action::Refuse { .. }) {
             continue;
         }
         match contained_normalize(path) {
             Some(normalized) if normalized == *path => {}
             _ => {
-                containment.insert(path.clone(), source(path));
+                refuse(Refusal::Containment);
                 continue;
             }
         }
         if !matches!(action, Action::Write { .. }) && !manifest.entries.contains_key(path) {
-            foreign.insert(path.clone());
+            refuse(Refusal::Foreign);
             continue;
         }
         let written = match action {
@@ -159,7 +131,9 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         };
         if let Some(Entry::Symlink { target }) = written {
             if !is_pathname(target) {
-                invalid.insert(path.clone(), (target.clone(), source(path)));
+                refuse(Refusal::InvalidTarget {
+                    target: target.clone(),
+                });
                 continue;
             }
         }
@@ -172,25 +146,26 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         }
         let recorded_kind = manifest.entries.get(path).map(|recorded| &recorded.kind);
         let record_is_block = recorded_kind.is_some_and(EntryKind::is_block);
+        let mut block = |fault: BlockFault| refuse(Refusal::Block { fault });
         match action {
             Action::Write { entry } => {
                 if let Some(fault) = entry_block_fault(entry) {
-                    blocks.insert(path.clone(), fault);
+                    block(fault);
                 }
                 if manifest.entries.contains_key(path) && record_is_block != entry.kind().is_block()
                 {
-                    blocks.insert(path.clone(), BlockFault::KindChange);
+                    block(BlockFault::KindChange);
                 }
             }
             Action::Overwrite { entry, expected } => {
                 if let Some(fault) = entry_block_fault(entry) {
-                    blocks.insert(path.clone(), fault);
+                    block(fault);
                 }
                 if record_is_block != entry.kind().is_block() {
-                    blocks.insert(path.clone(), BlockFault::KindChange);
+                    block(BlockFault::KindChange);
                 }
                 if let Some(fault) = signature_block_fault(recorded_kind, &expected.kind) {
-                    blocks.insert(path.clone(), fault);
+                    block(fault);
                 }
             }
             Action::Skip { expected }
@@ -198,40 +173,15 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                 expected: Some(expected),
             } => {
                 if let Some(fault) = signature_block_fault(recorded_kind, &expected.kind) {
-                    blocks.insert(path.clone(), fault);
+                    block(fault);
                 }
             }
             Action::Remove { expected: None } | Action::Release => {}
             Action::Refuse { .. } => unreachable!("matched above"),
         }
     }
-    if !containment.is_empty() {
-        return Err(Error::Containment { paths: containment });
-    }
-    if !tree_conflict.is_empty() {
-        return Err(Error::TreeConflict {
-            paths: tree_conflict,
-        });
-    }
-    if !foreign.is_empty() {
-        return Err(Error::Foreign { paths: foreign });
-    }
-    if !drift.is_empty() {
-        return Err(Error::Drift { paths: drift });
-    }
-    if !owner_conflicts.is_empty() {
-        return Err(Error::OwnerConflict {
-            conflicts: owner_conflicts,
-        });
-    }
-    if !external.is_empty() {
-        return Err(Error::ExternalTarget { links: external });
-    }
-    if !invalid.is_empty() {
-        return Err(Error::InvalidTarget { links: invalid });
-    }
-    if !blocks.is_empty() {
-        return Err(Error::Block { blocks });
+    if let Some(refused) = Refused::aggregate(refused) {
+        return Err(refused.into());
     }
     if let Some(path) = too_deep {
         return Err(Error::DestinationTooDeep {
@@ -393,7 +343,7 @@ fn settle_links(
     while !pending.is_empty() {
         let before = pending.len();
         let mut held: Vec<(&Utf8PathBuf, &Action)> = Vec::new();
-        let mut escaping: BTreeMap<Utf8PathBuf, (String, Origin)> = BTreeMap::new();
+        let mut escaping = Vec::new();
         for (path, action) in pending {
             let (entry, fresh, outcome) = match action {
                 Action::Write { entry } => (entry, true, ApplyOutcome::Written),
@@ -413,19 +363,21 @@ fn settle_links(
                     let Entry::Symlink { target } = entry else {
                         unreachable!("only a symlink is ever held");
                     };
-                    escaping.insert(
+                    escaping.push((
                         path.clone(),
-                        (
-                            target.clone(),
-                            plan.origins.get(path).cloned().unwrap_or_default(),
-                        ),
-                    );
+                        Refusal::ExternalTarget {
+                            target: target.clone(),
+                        },
+                        plan.origin_of(path),
+                    ));
                     held.push((path, action));
                 }
             }
         }
         if held.len() == before {
-            return Err(Error::ExternalTarget { links: escaping });
+            return Err(Refused::aggregate(escaping)
+                .expect("a held link is an escaping one")
+                .into());
         }
         pending = held;
     }
@@ -467,9 +419,12 @@ fn regrade_recorded_link(
     if link_settles(dest, plan, &BTreeSet::new(), &resolved_parent, target)? {
         return Ok(());
     }
-    Err(Error::ExternalTarget {
-        links: BTreeMap::from([(path.to_owned(), (target.to_owned(), Origin::Caller))]),
-    })
+    Err(refuse(
+        path,
+        Refusal::ExternalTarget {
+            target: target.to_owned(),
+        },
+    ))
 }
 
 /// Executes one [`Action::Remove`], returning the *resolved* location it
@@ -550,9 +505,7 @@ fn write(
                 return Err(if manifest.entries.contains_key(path) {
                     drift(path)
                 } else {
-                    Error::Foreign {
-                        paths: BTreeSet::from([path.to_owned()]),
-                    }
+                    refuse(path, Refusal::Foreign)
                 });
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -647,9 +600,7 @@ fn read_block_container(
         Container::Other => Err(if manifest.entries.contains_key(path) {
             drift(path)
         } else {
-            Error::Foreign {
-                paths: BTreeSet::from([path.to_owned()]),
-            }
+            refuse(path, Refusal::Foreign)
         }),
     }
 }
@@ -699,9 +650,7 @@ fn write_block(
         if manifest.entries.contains_key(path) {
             drift(path)
         } else {
-            Error::Foreign {
-                paths: BTreeSet::from([path.to_owned()]),
-            }
+            refuse(path, Refusal::Foreign)
         }
     };
     if block::occurrence_count(&container.bytes, marker) > 1 {
@@ -832,9 +781,7 @@ fn remove_block(
 }
 
 fn block_refusal(path: &Utf8Path, fault: BlockFault) -> Error {
-    Error::Block {
-        blocks: BTreeMap::from([(path.to_owned(), fault)]),
-    }
+    refuse(path, Refusal::Block { fault })
 }
 
 /// Whether the symlink `target`, resolved from `parent` against the live
@@ -1003,7 +950,7 @@ fn check_expected(
 
 /// Compares the node at `leaf` (inside the verified `parent`) against
 /// `expected` — kind, hash, executable bit — with lstat semantics; any
-/// difference, absence included, is [`Error::Drift`] at `path`.
+/// difference, absence included, is [`Refusal::Drift`] at `path`.
 fn check_leaf(parent: &Dir, leaf: &str, path: &Utf8Path, expected: &NodeSignature) -> Result<()> {
     let meta = match parent.symlink_metadata(leaf) {
         Ok(meta) => meta,
@@ -1154,9 +1101,7 @@ fn verified_parent(
                 return Err(if manifest.entries.contains_key(&here) {
                     drift(&here)
                 } else {
-                    Error::Foreign {
-                        paths: BTreeSet::from([here]),
-                    }
+                    refuse(&here, Refusal::Foreign)
                 });
             }
         }
@@ -1175,7 +1120,7 @@ fn open_nofollow(dir: &Dir, name: &str) -> std::io::Result<Dir> {
 }
 
 /// Holds a write to its action key: `landing` is where [`verified_parent`]'s
-/// walk came out, and anywhere but `path` refuses as [`Error::Containment`].
+/// walk came out, and anywhere but `path` refuses as [`Refusal::Containment`].
 /// Removals are held to no key.
 fn at_action_key(path: &Utf8Path, landing: &Utf8Path) -> Result<()> {
     if landing == path {
@@ -1185,16 +1130,18 @@ fn at_action_key(path: &Utf8Path, landing: &Utf8Path) -> Result<()> {
     }
 }
 
+/// A refusal met mid-run, once [`validate`] has passed and the disk has
+/// moved: a verdict on what the disk holds, which no source named.
+fn refuse(path: &Utf8Path, refusal: Refusal) -> Error {
+    Refused::one(path.to_owned(), refusal, Origin::Caller).into()
+}
+
 fn drift(path: &Utf8Path) -> Error {
-    Error::Drift {
-        paths: BTreeSet::from([path.to_owned()]),
-    }
+    refuse(path, Refusal::Drift)
 }
 
 fn containment(path: &Utf8Path) -> Error {
-    Error::Containment {
-        paths: BTreeMap::from([(path.to_owned(), Origin::Caller)]),
-    }
+    refuse(path, Refusal::Containment)
 }
 
 #[cfg(test)]

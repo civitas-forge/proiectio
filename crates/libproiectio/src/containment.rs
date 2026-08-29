@@ -1,19 +1,16 @@
-use std::collections::BTreeMap;
 use std::collections::{BTreeSet, VecDeque};
 use std::convert::Infallible;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use crate::{Error, Origin, Result};
+use crate::{Origin, Refusal, Refused, Result};
 
 /// Normalizes `rel` lexically and joins it onto `dest`, refusing as
-/// [`Error::Containment`] any path that would land outside the destination.
+/// [`Refusal::Containment`] any path that would land outside the destination.
 pub fn contained_join(dest: &Utf8Path, rel: &Utf8Path) -> Result<Utf8PathBuf> {
     match contained_normalize(rel) {
         Some(normalized) => Ok(dest.join(normalized)),
-        None => Err(Error::Containment {
-            paths: BTreeMap::from([(rel.to_owned(), Origin::Caller)]),
-        }),
+        None => Err(Refused::one(rel.to_owned(), Refusal::Containment, Origin::Caller).into()),
     }
 }
 

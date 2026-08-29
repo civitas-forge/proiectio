@@ -5,10 +5,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs_utf8::Dir as Utf8Dir;
 
 use super::*;
-use crate::test_support::{Fixture, Tree, assert_tree};
+use crate::test_support::{Fixture, Tree, assert_tree, origins_of};
 use crate::{
-    Action, ApplyReport, Manifest, Origin, PlanOptions, Refusal, apply, block_markers, decide,
-    load_manifest, observe,
+    Action, ApplyReport, Manifest, Origin, PlanOptions, Refusal, RefusalKind, apply, block_markers,
+    decide, load_manifest, observe,
 };
 
 // Opens a capability handle at a fixture root. Ambient authority is the
@@ -280,7 +280,7 @@ fn names_the_containment_gateway_refuses_are_reported_together_verbatim() {
     // names the root it is spelled against.
     assert!(matches!(
         load_tree(source.root()).unwrap_err(),
-        Error::Containment { paths } if paths == want
+        Error::Refused(refused) if refused.kind == RefusalKind::Containment && origins_of(&refused) == want
     ));
 }
 
@@ -298,7 +298,7 @@ fn a_directory_the_gateway_refuses_is_named_instead_of_its_descendants() {
     let want = refused(&source, &["COM1"]);
     assert!(matches!(
         load_tree(source.root()).unwrap_err(),
-        Error::Containment { paths } if paths == want
+        Error::Refused(refused) if refused.kind == RefusalKind::Containment && origins_of(&refused) == want
     ));
 }
 
@@ -312,7 +312,7 @@ fn a_refused_directory_holding_nothing_is_still_refused() {
     let want = refused(&source, &["weird:name"]);
     assert!(matches!(
         load_tree(source.root()).unwrap_err(),
-        Error::Containment { paths } if paths == want
+        Error::Refused(refused) if refused.kind == RefusalKind::Containment && origins_of(&refused) == want
     ));
 }
 

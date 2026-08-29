@@ -3,6 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
+use crate::test_support::paths_of;
+use crate::{Error, RefusalKind};
 
 const DEST: &str = "/projects/dest";
 
@@ -132,9 +134,9 @@ fn escaping_paths_are_refused_with_the_path_verbatim() {
             .expect_err(&format!("{rel:?}: expected refusal"));
         assert!(error.is_refusal(), "{rel:?}");
         match error {
-            Error::Containment { paths, .. } => {
+            Error::Refused(refused) if refused.kind == RefusalKind::Containment => {
                 assert_eq!(
-                    paths.into_keys().collect::<BTreeSet<_>>(),
+                    paths_of(&refused),
                     BTreeSet::from([Utf8PathBuf::from(*rel)]),
                     "{rel:?}"
                 );

@@ -1,9 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
-
 use camino::Utf8PathBuf;
 use thiserror::Error;
 
-use crate::Origin;
+use crate::Refused;
 
 /// The crate-wide result type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -31,77 +29,10 @@ pub const MAX_WALK_DEPTH: usize = 64;
 /// ```
 #[derive(Debug, Error)]
 pub enum Error {
-    /// Refusal: recorded paths whose state on disk differs from the recorded
-    /// entry — bytes, kind, or executable bit.
-    #[error("refusing to touch drifted paths (edited on disk): {}", join(paths))]
-    Drift {
-        /// The drifted paths, relative to the destination.
-        paths: BTreeSet<Utf8PathBuf>,
-    },
-    /// Refusal: paths on disk that the manifest does not record. For a
-    /// [`Block`](crate::EntryKind::Block) entry the region is judged, not the
-    /// container around it.
-    #[error(
-        "refusing to touch foreign paths (not written by this projection): {}",
-        join(paths)
-    )]
-    Foreign {
-        /// The foreign paths, relative to the destination.
-        paths: BTreeSet<Utf8PathBuf>,
-    },
-    /// Refusal: locations the projection may not act at — paths refused by
-    /// [`contained_join`](crate::contained_join), paths resolving through a
-    /// symlinked ancestor, and paths overlapping the state directory.
-    #[error("refusing paths that violate containment: {}", join_sourced(paths))]
-    Containment {
-        /// The offending locations, each with the source that named it.
-        paths: BTreeMap<Utf8PathBuf, Origin>,
-    },
-    /// Refusal: the desired entry for a path — bytes, kind, or executable bit
-    /// — differs from what another owner holds there.
-    #[error(
-        "refusing paths whose desired entries conflict with another owner's: {}",
-        join_conflicts(conflicts)
-    )]
-    OwnerConflict {
-        /// The conflicting paths, relative to the destination, each mapped
-        /// to the other owners holding it.
-        conflicts: BTreeMap<Utf8PathBuf, BTreeSet<String>>,
-    },
-    /// Refusal: desired symlinks whose targets, resolved from each link's
-    /// parent, land outside the destination. Lifted by
-    /// [`ExternalTargetPolicy::Allow`](crate::ExternalTargetPolicy::Allow).
-    #[error(
-        "refusing symlinks with targets outside the destination: {}",
-        join_links(links)
-    )]
-    ExternalTarget {
-        /// The offending links: each link's path, with its target verbatim
-        /// and the source that named it.
-        links: BTreeMap<Utf8PathBuf, (String, Origin)>,
-    },
-    /// Refusal: desired symlinks whose targets are not pathnames on any host
-    /// — the empty string, or a string carrying a NUL byte.
-    #[error(
-        "refusing symlinks whose targets are not paths: {}",
-        join_invalid(links)
-    )]
-    InvalidTarget {
-        /// The offending links: each link's path, with its target verbatim
-        /// and the source that named it.
-        links: BTreeMap<Utf8PathBuf, (String, Origin)>,
-    },
-    /// Refusal: desired keys claiming one on-disk location more than once —
-    /// two keys normalizing to the same path, or one desired path lying
-    /// beneath another. Both sides of a conflict are refused.
-    #[error(
-        "refusing desired paths that claim overlapping locations: {}",
-        join_sourced(paths)
-    )]
-    TreeConflict {
-        /// The conflicting desired keys, each with the source that named it.
-        paths: BTreeMap<Utf8PathBuf, Origin>,
-    },
+    /// A refusal: the projection declining to touch paths. Everything else
+    /// is an operation failing.
+    #[error(transparent)]
+    Refused(#[from] Refused),
     /// A filesystem operation failed. Not a refusal.
     #[error("{path}: {source}")]
     Io {
@@ -343,173 +274,14 @@ pub enum Error {
         /// The node's absolute path.
         path: Utf8PathBuf,
     },
-    /// Refusal: [`Block`](crate::EntryKind::Block) entries the projection
-    /// declines, each with the [`BlockFault`] that declined it.
-    #[error("refusing block entries: {}", join_blocks(blocks))]
-    Block {
-        /// The offending paths, relative to the destination, each mapped to
-        /// what is wrong with it.
-        blocks: BTreeMap<Utf8PathBuf, BlockFault>,
-    },
-}
-
-/// Why one [`Block`](crate::EntryKind::Block) entry is refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
-pub enum BlockFault {
-    /// The marker is the empty string, which would match every line start.
-    MarkerEmpty,
-    /// The marker carries a `\n` or a `\r`; a marker is one line.
-    MarkerNotOneLine,
-    /// The marker begins or ends with a space or a tab.
-    MarkerEdgeWhitespace,
-    /// A line of the body equals the marker.
-    BodyCarriesMarker,
-    /// The placement is [`Prepend`](crate::Placement::Prepend) and the body
-    /// neither is empty nor ends with `\n`.
-    BodyNotNewlineTerminated,
-    /// The placement is [`Append`](crate::Placement::Append) and the author's
-    /// side of the container neither is empty nor ends with `\n`.
-    ContainerNotNewlineTerminated,
-    /// The container, or a directory above it, is not there.
-    ContainerMissing,
-    /// The path is recorded as a whole node and desired as a block, or the
-    /// other way round.
-    KindChange,
-    /// A plan's expected signature names a marker or placement the manifest
-    /// does not record at that path.
-    SignatureNotRecorded,
-    MarkerInAuthorText,
-}
-
-impl std::fmt::Display for BlockFault {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let reason = match self {
-            BlockFault::MarkerEmpty => "the marker is empty",
-            BlockFault::MarkerNotOneLine => "the marker carries a line break",
-            BlockFault::MarkerEdgeWhitespace => "the marker begins or ends with a space or a tab",
-            BlockFault::BodyCarriesMarker => "a line of the body equals the marker",
-            BlockFault::BodyNotNewlineTerminated => {
-                "prepending needs a body that is empty or ends with a newline"
-            }
-            BlockFault::ContainerNotNewlineTerminated => {
-                "appending needs a container that is empty or ends with a newline"
-            }
-            BlockFault::ContainerMissing => {
-                "the container is not there, and a block never creates one"
-            }
-            BlockFault::KindChange => "a path never changes between a whole node and a block",
-            BlockFault::SignatureNotRecorded => {
-                "the expected signature names a region the manifest does not record"
-            }
-            BlockFault::MarkerInAuthorText => {
-                "the container's author side already holds the marker being migrated to"
-            }
-        };
-        f.write_str(reason)
-    }
 }
 
 impl Error {
     /// Whether this error is a refusal — the projection declining to touch a
     /// path — rather than an operation failing.
     pub fn is_refusal(&self) -> bool {
-        match self {
-            Error::Drift { .. }
-            | Error::Foreign { .. }
-            | Error::Containment { .. }
-            | Error::OwnerConflict { .. }
-            | Error::ExternalTarget { .. }
-            | Error::InvalidTarget { .. }
-            | Error::TreeConflict { .. }
-            | Error::Block { .. } => true,
-            Error::Io { .. }
-            | Error::ManifestFormat { .. }
-            | Error::ManifestVersion { .. }
-            | Error::LockHeld { .. }
-            | Error::MappingFormat { .. }
-            | Error::MappingVersion { .. }
-            | Error::MappingContentsXorSource { .. }
-            | Error::MappingDuplicate { .. }
-            | Error::ArchiveFormatUnknown { .. }
-            | Error::ArchiveDecode { .. }
-            | Error::ArchiveMemberNameNotUtf8 { .. }
-            | Error::ArchiveMemberTargetNotUtf8 { .. }
-            | Error::ArchiveMemberKind { .. }
-            | Error::ArchiveMemberKindDisagrees { .. }
-            | Error::ArchiveMemberDuplicate { .. }
-            | Error::ArchiveMemberStripped { .. }
-            | Error::ArchiveMemberTooDeep { .. }
-            | Error::ArchiveTooLarge { .. }
-            | Error::ArchiveTooManyMembers { .. }
-            | Error::TreeNameNotUtf8 { .. }
-            | Error::TreeTargetNotUtf8 { .. }
-            | Error::TreeTooDeep { .. }
-            | Error::DestinationTooDeep { .. }
-            | Error::TreeNodeKind { .. } => false,
-        }
+        matches!(self, Error::Refused(_))
     }
-}
-
-fn join_sourced(paths: &BTreeMap<Utf8PathBuf, Origin>) -> String {
-    paths
-        .iter()
-        .map(|(path, origin)| match origin {
-            Origin::Caller => path.to_string(),
-            named => format!("{path} ({named})"),
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn join(paths: &BTreeSet<Utf8PathBuf>) -> String {
-    paths
-        .iter()
-        .map(|path| path.as_str())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn join_conflicts(conflicts: &BTreeMap<Utf8PathBuf, BTreeSet<String>>) -> String {
-    conflicts
-        .iter()
-        .map(|(path, owners)| {
-            let owners = owners.iter().cloned().collect::<Vec<_>>().join("+");
-            format!("{path} (held by {owners})")
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn join_blocks(blocks: &BTreeMap<Utf8PathBuf, BlockFault>) -> String {
-    blocks
-        .iter()
-        .map(|(path, fault)| format!("{path} ({fault})"))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn join_links(links: &BTreeMap<Utf8PathBuf, (String, Origin)>) -> String {
-    links
-        .iter()
-        .map(|(path, (target, origin))| match origin {
-            Origin::Caller => format!("{path} -> {target}"),
-            named => format!("{path} -> {target} ({named})"),
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// [`join_links`] with the target quoted and escaped, so an empty string or a
-/// NUL byte renders visibly.
-fn join_invalid(links: &BTreeMap<Utf8PathBuf, (String, Origin)>) -> String {
-    links
-        .iter()
-        .map(|(path, (target, origin))| match origin {
-            Origin::Caller => format!("{path} -> {target:?}"),
-            named => format!("{path} -> {target:?} ({named})"),
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 #[cfg(test)]

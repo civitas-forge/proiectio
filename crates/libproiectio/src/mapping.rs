@@ -5,7 +5,7 @@ use std::io::Read;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Deserialize;
 
-use crate::{Desired, Entry, Error, Origin, Result};
+use crate::{Desired, Entry, Error, Origin, Refusal, Refused, Result};
 
 /// The mapping format version this crate accepts.
 pub const MAPPING_VERSION: u32 = 1;
@@ -84,12 +84,13 @@ fn parse(path: &Utf8Path, text: &str) -> Result<Desired> {
         }
     }
     if !refused.is_empty() {
-        return Err(Error::Containment {
-            paths: refused
+        return Err(Refused::aggregate(
+            refused
                 .into_iter()
-                .map(|key| (key, mapping_origin.clone()))
-                .collect(),
-        });
+                .map(|key| (key, Refusal::Containment, mapping_origin.clone())),
+        )
+        .expect("refused is not empty")
+        .into());
     }
 
     let mut seen = BTreeSet::new();

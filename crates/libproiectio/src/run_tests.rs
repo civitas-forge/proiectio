@@ -4,7 +4,7 @@ use std::fs;
 use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
-use crate::test_support::{Fixture, Tree, assert_tree};
+use crate::test_support::{Fixture, Tree, assert_tree, origins_of};
 use crate::{
     Action, ApplyOutcome, Desired, Entry, Error, LOCK_FILE_NAME, MANIFEST_FILE_NAME, Origin,
     PathState, Refusal, RemovalScope,
@@ -321,9 +321,9 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
         .expect_err("a plan carrying a refusal applies nothing");
 
     match &error {
-        Error::Containment { paths } => {
+        Error::Refused(refused) => {
             assert_eq!(
-                *paths,
+                origins_of(refused),
                 BTreeMap::from([(
                     Utf8PathBuf::from("../escape"),
                     Origin::Mapping { path: mapping },

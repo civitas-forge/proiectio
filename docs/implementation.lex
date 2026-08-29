@@ -180,12 +180,12 @@ Implementation Guidelines
     layer.
 
     To make the adapter layer trivial, the library's error type is a
-    structured enum (thiserror), with refusals — drift, foreign,
-    containment, external target, each variant carrying the
-    offending paths — distinct from I/O errors. The CLI's 0/1/2 exit
-    mapping ([./cli-tour.lex]) then falls out of a single match, and
-    messages list paths instead of formatting strings deep in the
-    core.
+    structured enum (thiserror) with one refusal variant — carrying
+    the refused paths, each with its reason (drift, foreign,
+    containment, external target, ...) and the source that named it
+    — distinct from I/O errors. The CLI's 0/1/2 exit mapping
+    ([./cli-tour.lex]) then falls out of a single match, and messages
+    list paths instead of formatting strings deep in the core.
 
 5. Error Handling
 

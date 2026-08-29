@@ -1,14 +1,15 @@
-use std::collections::BTreeMap;
-
 use camino::Utf8PathBuf;
 
 use super::*;
-use crate::Error;
+use crate::{Error, Refusal, Refused};
 
 fn containment(origin: Origin) -> Error {
-    Error::Containment {
-        paths: BTreeMap::from([(Utf8PathBuf::from("../etc/passwd"), origin)]),
-    }
+    Refused::one(
+        Utf8PathBuf::from("../etc/passwd"),
+        Refusal::Containment,
+        origin,
+    )
+    .into()
 }
 
 #[test]

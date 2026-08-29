@@ -16,7 +16,7 @@ use crate::{
 ///
 /// `state_dir` may lie inside `target` as a proper subdirectory: that
 /// subtree is excluded from classification, and a desired path overlapping
-/// it refuses as [`Containment`](crate::Error::Containment).
+/// it refuses as [`Containment`](crate::Refusal::Containment).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Projection {
     target: Utf8PathBuf,
