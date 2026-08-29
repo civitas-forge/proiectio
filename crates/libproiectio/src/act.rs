@@ -22,7 +22,8 @@ use crate::observe::{Container, io_error, read_container, sha256_hex_of_reader};
 use crate::{
     Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error, ExternalTargetPolicy,
     MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature,
-    Origin, PathFacts, Placement, Plan, Refusal, Refused, Report, Result, Row, sha256_hex,
+    Origin, PathFacts, PathShape, Placement, Plan, Refusal, Refused, Report, Result, Row,
+    sha256_hex,
 };
 
 /// Loads the manifest from `state`'s [`MANIFEST_FILE_NAME`]; a state
@@ -383,20 +384,17 @@ fn written_row(
 ) -> Row<ApplyOutcome> {
     Row {
         facts: Some(PathFacts {
-            kind: entry.kind(),
-            executable: matches!(
-                entry,
-                Entry::File {
-                    executable: true,
-                    ..
-                }
-            ),
-            target: match entry {
-                Entry::Symlink { target } => Some(target.clone()),
-                Entry::File { .. } | Entry::Block { .. } => None,
+            shape: match entry {
+                Entry::File { executable, .. } => PathShape::File {
+                    executable: *executable,
+                },
+                Entry::Symlink { target } => PathShape::Symlink {
+                    target: Some(target.clone()),
+                },
+                Entry::Block { .. } => PathShape::Block,
             },
             owners: owners_of(manifest, path),
-            origin: plan.origin_of(path),
+            origin: Some(plan.origin_of(path)),
         }),
         verdict,
     }
@@ -410,23 +408,27 @@ fn skipped_row(
 ) -> Row<ApplyOutcome> {
     Row {
         facts: Some(PathFacts {
-            kind: expected.kind.clone(),
-            executable: expected.executable,
-            target: None,
+            shape: recorded_shape(&expected.kind, expected.executable),
             owners: owners_of(manifest, path),
-            origin: plan.origin_of(path),
+            origin: Some(plan.origin_of(path)),
         }),
         verdict: ApplyOutcome::Skipped,
     }
 }
 
+fn recorded_shape(kind: &EntryKind, executable: bool) -> PathShape {
+    match kind {
+        EntryKind::File => PathShape::File { executable },
+        EntryKind::Symlink => PathShape::Symlink { target: None },
+        EntryKind::Block { .. } => PathShape::Block,
+    }
+}
+
 fn recorded_facts(recorded: Option<&ManifestEntry>, origin: Origin) -> Option<PathFacts> {
     recorded.map(|recorded| PathFacts {
-        kind: recorded.kind.clone(),
-        executable: recorded.executable,
-        target: None,
+        shape: recorded_shape(&recorded.kind, recorded.executable),
         owners: recorded.owners.clone(),
-        origin,
+        origin: Some(origin),
     })
 }
 

@@ -180,14 +180,15 @@ fn projects_a_fresh_tree_and_persists_the_manifest() {
     assert_eq!(
         facts_at(&report, "bin/run"),
         &PathFacts {
-            kind: EntryKind::File,
-            executable: true,
-            target: None,
+            shape: PathShape::File { executable: true },
             owners: BTreeSet::from(["own".to_owned()]),
-            origin: Origin::Caller,
+            origin: Some(Origin::Caller),
         }
     );
-    assert!(!facts_at(&report, "notes/a.txt").executable);
+    assert_eq!(
+        facts_at(&report, "notes/a.txt").shape,
+        PathShape::File { executable: false }
+    );
     // The report's manifest is the persisted one, atomically written with
     // no tempfile left beside it.
     assert_eq!(persisted(&state), report.manifest);
@@ -629,11 +630,9 @@ fn removing_a_recorded_symlink_unlinks_it_and_leaves_the_target() {
     assert_eq!(
         facts_at(&report, "latest"),
         &PathFacts {
-            kind: EntryKind::Symlink,
-            executable: false,
-            target: None,
+            shape: PathShape::Symlink { target: None },
             owners: BTreeSet::from(["own".to_owned()]),
-            origin: Origin::Caller,
+            origin: Some(Origin::Caller),
         }
     );
     assert_tree(dest.root(), &Tree::new().file("notes", "the target"));
@@ -1603,11 +1602,11 @@ fn projects_links_with_their_targets_verbatim_dangling_included() {
     assert_eq!(
         facts_at(&report, "nested/up"),
         &PathFacts {
-            kind: EntryKind::Symlink,
-            executable: false,
-            target: Some("../notes/a.txt".to_owned()),
+            shape: PathShape::Symlink {
+                target: Some("../notes/a.txt".to_owned()),
+            },
             owners: BTreeSet::from(["own".to_owned()]),
-            origin: Origin::Caller,
+            origin: Some(Origin::Caller),
         }
     );
     let entry = &report.manifest.entries[Utf8Path::new("nested/up")];
