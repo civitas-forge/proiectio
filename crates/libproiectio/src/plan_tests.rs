@@ -21,6 +21,7 @@ fn a_plan_serializes_with_paths_as_keys() {
                         hash: "aa11".to_owned(),
                         executable: true,
                     },
+                    reason: OverwriteReason::ForcedDrift,
                 },
             ),
             (
@@ -59,6 +60,10 @@ fn a_plan_serializes_with_paths_as_keys() {
     assert_eq!(
         json["actions"]["bin/tool"]["Overwrite"]["expected"]["hash"],
         "aa11"
+    );
+    assert_eq!(
+        json["actions"]["bin/tool"]["Overwrite"]["reason"],
+        "ForcedDrift"
     );
     assert_eq!(
         json["actions"]["toolchain"]["Refuse"]["refusal"]["ExternalTarget"]["target"],

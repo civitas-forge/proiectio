@@ -8,8 +8,8 @@ use cap_std::fs_utf8::Dir;
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree, paths_of, refusals_of, sourced_of};
 use crate::{
-    BlockMarkers, Desired, DriftPolicy, EntryKind, ExternalTargetPolicy, Origin, PlanOptions,
-    RefusalKind, RemovalScope, block_markers, decide, decide_removal, observe,
+    BlockMarkers, Desired, DriftPolicy, EntryKind, ExternalTargetPolicy, Origin, OverwriteReason,
+    PlanOptions, RefusalKind, RemovalScope, block_markers, decide, decide_removal, observe,
 };
 
 // Opens a capability handle at a fixture root. Ambient authority is the
@@ -1019,6 +1019,7 @@ fn a_hand_built_plan_replacing_a_region_with_a_whole_file_fails_up_front() {
                         hash: sha256_hex(b"body\n"),
                         executable: false,
                     },
+                    reason: OverwriteReason::ContentChanged,
                 },
             ),
         ]),
