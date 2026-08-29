@@ -9,19 +9,12 @@ use crate::Origin;
 /// Why one path is refused rather than acted on: the per-path vocabulary
 /// [`Action::Refuse`](crate::Action::Refuse) carries and [`Refused`]
 /// aggregates.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum Refusal {
-    /// The recorded path was edited on disk. Lifted per-plan by
-    /// [`DriftPolicy::Overwrite`](crate::DriftPolicy::Overwrite).
-    Drift,
-    /// The path is on disk but absent from the manifest.
-    Foreign,
-    /// The desired entry — bytes, kind, or executable bit — differs from what
-    /// another owner holds at this path.
-    OwnerConflict {
-        /// The other owners holding the path.
-        owners: BTreeSet<String>,
-    },
+    /// The projection may not write the path — it is refused by
+    /// [`contained_join`](crate::contained_join), it lies beneath a symlink
+    /// that outlives the plan, or it overlaps the state directory.
+    Containment,
     /// The desired tree claims one on-disk location more than once: this key
     /// shares a normalized path with another desired key, or its path lies
     /// beneath another desired path. Both sides of a conflict are refused.
@@ -30,10 +23,17 @@ pub enum Refusal {
         /// overlapping location.
         paths: BTreeSet<Utf8PathBuf>,
     },
-    /// The projection may not write the path — it is refused by
-    /// [`contained_join`](crate::contained_join), it lies beneath a symlink
-    /// that outlives the plan, or it overlaps the state directory.
-    Containment,
+    /// The path is on disk but absent from the manifest.
+    Foreign,
+    /// The recorded path was edited on disk. Lifted per-plan by
+    /// [`DriftPolicy::Overwrite`](crate::DriftPolicy::Overwrite).
+    Drift,
+    /// The desired entry — bytes, kind, or executable bit — differs from what
+    /// another owner holds at this path.
+    OwnerConflict {
+        /// The other owners holding the path.
+        owners: BTreeSet<String>,
+    },
     /// A desired symlink whose target, resolved from the link's parent
     /// through the destination's own links, lands outside the destination.
     /// Lifted per-plan by [`ExternalTargetPolicy::Allow`](crate::ExternalTargetPolicy::Allow).

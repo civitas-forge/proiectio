@@ -5,7 +5,7 @@ use serde::Serialize;
 
 /// The classification of one path in the union of the manifest and the
 /// destination directory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum PathState {
     /// Disk matches the recorded entry: bytes, kind, and executable bit.
     Clean,
