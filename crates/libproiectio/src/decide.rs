@@ -7,8 +7,8 @@ use crate::block;
 use crate::containment::{Hop, contained_normalize, contained_target_chain, is_pathname};
 use crate::{
     Action, BlockFault, Desired, DriftPolicy, Entry, EntryKind, Error, ExternalTargetPolicy,
-    MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations, PathState,
-    Placement, Plan, PlanOptions, Refusal, Result, Status, sha256_hex,
+    MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations,
+    OverwriteReason, PathState, Placement, Plan, PlanOptions, Refusal, Result, Status, sha256_hex,
 };
 
 /// One [`PathState`] per path in the union of the manifest and the
@@ -484,6 +484,7 @@ fn desired_action(
                 Action::Overwrite {
                     entry: entry.clone(),
                     expected: recorded_signature(recorded),
+                    reason: clean_overwrite_reason(entry, recorded),
                 }
             }
         }
@@ -495,6 +496,7 @@ fn desired_action(
                 lift_or_refuse_drift(recorded, observation, policy, |drifted| Action::Overwrite {
                     entry: entry.clone(),
                     expected: drifted,
+                    reason: OverwriteReason::ForcedDrift,
                 })
             }
         }
@@ -610,7 +612,19 @@ fn refuse(refusal: Refusal) -> Action {
 /// carrying the desired signature for apply to re-check and record.
 fn skip(entry: &Entry) -> Action {
     Action::Skip {
+        entry: entry.clone(),
         expected: desired_signature(entry),
+    }
+}
+
+fn clean_overwrite_reason(entry: &Entry, recorded: &ManifestEntry) -> OverwriteReason {
+    if entry.kind() == recorded.kind
+        && desired_hash(entry) == recorded.hash
+        && desired_executable(entry) != recorded.executable
+    {
+        OverwriteReason::ExecutableChanged
+    } else {
+        OverwriteReason::ContentChanged
     }
 }
 

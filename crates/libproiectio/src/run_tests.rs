@@ -7,7 +7,7 @@ use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree, origins_of};
 use crate::{
     Action, ApplyOutcome, Desired, Entry, Error, LOCK_FILE_NAME, MANIFEST_FILE_NAME, Origin,
-    PathState, Refusal, RemovalScope,
+    PathState, Refusal, RefusalKind, RemovalScope,
 };
 
 // A projection over two fixture directories, the state directory outside
@@ -343,6 +343,39 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
          ../escape (from mapping /etc/harness/skills.toml)"
     );
     assert_tree(dest.root(), &Tree::new());
+}
+
+// A dry run reports what a real run would fail with: the same aggregated
+// error, off the plan alone.
+#[test]
+fn the_plans_refused_is_the_error_applying_it_raises() {
+    let dest = Tree::new().file("theirs.txt", "not ours").materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(&dest, state.root());
+    let tree = Tree::new()
+        .file("theirs.txt", "ours now")
+        .file("notes/a.txt", "alpha");
+
+    let mut run = projection.begin().expect("begin");
+    let refused = run
+        .plan("harness", &desired(&tree), PlanOptions::default())
+        .expect("plan")
+        .refused()
+        .expect("the foreign path is refused");
+
+    let error = run
+        .apply()
+        .expect_err("a plan carrying a refusal applies nothing");
+
+    match error {
+        Error::Refused(raised) => assert_eq!(raised, refused),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(refused.kind(), RefusalKind::Foreign);
+    assert_eq!(
+        refused.keys().collect::<Vec<_>>(),
+        vec![Utf8Path::new("theirs.txt")]
+    );
 }
 
 // The plan a read returns is a report: it says what applying would do and

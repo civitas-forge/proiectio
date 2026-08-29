@@ -382,6 +382,7 @@ fn disk_already_equal_to_desired_skips() {
     assert_eq!(
         action(&plan, "a.txt"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -409,6 +410,7 @@ fn clean_disk_with_changed_desired_overwrites() {
         &Action::Overwrite {
             entry: new,
             expected: signature(&old),
+            reason: OverwriteReason::ContentChanged,
         }
     );
 }
@@ -456,6 +458,7 @@ fn drift_policy_overwrite_lifts_the_drift_refusal() {
         &Action::Overwrite {
             entry: new,
             expected: signature(&drifted),
+            reason: OverwriteReason::ForcedDrift,
         }
     );
 }
@@ -478,6 +481,7 @@ fn a_path_edited_into_agreement_with_desired_skips() {
     assert_eq!(
         action(&plan, "a.txt"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -503,6 +507,7 @@ fn an_agreement_skip_carries_the_desired_signature() {
     assert_eq!(
         action(&plan, "bin/tool"),
         &Action::Skip {
+            entry: agreed.clone(),
             expected: NodeSignature {
                 kind: EntryKind::File,
                 hash: desired_hash(&agreed),
@@ -701,6 +706,31 @@ fn an_executable_bit_change_alone_overwrites() {
         &Action::Overwrite {
             entry: new,
             expected: signature(&old),
+            reason: OverwriteReason::ExecutableChanged,
+        }
+    );
+}
+
+#[test]
+fn a_content_and_executable_bit_change_together_reads_as_content_changed() {
+    let old = file("#!/bin/sh\n", false);
+    let new = file("#!/bin/bash\n", true);
+    let manifest = manifest_of(&[("run.sh", recorded(&old, &[OWNER]))]);
+    let observations = observed(&[("run.sh", on_disk(&old))]);
+
+    let plan = plan(
+        &tree(&[("run.sh", &new)]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "run.sh"),
+        &Action::Overwrite {
+            entry: new,
+            expected: signature(&old),
+            reason: OverwriteReason::ContentChanged,
         }
     );
 }
@@ -723,6 +753,7 @@ fn skip_lets_an_owner_join_a_path_another_owner_holds_identically() {
     assert_eq!(
         action(&plan, ".zshrc"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -859,6 +890,7 @@ fn a_denormalized_desired_key_unifies_with_its_recorded_path() {
     assert_eq!(
         action(&plan, "b"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -1395,6 +1427,7 @@ fn an_external_target_refuses_even_where_the_link_is_already_recorded_and_clean(
     assert_eq!(
         action(&allowing, "toolchain"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -1724,6 +1757,7 @@ fn a_pivot_this_run_replaces_is_graded_as_the_link_it_becomes() {
         &Action::Overwrite {
             entry: landing.clone(),
             expected: signature(&escaping),
+            reason: OverwriteReason::ContentChanged,
         }
     );
     assert_eq!(
@@ -1942,6 +1976,7 @@ fn a_desired_link_matching_the_disk_target_skips() {
     assert_eq!(
         action(&plan, "rc"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -1966,6 +2001,7 @@ fn a_changed_desired_link_target_overwrites_a_clean_link() {
         &Action::Overwrite {
             entry: new,
             expected: signature(&old),
+            reason: OverwriteReason::ContentChanged,
         }
     );
 }
@@ -2234,6 +2270,7 @@ fn a_changed_marker_overwrites_the_recorded_region() {
         &Action::Overwrite {
             entry: now,
             expected: signature(&was),
+            reason: OverwriteReason::ContentChanged,
         }
     );
 }
@@ -2253,6 +2290,7 @@ fn a_region_matching_desired_skips() {
     assert_eq!(
         action(&plan, "conf"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -2296,6 +2334,7 @@ fn a_drifted_region_lifts_under_force_and_a_lost_container_does_not() {
                 hash: sha256_hex(b"edited\n"),
                 executable: false,
             },
+            reason: OverwriteReason::ForcedDrift,
         }
     );
     assert_eq!(
@@ -2739,9 +2778,7 @@ fn plans_are_byte_identical_for_identical_inputs() {
     let first = plan(&desired, &manifest, &observations, DriftPolicy::Overwrite);
     let second = plan(&desired, &manifest, &observations, DriftPolicy::Overwrite);
 
-    let first = serde_json::to_vec(&first).expect("serialize");
-    let second = serde_json::to_vec(&second).expect("serialize");
-    assert_eq!(first, second);
+    assert_eq!(format!("{first:?}"), format!("{second:?}"));
 }
 
 #[test]
