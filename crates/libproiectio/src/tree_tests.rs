@@ -33,7 +33,8 @@ fn project(dest: &Fixture, state: &Fixture, desired: &BTreeMap<Utf8PathBuf, Entr
         &observations,
         None,
         PlanOptions::default(),
-    );
+    )
+    .expect("decide");
     apply(&dest_dir, &state_dir, &manifest, &plan).expect("apply the plan")
 }
 
@@ -53,6 +54,7 @@ fn actions_for(desired: &BTreeMap<Utf8PathBuf, Entry>) -> BTreeMap<Utf8PathBuf, 
         None,
         PlanOptions::default(),
     )
+    .expect("decide")
     .actions
 }
 

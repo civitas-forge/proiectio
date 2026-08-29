@@ -357,7 +357,8 @@ fn an_expanded_archive_projects_and_its_relative_link_resolves() {
         &observations,
         None,
         PlanOptions::default(),
-    );
+    )
+    .expect("decide");
     apply(&dest_dir, &state_dir, &manifest, &plan).expect("apply the plan");
 
     assert_tree(dest.root(), &declared_tree());
@@ -738,7 +739,8 @@ fn a_symlink_member_and_a_member_written_through_it_are_refused_together() {
         &observations,
         None,
         PlanOptions::default(),
-    );
+    )
+    .expect("decide");
 
     for (path, other) in [("logs", "logs/passwd"), ("logs/passwd", "logs")] {
         let action = plan.actions.get(Utf8Path::new(path)).expect("an action");

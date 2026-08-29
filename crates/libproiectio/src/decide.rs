@@ -6,9 +6,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 use crate::block;
 use crate::containment::{Hop, contained_normalize, contained_target_chain, is_pathname};
 use crate::{
-    Action, BlockFault, DriftPolicy, Entry, EntryKind, ExternalTargetPolicy, Manifest,
-    ManifestEntry, NodeSignature, Observation, Observations, Origin, PathState, Placement, Plan,
-    PlanOptions, Refusal, Status, sha256_hex,
+    Action, BlockFault, DriftPolicy, Entry, EntryKind, Error, ExternalTargetPolicy, MAX_WALK_DEPTH,
+    Manifest, ManifestEntry, NodeSignature, Observation, Observations, Origin, PathState,
+    Placement, Plan, PlanOptions, Refusal, Result, Status, sha256_hex,
 };
 
 /// One [`PathState`] per path in the union of the manifest and the
@@ -59,21 +59,44 @@ pub(crate) fn decide(
     observations: &Observations,
     state_prefix: Option<&Utf8Path>,
     options: PlanOptions,
-) -> Plan {
-    Plan {
+) -> Result<Plan> {
+    let actions = plan_actions(
+        owner,
+        desired,
+        manifest,
+        observations,
+        state_prefix,
+        options,
+        &Judged::Everything,
+    );
+    if let Some(path) = deepest_write(&actions) {
+        return Err(Error::DestinationTooDeep {
+            path,
+            limit: MAX_WALK_DEPTH,
+        });
+    }
+    Ok(Plan {
         owner: owner.to_owned(),
         origin,
         external_targets: options.external_targets,
-        actions: plan_actions(
-            owner,
-            desired,
-            manifest,
-            observations,
-            state_prefix,
-            options,
-            &Judged::Everything,
-        ),
-    }
+        actions,
+    })
+}
+
+fn deepest_write(actions: &BTreeMap<Utf8PathBuf, Action>) -> Option<Utf8PathBuf> {
+    actions
+        .iter()
+        .filter(|(_, action)| matches!(action, Action::Write { .. } | Action::Overwrite { .. }))
+        .map(|(path, _)| path)
+        .find(|path| path.components().count() - 1 > MAX_WALK_DEPTH)
+        .map(|path| {
+            let head: Vec<&str> = path
+                .components()
+                .take(MAX_WALK_DEPTH + 1)
+                .map(|component| component.as_str())
+                .collect();
+            Utf8PathBuf::from(head.join("/"))
+        })
 }
 
 /// The plan that clears what `owner` holds, narrowed by `scope`: [`decide`]

@@ -66,7 +66,8 @@ fn plan_for_with(
         &observations,
         None,
         options,
-    );
+    )
+    .expect("decide");
     (manifest, plan)
 }
 
@@ -3188,4 +3189,126 @@ fn save_manifest_round_trips_and_leaves_no_litter() {
 
     assert_eq!(persisted(&state), manifest);
     assert_eq!(names_in(&state), vec![MANIFEST_FILE_NAME.to_owned()]);
+}
+
+// --- plan/apply parity ---
+
+fn plan_result(
+    dest: &Fixture,
+    state: &Fixture,
+    desired: &BTreeMap<Utf8PathBuf, Entry>,
+) -> (Manifest, Result<Plan>) {
+    let dest_dir = dir_at(dest.root());
+    let state_dir = dir_at(state.root());
+    let manifest = load_manifest(&state_dir).expect("load manifest");
+    let observations = observe(&dest_dir, &manifest).expect("observe destination");
+    let planned = decide(
+        "own",
+        desired,
+        Origin::Caller,
+        &manifest,
+        &observations,
+        None,
+        PlanOptions::default(),
+    );
+    (manifest, planned)
+}
+
+fn assert_plan_and_apply_agree(
+    dest: &Fixture,
+    state: &Fixture,
+    desired: &BTreeMap<Utf8PathBuf, Entry>,
+) {
+    let (manifest, planned) = plan_result(dest, state, desired);
+    let Ok(plan) = planned else {
+        return;
+    };
+    let refused: Vec<&Utf8PathBuf> = plan
+        .actions
+        .iter()
+        .filter(|(_, action)| matches!(action, Action::Refuse { .. }))
+        .map(|(path, _)| path)
+        .collect();
+    if !refused.is_empty() {
+        return;
+    }
+    if let Err(error) = apply_at(dest, state, &manifest, &plan) {
+        panic!("deciding planned no refusal over {desired:?}, applying failed: {error}");
+    }
+}
+
+#[test]
+fn deciding_and_applying_agree_over_an_empty_destination() {
+    let (dest, state) = fixtures();
+    let desired = Tree::new()
+        .file("a.txt", "one")
+        .file("nested/b.txt", "two")
+        .symlink("link", "a.txt")
+        .entries();
+
+    assert_plan_and_apply_agree(&dest, &state, &desired);
+}
+
+#[test]
+fn deciding_and_applying_agree_over_writes_skips_and_removals() {
+    let (dest, state) = fixtures();
+    let first = Tree::new()
+        .file("keep.txt", "same")
+        .file("change.txt", "before")
+        .file("drop.txt", "gone soon")
+        .entries();
+    pipeline(&dest, &state, "own", &first, DriftPolicy::Refuse).expect("first projection");
+
+    let second = Tree::new()
+        .file("keep.txt", "same")
+        .file("change.txt", "after")
+        .file("added.txt", "new")
+        .entries();
+
+    assert_plan_and_apply_agree(&dest, &state, &second);
+}
+
+#[test]
+fn deciding_and_applying_agree_over_a_block_into_a_standing_container() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("rc", "author line\n")
+        .write_under(dest.root());
+
+    assert_plan_and_apply_agree(
+        &dest,
+        &state,
+        &block_tree("rc", "managed\n", Placement::Append),
+    );
+}
+
+#[test]
+fn deciding_reports_a_desired_path_past_the_walk_depth() {
+    let (dest, state) = fixtures();
+    let past = format!("{}/leaf", ["d"; MAX_WALK_DEPTH + 1].join("/"));
+    let desired = Tree::new().file(&past, "deep").entries();
+
+    let (_, planned) = plan_result(&dest, &state, &desired);
+
+    match planned.expect_err("a path observe could not read back") {
+        Error::DestinationTooDeep { path, limit } => {
+            assert_eq!(path, ["d"; MAX_WALK_DEPTH + 1].join("/"));
+            assert_eq!(limit, MAX_WALK_DEPTH);
+        }
+        other => panic!("expected DestinationTooDeep, got {other:?}"),
+    }
+    assert_tree(dest.root(), &Tree::new());
+}
+
+#[test]
+fn deciding_accepts_a_desired_path_at_the_walk_depth() {
+    let (dest, state) = fixtures();
+    let at_the_limit = format!("{}/leaf", ["d"; MAX_WALK_DEPTH].join("/"));
+    let desired = Tree::new().file(&at_the_limit, "deep").entries();
+
+    assert_plan_and_apply_agree(&dest, &state, &desired);
+    assert_eq!(
+        fs::read_to_string(dest.path(&at_the_limit)).expect("the deep file"),
+        "deep"
+    );
 }

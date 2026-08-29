@@ -134,7 +134,7 @@ impl Projection {
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
         let observations = observe(&dest, &manifest)?;
-        Ok(decide(
+        decide(
             owner,
             desired,
             origin,
@@ -142,7 +142,7 @@ impl Projection {
             &observations,
             self.state_prefix(),
             options,
-        ))
+        )
     }
 
     /// The removal of everything `owner` holds, or of the recorded paths
