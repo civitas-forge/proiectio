@@ -1049,12 +1049,154 @@ fn a_desired_path_entering_the_state_dir_refuses_containment() {
     );
 }
 
+/// A state directory nested inside the destination, so the destination
+/// holds locations the state subtree lies *beneath* as well as locations
+/// inside it.
+const NESTED_STATE: &str = ".local/state/proiectio";
+
+#[test]
+fn a_desired_path_the_state_dir_sits_beneath_refuses_containment() {
+    // The admission test is symmetric: a desired file at `.local` would
+    // stand where the directory holding the manifest stands, so it refuses
+    // as Containment here, at plan time. Admitting it would send it to
+    // apply, whose walk meets a file-versus-directory mismatch and refuses
+    // it as Foreign or Drift — a later stage naming a different rule,
+    // against a plan a dry run had already reported.
+    let entry = file("x\n", false);
+
+    let plan = decide(
+        OWNER,
+        &tree(&[
+            (".local", &entry),
+            (".local/state", &entry),
+            (".local/state/proiectio/manifest.json", &entry),
+            (".local/share/rc", &entry),
+        ]),
+        &Manifest::new(),
+        &observed(&[]),
+        Some(Utf8Path::new(NESTED_STATE)),
+        PlanOptions::default(),
+    );
+
+    for refused in [
+        ".local",
+        ".local/state",
+        ".local/state/proiectio/manifest.json",
+    ] {
+        assert_eq!(
+            action(&plan, refused),
+            &Action::Refuse {
+                refusal: Refusal::Containment,
+            },
+            "expected a containment refusal at {refused}"
+        );
+    }
+    // A location off to the side of the state subtree is an ordinary one.
+    assert_eq!(action(&plan, ".local/share/rc"), &Action::Write { entry });
+}
+
+#[test]
+fn a_recorded_path_the_state_dir_sits_beneath_is_refused_not_removed() {
+    // A location an earlier configuration recorded, which the state
+    // directory now sits beneath. The orphan loop reaches it — it reads the
+    // prefix the other way, so `.local` is its business — and must not act
+    // on it: removing `.local` unlinks the node the manifest hangs from,
+    // and the next run reads no manifest and calls every projected file
+    // foreign. Every scope gets the containment refusal, so the verdict does
+    // not turn on how the removal was spelled.
+    let entry = file("alpha\n", false);
+    let manifest = manifest_of(&[(".local", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[(".local", on_disk(&entry))]);
+    let refused = Action::Refuse {
+        refusal: Refusal::Containment,
+    };
+
+    let sweep = decide_removal(
+        OWNER,
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        Some(Utf8Path::new(NESTED_STATE)),
+        PlanOptions::default(),
+    );
+    assert_eq!(action(&sweep, ".local"), &refused);
+
+    let by_name = decide_removal(
+        OWNER,
+        RemovalScope::Paths(&requested(&[".local"])),
+        &manifest,
+        &observations,
+        Some(Utf8Path::new(NESTED_STATE)),
+        PlanOptions::default(),
+    );
+    assert_eq!(action(&by_name, ".local"), &refused);
+
+    // And a desired entry at that same recorded location keeps the refusal
+    // admission gave it, keyed once: an orphan removal planned over it would
+    // leave a plan carrying nothing to refuse, which apply executes in full
+    // — deleting the file the tree just asked for.
+    let plan = decide(
+        OWNER,
+        &tree(&[("d/../.local", &entry)]),
+        &manifest,
+        &observations,
+        Some(Utf8Path::new(NESTED_STATE)),
+        PlanOptions::default(),
+    );
+
+    assert_eq!(
+        plan.actions,
+        BTreeMap::from([("d/../.local".into(), refused)])
+    );
+}
+
+#[test]
+fn a_path_the_state_dir_sits_beneath_still_classifies() {
+    // Classification reads the prefix the other way, and on purpose:
+    // `.local` is not the projection's state, it is a directory the state
+    // directory sits in, holding whatever else the destination puts there.
+    // Excluding it would hide from status a node the destination holds and
+    // the projection is merely refusing to touch.
+    let entry = file("alpha\n", false);
+    let manifest = manifest_of(&[(".local", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[
+        (".local", Observation::Directory),
+        (".local/share/rc", on_disk(&entry)),
+        (".local/state", Observation::Directory),
+        (".local/state/proiectio", Observation::Directory),
+        (
+            ".local/state/proiectio/manifest.json",
+            on_disk(&file("{\"version\":1}", false)),
+        ),
+    ]);
+
+    let status = classify(&manifest, &observations, Some(Utf8Path::new(NESTED_STATE)));
+
+    assert_eq!(
+        status.paths,
+        BTreeMap::from([
+            // Recorded as a file, a directory on disk: drift of kind.
+            (".local".into(), PathState::Drifted),
+            (".local/share/rc".into(), PathState::Foreign),
+            (".local/state".into(), PathState::Foreign),
+        ])
+    );
+}
+
 #[test]
 fn the_state_subtree_is_invisible_to_planning() {
     // The state directory's own files observe as on-disk nodes, but never
-    // classify — so they are not foreign and get no action.
+    // classify — so they are not foreign and get no action. A manifest entry
+    // inside the subtree is passed over the same way, sweep included: the
+    // subtree is out of planning's sight, not a location planning refuses.
+    // That is where the two readings of the prefix part company — a request
+    // naming such a path is refused at admission, since a caller naming a
+    // location is asking about that location.
     let entry = file("alpha\n", false);
-    let manifest = manifest_of(&[("a.txt", recorded(&entry, &[OWNER]))]);
+    let manifest = manifest_of(&[
+        ("a.txt", recorded(&entry, &[OWNER])),
+        (".proiectio/old", recorded(&entry, &[OWNER])),
+    ]);
     let observations = observed(&[
         ("a.txt", on_disk(&entry)),
         (".proiectio", Observation::Directory),
@@ -1076,6 +1218,36 @@ fn the_state_subtree_is_invisible_to_planning() {
     assert_eq!(
         plan.actions.keys().collect::<Vec<_>>(),
         [Utf8Path::new("a.txt")]
+    );
+
+    let sweep = decide_removal(
+        OWNER,
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        Some(Utf8Path::new(".proiectio")),
+        PlanOptions::default(),
+    );
+
+    assert_eq!(
+        sweep.actions.keys().collect::<Vec<_>>(),
+        [Utf8Path::new("a.txt")]
+    );
+
+    let by_name = decide_removal(
+        OWNER,
+        RemovalScope::Paths(&requested(&[".proiectio/old"])),
+        &manifest,
+        &observations,
+        Some(Utf8Path::new(".proiectio")),
+        PlanOptions::default(),
+    );
+
+    assert_eq!(
+        action(&by_name, ".proiectio/old"),
+        &Action::Refuse {
+            refusal: Refusal::Containment,
+        }
     );
 }
 
@@ -2420,6 +2592,38 @@ fn requested_paths_pass_the_same_containment_gateway_as_desired_keys() {
     }
     assert_eq!(
         action(&plan, "a.txt"),
+        &Action::Remove {
+            expected: Some(signature(&entry)),
+        }
+    );
+}
+
+#[test]
+fn a_removal_request_the_state_dir_sits_beneath_refuses_containment() {
+    // Same gateway as a desired key, symmetric prefix test included: a
+    // request naming a location the state directory sits beneath is a
+    // request to act where the projection's own state lives.
+    let entry = file("alpha\n", false);
+    let manifest = manifest_of(&[(".local/share/rc", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[(".local/share/rc", on_disk(&entry))]);
+
+    let plan = decide_removal(
+        OWNER,
+        RemovalScope::Paths(&requested(&[".local", ".local/share/rc"])),
+        &manifest,
+        &observations,
+        Some(Utf8Path::new(NESTED_STATE)),
+        PlanOptions::default(),
+    );
+
+    assert_eq!(
+        action(&plan, ".local"),
+        &Action::Refuse {
+            refusal: Refusal::Containment,
+        }
+    );
+    assert_eq!(
+        action(&plan, ".local/share/rc"),
         &Action::Remove {
             expected: Some(signature(&entry)),
         }
