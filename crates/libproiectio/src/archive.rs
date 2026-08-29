@@ -85,6 +85,9 @@ pub(crate) fn new_budget() -> Rc<Budget> {
     Budget::new(MAX_EXPANDED_BYTES)
 }
 
+/// Each member passes the containment gateway before `prefix` is joined onto
+/// it, so `../etc/passwd` under a `vendor/` prefix is refused; joined first
+/// and normalized after, it would project as `etc/passwd`.
 pub(crate) fn expand(
     source: &Utf8Path,
     strip: u32,

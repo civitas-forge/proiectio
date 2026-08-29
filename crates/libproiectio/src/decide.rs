@@ -277,6 +277,10 @@ fn overlaps_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
 }
 
 /// Whether `path` is itself inside the state subtree, the prefix included.
+///
+/// Narrower than `overlaps_state` on purpose: a path the state directory
+/// merely sits beneath still classifies and shows in `status`, while acting on
+/// that same path refuses.
 fn in_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
     state_prefix.is_some_and(|prefix| path.starts_with(prefix))
 }
@@ -471,6 +475,11 @@ fn desired_action(
 
 /// The refusals a desired [`Block`](Entry::Block) earns before its
 /// classification is consulted.
+///
+/// An unrecorded container carries no region observation, so the
+/// [`Append`](Placement::Append) newline check goes unasked here and apply
+/// asks it of the bytes it reads: such a path can plan a write and refuse at
+/// apply.
 fn block_refusal(entry: &Entry, observation: Option<&Observation>) -> Option<Refusal> {
     let Entry::Block {
         body,

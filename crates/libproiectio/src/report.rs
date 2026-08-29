@@ -13,7 +13,9 @@ pub enum ApplyOutcome {
     Written,
     /// The path existed and was replaced.
     Overwritten,
-    /// Disk already matched desired; nothing was written.
+    /// Disk already matched desired; nothing was written. A planned write
+    /// reports this too where it found the region already carrying the
+    /// desired body and adopted it.
     Skipped,
     /// The orphaned path was removed.
     Removed,
@@ -24,6 +26,10 @@ pub enum ApplyOutcome {
 
 /// What a successful apply run did: one outcome per path, and the manifest as
 /// persisted at the end of the run.
+///
+/// A failed apply returns an [`Error`](crate::Error) and no report; the
+/// on-disk manifest still records the entries applied before the error, so a
+/// partial run heals on re-run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApplyReport {
     /// Per-path outcomes, keyed by path relative to the destination.

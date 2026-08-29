@@ -58,6 +58,10 @@ pub(crate) enum Hop {
 /// asking `hop` what stands at each destination-relative path along the way:
 /// `Some` of the landing relative to the destination, or `None` where it
 /// lands outside. A link met twice ends the resolution outside.
+///
+/// The visited set is a cycle guard, not a hop limit: a chain may be
+/// arbitrarily long, and one that legitimately walks a single link twice ends
+/// outside like a cycle does.
 pub(crate) fn contained_target_chain<E>(
     parent: &Utf8Path,
     target: &str,

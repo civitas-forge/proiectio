@@ -12,6 +12,9 @@
 //! one with [`load_mapping`], [`load_tree`], or [`load_archive`]. Content is
 //! bytes and owners are opaque strings; nothing here names what the files
 //! are for.
+//!
+//! [`Error::is_refusal`] splits refusals from runtime failures, which a CLI's
+//! 0/1/2 exit contract matches on.
 
 #![forbid(unsafe_code)]
 

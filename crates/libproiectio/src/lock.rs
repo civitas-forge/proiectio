@@ -1,7 +1,8 @@
 //! An exclusive advisory `flock(2)` on [`LOCK_FILE_NAME`] in the state
 //! directory. One lock covers one state directory: two projections sharing a
 //! destination but keeping separate state directories do not exclude each
-//! other.
+//! other. Advisory binds proiectio against proiectio: no other writer in the
+//! destination is excluded.
 
 use camino::Utf8Path;
 use cap_std::fs_utf8::{Dir, File, OpenOptions};

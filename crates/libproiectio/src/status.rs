@@ -14,7 +14,9 @@ pub enum PathState {
     Drifted,
     /// Recorded, but gone from disk.
     Missing,
-    /// On disk, absent from the manifest.
+    /// On disk, absent from the manifest. Planning refuses to touch it,
+    /// except that a [`Block`](crate::EntryKind::Block) is judged over its
+    /// region: an unrecorded container is a write target, not a refusal.
     Foreign,
 }
 

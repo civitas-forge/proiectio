@@ -10,6 +10,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// How deep below its root a directory walk descends, counted in directories.
 /// Measured on a debug build, a walk exhausts a 2 MiB stack past ~200 levels.
+/// A bind mount making a directory its own ancestor gives a tree no bottom,
+/// and no symlink check sees that one: every level of it is a real directory.
 pub const MAX_WALK_DEPTH: usize = 64;
 
 /// Everything the engine can fail with.
@@ -133,7 +135,9 @@ pub enum Error {
         source: serde_json::Error,
     },
     /// The manifest parses but declares a version this crate does not
-    /// support. Not a refusal.
+    /// support. Not a refusal. Both loaders read the declared version before
+    /// decoding the rest strictly, so a future format reports this or
+    /// [`MappingVersion`](Error::MappingVersion), not the format error.
     #[error("manifest {path} has version {found}; this crate supports version {supported}")]
     ManifestVersion {
         /// The manifest file's location.

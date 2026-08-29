@@ -18,9 +18,29 @@ pub enum EntryKind {
     Symlink,
     /// A managed region at one end of a container file the projection does
     /// not own whole.
+    ///
+    /// [`Append`](Placement::Append) lays the container out as
+    /// `author ++ marker ++ b"\n" ++ body`, [`Prepend`](Placement::Prepend) as
+    /// `body ++ marker ++ b"\n" ++ author`.
+    ///
+    /// A marker occurrence is a whole line: anchored at a line start, matched
+    /// byte-exact, terminated by `\n`, `\r\n`, or the end of the container. A
+    /// line carrying the marker text indented or quoted is not one.
+    ///
+    /// Two or more marker lines in one container identify no region: the path
+    /// classifies [`Drifted`](crate::PathState::Drifted) and every action on it
+    /// refuses, [`Overwrite`](crate::DriftPolicy::Overwrite) included.
+    ///
+    /// The region runs to the container's edge, so bytes an author writes past
+    /// that edge are inside it: they read as drift, and `Overwrite` discards
+    /// them with the rest of the region.
+    ///
+    /// The body's hash covers its line terminators, so a container something
+    /// rewrites — git under `text=auto` or `core.autocrlf` — drifts every run.
     Block {
         /// The line bounding the region on the inside, written verbatim and
-        /// matched byte-exact.
+        /// matched byte-exact. [`BlockFault`](crate::BlockFault) names what a
+        /// marker and a body may not be.
         marker: String,
         /// Which end of the container the region occupies.
         placement: Placement,
@@ -51,7 +71,7 @@ pub enum Entry {
         target: String,
     },
     /// A managed region at one end of a container the projection does not own
-    /// whole.
+    /// whole. [`EntryKind::Block`] carries the region's rules.
     Block {
         /// The bytes inside the region. No line of it may equal `marker`.
         body: Vec<u8>,

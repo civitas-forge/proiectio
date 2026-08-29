@@ -71,6 +71,10 @@ pub(crate) fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// Executes `plan` verbatim against `dest` and persists the updated
 /// manifest into `state`, reporting what each action did. Nothing is
 /// written when the plan cannot be honored whole ([`validate`]).
+///
+/// A block over a container the manifest does not record is the exception:
+/// what that container holds is unknown until this stage reads it, so its
+/// refusals arrive mid-run, after whatever the plan already applied.
 pub(crate) fn apply(
     dest: &Dir,
     state: &Dir,
@@ -158,6 +162,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                 continue;
             }
         }
+        // Removals are exempt: this check judges only what the run creates.
         if matches!(action, Action::Write { .. } | Action::Overwrite { .. })
             && too_deep.is_none()
             && path.components().count() - 1 > MAX_WALK_DEPTH
@@ -625,6 +630,12 @@ fn persist_mode(dir: &Dir, leaf: &str, path: &Utf8Path, contents: &[u8], mode: u
 /// Opens the container of the block at `path` through the no-follow ancestor
 /// walk and reads it once. `None` means nothing stands at the path; a node
 /// that is not a regular file refuses.
+///
+/// The run's guard does not cover the gap between this read and the rename
+/// that republishes the container: a write by anything else in that window
+/// is silently lost. The rename replaces the inode, so ownership, ACLs,
+/// extended attributes and any other hard link to the file do not survive
+/// it; the mode does.
 fn read_block_container(
     dest: &Dir,
     manifest: &Manifest,

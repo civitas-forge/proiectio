@@ -13,6 +13,10 @@ pub const MAPPING_VERSION: u32 = 1;
 /// Loads a TOML mapping file into the desired tree `plan` takes, resolving
 /// each `source` against the mapping file's own directory.
 ///
+/// The version, every projected key, and each entry's `contents`/`source`
+/// choice are all judged before any `source` file is read or any archive is
+/// opened.
+///
 /// # Panics
 ///
 /// Panics if `path` is relative.

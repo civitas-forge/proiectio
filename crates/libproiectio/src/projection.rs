@@ -110,7 +110,9 @@ impl Projection {
 
     /// The manifest read through a destination handle the caller already
     /// holds, so an in-dest state directory is a child of the directory the
-    /// observation walks.
+    /// observation walks. A second open of the target path would let a rename
+    /// between the two opens classify one directory against another's
+    /// manifest.
     fn manifest_under(&self, dest: &Dir) -> Result<Manifest> {
         match self.open_state(Some(dest)) {
             Some(state) => load_manifest(&state?),

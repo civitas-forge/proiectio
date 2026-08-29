@@ -133,9 +133,9 @@ Proiectio Design
     whole, and a file the projection does own whole is a File entry
     whose removal already deletes it.
 
-    The marker rules, the region's byte layout, and the tradeoff
-    between prepending and appending are EntryKind::Block's rustdoc,
-    not restated here.
+    The marker rules, the region's byte layout, and what an author
+    writing past the region's outer edge costs are EntryKind::Block's
+    rustdoc, not restated here.
 
     plan and apply are separate calls, so before each overwrite or
     removal apply re-checks the target against the signature the plan

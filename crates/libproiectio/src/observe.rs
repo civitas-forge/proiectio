@@ -67,7 +67,9 @@ pub(crate) enum Observation {
     },
     /// A symbolic link, observed as itself.
     Symlink {
-        /// [`sha256_hex`] of the raw target bytes.
+        /// [`sha256_hex`] of the raw target bytes. A non-UTF-8 target can
+        /// match no recorded hash, so a recorded link edited to such bytes
+        /// compares as drifted instead of failing the walk.
         hash: String,
         /// The target string verbatim, or `None` when the on-disk target
         /// is not UTF-8.
@@ -75,7 +77,8 @@ pub(crate) enum Observation {
     },
     /// A directory.
     Directory,
-    /// A FIFO, socket, or device node — never opened or hashed.
+    /// A FIFO, socket, or device node — never opened or hashed. Opening a
+    /// FIFO with no writer blocks forever.
     Other,
     /// The managed region inside a regular file recorded as a
     /// [`Block`](crate::EntryKind::Block), located with the manifest's marker
@@ -115,6 +118,10 @@ pub(crate) enum Container {
 /// Opens the container at `name` inside `dir` and takes the regular-file
 /// verdict, the mode, and the bytes from that one descriptor. `path` is where
 /// errors are reported at, relative to the destination.
+///
+/// One file description does the whole read, so a name swapped between a stat
+/// and an open cannot have the verdict describe one file and the bytes
+/// another.
 #[cfg(unix)]
 pub(crate) fn read_container(dir: &Dir, name: &str, path: &Utf8Path) -> Result<Container> {
     use std::io::Read as _;
@@ -146,6 +153,10 @@ pub(crate) fn read_container(dir: &Dir, name: &str, path: &Utf8Path) -> Result<C
 /// Walks the union of the destination directory and the manifest and
 /// snapshots what is on disk into [`Observations`], reading everything
 /// through the capability handle `dest`.
+///
+/// cap-std has no read-only handle type, so "this stage writes nothing"
+/// (`docs/implementation.lex` section 1) is a discipline the walk keeps and
+/// its tests check, not a guarantee the types carry.
 ///
 /// Symlinks are observed as themselves and never entered, so a recorded path
 /// beneath one observes [`Observation::Absent`]. Entries whose names are not
