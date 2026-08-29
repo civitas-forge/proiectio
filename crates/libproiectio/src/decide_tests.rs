@@ -2770,9 +2770,7 @@ fn plans_are_byte_identical_for_identical_inputs() {
     let first = plan(&desired, &manifest, &observations, DriftPolicy::Overwrite);
     let second = plan(&desired, &manifest, &observations, DriftPolicy::Overwrite);
 
-    let first = serde_json::to_vec(&first).expect("serialize");
-    let second = serde_json::to_vec(&second).expect("serialize");
-    assert_eq!(first, second);
+    assert_eq!(format!("{first:?}"), format!("{second:?}"));
 }
 
 #[test]

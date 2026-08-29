@@ -104,8 +104,16 @@ pub(crate) fn apply(
 /// error, with a too-deep destination reported only when nothing refused.
 fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
     let mut refused: Vec<(Utf8PathBuf, Refusal, Origin)> = plan
-        .refusals()
-        .map(|(path, refusal, origin)| (path.to_owned(), refusal.clone(), origin))
+        .refused()
+        .iter()
+        .flat_map(Refused::paths)
+        .map(|(path, refused)| {
+            (
+                path.clone(),
+                refused.refusal.clone(),
+                refused.origin.clone(),
+            )
+        })
         .collect();
     let mut too_deep = None;
     for (path, action) in &plan.actions {

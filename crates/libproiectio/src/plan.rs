@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
-use crate::{Entry, EntryKind, Origin, Refusal};
+use crate::{Entry, EntryKind, Origin, PathFacts, Refusal, Refused, Report, Row};
 
 /// What planning does when a recorded path's state on disk differs from the
 /// recorded entry — bytes, kind, or executable bit.
@@ -54,7 +54,7 @@ pub struct PlanOptions {
 /// one, and only the one it decided itself. Applying re-checks containment,
 /// the manifest, and each action's `expected` signature before touching
 /// anything.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     /// The owner the plan was computed for; applied entries are recorded
     /// under this name in the manifest.
@@ -84,10 +84,79 @@ impl Plan {
                 _ => None,
             })
     }
+
+    pub fn report(&self) -> Report<PlannedAction> {
+        Report {
+            rows: self
+                .actions
+                .iter()
+                .map(|(path, action)| {
+                    let row = Row {
+                        facts: facts_of(action, self.origin_of(path)),
+                        verdict: verdict_of(action),
+                    };
+                    (path.clone(), row)
+                })
+                .collect(),
+        }
+    }
+
+    pub fn refused(&self) -> Option<Refused> {
+        Refused::aggregate(
+            self.refusals()
+                .map(|(path, refusal, origin)| (path.to_owned(), refusal.clone(), origin)),
+        )
+    }
+}
+
+fn facts_of(action: &Action, origin: Origin) -> Option<PathFacts> {
+    let (kind, executable, target) = match action {
+        Action::Write { entry } | Action::Overwrite { entry, .. } => (
+            entry.kind(),
+            matches!(
+                entry,
+                Entry::File {
+                    executable: true,
+                    ..
+                }
+            ),
+            match entry {
+                Entry::Symlink { target } => Some(target.clone()),
+                _ => None,
+            },
+        ),
+        Action::Skip { expected }
+        | Action::Remove {
+            expected: Some(expected),
+        } => (expected.kind.clone(), expected.executable, None),
+        Action::Remove { expected: None } | Action::Release | Action::Refuse { .. } => {
+            return None;
+        }
+    };
+    Some(PathFacts {
+        kind,
+        executable,
+        target,
+        owners: BTreeSet::new(),
+        origin,
+    })
+}
+
+fn verdict_of(action: &Action) -> PlannedAction {
+    match action {
+        Action::Write { .. } => PlannedAction::Write,
+        Action::Overwrite { reason, .. } => PlannedAction::Overwrite { reason: *reason },
+        Action::Skip { .. } => PlannedAction::Skip,
+        Action::Remove { .. } => PlannedAction::Remove,
+        Action::Release => PlannedAction::Release,
+        Action::Refuse { refusal } => PlannedAction::Refuse {
+            refusal: refusal.clone(),
+        },
+    }
 }
 
 /// One planned per-path action.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Create a path that is not on disk: one never recorded, or one recorded
     /// but gone that the desired tree still wants. For an [`Entry::Block`]
@@ -139,9 +208,19 @@ pub enum OverwriteReason {
     ForcedDrift,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum PlannedAction {
+    Write,
+    Overwrite { reason: OverwriteReason },
+    Skip,
+    Remove,
+    Release,
+    Refuse { refusal: Refusal },
+}
+
 /// The on-disk node an action expects at apply time. Apply re-checks all
 /// three fields and refuses if any changed since the plan.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeSignature {
     /// The node's kind. For a [`Block`](EntryKind::Block) it carries the
     /// marker and placement the region is located with.
