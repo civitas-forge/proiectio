@@ -15,8 +15,8 @@ pub const MANIFEST_FILE_NAME: &str = "manifest.json";
 /// (`docs/implementation.lex` section 7). It sits here, beside
 /// [`MANIFEST_FILE_NAME`] and outside the `flock(2)`-gated `lock` module, so
 /// every target can name the file: [`Error::LockHeld`](crate::Error::LockHeld)
-/// reports it everywhere, and a caller on a target that builds no
-/// `StateLock` still knows which file proiectio's own runs contend on.
+/// reports it everywhere, and a caller on a target that builds no `Run`
+/// still knows which file proiectio's own runs contend on.
 pub const LOCK_FILE_NAME: &str = "proiectio.lock";
 
 /// The recorded state of a projection: one JSON file in a caller-chosen

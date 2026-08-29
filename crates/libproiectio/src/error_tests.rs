@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::Utf8PathBuf;
 
 use super::*;
-use crate::Manifest;
+use crate::{Manifest, Origin};
 
 fn paths(names: &[&str]) -> BTreeSet<Utf8PathBuf> {
     names.iter().map(Utf8PathBuf::from).collect()
@@ -19,6 +19,7 @@ fn every_variant() -> Vec<Error> {
         },
         Error::Containment {
             paths: paths(&["../escape", "/etc/passwd"]),
+            origin: Origin::Caller,
         },
         Error::OwnerConflict {
             conflicts: BTreeMap::from([(
@@ -28,12 +29,15 @@ fn every_variant() -> Vec<Error> {
         },
         Error::ExternalTarget {
             links: BTreeMap::from([(Utf8PathBuf::from("toolchain"), "/opt/rust".to_owned())]),
+            origin: Origin::Caller,
         },
         Error::InvalidTarget {
             links: BTreeMap::from([(Utf8PathBuf::from("rc"), String::new())]),
+            origin: Origin::Caller,
         },
         Error::TreeConflict {
             paths: paths(&["a", "a/b"]),
+            origin: Origin::Caller,
         },
         Error::Block {
             blocks: BTreeMap::from([(
@@ -178,6 +182,7 @@ fn refusal_messages_name_the_offending_paths() {
 
     let external = Error::ExternalTarget {
         links: BTreeMap::from([(Utf8PathBuf::from("toolchain"), "/opt/rust".to_owned())]),
+        origin: Origin::Caller,
     };
     assert_eq!(
         external.to_string(),
@@ -190,6 +195,7 @@ fn refusal_messages_name_the_offending_paths() {
             (Utf8PathBuf::from("rc"), String::new()),
             (Utf8PathBuf::from("zed"), "a\0b".to_owned()),
         ]),
+        origin: Origin::Caller,
     };
     assert_eq!(
         invalid.to_string(),
@@ -212,6 +218,7 @@ fn refusal_messages_name_the_offending_paths() {
 
     let tree_conflict = Error::TreeConflict {
         paths: paths(&["a", "a/b"]),
+        origin: Origin::Caller,
     };
     assert_eq!(
         tree_conflict.to_string(),

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::Utf8PathBuf;
 use serde::Serialize;
 
-use crate::{Entry, EntryKind};
+use crate::{Entry, EntryKind, Origin};
 
 /// What planning does when a recorded path's state on disk differs from
 /// the recorded entry — bytes, kind, or executable bit — a user edit.
@@ -38,7 +38,7 @@ pub enum ExternalTargetPolicy {
     Allow,
 }
 
-/// The policy inputs one [`decide`](crate::decide) call runs under: what
+/// The policy inputs one [planning](crate::Projection::plan) call runs under: what
 /// the caller permits, as opposed to what the desired tree, the manifest,
 /// and the disk say.
 ///
@@ -68,18 +68,26 @@ pub struct PlanOptions {
 /// Every action apply would perform, keyed by path relative to the
 /// destination.
 ///
-/// A plan is complete: apply's inputs are the projection and the plan —
-/// never the desired tree — because each action carries what executing it
-/// needs: the [`Entry`] to write, and for destructive and recording
-/// actions the [`NodeSignature`] the disk must still match. Plans are
-/// plain data, not capabilities: apply re-validates containment, refuses
-/// an [`Overwrite`](Action::Overwrite), [`Skip`](Action::Skip),
+/// A plan is complete: applying it reads the desired tree again for
+/// nothing, because each action carries what executing it needs — the
+/// [`Entry`] to write, and for destructive and recording actions the
+/// [`NodeSignature`] the disk must still match.
+///
+/// A plan is a report, not a capability. Only a [`Run`](crate::Run) can
+/// execute one, and only the one it decided itself:
+/// [`Run::apply`](crate::Run::apply) takes no plan, so a plan from
+/// [`Projection::plan`](crate::Projection::plan) — decided outside the
+/// single-writer guard — is a description of what applying would do and
+/// nothing that can be handed back. Applying re-checks everything anyway:
+/// it re-validates containment, refuses an
+/// [`Overwrite`](Action::Overwrite), [`Skip`](Action::Skip),
 /// [`Remove`](Action::Remove), or [`Release`](Action::Release) keyed by a
-/// path the manifest does not record, and re-checks the disk against each
+/// path the manifest does not record, and matches the disk against each
 /// action's `expected` signature before touching anything — the recorded
 /// entry itself is never the signature baseline, since `expected` may
 /// deliberately differ from it (an agreement skip, a lifted drift) — so a
-/// hand-built or stale plan refuses rather than misfires. `BTreeMap`
+/// plan gone stale between deciding and applying refuses rather than
+/// misfires. `BTreeMap`
 /// keeps plans sorted, diffable, and deterministic; apply derives execution
 /// order from it — removals in reverse, then everything else parents before
 /// children, then the symlinks, each published only once the destination
@@ -93,6 +101,12 @@ pub struct Plan {
     /// The owner the plan was computed for; applied entries are recorded
     /// under this name in the manifest.
     pub owner: String,
+    /// Where the desired tree came from, named by every refusal this plan
+    /// produces — the ones deciding put in it, and the ones applying it
+    /// raises ([`Origin`]). A removal carries
+    /// [`Origin::Caller`](crate::Origin::Caller): it is decided from the
+    /// manifest, and there is no source tree to name.
+    pub origin: Origin,
     /// Whether the caller permitted external symlink targets when this
     /// plan was decided.
     ///
@@ -252,7 +266,7 @@ pub enum Refusal {
     /// disk — apply's walk follows a link the projection owns — but the
     /// write would land somewhere the plan does not name, which apply
     /// refuses and deciding will not plan (the no-alias rule
-    /// [`decide`](crate::decide) documents). Both sides
+    /// `docs/design.lex` section 2 states). Both sides
     /// of a conflict are refused — there is no deterministic entry to
     /// prefer; see [`Error::TreeConflict`](crate::Error::TreeConflict).
     /// [`load_mapping`](crate::load_mapping) rejects same-path duplicates
@@ -269,7 +283,7 @@ pub enum Refusal {
     /// via `..`, empty or `.` components, backslashes, and component
     /// shapes Windows resolves specially — its rustdoc is the full list),
     /// it lies beneath a symlink that outlives the plan (the no-alias rule
-    /// [`decide`](crate::decide) documents — a link on disk, owned or
+    /// `docs/design.lex` section 2 states — a link on disk, owned or
     /// foreign, that no action in this plan removes; beneath a *desired*
     /// link the refusal is [`TreeConflict`](Refusal::TreeConflict)), or it
     /// overlaps the projection's own state directory — a location inside

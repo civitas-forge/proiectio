@@ -142,7 +142,15 @@ fn plan_with(
     observations: &Observations,
     options: PlanOptions,
 ) -> Plan {
-    decide(OWNER, desired, manifest, observations, None, options)
+    decide(
+        OWNER,
+        desired,
+        Origin::Caller,
+        manifest,
+        observations,
+        None,
+        options,
+    )
 }
 
 fn action<'plan>(plan: &'plan Plan, path: &str) -> &'plan Action {
@@ -1026,6 +1034,7 @@ fn a_desired_path_entering_the_state_dir_refuses_containment() {
             (".proiectio", &entry),
             ("elsewhere/.proiectio", &entry),
         ]),
+        Origin::Caller,
         &Manifest::new(),
         &observed(&[]),
         Some(Utf8Path::new(".proiectio")),
@@ -1072,6 +1081,7 @@ fn a_desired_path_the_state_dir_sits_beneath_refuses_containment() {
             (".local/state/proiectio/manifest.json", &entry),
             (".local/share/rc", &entry),
         ]),
+        Origin::Caller,
         &Manifest::new(),
         &observed(&[]),
         Some(Utf8Path::new(NESTED_STATE)),
@@ -1138,6 +1148,7 @@ fn a_recorded_path_the_state_dir_sits_beneath_is_refused_not_removed() {
     let plan = decide(
         OWNER,
         &tree(&[("d/../.local", &entry)]),
+        Origin::Caller,
         &manifest,
         &observations,
         Some(Utf8Path::new(NESTED_STATE)),
@@ -1209,6 +1220,7 @@ fn the_state_subtree_is_invisible_to_planning() {
     let plan = decide(
         OWNER,
         &tree(&[("a.txt", &entry)]),
+        Origin::Caller,
         &manifest,
         &observations,
         Some(Utf8Path::new(".proiectio")),

@@ -2,59 +2,22 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use cap_std::fs_utf8::Dir;
 
 use super::*;
 use crate::test_support::{Tree, assert_tree};
-use crate::{DriftPolicy, Entry, PlanOptions, apply, decide};
+use crate::{Entry, Origin, PlanOptions, Projection};
 
-/// Opens a capability handle at a directory. Ambient authority is the
-/// test's to spend; the library itself never opens ambient paths.
-fn dir_at(root: &Utf8Path) -> Dir {
-    Dir::open_ambient_dir(root, cap_std::ambient_authority()).expect("open fixture root as a Dir")
+fn projection(dest: &Utf8Path, state: &Utf8Path) -> Projection {
+    Projection::new(dest.to_owned(), state.to_owned())
 }
 
-/// The state handle a caller ends up with for `root`: `None` where the
-/// directory does not exist, which a caller spells to [`status`] as
-/// [`StateDir::Missing`] — "nothing was ever projected here".
-fn state_at(root: &Utf8Path) -> Option<Dir> {
-    match Dir::open_ambient_dir(root, cap_std::ambient_authority()) {
-        Ok(state) => Some(state),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => panic!("open {root}: {e}"),
-    }
-}
-
-/// One full observe → decide → apply run, so a status test has something
-/// recorded to classify.
-fn project(dest: &Utf8Path, state: &Utf8Path, owner: &str, desired: &BTreeMap<Utf8PathBuf, Entry>) {
-    let dest = dir_at(dest);
-    let state = dir_at(state);
-    let manifest = crate::load_manifest(&state).expect("load manifest");
-    let observations = crate::observe(&dest, &manifest).expect("observe destination");
-    let plan = decide(
-        owner,
-        desired,
-        &manifest,
-        &observations,
-        None,
-        PlanOptions {
-            drift: DriftPolicy::Refuse,
-            ..PlanOptions::default()
-        },
-    );
-    apply(&dest, &state, &manifest, &plan).expect("apply");
-}
-
-/// [`status`] over two directories, the state directory outside the
-/// destination.
-fn status_of(dest: &Utf8Path, state: &Utf8Path) -> Status {
-    let state = state_at(state);
-    let state = match state.as_ref() {
-        Some(dir) => StateDir::Outside(dir),
-        None => StateDir::Missing,
-    };
-    status(&dir_at(dest), state).expect("status")
+/// One full plan → apply pass, so a status test has something recorded to
+/// classify.
+fn project(projection: &Projection, owner: &str, desired: &BTreeMap<Utf8PathBuf, Entry>) {
+    let mut run = projection.begin().expect("begin");
+    run.plan(owner, desired, Origin::Caller, PlanOptions::default())
+        .expect("plan");
+    run.apply().expect("apply");
 }
 
 fn states(status: &Status) -> Vec<(&str, PathState)> {
@@ -76,7 +39,12 @@ fn a_destination_with_no_manifest_reports_nothing() {
     // The state directory exists and holds no manifest file: nothing has
     // been projected yet.
     assert_eq!(fs::read_dir(state.root()).expect("read state").count(), 0);
-    assert_eq!(status_of(dest.root(), state.root()), Status::default());
+    assert_eq!(
+        projection(dest.root(), state.root())
+            .status()
+            .expect("status"),
+        Status::default()
+    );
 }
 
 #[test]
@@ -86,12 +54,13 @@ fn a_missing_state_directory_reports_nothing() {
     let missing = elsewhere.path("never-created");
     assert!(!missing.exists(), "the state directory must not exist");
 
-    let state = state_at(&missing);
-    assert!(state.is_none(), "a missing directory opens as no handle");
-
-    let report = status(&dir_at(dest.root()), StateDir::Missing).expect("status");
+    let report = projection(dest.root(), &missing).status().expect("status");
 
     assert_eq!(report, Status::default());
+    assert!(
+        !missing.exists(),
+        "a read never creates the state directory"
+    );
 }
 
 #[test]
@@ -99,8 +68,9 @@ fn without_a_state_directory_everything_on_disk_is_foreign() {
     let dest = Tree::new().file("theirs.txt", "not ours").materialize();
     let elsewhere = Tree::new().materialize();
 
-    assert!(state_at(&elsewhere.path("never-created")).is_none());
-    let report = status(&dir_at(dest.root()), StateDir::Missing).expect("status");
+    let report = projection(dest.root(), &elsewhere.path("never-created"))
+        .status()
+        .expect("status");
 
     assert_eq!(states(&report), vec![("theirs.txt", PathState::Foreign)]);
 }
@@ -109,18 +79,19 @@ fn without_a_state_directory_everything_on_disk_is_foreign() {
 fn reports_one_state_per_path_of_the_union() {
     let dest = Tree::new().materialize();
     let state = Tree::new().materialize();
+    let projection = projection(dest.root(), state.root());
     let tree = Tree::new()
         .file("clean.txt", "as written")
         .file("drifted.txt", "as written")
         .file("gone.txt", "as written");
-    project(dest.root(), state.root(), "own", &tree.entries());
+    project(&projection, "own", &tree.entries());
 
     fs::write(dest.path("drifted.txt"), "edited by hand").expect("edit");
     fs::remove_file(dest.path("gone.txt")).expect("delete");
     fs::write(dest.path("theirs.txt"), "never ours").expect("plant a foreign file");
 
     assert_eq!(
-        states(&status_of(dest.root(), state.root())),
+        states(&projection.status().expect("status")),
         vec![
             ("clean.txt", PathState::Clean),
             ("drifted.txt", PathState::Drifted),
@@ -134,13 +105,14 @@ fn reports_one_state_per_path_of_the_union() {
 fn a_directory_the_projection_created_still_reports_foreign() {
     let dest = Tree::new().materialize();
     let state = Tree::new().materialize();
+    let projection = projection(dest.root(), state.root());
     let tree = Tree::new().file("a/b/mine.txt", "projected");
-    project(dest.root(), state.root(), "own", &tree.entries());
+    project(&projection, "own", &tree.entries());
 
     // The manifest records no directories, so the parents apply created
     // for an owned file are unrecorded like any other directory.
     assert_eq!(
-        states(&status_of(dest.root(), state.root())),
+        states(&projection.status().expect("status")),
         vec![
             ("a", PathState::Foreign),
             ("a/b", PathState::Foreign),
@@ -153,37 +125,30 @@ fn a_directory_the_projection_created_still_reports_foreign() {
 fn status_writes_nothing() {
     let dest = Tree::new().materialize();
     let state = Tree::new().materialize();
+    let projection = projection(dest.root(), state.root());
     let tree = Tree::new().file("a/b.txt", "alpha");
-    project(dest.root(), state.root(), "own", &tree.entries());
+    project(&projection, "own", &tree.entries());
     let manifest = fs::read(state.path(crate::MANIFEST_FILE_NAME)).expect("read manifest");
 
-    status_of(dest.root(), state.root());
+    projection.status().expect("status");
 
     assert_tree(dest.root(), &tree);
     assert_tree(
         state.root(),
-        &Tree::new().file(crate::MANIFEST_FILE_NAME, manifest),
+        &Tree::new()
+            .file(crate::MANIFEST_FILE_NAME, manifest)
+            .file(crate::LOCK_FILE_NAME, ""),
     );
 }
 
 #[test]
 fn the_state_subtree_inside_the_destination_never_classifies() {
     let dest = Tree::new().materialize();
-    let prefix = Utf8Path::new(".proiectio");
-    let state = dest.path(prefix);
-    fs::create_dir(&state).expect("create the in-dest state directory");
+    let projection = projection(dest.root(), &dest.path(".proiectio"));
     let tree = Tree::new().file("a.txt", "alpha");
-    project(dest.root(), &state, "own", &tree.entries());
+    project(&projection, "own", &tree.entries());
 
-    let opened = state_at(&state).expect("the in-dest state directory opens");
-    let report = status(
-        &dir_at(dest.root()),
-        StateDir::Inside {
-            dir: &opened,
-            prefix,
-        },
-    )
-    .expect("status");
+    let report = projection.status().expect("status");
 
     assert_eq!(states(&report), vec![("a.txt", PathState::Clean)]);
 }

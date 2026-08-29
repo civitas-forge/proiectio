@@ -8,7 +8,7 @@ use std::rc::Rc;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
-use crate::{Entry, Error, Result};
+use crate::{Entry, Error, Origin, Result};
 
 /// How many bytes one load may expand archives to, summed over every member
 /// it keeps — over every `[archives]` table in one mapping, not one table
@@ -136,7 +136,7 @@ impl fmt::Display for ArchiveFormat {
 /// name outside them produces.
 pub(crate) const ARCHIVE_EXTENSIONS: &str = ".tar, .tar.gz, .tgz, .tar.zst, .zip";
 
-/// Expands an archive into the desired tree [`decide`](crate::decide) takes
+/// Expands an archive into the desired tree [planning](crate::Projection::plan) takes
 /// — the third desired-tree source beside
 /// [`load_mapping`](crate::load_mapping) and
 /// [`load_tree`](crate::load_tree), and the one behind `--tree` pointed at
@@ -184,7 +184,7 @@ pub(crate) const ARCHIVE_EXTENSIONS: &str = ".tar, .tar.gz, .tgz, .tar.zst, .zip
 ///
 /// Nothing is extracted to disk here. Expansion produces a desired tree in
 /// memory; the writing, and with it the apply-time refusal to write through
-/// a symlinked ancestor, is [`apply`](crate::apply)'s as for any other tree.
+/// a symlinked ancestor, is [`Run::apply`](crate::Run::apply)'s as for any other tree.
 ///
 /// # Refusals and errors
 ///
@@ -211,7 +211,7 @@ pub(crate) const ARCHIVE_EXTENSIONS: &str = ".tar, .tar.gz, .tgz, .tar.zst, .zip
 /// Symlink members carry their target string into [`Entry::Symlink`]
 /// verbatim and unjudged, as [`load_tree`](crate::load_tree) carries a
 /// walked link's. Grading a target in-dest or external needs the
-/// destination and belongs to [`decide`](crate::decide)
+/// destination and belongs to [planning](crate::Projection::plan)
 /// (`docs/security.lex` section 3). Under a prefix the link's *parent*
 /// moves, so a relative target is resolved from where the link lands; the
 /// target string itself is never rewritten to compensate, because what
@@ -220,7 +220,7 @@ pub(crate) const ARCHIVE_EXTENSIONS: &str = ".tar, .tar.gz, .tgz, .tar.zst, .zip
 /// One shape this function deliberately does not judge: a member nesting
 /// beneath another member that is not a directory — the symlink-member
 /// followed by a member writing through it, and the same shape with a file
-/// underneath. [`decide`](crate::decide) refuses it for *any* desired tree
+/// underneath. [Planning](crate::Projection::plan) refuses it for *any* desired tree
 /// as [`Refusal::TreeConflict`](crate::Refusal::TreeConflict), naming both
 /// paths, and it is the only stage that can: the member writing through an
 /// archive's symlink may come from a `[files]` entry in the same mapping,
@@ -279,7 +279,7 @@ pub(crate) const ARCHIVE_EXTENSIONS: &str = ".tar, .tar.gz, .tgz, .tar.zst, .zip
 /// Panics if `source` is relative: the crate never consults the current
 /// directory, so a relative path here has no meaning it could honor.
 pub fn load_archive(source: &Utf8Path, strip: u32) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
-    expand(source, strip, Utf8Path::new(""), &new_budget())
+    expand(source, strip, Utf8Path::new(""), None, &new_budget())
 }
 
 /// The byte budget one load spends, for a caller expanding several archives
@@ -316,11 +316,14 @@ pub(crate) fn new_budget() -> Rc<Budget> {
 /// components — so the join needs no second verdict.
 ///
 /// `budget` is what the whole load may still allocate — [`new_budget`] says
-/// why it is the caller's rather than this function's.
+/// why it is the caller's rather than this function's. `via` is the mapping
+/// whose `[archives]` table named this archive, carried into the containment
+/// refusal below ([`Origin::Archive`]).
 pub(crate) fn expand(
     source: &Utf8Path,
     strip: u32,
     prefix: &Utf8Path,
+    via: Option<&Utf8Path>,
     budget: &Rc<Budget>,
 ) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     assert!(
@@ -381,6 +384,10 @@ pub(crate) fn expand(
     if !expansion.refused.is_empty() {
         return Err(Error::Containment {
             paths: expansion.refused,
+            origin: Origin::Archive {
+                path: source.to_owned(),
+                via: via.map(Utf8Path::to_owned),
+            },
         });
     }
     Ok(expansion.tree)
@@ -669,7 +676,8 @@ impl Expansion<'_> {
         } else {
             name
         };
-        let Ok(normalized) = crate::containment::contained_normalize(Utf8Path::new(spelled)) else {
+        let Some(normalized) = crate::containment::contained_normalize(Utf8Path::new(spelled))
+        else {
             // Named as the archive spells it, trailing slash included, so
             // the refusal points at something findable in the archive.
             self.refused.insert(Utf8PathBuf::from(name));

@@ -61,7 +61,7 @@ pub(crate) fn sha256_hex_of_reader(mut reader: impl std::io::Read) -> std::io::R
 /// name; a non-UTF-8 entry on disk can never match a desired or recorded
 /// path, so it never appears here (`docs/design.lex` section 2).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct Observations {
+pub(crate) struct Observations {
     /// Per-path observations, keyed by path relative to the destination.
     pub paths: BTreeMap<Utf8PathBuf, Observation>,
 }
@@ -70,7 +70,7 @@ pub struct Observations {
 /// manifest looked like on disk, with lstat semantics: a symlink is
 /// observed as itself, never as what it points at.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum Observation {
+pub(crate) enum Observation {
     /// Recorded in the manifest, but not reached by the walk: gone from
     /// disk — or beneath an ancestor that is no longer a real directory,
     /// which the walk never reads through.
@@ -256,7 +256,7 @@ pub(crate) fn read_container(dir: &Dir, name: &str, path: &Utf8Path) -> Result<C
 /// destination fails this way over what the projection did not write:
 /// foreign nesting, or a mount loop.
 #[cfg(unix)]
-pub fn observe(dest: &Dir, manifest: &Manifest) -> Result<Observations> {
+pub(crate) fn observe(dest: &Dir, manifest: &Manifest) -> Result<Observations> {
     let mut paths = BTreeMap::new();
     walk(dest, Utf8Path::new(""), 0, manifest, &mut paths)?;
     for path in manifest.entries.keys() {

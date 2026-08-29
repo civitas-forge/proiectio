@@ -7,7 +7,8 @@ use cap_std::fs_utf8::Dir as Utf8Dir;
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree};
 use crate::{
-    Action, ApplyReport, Manifest, PlanOptions, Refusal, apply, decide, load_manifest, observe,
+    Action, ApplyReport, Manifest, Origin, PlanOptions, Refusal, apply, decide, load_manifest,
+    observe,
 };
 
 /// Opens a capability handle at a fixture root. Ambient authority is the
@@ -27,6 +28,7 @@ fn project(dest: &Fixture, state: &Fixture, desired: &BTreeMap<Utf8PathBuf, Entr
     let plan = decide(
         "tree",
         desired,
+        Origin::Caller,
         &manifest,
         &observations,
         None,
@@ -45,6 +47,7 @@ fn actions_for(desired: &BTreeMap<Utf8PathBuf, Entry>) -> BTreeMap<Utf8PathBuf, 
     decide(
         "tree",
         desired,
+        Origin::Caller,
         &manifest,
         &observations,
         None,
@@ -249,9 +252,12 @@ fn names_the_containment_gateway_refuses_are_reported_together_verbatim() {
             .into_iter()
             .map(Utf8PathBuf::from)
             .collect();
+    // A walked key is spelled relative to the source root, so the refusal
+    // names the root it is spelled against.
     assert!(matches!(
         load_tree(source.root()).unwrap_err(),
-        Error::Containment { paths } if paths == want
+        Error::Containment { paths, origin }
+            if paths == want && origin == Origin::Tree { path: source.root().to_owned() }
     ));
 }
 
@@ -269,7 +275,7 @@ fn a_directory_the_gateway_refuses_is_named_instead_of_its_descendants() {
     let want: BTreeSet<Utf8PathBuf> = BTreeSet::from([Utf8PathBuf::from("COM1")]);
     assert!(matches!(
         load_tree(source.root()).unwrap_err(),
-        Error::Containment { paths } if paths == want
+        Error::Containment { paths, .. } if paths == want
     ));
 }
 
@@ -283,7 +289,7 @@ fn a_refused_directory_holding_nothing_is_still_refused() {
     let want: BTreeSet<Utf8PathBuf> = BTreeSet::from([Utf8PathBuf::from("weird:name")]);
     assert!(matches!(
         load_tree(source.root()).unwrap_err(),
-        Error::Containment { paths } if paths == want
+        Error::Containment { paths, .. } if paths == want
     ));
 }
 

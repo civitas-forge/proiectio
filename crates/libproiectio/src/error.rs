@@ -3,17 +3,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::Utf8PathBuf;
 use thiserror::Error;
 
+use crate::Origin;
+
 /// The crate-wide result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// How deep below its root a directory walk descends, counted in
 /// directories: [`load_tree`](crate::load_tree) below the source root, and
-/// [`observe`](crate::observe) below the destination. A tree nesting past it
+/// the destination walk below the destination. A tree nesting past it
 /// fails the walk — [`Error::TreeTooDeep`] on the source side,
 /// [`Error::DestinationTooDeep`] on the destination side — rather than being
 /// walked further.
 ///
-/// [`apply`](crate::apply) bounds by the same number the paths it writes,
+/// [`Run::apply`](crate::Run::apply) bounds by the same number the paths it writes,
 /// though it walks nothing: a plan writing past it names a path apply would
 /// create and observe could then never read back, leaving every later run
 /// of that destination behind a walk that cannot complete — including the
@@ -66,7 +68,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// runs out: the same abort, later, and still with no path named. Bounding
 /// the depth answers both, and answers them with a path.
 ///
-/// [`apply`](crate::apply)'s no-follow walk is iterative for a different
+/// [`Run::apply`](crate::Run::apply)'s no-follow walk is iterative for a different
 /// reason: it walks the components of one path the plan already names, so
 /// its length is the plan's and never the disk's.
 pub const MAX_WALK_DEPTH: usize = 64;
@@ -133,12 +135,18 @@ pub enum Error {
     /// one path with the manifest recording another is the alias deciding's
     /// no-alias rule exists to prevent. An ancestor link the manifest owns
     /// whose on-disk target changed is [`Drift`](Error::Drift), not this.
-    #[error("refusing paths that violate containment: {}", join(paths))]
+    #[error(
+        "refusing paths that violate containment{}: {}",
+        note(origin),
+        join(paths)
+    )]
     Containment {
         /// The offending locations, spelled as whatever named them: a
         /// desired key or a removal request verbatim, or — where the plan
         /// refused a location its own manifest records — the recorded path.
         paths: BTreeSet<Utf8PathBuf>,
+        /// Where the tree holding them came from ([`Origin`]).
+        origin: Origin,
     },
     /// Refusal: the desired entry for a path — bytes, kind, or executable
     /// bit — differs from what another owner holds there. Two owners may
@@ -165,13 +173,16 @@ pub enum Error {
     /// its target verbatim. Nothing is ever written *through* such a link:
     /// an external target is a pointer, and apply refuses to resolve one.
     #[error(
-        "refusing symlinks with targets outside the destination: {}",
+        "refusing symlinks with targets outside the destination{}: {}",
+        note(origin),
         join_links(links)
     )]
     ExternalTarget {
         /// The offending links: path of each link, relative to the
         /// destination, mapped to its target string verbatim.
         links: BTreeMap<Utf8PathBuf, String>,
+        /// Where the tree holding them came from ([`Origin`]).
+        origin: Origin,
     },
     /// Refusal: desired symlinks whose targets are not pathnames on any
     /// host — the empty string, which names nothing, and strings carrying a
@@ -184,13 +195,16 @@ pub enum Error {
     /// writable — a target past the host's length limit still fails at the
     /// filesystem, which nothing lexical could foresee.
     #[error(
-        "refusing symlinks whose targets are not paths: {}",
+        "refusing symlinks whose targets are not paths{}: {}",
+        note(origin),
         join_invalid(links)
     )]
     InvalidTarget {
         /// The offending links: path of each link, relative to the
         /// destination, mapped to its target string verbatim.
         links: BTreeMap<Utf8PathBuf, String>,
+        /// Where the tree holding them came from ([`Origin`]).
+        origin: Origin,
     },
     /// Refusal: desired keys claiming one on-disk location more than once
     /// — two keys normalizing to the same path, or one desired path lying
@@ -205,12 +219,15 @@ pub enum Error {
     /// this refusal is the deciding stage's verdict on any tree, however
     /// built.
     #[error(
-        "refusing desired paths that claim overlapping locations: {}",
+        "refusing desired paths that claim overlapping locations{}: {}",
+        note(origin),
         join(paths)
     )]
     TreeConflict {
         /// The conflicting desired keys, verbatim.
         paths: BTreeSet<Utf8PathBuf>,
+        /// Where the tree holding them came from ([`Origin`]).
+        origin: Origin,
     },
     /// A filesystem operation failed. Not a refusal: the underlying OS
     /// error stays visible.
@@ -244,14 +261,14 @@ pub enum Error {
         supported: u32,
     },
     /// Another writer holds the single-writer lock on the state directory
-    /// (`docs/implementation.lex` section 7). `StateLock::acquire` has
-    /// try-lock semantics, so a contended lock reports this immediately
-    /// rather than blocking. Not a refusal — no destination path is being
-    /// declined, the run simply cannot start — so [`Error::is_refusal`] is
-    /// `false` and a CLI maps it to exit 1 like any other runtime failure.
+    /// (`docs/implementation.lex` section 7). Acquisition is try-lock, so a
+    /// contended lock reports this immediately rather than blocking. Not a
+    /// refusal — no destination path is being declined, the run simply
+    /// cannot start — so [`Error::is_refusal`] is `false` and a CLI maps it
+    /// to exit 1 like any other runtime failure.
     ///
     /// (The variant is spelled on every target so the exit contract does
-    /// not shift under a `cfg`; the lock itself, `StateLock`, is built only
+    /// not shift under a `cfg`; the guard, and so `Run`, is built only
     /// where `flock(2)` is available.)
     #[error("state lock {path} is held by another writer")]
     LockHeld {
@@ -537,7 +554,7 @@ pub enum Error {
         /// below the source root — [`MAX_WALK_DEPTH`].
         limit: usize,
     },
-    /// The destination nests deeper than [`observe`](crate::observe) walks.
+    /// The destination nests deeper than the destination walk descends.
     /// Not a refusal: no destination path is being declined — the
     /// observation cannot be taken at all, and every later stage reads the
     /// snapshot rather than the disk.
@@ -550,7 +567,7 @@ pub enum Error {
     /// snapshot silently missing paths would let the deciding stage read
     /// occupied ones as absent.
     ///
-    /// [`apply`](crate::apply) raises it too, up front, over a plan writing
+    /// [`Run::apply`](crate::Run::apply) raises it too, up front, over a plan writing
     /// a path past the same depth: the projection does not write what it
     /// would not be able to observe afterwards. The path there is the
     /// written path's ancestor a level past the limit, spelled in the same
@@ -716,6 +733,50 @@ impl Error {
             | Error::DestinationTooDeep { .. }
             | Error::TreeNodeKind { .. } => false,
         }
+    }
+
+    /// Names `origin` as the source of this refusal, where it is one of the
+    /// four that carry an [`Origin`]; every other variant is returned
+    /// unchanged.
+    ///
+    /// Applying is where this earns its keep, and only over the refusals
+    /// whose offending value the plan supplied: whole-plan validation reads
+    /// nothing but the plan's actions, so a refusal it raises is named with
+    /// the plan's origin as it leaves. The walk that follows refuses over
+    /// what it finds on disk — a link a *past* run wrote, an ancestor
+    /// nobody recorded — and those keep [`Origin::Caller`], because naming
+    /// this plan's source would send a reader to a file the offending
+    /// string is not in ([`Run::apply`](crate::Run::apply)).
+    pub(crate) fn with_origin(self, origin: &Origin) -> Error {
+        match self {
+            Error::Containment { paths, .. } => Error::Containment {
+                paths,
+                origin: origin.clone(),
+            },
+            Error::TreeConflict { paths, .. } => Error::TreeConflict {
+                paths,
+                origin: origin.clone(),
+            },
+            Error::ExternalTarget { links, .. } => Error::ExternalTarget {
+                links,
+                origin: origin.clone(),
+            },
+            Error::InvalidTarget { links, .. } => Error::InvalidTarget {
+                links,
+                origin: origin.clone(),
+            },
+            other => other,
+        }
+    }
+}
+
+/// The parenthesised source phrase a refusal's message carries, and nothing
+/// at all for [`Origin::Caller`] — which is why the messages read the same as
+/// they did before an origin was on them.
+fn note(origin: &Origin) -> String {
+    match origin {
+        Origin::Caller => String::new(),
+        named => format!(" ({named})"),
     }
 }
 

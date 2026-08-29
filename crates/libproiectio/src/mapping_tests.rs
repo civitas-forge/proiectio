@@ -241,10 +241,18 @@ fn escaping_keys_are_refused_together_each_named_verbatim() {
     .into_iter()
     .map(Utf8PathBuf::from)
     .collect();
+    let error = parse_at(text).unwrap_err();
     assert!(matches!(
-        parse_at(text).unwrap_err(),
-        Error::Containment { paths } if paths == want
+        &error,
+        Error::Containment { paths, origin }
+            if *paths == want && *origin == Origin::Mapping { path: MAPPING.into() }
     ));
+    assert!(
+        error.to_string().starts_with(
+            "refusing paths that violate containment (from mapping /maps/deploy.toml)"
+        ),
+        "the refusal names the file to edit: {error}"
+    );
 }
 
 #[test]
@@ -353,9 +361,54 @@ fn an_archive_member_climbing_out_of_its_prefix_is_refused_by_name() {
 
     assert!(matches!(
         load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
-        Error::Containment { paths }
+        Error::Containment { paths, .. }
             if paths == BTreeSet::from([Utf8PathBuf::from("../escape")])
     ));
+}
+
+/// The definition of done: one mapping may name several archives, so a
+/// member path says neither which archive to open nor which file to edit.
+/// The refusal names both.
+#[test]
+#[cfg(unix)]
+fn a_refused_member_names_its_archive_and_the_mapping_that_named_it() {
+    let text = r#"
+        version = 1
+        [archives."first/"]
+        source = "assets/first.zip"
+        [archives."second/"]
+        source = "assets/second.zip"
+    "#;
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .file("assets/first.zip", zip_named("ok.txt", "fine\n"))
+        .file("assets/second.zip", zip_named("../escape", "out\n"))
+        .materialize();
+
+    let error = load_mapping(&fixture.path("deploy.toml")).unwrap_err();
+
+    match &error {
+        Error::Containment { paths, origin } => {
+            assert_eq!(*paths, BTreeSet::from([Utf8PathBuf::from("../escape")]));
+            assert_eq!(
+                *origin,
+                Origin::Archive {
+                    path: fixture.path("assets/second.zip"),
+                    via: Some(fixture.path("deploy.toml")),
+                }
+            );
+        }
+        other => panic!("expected Containment, got {other:?}"),
+    }
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "refusing paths that violate containment (from archive {}, named by mapping {}): \
+             ../escape",
+            fixture.path("assets/second.zip"),
+            fixture.path("deploy.toml"),
+        )
+    );
 }
 
 /// An expanded member is an ordinary projected path, so one colliding with

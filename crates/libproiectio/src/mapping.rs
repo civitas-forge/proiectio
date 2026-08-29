@@ -5,7 +5,7 @@ use std::io::Read;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Deserialize;
 
-use crate::{Entry, Error, Result};
+use crate::{Entry, Error, Origin, Result};
 
 /// The mapping format version this crate accepts.
 pub const MAPPING_VERSION: u32 = 1;
@@ -107,7 +107,7 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     let mut files = Vec::new();
     for (key, table) in doc.files {
         let key = Utf8PathBuf::from(key);
-        match normalize_key(&key) {
+        match crate::containment::contained_normalize(&key) {
             Some(normalized) => files.push((key, normalized, table)),
             None => {
                 refused.insert(key);
@@ -117,7 +117,7 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     let mut links = Vec::new();
     for (key, table) in doc.links {
         let key = Utf8PathBuf::from(key);
-        match normalize_key(&key) {
+        match crate::containment::contained_normalize(&key) {
             Some(normalized) => links.push((normalized, table)),
             None => {
                 refused.insert(key);
@@ -130,7 +130,7 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     let mut archives = Vec::new();
     for (key, table) in doc.archives {
         let prefix = key.strip_suffix('/').unwrap_or(&key);
-        match normalize_key(Utf8Path::new(prefix)) {
+        match crate::containment::contained_normalize(Utf8Path::new(prefix)) {
             Some(normalized) => archives.push((normalized, table)),
             None => {
                 refused.insert(Utf8PathBuf::from(key));
@@ -138,7 +138,12 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
         }
     }
     if !refused.is_empty() {
-        return Err(Error::Containment { paths: refused });
+        return Err(Error::Containment {
+            paths: refused,
+            origin: Origin::Mapping {
+                path: path.to_owned(),
+            },
+        });
     }
 
     let mut seen = BTreeSet::new();
@@ -236,7 +241,13 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
     let budget = crate::archive::new_budget();
     for (prefix, table) in archives {
         let source = dir.join(table.source);
-        let expanded = crate::archive::expand(&source, table.strip.unwrap_or(0), &prefix, &budget)?;
+        let expanded = crate::archive::expand(
+            &source,
+            table.strip.unwrap_or(0),
+            &prefix,
+            Some(path),
+            &budget,
+        )?;
         for (key, entry) in expanded {
             if tree.insert(key.clone(), entry).is_some() {
                 return Err(Error::MappingDuplicate {
@@ -247,16 +258,6 @@ fn parse(path: &Utf8Path, text: &str) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
         }
     }
     Ok(tree)
-}
-
-/// Runs one projected key through the containment gateway's normalize-only
-/// half and returns it lexically normalized; `None` is a containment
-/// refusal, which the caller aggregates into one [`Error::Containment`]
-/// naming every offender. The gateway's verdict on a relative key does not
-/// depend on any destination — the mapping is parsed before one exists —
-/// which is exactly the half `contained_normalize` carries.
-fn normalize_key(key: &Utf8Path) -> Option<Utf8PathBuf> {
-    crate::containment::contained_normalize(key).ok()
 }
 
 /// Where a `[files]` entry's bytes come from, decided before any read.

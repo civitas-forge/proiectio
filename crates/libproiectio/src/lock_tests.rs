@@ -18,16 +18,7 @@ fn acquire_creates_the_lock_file_in_the_state_dir() {
 }
 
 #[test]
-fn release_lets_the_next_writer_acquire() {
-    let state = Tree::new().materialize();
-    let dir = dir_at(state.root());
-    let guard = StateLock::acquire(&dir).expect("first acquire");
-    guard.release();
-    StateLock::acquire(&dir).expect("acquire after release");
-}
-
-#[test]
-fn drop_releases_like_release() {
+fn dropping_the_guard_lets_the_next_writer_acquire() {
     let state = Tree::new().materialize();
     let dir = dir_at(state.root());
     let guard = StateLock::acquire(&dir).expect("first acquire");

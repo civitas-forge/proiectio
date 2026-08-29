@@ -7,7 +7,7 @@ use crate::block;
 use crate::containment::{Hop, contained_normalize, contained_target_chain, is_pathname};
 use crate::{
     Action, BlockFault, DriftPolicy, Entry, EntryKind, ExternalTargetPolicy, Manifest,
-    ManifestEntry, NodeSignature, Observation, Observations, PathState, Placement, Plan,
+    ManifestEntry, NodeSignature, Observation, Observations, Origin, PathState, Placement, Plan,
     PlanOptions, Refusal, Status, sha256_hex,
 };
 
@@ -57,7 +57,7 @@ use crate::{
 /// reads [`Drifted`](PathState::Drifted) whatever its extreme occurrence
 /// holds, which is what stops every later stage acting on a guess
 /// ([`EntryKind::Block`]).
-pub fn classify(
+pub(crate) fn classify(
     manifest: &Manifest,
     observations: &Observations,
     state_prefix: Option<&Utf8Path>,
@@ -276,23 +276,33 @@ pub fn classify(
 /// holding the marker on more than one whole line — it identifies no region,
 /// so it never reads clean, never skips, and never lifts, until the extra
 /// line is gone ([`EntryKind::Block`]).
-pub fn decide(
+///
+/// `origin` says where `desired` came from and lands on the [`Plan`], so
+/// every refusal this call produces — and every refusal applying the plan
+/// raises — names it ([`Origin`]).
+pub(crate) fn decide(
     owner: &str,
     desired: &BTreeMap<Utf8PathBuf, Entry>,
+    origin: Origin,
     manifest: &Manifest,
     observations: &Observations,
     state_prefix: Option<&Utf8Path>,
     options: PlanOptions,
 ) -> Plan {
-    plan_actions(
-        owner,
-        desired,
-        manifest,
-        observations,
-        state_prefix,
-        options,
-        &Judged::Everything,
-    )
+    Plan {
+        owner: owner.to_owned(),
+        origin,
+        external_targets: options.external_targets,
+        actions: plan_actions(
+            owner,
+            desired,
+            manifest,
+            observations,
+            state_prefix,
+            options,
+            &Judged::Everything,
+        ),
+    }
 }
 
 /// The removal stage: the plan that clears what `owner` holds, either
@@ -335,7 +345,10 @@ pub fn decide(
 /// plan refuses at apply time. [`apply`](crate::apply) then removes in
 /// reverse order and prunes the directories the removals emptied, keeping
 /// any that still holds anything.
-pub fn decide_removal(
+///
+/// The plan carries [`Origin::Caller`]: a removal is decided from the
+/// manifest, so there is no source tree for a refusal to name.
+pub(crate) fn decide_removal(
     owner: &str,
     scope: RemovalScope<'_>,
     manifest: &Manifest,
@@ -350,7 +363,7 @@ pub fn decide_removal(
             let mut refused: BTreeMap<Utf8PathBuf, Action> = BTreeMap::new();
             for request in requested {
                 match contained_normalize(request) {
-                    Ok(normalized) if !overlaps_state(&normalized, state_prefix) => {
+                    Some(normalized) if !overlaps_state(&normalized, state_prefix) => {
                         admitted.insert(normalized);
                     }
                     _ => {
@@ -361,7 +374,7 @@ pub fn decide_removal(
             (Judged::Paths(admitted), refused)
         }
     };
-    let mut plan = plan_actions(
+    let mut actions = plan_actions(
         owner,
         &BTreeMap::new(),
         manifest,
@@ -372,12 +385,17 @@ pub fn decide_removal(
     );
     // A refused request was never admitted, so its key names no planned
     // action: the two maps are disjoint.
-    plan.actions.extend(refused);
-    plan
+    actions.extend(refused);
+    Plan {
+        owner: owner.to_owned(),
+        origin: Origin::Caller,
+        external_targets: options.external_targets,
+        actions,
+    }
 }
 
-/// What a [`decide_removal`] call clears: everything the owner holds, or
-/// the paths a caller names.
+/// What a removal clears: everything the owner holds, or the paths a caller
+/// names ([`Projection::plan_removal`](crate::Projection::plan_removal)).
 ///
 /// The two are separate spellings rather than a full list and an empty one,
 /// so clearing an owner cannot be said by accident: `Paths` over an empty
@@ -420,7 +438,8 @@ impl Judged {
 
 /// The body behind [`decide`] and [`decide_removal`]: the action table of
 /// [`decide`]'s rustdoc, with `judged` narrowing which of the owner's
-/// recorded paths it judges.
+/// recorded paths it judges. The callers wrap the actions in the [`Plan`]
+/// that carries the owner, the origin, and the policy.
 fn plan_actions(
     owner: &str,
     desired: &BTreeMap<Utf8PathBuf, Entry>,
@@ -429,7 +448,7 @@ fn plan_actions(
     state_prefix: Option<&Utf8Path>,
     options: PlanOptions,
     judged: &Judged,
-) -> Plan {
+) -> BTreeMap<Utf8PathBuf, Action> {
     let states = classify(manifest, observations, state_prefix);
     let mut actions: BTreeMap<Utf8PathBuf, Action> = BTreeMap::new();
 
@@ -443,7 +462,7 @@ fn plan_actions(
     let mut claims: BTreeMap<Utf8PathBuf, BTreeMap<&Utf8PathBuf, &Entry>> = BTreeMap::new();
     let mut named: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (key, entry) in desired {
-        let Ok(normalized) = contained_normalize(key) else {
+        let Some(normalized) = contained_normalize(key) else {
             // No location to name: the gateway refused the key outright, and
             // a manifest key is always one the gateway admits.
             actions.insert(key.clone(), refuse(Refusal::Containment));
@@ -565,11 +584,7 @@ fn plan_actions(
         actions.insert(path.clone(), action);
     }
 
-    Plan {
-        owner: owner.to_owned(),
-        external_targets: options.external_targets,
-        actions,
-    }
+    actions
 }
 
 /// Whether acting at `path` would touch the projection's own state subtree —
