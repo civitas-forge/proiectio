@@ -51,7 +51,11 @@ use crate::{
 /// recorded marker and placement and hashes the body alone, so a container
 /// edited outside the region reads [`Clean`](PathState::Clean), and a
 /// container whose marker line is gone reads [`Missing`](PathState::Missing)
-/// exactly as a deleted file does (`docs/design.lex` section 2).
+/// exactly as a deleted file does (`docs/design.lex` section 2). One holding
+/// the marker on more than one whole line identifies no region at all and
+/// reads [`Drifted`](PathState::Drifted) whatever its extreme occurrence
+/// holds, which is what stops every later stage acting on a guess
+/// ([`EntryKind::Block`]).
 pub fn classify(
     manifest: &Manifest,
     observations: &Observations,
@@ -262,11 +266,11 @@ pub fn classify(
 /// strips that region and splices the new one in a single publish. A drifted
 /// region lifts under [`DriftPolicy::Overwrite`] like any other node whose
 /// signature apply can re-verify, which for a block is the body the recorded
-/// marker locates in a container holding that marker on exactly one line: a
-/// container that became a directory carries no such signature, and neither
-/// does one the author wrote a second bare marker line into, since the marker
-/// is the whole of the region's identity. Both stay refused under either
-/// policy.
+/// marker locates: a container that became a directory carries no such
+/// signature and stays refused under either policy. Neither does a container
+/// holding the marker on more than one whole line — it identifies no region,
+/// so it never reads clean, never skips, and never lifts, until the extra
+/// line is gone ([`EntryKind::Block`]).
 pub fn decide(
     owner: &str,
     desired: &BTreeMap<Utf8PathBuf, Entry>,
@@ -930,32 +934,17 @@ fn desired_signature(entry: &Entry) -> NodeSignature {
 /// carries no region, so a lifted drift has nothing to re-verify and the
 /// refusal holds under either policy.
 ///
-/// Neither does a container holding the marker on more than one line. The
-/// region is located by taking an extreme occurrence, which is the
-/// projection's own only while every other one is a line the author wrote
-/// outside the region; an author who wrote a bare marker line past the
-/// region's outer edge broke that, and the manifest holds nothing else that
-/// tells the two apart. Lifting there would strip a range nobody can say is
-/// the recorded one, and the region it guessed wrong about would stay in the
-/// container with the manifest no longer recording it — so it refuses instead,
-/// under either policy, and the author's stray line has to go first.
+/// Neither does a container holding the marker on more than one line, which
+/// identifies no region at all ([`identified_region`]): lifting there would
+/// strip a range nobody can say is the recorded one, and the region it
+/// guessed wrong about would stay in the container with the manifest no
+/// longer recording it.
 fn observed_signature(
     recorded: &ManifestEntry,
     observation: &Observation,
 ) -> Option<NodeSignature> {
     if recorded.kind.is_block() {
-        let Observation::Block {
-            hash: Some(hash),
-            occurrences,
-            ..
-        } = observation
-        else {
-            return None;
-        };
-        if *occurrences != 1 {
-            return None;
-        }
-        return Some(NodeSignature {
+        return identified_region(observation).map(|hash| NodeSignature {
             kind: recorded.kind.clone(),
             hash: hash.clone(),
             executable: false,
@@ -982,19 +971,52 @@ fn observed_signature(
 /// Whether the observed node is exactly the recorded entry — kind and hash,
 /// plus the executable bit for files. For a block that is the region's body:
 /// the container's other bytes are the author's and enter no comparison.
+///
+/// A container holding the marker on more than one whole line matches
+/// nothing, however its extreme occurrence hashes ([`identified_region`]).
 fn observation_matches_recorded(recorded: &ManifestEntry, observation: &Observation) -> bool {
     match (&recorded.kind, observation) {
         (EntryKind::File, Observation::File { hash, executable }) => {
             *hash == recorded.hash && *executable == recorded.executable
         }
         (EntryKind::Symlink, Observation::Symlink { hash, .. }) => *hash == recorded.hash,
-        (
-            EntryKind::Block { .. },
-            Observation::Block {
-                hash: Some(hash), ..
-            },
-        ) => *hash == recorded.hash,
+        (EntryKind::Block { .. }, observation) => {
+            identified_region(observation) == Some(&recorded.hash)
+        }
         _ => false,
+    }
+}
+
+/// The hash of the region an observation identifies: `None` where the
+/// container holds no marker occurrence, and `None` too where it holds more
+/// than one.
+///
+/// The region is found by taking an extreme occurrence — the last for
+/// [`Append`](Placement::Append), the first for
+/// [`Prepend`](Placement::Prepend) — which is the projection's own only while
+/// every other occurrence is a line outside the region. The body may carry
+/// none, so a container the projection alone has written has exactly one; a
+/// second bare marker line is somebody else's, and the marker is the whole of
+/// a region's identity, so nothing says which of the two bounds the recorded
+/// region. An author line above an `Append` region and a duplicate of the
+/// region below it are the same picture from here, and the safe one cannot be
+/// told from the ruinous one.
+///
+/// So such a container identifies no region. It matches neither the record
+/// nor the desired entry, which classifies it [`Drifted`](PathState::Drifted)
+/// and leaves nothing to skip, and it carries no signature
+/// ([`observed_signature`]), which is what refuses the lift. Every action on
+/// it refuses under either policy until the extra line is gone.
+/// [`EntryKind::Block`]'s rustdoc states the rule and the indented or quoted
+/// spelling that lets a container mention its marker without breaking it.
+fn identified_region(observation: &Observation) -> Option<&String> {
+    match observation {
+        Observation::Block {
+            hash: Some(hash),
+            occurrences: 1,
+            ..
+        } => Some(hash),
+        _ => None,
     }
 }
 
@@ -1025,12 +1047,10 @@ fn observation_matches_desired(
         (Entry::Symlink { target }, Observation::Symlink { hash, .. }) => {
             *hash == sha256_hex(target.as_bytes())
         }
-        (
-            Entry::Block { body, .. },
-            Observation::Block {
-                hash: Some(hash), ..
-            },
-        ) => entry.kind() == recorded.kind && *hash == sha256_hex(body),
+        (Entry::Block { body, .. }, observation) => {
+            entry.kind() == recorded.kind
+                && identified_region(observation) == Some(&sha256_hex(body))
+        }
         _ => false,
     }
 }

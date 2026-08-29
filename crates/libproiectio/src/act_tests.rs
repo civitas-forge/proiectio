@@ -2557,30 +2557,44 @@ fn two_owners_share_a_region_only_while_agreeing_on_the_marker() {
 }
 
 #[test]
-fn a_second_marker_line_past_the_edge_refuses_under_force_and_strands_nothing() {
+fn a_second_marker_line_past_the_edge_refuses_and_strands_nothing() {
     // The last occurrence is the projection's only while every other one is
-    // a line outside the region. An author who appended a bare marker line
-    // past the edge left two, and stripping the last would republish the
-    // container with the first region still in it and the manifest recording
-    // the new one — a stranded body nothing owns.
-    let (dest, state) = fixtures();
-    Tree::new().file("rc", "author\n").write_under(dest.root());
-    let desired = block_tree("rc", "managed\n", Placement::Append);
-    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
-    let edited = "author\n# proiectio\nmanaged\n# proiectio\ntheirs\n";
-    fs::write(dest.path("rc"), edited).expect("append a second marker line past the edge");
+    // a line outside the region. A second bare marker line leaves two, and
+    // stripping the last would republish the container with the first region
+    // still in it and the manifest recording only the new one — a stranded
+    // body nothing owns. The second region's body decides nothing: a copy of
+    // the recorded one would otherwise read clean and be overwritten in
+    // place, which is the same stranding by a quieter route.
+    for theirs in ["theirs\n", "managed\n"] {
+        let (dest, state) = fixtures();
+        Tree::new().file("rc", "author\n").write_under(dest.root());
+        let desired = block_tree("rc", "managed\n", Placement::Append);
+        pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
+        let edited = format!("author\n# proiectio\nmanaged\n# proiectio\n{theirs}");
+        fs::write(dest.path("rc"), &edited).expect("append a second marker line past the edge");
 
-    // Neither a forced overwrite nor a forced removal has a region it can
-    // name, so both refuse where an unambiguous edit would have lifted.
-    let overwrite = pipeline(
-        &dest,
-        &state,
-        "own",
-        &block_tree("rc", "v2\n", Placement::Append),
-        DriftPolicy::Overwrite,
-    )
-    .expect_err("no occurrence is known to be the recorded one");
-    let removal = {
+        // Nothing has a region it can name: not the ordinary overwrite, not
+        // the forced one, and not the forced removal.
+        let mut errors = vec![
+            pipeline(
+                &dest,
+                &state,
+                "own",
+                &block_tree("rc", "v2\n", Placement::Append),
+                DriftPolicy::Refuse,
+            )
+            .expect_err("no occurrence is known to be the recorded one"),
+        ];
+        errors.push(
+            pipeline(
+                &dest,
+                &state,
+                "own",
+                &block_tree("rc", "v2\n", Placement::Append),
+                DriftPolicy::Overwrite,
+            )
+            .expect_err("and --force lifts nothing it cannot re-verify"),
+        );
         let (manifest, plan) = {
             let dest_dir = dir_at(dest.root());
             let state_dir = dir_at(state.root());
@@ -2599,17 +2613,17 @@ fn a_second_marker_line_past_the_edge_refuses_under_force_and_strands_nothing() 
             );
             (manifest, plan)
         };
-        apply_at(&dest, &state, &manifest, &plan).expect_err("nor does the removal")
-    };
+        errors.push(apply_at(&dest, &state, &manifest, &plan).expect_err("nor does the removal"));
 
-    for error in [overwrite, removal] {
-        match error {
-            Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
-            other => panic!("expected Drift, got {other:?}"),
+        for error in errors {
+            match error {
+                Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+                other => panic!("expected Drift, got {other:?}"),
+            }
         }
+        assert_eq!(container(&dest, "rc"), edited);
+        assert!(persisted(&state).entries.contains_key(Utf8Path::new("rc")));
     }
-    assert_eq!(container(&dest, "rc"), edited);
-    assert!(persisted(&state).entries.contains_key(Utf8Path::new("rc")));
 }
 
 #[test]

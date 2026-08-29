@@ -117,13 +117,14 @@ pub enum Observation {
         /// same read.
         newline_terminated: bool,
         /// How many whole-line marker occurrences the container holds. One is
-        /// the ordinary reading; more than one means the marker no longer
-        /// says which bytes are the projection's, since the region is located
-        /// by taking an extreme occurrence and the author has written another
-        /// past the region's outer edge. A drifted region does not lift under
-        /// [`DriftPolicy::Overwrite`](crate::DriftPolicy::Overwrite) then —
-        /// there is no range apply could strip that is known to be the
-        /// recorded one.
+        /// the ordinary reading: the body may carry no marker line, so a
+        /// container the projection alone has written holds exactly one. More
+        /// than one and the marker no longer says which bytes are the
+        /// projection's — the region is found by taking an extreme
+        /// occurrence, and somebody else has written another. Such a
+        /// container identifies no region, so it classifies
+        /// [`Drifted`](crate::PathState::Drifted) and every action on it
+        /// refuses under either policy ([`EntryKind::Block`](crate::EntryKind::Block)).
         occurrences: usize,
     },
 }

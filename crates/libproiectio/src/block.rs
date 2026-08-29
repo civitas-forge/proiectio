@@ -102,20 +102,7 @@ pub(crate) fn locate(container: &[u8], marker: &str, placement: Placement) -> Op
 /// its identity. Counting is what lets the deciding stage refuse that rather
 /// than strip a range it guessed at.
 pub(crate) fn occurrence_count(container: &[u8], marker: &str) -> usize {
-    let mut count = 0;
-    let mut start = 0;
-    if marker.is_empty() {
-        return 0;
-    }
-    loop {
-        if marker_line(container, marker.as_bytes(), start).is_some() {
-            count += 1;
-        }
-        match container[start..].iter().position(|byte| *byte == b'\n') {
-            Some(offset) => start += offset + 1,
-            None => return count,
-        }
-    }
+    occurrences(container, marker).count()
 }
 
 /// The container with `region` removed: the author's side, byte for byte.
@@ -161,32 +148,43 @@ use Which::{First, Last};
 
 /// The first or last marker occurrence in `bytes`, as the offset the marker
 /// starts at and the offset just past its line terminator.
+fn occurrence(bytes: &[u8], marker: &str, which: Which) -> Option<(usize, usize)> {
+    let mut found = occurrences(bytes, marker);
+    match which {
+        First => found.next(),
+        Last => found.last(),
+    }
+}
+
+/// Every marker occurrence in `bytes`, in order, each as the offset the
+/// marker starts at and the offset just past its line terminator. The one
+/// reading of "occurrence" the whole module shares.
 ///
 /// An occurrence is a whole line: anchored at a line start — offset zero, or
 /// the byte after a `\n` — matched byte-exact, and terminated by `\n`,
 /// `\r\n`, or the end of `bytes`. So an indented or quoted line carrying the
 /// marker text is not one.
-fn occurrence(bytes: &[u8], marker: &str, which: Which) -> Option<(usize, usize)> {
-    if marker.is_empty() {
-        // Every line start would match, which is no occurrence at all. Such a
-        // marker is refused before it can be written; a manifest this crate
-        // never wrote can still carry one.
-        return None;
-    }
-    let mut found = None;
-    let mut start = 0;
-    loop {
-        if let Some(line_end) = marker_line(bytes, marker.as_bytes(), start) {
-            found = Some((start, line_end));
-            if which == First {
-                return found;
+///
+/// An empty marker yields nothing: every line start would match, which is no
+/// occurrence at all. Such a marker is refused before it can be written; a
+/// manifest this crate never wrote can still carry one.
+fn occurrences<'a>(bytes: &'a [u8], marker: &'a str) -> impl Iterator<Item = (usize, usize)> + 'a {
+    let mut start = Some(0);
+    std::iter::from_fn(move || {
+        if marker.is_empty() {
+            return None;
+        }
+        loop {
+            let here = start?;
+            start = bytes[here..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|offset| here + offset + 1);
+            if let Some(line_end) = marker_line(bytes, marker.as_bytes(), here) {
+                return Some((here, line_end));
             }
         }
-        match bytes[start..].iter().position(|byte| *byte == b'\n') {
-            Some(offset) => start += offset + 1,
-            None => return found,
-        }
-    }
+    })
 }
 
 /// The offset just past the line terminator when `start` — known to be a line

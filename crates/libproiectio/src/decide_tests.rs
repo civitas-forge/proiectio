@@ -2126,37 +2126,49 @@ fn a_drifted_region_lifts_under_force_and_a_lost_container_does_not() {
 }
 
 #[test]
-fn a_second_marker_line_costs_the_region_its_identity_and_force_refuses() {
+fn a_second_marker_line_costs_the_region_its_identity_and_every_action_refuses() {
     // The region is found by taking the last occurrence, which is the
-    // projection's own only while every other one is a line outside it. An
-    // author who wrote a bare marker line past the region's outer edge left
-    // nothing saying which is which, so there is no range apply could be
-    // told to strip — and lifting a guess would leave the other region in
-    // the container with the manifest no longer recording it.
+    // projection's own only while every other one is a line outside it. A
+    // second bare marker line leaves nothing saying which is which, so there
+    // is no range apply could be told to strip — and acting on a guess would
+    // leave the other region in the container with the manifest recording
+    // only one. The extreme occurrence's body decides nothing here: whether
+    // it hashes to the record, to the desired body, or to neither, the
+    // container identifies no region and every action refuses.
     let entry = block("v2\n", Placement::Append);
-    let recorded_v1 = recorded(&block("v1\n", Placement::Append), &[OWNER]);
-    let manifest = manifest_of(&[("conf", recorded_v1)]);
-    let ambiguous = edited_region("theirs\n", 2);
+    let manifest = manifest_of(&[(
+        "conf",
+        recorded(&block("v1\n", Placement::Append), &[OWNER]),
+    )]);
+    let ambiguous = [
+        // The author's own bytes down there.
+        edited_region("theirs\n", 2),
+        // A copy of the recorded region, which would otherwise read clean.
+        edited_region("v1\n", 2),
+        // A copy of what this run wants, which would otherwise skip.
+        edited_region("v2\n", 2),
+    ];
 
-    let overwrite = plan(
-        &tree(&[("conf", &entry)]),
-        &manifest,
-        &observed(&[("conf", ambiguous.clone())]),
-        DriftPolicy::Overwrite,
-    );
-    let removal = removal(
-        RemovalScope::Everything,
-        &manifest,
-        &observed(&[("conf", ambiguous)]),
-        DriftPolicy::Overwrite,
-    );
-
-    for plan in [&overwrite, &removal] {
-        assert_eq!(
-            action(plan, "conf"),
-            &Action::Refuse {
-                refusal: Refusal::Drift,
+    for observation in ambiguous {
+        let observations = observed(&[("conf", observation.clone())]);
+        for policy in [DriftPolicy::Refuse, DriftPolicy::Overwrite] {
+            let overwrite = plan(&tree(&[("conf", &entry)]), &manifest, &observations, policy);
+            let removal = removal(RemovalScope::Everything, &manifest, &observations, policy);
+            for plan in [&overwrite, &removal] {
+                assert_eq!(
+                    action(plan, "conf"),
+                    &Action::Refuse {
+                        refusal: Refusal::Drift,
+                    },
+                    "{observation:?} {policy:?}"
+                );
             }
+        }
+        // And it is drift that says so, at the classification.
+        assert_eq!(
+            classify(&manifest, &observations, None).paths[Utf8Path::new("conf")],
+            PathState::Drifted,
+            "{observation:?}"
         );
     }
 }

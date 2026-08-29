@@ -111,15 +111,32 @@ pub enum EntryKind {
     /// this. [`Prepend`](Placement::Prepend) is therefore the safer placement
     /// for a container people append to — which is most of them.
     ///
-    /// One shape of that edit is worse than the rest and is refused rather
-    /// than discarded: a bare `marker` line among the bytes past the edge.
-    /// The region is found by taking the last occurrence (the first, for
-    /// `Prepend`), which is the projection's own only while every other one
-    /// is a line outside the region; a second one inside it leaves nothing
-    /// saying which is which, since the marker is the whole of the region's
-    /// identity. Such a container refuses under either policy until the stray
-    /// line is gone. Writing the marker text indented or quoted is what lets
-    /// a container hold it safely.
+    /// # One marker line, or none of it works
+    ///
+    /// A container may hold `marker` as a whole line exactly once. The region
+    /// is found by taking the last occurrence (the first, for
+    /// [`Prepend`](Placement::Prepend)), which is the projection's own only
+    /// while every other occurrence is a line outside the region — and the
+    /// body may carry none, so a container the projection alone has written
+    /// holds exactly one.
+    ///
+    /// A second bare marker line is somebody else's, and the marker is the
+    /// whole of a region's identity, so nothing then says which of the two
+    /// bounds the projection's bytes. A line the author wrote above an
+    /// `Append` region and a copy of the region below it are the same picture
+    /// from the projection's side, and the harmless one cannot be told from
+    /// the ruinous one: acting on a guess would republish the container with
+    /// the other region still in it and the manifest recording only one — a
+    /// managed body nothing owns, per marker line, which is the growth the
+    /// marker exists to prevent.
+    ///
+    /// So such a container identifies no region: it reads
+    /// [`Drifted`](crate::PathState::Drifted) whatever its extreme occurrence
+    /// holds, nothing skips, and
+    /// [`DriftPolicy::Overwrite`](crate::DriftPolicy::Overwrite) does not
+    /// lift it. Every action refuses until the extra line is gone. Writing
+    /// the marker text indented or quoted is what lets a container mention it
+    /// without this, since neither is an occurrence.
     ///
     /// # Bounds
     ///
