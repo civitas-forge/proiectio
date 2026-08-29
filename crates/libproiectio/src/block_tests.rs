@@ -183,6 +183,33 @@ fn the_marker_rules_refuse_at_plan_time() {
 }
 
 #[test]
+fn occurrences_are_counted_by_the_same_whole_line_rule() {
+    let cases: &[(&str, usize)] = &[
+        ("author only\n", 0),
+        ("author\n# proiectio\nbody\n", 1),
+        // The marker terminated by the end of the file counts.
+        ("author\n# proiectio", 1),
+        // Two bare lines: which one bounds the region is no longer knowable.
+        ("# proiectio\nauthor\n# proiectio\nours\n", 2),
+        // Indented, quoted and longer lines are not occurrences, so a
+        // container discussing its marker keeps its region identifiable.
+        (
+            "  # proiectio\n\"# proiectio\"\n# proiectio extra\n# proiectio\nours\n",
+            1,
+        ),
+    ];
+    for (container, want) in cases {
+        assert_eq!(
+            occurrence_count(container.as_bytes(), MARKER),
+            *want,
+            "{container:?}"
+        );
+    }
+    // An empty marker would otherwise count every line start.
+    assert_eq!(occurrence_count(b"a\nb\n", ""), 0);
+}
+
+#[test]
 fn newline_termination_is_emptiness_or_a_trailing_newline() {
     assert!(newline_terminated(b""));
     assert!(newline_terminated(b"a\n"));

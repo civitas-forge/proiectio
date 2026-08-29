@@ -63,9 +63,14 @@ pub fn classify(
             continue;
         }
         let state = match (manifest.entries.get(path), observation) {
+            (Some(_), Observation::Absent) => PathState::Missing,
             // A region whose marker line is no longer in the container is a
-            // node gone from disk, which is what Missing means.
-            (Some(_), Observation::Absent | Observation::Block { hash: None, .. }) => {
+            // node gone from disk, which is what Missing means — but only
+            // where the record is the block that region belongs to. This
+            // stage takes the manifest and the observations as two separate
+            // inputs, so a region observed at a path recorded as a whole node
+            // is the kind mismatch below, not an absence.
+            (Some(recorded), Observation::Block { hash: None, .. }) if recorded.kind.is_block() => {
                 PathState::Missing
             }
             (Some(recorded), observation) => {
@@ -257,8 +262,11 @@ pub fn classify(
 /// strips that region and splices the new one in a single publish. A drifted
 /// region lifts under [`DriftPolicy::Overwrite`] like any other node whose
 /// signature apply can re-verify, which for a block is the body the recorded
-/// marker locates: a container that became a directory carries no such
-/// signature and stays refused under either policy.
+/// marker locates in a container holding that marker on exactly one line: a
+/// container that became a directory carries no such signature, and neither
+/// does one the author wrote a second bare marker line into, since the marker
+/// is the whole of the region's identity. Both stay refused under either
+/// policy.
 pub fn decide(
     owner: &str,
     desired: &BTreeMap<Utf8PathBuf, Entry>,
@@ -857,8 +865,9 @@ fn orphan_action(
 /// overwrites and the drifted node carries a signature for apply's
 /// changed-since-plan re-check — the destructive action built by `lift`
 /// expecting the drifted node. A node without a signature — a directory, a
-/// kind the projection never writes, or a block whose container is no longer
-/// a file holding the region — is refused under either policy.
+/// kind the projection never writes, or a block whose container no longer
+/// holds exactly one region the recorded marker identifies — is refused under
+/// either policy.
 fn lift_or_refuse_drift(
     recorded: &ManifestEntry,
     observation: &Observation,
@@ -920,17 +929,32 @@ fn desired_signature(entry: &Entry) -> NodeSignature {
 /// same recorded kind. A container swapped for a symlink or a directory
 /// carries no region, so a lifted drift has nothing to re-verify and the
 /// refusal holds under either policy.
+///
+/// Neither does a container holding the marker on more than one line. The
+/// region is located by taking an extreme occurrence, which is the
+/// projection's own only while every other one is a line the author wrote
+/// outside the region; an author who wrote a bare marker line past the
+/// region's outer edge broke that, and the manifest holds nothing else that
+/// tells the two apart. Lifting there would strip a range nobody can say is
+/// the recorded one, and the region it guessed wrong about would stay in the
+/// container with the manifest no longer recording it — so it refuses instead,
+/// under either policy, and the author's stray line has to go first.
 fn observed_signature(
     recorded: &ManifestEntry,
     observation: &Observation,
 ) -> Option<NodeSignature> {
     if recorded.kind.is_block() {
         let Observation::Block {
-            hash: Some(hash), ..
+            hash: Some(hash),
+            occurrences,
+            ..
         } = observation
         else {
             return None;
         };
+        if *occurrences != 1 {
+            return None;
+        }
         return Some(NodeSignature {
             kind: recorded.kind.clone(),
             hash: hash.clone(),

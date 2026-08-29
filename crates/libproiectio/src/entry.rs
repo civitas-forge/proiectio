@@ -111,6 +111,16 @@ pub enum EntryKind {
     /// this. [`Prepend`](Placement::Prepend) is therefore the safer placement
     /// for a container people append to — which is most of them.
     ///
+    /// One shape of that edit is worse than the rest and is refused rather
+    /// than discarded: a bare `marker` line among the bytes past the edge.
+    /// The region is found by taking the last occurrence (the first, for
+    /// `Prepend`), which is the projection's own only while every other one
+    /// is a line outside the region; a second one inside it leaves nothing
+    /// saying which is which, since the marker is the whole of the region's
+    /// identity. Such a container refuses under either policy until the stray
+    /// line is gone. Writing the marker text indented or quoted is what lets
+    /// a container hold it safely.
+    ///
     /// # Bounds
     ///
     /// One region per path and one projection per container: two regions in

@@ -2557,6 +2557,62 @@ fn two_owners_share_a_region_only_while_agreeing_on_the_marker() {
 }
 
 #[test]
+fn a_second_marker_line_past_the_edge_refuses_under_force_and_strands_nothing() {
+    // The last occurrence is the projection's only while every other one is
+    // a line outside the region. An author who appended a bare marker line
+    // past the edge left two, and stripping the last would republish the
+    // container with the first region still in it and the manifest recording
+    // the new one — a stranded body nothing owns.
+    let (dest, state) = fixtures();
+    Tree::new().file("rc", "author\n").write_under(dest.root());
+    let desired = block_tree("rc", "managed\n", Placement::Append);
+    pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
+    let edited = "author\n# proiectio\nmanaged\n# proiectio\ntheirs\n";
+    fs::write(dest.path("rc"), edited).expect("append a second marker line past the edge");
+
+    // Neither a forced overwrite nor a forced removal has a region it can
+    // name, so both refuse where an unambiguous edit would have lifted.
+    let overwrite = pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "v2\n", Placement::Append),
+        DriftPolicy::Overwrite,
+    )
+    .expect_err("no occurrence is known to be the recorded one");
+    let removal = {
+        let (manifest, plan) = {
+            let dest_dir = dir_at(dest.root());
+            let state_dir = dir_at(state.root());
+            let manifest = load_manifest(&state_dir).expect("load manifest");
+            let observations = observe(&dest_dir, &manifest).expect("observe");
+            let plan = decide_removal(
+                "own",
+                RemovalScope::Everything,
+                &manifest,
+                &observations,
+                None,
+                PlanOptions {
+                    drift: DriftPolicy::Overwrite,
+                    ..PlanOptions::default()
+                },
+            );
+            (manifest, plan)
+        };
+        apply_at(&dest, &state, &manifest, &plan).expect_err("nor does the removal")
+    };
+
+    for error in [overwrite, removal] {
+        match error {
+            Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+    assert_eq!(container(&dest, "rc"), edited);
+    assert!(persisted(&state).entries.contains_key(Utf8Path::new("rc")));
+}
+
+#[test]
 fn a_hand_built_plan_expecting_another_marker_fails_up_front() {
     // The marker is what tells the projection's bytes from the author's, so
     // an expectation naming a line the author wrote would point the strip at

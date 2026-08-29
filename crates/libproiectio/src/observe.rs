@@ -116,6 +116,15 @@ pub enum Observation {
         /// [`Append`](crate::Placement::Append) requires of it. Free from the
         /// same read.
         newline_terminated: bool,
+        /// How many whole-line marker occurrences the container holds. One is
+        /// the ordinary reading; more than one means the marker no longer
+        /// says which bytes are the projection's, since the region is located
+        /// by taking an extreme occurrence and the author has written another
+        /// past the region's outer edge. A drifted region does not lift under
+        /// [`DriftPolicy::Overwrite`](crate::DriftPolicy::Overwrite) then —
+        /// there is no range apply could strip that is known to be the
+        /// recorded one.
+        occurrences: usize,
     },
 }
 
@@ -329,8 +338,9 @@ fn walk(
 }
 
 /// Observes the region recorded at `rel` inside the container named `name`:
-/// the body's hash where the container holds a marker occurrence, and whether
-/// the author's side is newline-terminated either way.
+/// the body's hash where the container holds a marker occurrence, whether the
+/// author's side is newline-terminated either way, and how many occurrences
+/// the container holds at all.
 ///
 /// The container is read whole rather than streamed, because locating a
 /// marker line needs the bytes together — so this is the one read whose peak
@@ -357,6 +367,7 @@ fn observe_region(
             &bytes,
             region.as_ref(),
         )),
+        occurrences: crate::block::occurrence_count(&bytes, marker),
     })
 }
 

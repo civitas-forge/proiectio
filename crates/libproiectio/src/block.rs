@@ -90,6 +90,34 @@ pub(crate) fn locate(container: &[u8], marker: &str, placement: Placement) -> Op
     }
 }
 
+/// How many whole-line marker occurrences `container` holds.
+///
+/// [`locate`] takes the last for [`Append`](Placement::Append) and the first
+/// for [`Prepend`](Placement::Prepend), which is the projection's own only
+/// while the region reads back as recorded: the body may carry no marker
+/// line, so every other occurrence is a line the author wrote outside the
+/// region. An author who writes a bare marker line *past* the region's outer
+/// edge has written one inside it, and then nothing in the manifest says
+/// which occurrence bounds the recorded region — the marker is the whole of
+/// its identity. Counting is what lets the deciding stage refuse that rather
+/// than strip a range it guessed at.
+pub(crate) fn occurrence_count(container: &[u8], marker: &str) -> usize {
+    let mut count = 0;
+    let mut start = 0;
+    if marker.is_empty() {
+        return 0;
+    }
+    loop {
+        if marker_line(container, marker.as_bytes(), start).is_some() {
+            count += 1;
+        }
+        match container[start..].iter().position(|byte| *byte == b'\n') {
+            Some(offset) => start += offset + 1,
+            None => return count,
+        }
+    }
+}
+
 /// The container with `region` removed: the author's side, byte for byte.
 pub(crate) fn strip(container: &[u8], region: Option<&Region>) -> Vec<u8> {
     match region {

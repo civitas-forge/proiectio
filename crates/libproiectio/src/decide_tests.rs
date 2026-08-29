@@ -54,6 +54,7 @@ fn on_disk(entry: &Entry) -> Observation {
         Entry::Block { body, .. } => Observation::Block {
             hash: Some(sha256_hex(body)),
             newline_terminated: true,
+            occurrences: 1,
         },
     }
 }
@@ -75,6 +76,17 @@ fn no_region(newline_terminated: bool) -> Observation {
     Observation::Block {
         hash: None,
         newline_terminated,
+        occurrences: 0,
+    }
+}
+
+/// The observation of a region whose body was edited on disk, under a
+/// container holding the marker on `occurrences` lines.
+fn edited_region(body: &str, occurrences: usize) -> Observation {
+    Observation::Block {
+        hash: Some(sha256_hex(body.as_bytes())),
+        newline_terminated: true,
+        occurrences,
     }
 }
 
@@ -295,13 +307,7 @@ fn a_recorded_block_classifies_over_its_region() {
     let manifest = manifest_of(&[("conf", recorded(&entry, &[OWNER]))]);
     let cases: &[(Observation, PathState)] = &[
         (on_disk(&entry), PathState::Clean),
-        (
-            Observation::Block {
-                hash: Some(sha256_hex(b"edited\n")),
-                newline_terminated: true,
-            },
-            PathState::Drifted,
-        ),
+        (edited_region("edited\n", 1), PathState::Drifted),
         (no_region(true), PathState::Missing),
         (Observation::Absent, PathState::Missing),
         // The container is no longer a file at all: drift of kind.
@@ -312,6 +318,19 @@ fn a_recorded_block_classifies_over_its_region() {
         assert_eq!(
             status.paths[Utf8Path::new("conf")],
             *want,
+            "{observation:?}"
+        );
+    }
+
+    // The manifest and the observations are two separate inputs of this pure
+    // stage, so a region observed at a path recorded as a whole node is the
+    // kind mismatch every other pairing is, not an absence.
+    let whole = manifest_of(&[("conf", recorded(&file("whole\n", false), &[OWNER]))]);
+    for observation in [no_region(true), on_disk(&entry)] {
+        let status = classify(&whole, &observed(&[("conf", observation.clone())]), None);
+        assert_eq!(
+            status.paths[Utf8Path::new("conf")],
+            PathState::Drifted,
             "{observation:?}"
         );
     }
@@ -2069,10 +2088,7 @@ fn a_drifted_region_lifts_under_force_and_a_lost_container_does_not() {
         "conf",
         recorded(&block("v1\n", Placement::Append), &[OWNER]),
     )]);
-    let edited = Observation::Block {
-        hash: Some(sha256_hex(b"edited\n")),
-        newline_terminated: true,
-    };
+    let edited = edited_region("edited\n", 1);
 
     let lifted = plan(
         &tree(&[("conf", &entry)]),
@@ -2107,6 +2123,42 @@ fn a_drifted_region_lifts_under_force_and_a_lost_container_does_not() {
             refusal: Refusal::Drift,
         }
     );
+}
+
+#[test]
+fn a_second_marker_line_costs_the_region_its_identity_and_force_refuses() {
+    // The region is found by taking the last occurrence, which is the
+    // projection's own only while every other one is a line outside it. An
+    // author who wrote a bare marker line past the region's outer edge left
+    // nothing saying which is which, so there is no range apply could be
+    // told to strip — and lifting a guess would leave the other region in
+    // the container with the manifest no longer recording it.
+    let entry = block("v2\n", Placement::Append);
+    let recorded_v1 = recorded(&block("v1\n", Placement::Append), &[OWNER]);
+    let manifest = manifest_of(&[("conf", recorded_v1)]);
+    let ambiguous = edited_region("theirs\n", 2);
+
+    let overwrite = plan(
+        &tree(&[("conf", &entry)]),
+        &manifest,
+        &observed(&[("conf", ambiguous.clone())]),
+        DriftPolicy::Overwrite,
+    );
+    let removal = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observed(&[("conf", ambiguous)]),
+        DriftPolicy::Overwrite,
+    );
+
+    for plan in [&overwrite, &removal] {
+        assert_eq!(
+            action(plan, "conf"),
+            &Action::Refuse {
+                refusal: Refusal::Drift,
+            }
+        );
+    }
 }
 
 #[test]

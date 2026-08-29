@@ -388,6 +388,7 @@ fn a_recorded_block_observes_its_region_and_not_the_container() {
             hash: Some(sha256_hex(b"managed\n")),
             // The author's side ends at the marker's line start.
             newline_terminated: true,
+            occurrences: 1,
         }
     );
 }
@@ -424,6 +425,7 @@ fn a_container_with_no_marker_line_observes_no_region() {
             // No region, so the author's side is the whole file — and this
             // one has no final newline to append after.
             newline_terminated: false,
+            occurrences: 0,
         }
     );
 }
@@ -446,6 +448,7 @@ fn newline_termination_is_about_the_author_side_alone() {
             Observation::Block {
                 hash: Some(sha256_hex(b"managed\n")),
                 newline_terminated: want,
+                occurrences: 1,
             }
         );
     }
