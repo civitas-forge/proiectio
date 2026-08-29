@@ -230,9 +230,9 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// `docs/implementation.lex` section 3 states all three answers together. A
 /// **write** — file, symlink, or a block's container — must go down at its
 /// action key, since that is the path the manifest records: one the walk
-/// relocated is refused as [`Error::Containment`] ([`at_action_key`]). A
+/// relocated is refused as [`Error::Containment`] (`at_action_key`). A
 /// **removal** follows the link and reports where it unlinked, so pruning
-/// judges the directory that actually lost a child ([`remove`]) — nothing is
+/// judges the directory that actually lost a child (`remove`) — nothing is
 /// created and the manifest entry goes away either way. A **release** walks
 /// nothing: it drops an owner from a manifest entry and reads no disk
 /// ([`Action::Release`]).
@@ -895,7 +895,7 @@ fn prune(dest: &Dir, manifest: &Manifest, candidates: &BTreeSet<Utf8PathBuf>) ->
 /// caller writing a file has nothing to read in the answer.
 ///
 /// Nothing is written where the walk did not go down at the action key
-/// ([`at_action_key`]) — a symlink, a file, and a block's container alike.
+/// (`at_action_key`) — a symlink, a file, and a block's container alike.
 /// A block never reaches this function: [`run`] splices its region instead,
 /// through a walk that creates nothing but is held to the same key.
 ///
@@ -1013,7 +1013,7 @@ fn persist_mode(dir: &Dir, leaf: &str, path: &Utf8Path, contents: &[u8], mode: u
 ///
 /// [`OpenContainer::landing`] carries where the walk came out, so the two
 /// callers that republish a container — [`write_block`] and
-/// [`overwrite_block`] — hold it to the action key ([`at_action_key`]),
+/// [`overwrite_block`] — hold it to the action key (`at_action_key`),
 /// while [`remove_block`] follows an owned link like every other removal.
 fn read_block_container(
     dest: &Dir,
@@ -1089,7 +1089,7 @@ struct OpenContainer {
 ///
 /// The container this read opened must be the one the action names: a walk
 /// that reached it through an owned link refuses as [`Error::Containment`]
-/// ([`at_action_key`]) rather than splice a region the manifest would then
+/// (`at_action_key`) rather than splice a region the manifest would then
 /// record at another path.
 ///
 /// A recorded path is asked one question first, under the *recorded* marker
@@ -1177,7 +1177,7 @@ fn write_block(
 /// The old region is located with `expected`'s marker and placement and the
 /// new one written with the entry's, so a caller who changed either migrates
 /// the region in this single publish. Like every other write, it happens at
-/// the action key or not at all ([`at_action_key`]).
+/// the action key or not at all (`at_action_key`).
 fn overwrite_block(
     dest: &Dir,
     manifest: &Manifest,
