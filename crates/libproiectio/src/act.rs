@@ -142,10 +142,13 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 ///   back. Removals are exempt, since they add no directory and are the
 ///   way back from a destination already too deep;
 /// - a plan whose [`Block`](EntryKind::Block) entry breaks one of the marker
-///   or body rules [`EntryKind::Block`] states, or whose block entry or block
-///   signature disagrees with the manifest about whether the path holds a
-///   region, fails as [`Error::Block`]. The deciding stage refuses both
-///   already; a plan is plain data, so a hand-built one meets them here.
+///   or body rules [`EntryKind::Block`] states, whose entry or signature
+///   disagrees with the manifest about whether the path holds a region, or
+///   whose signature names a marker and placement the manifest does not
+///   record there, fails as [`Error::Block`]. The deciding stage produces
+///   none of these; a plan is plain data, so a hand-built one meets them
+///   here, and the last is what keeps an expectation from pointing apply's
+///   strip at a line the author wrote.
 ///
 /// # Blocks
 ///
@@ -160,6 +163,19 @@ pub fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 /// region are copied through by range — never parsed, compared, or passed
 /// through a pattern substitution — and the container is republished with the
 /// author's mode, taken off that descriptor rather than from the entry.
+///
+/// One case is the exception to the up-front promise above, and it is stated
+/// rather than implied: a block over a container the manifest does not
+/// record. [`observe`](crate::observe) locates a region with the *recorded*
+/// marker, and there is none at a path never recorded, so what such a
+/// container holds is unknown until this read — deciding plans a
+/// [`Write`](Action::Write) either way, and the read then splices, adopts an
+/// identical region, or refuses ([`Error::Foreign`] for a region carrying
+/// other bytes, [`Error::Block`] for a container an
+/// [`Append`](Placement::Append) cannot be added to). Those three refusals
+/// arrive mid-run, after whatever the plan already applied. The manifest
+/// still records exactly what landed, so a re-run heals rather than meeting
+/// its own writes as foreign.
 ///
 /// # What a block costs
 ///
@@ -390,10 +406,8 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         // here is a region rather than a whole node
         // ([`EntryKind::Block`](crate::EntryKind::Block)). A recorded path is
         // guaranteed above for every action but `Write`.
-        let record_is_block = manifest
-            .entries
-            .get(path)
-            .is_some_and(|recorded| recorded.kind.is_block());
+        let recorded_kind = manifest.entries.get(path).map(|recorded| &recorded.kind);
+        let record_is_block = recorded_kind.is_some_and(EntryKind::is_block);
         match action {
             Action::Write { entry } => {
                 if let Some(fault) = entry_block_fault(entry) {
@@ -408,18 +422,19 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                 if let Some(fault) = entry_block_fault(entry) {
                     blocks.insert(path.clone(), fault);
                 }
-                if record_is_block != entry.kind().is_block()
-                    || record_is_block != expected.kind.is_block()
-                {
+                if record_is_block != entry.kind().is_block() {
                     blocks.insert(path.clone(), BlockFault::KindChange);
+                }
+                if let Some(fault) = signature_block_fault(recorded_kind, &expected.kind) {
+                    blocks.insert(path.clone(), fault);
                 }
             }
             Action::Skip { expected }
             | Action::Remove {
                 expected: Some(expected),
             } => {
-                if record_is_block != expected.kind.is_block() {
-                    blocks.insert(path.clone(), BlockFault::KindChange);
+                if let Some(fault) = signature_block_fault(recorded_kind, &expected.kind) {
+                    blocks.insert(path.clone(), fault);
                 }
             }
             Action::Remove { expected: None } | Action::Release => {}
@@ -461,6 +476,28 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// What an action's expected signature earns from the record at its path:
+/// the one distinction a path never crosses, and — where the record is a
+/// block — the region that signature names.
+///
+/// A block signature is what locates the bytes apply strips or replaces, so
+/// it must name the region the manifest records, marker and placement both.
+/// A signature naming another marker would have apply treat lines the author
+/// wrote as the projection's region and strip or replace them. The *entry* of
+/// an overwrite may name a new marker — that is the migration one publish
+/// performs — but the expectation is what the disk is re-checked against, and
+/// it is the record's.
+fn signature_block_fault(recorded: Option<&EntryKind>, expected: &EntryKind) -> Option<BlockFault> {
+    let record_is_block = recorded.is_some_and(EntryKind::is_block);
+    if record_is_block != expected.is_block() {
+        return Some(BlockFault::KindChange);
+    }
+    if record_is_block && recorded != Some(expected) {
+        return Some(BlockFault::SignatureNotRecorded);
+    }
+    None
 }
 
 /// The plan-time refusals a written [`Block`](Entry::Block) entry earns from
@@ -1026,6 +1063,15 @@ struct OpenContainer {
 ///   [`ContainerMissing`](BlockFault::ContainerMissing): a block never
 ///   creates its container, which is what keeps the projection from owning
 ///   one whole.
+///
+/// A recorded path is asked one question more, under the *recorded* marker
+/// rather than the entry's. The two differ only where the caller is changing
+/// the marker, and the plan reached a write by finding the recorded region
+/// gone; a recorded region that came back in the gap is a change since the
+/// plan, refused as [`Error::Drift`]. Splicing under the new marker instead
+/// would leave the old region standing with nothing recording it — one
+/// stranded body per marker change, which is the growth the marker exists to
+/// prevent.
 fn write_block(
     dest: &Dir,
     manifest: &Manifest,
@@ -1043,6 +1089,20 @@ fn write_block(
     let Some(container) = read_block_container(dest, manifest, path)? else {
         return Err(block_refusal(path, BlockFault::ContainerMissing));
     };
+    if let Some((was_marker, was_placement)) = manifest
+        .entries
+        .get(path)
+        .and_then(|recorded| block::block_kind(&recorded.kind))
+    {
+        // The recorded region was gone at plan time. Where the caller is
+        // also changing the marker, the splice below would not replace it,
+        // so a region that came back in the gap would be stranded.
+        if (was_marker, was_placement) != (marker.as_str(), *placement)
+            && block::locate(&container.bytes, was_marker, was_placement).is_some()
+        {
+            return Err(drift(path));
+        }
+    }
     if let Some(region) = block::locate(&container.bytes, marker, *placement) {
         if &container.bytes[region.body] == body.as_slice() {
             return Ok(ApplyOutcome::Skipped);

@@ -2557,6 +2557,102 @@ fn two_owners_share_a_region_only_while_agreeing_on_the_marker() {
 }
 
 #[test]
+fn a_hand_built_plan_expecting_another_marker_fails_up_front() {
+    // The marker is what tells the projection's bytes from the author's, so
+    // an expectation naming a line the author wrote would point the strip at
+    // the author's own tail. The record's marker is the only one an
+    // expectation may name.
+    let (dest, state) = fixtures();
+    let author = "author\n# theirs\ntheir tail\n";
+    Tree::new().file("rc", author).write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "rc".into(),
+        recorded(
+            block_kind(Placement::Append),
+            sha256_hex(b"managed\n"),
+            &["own"],
+        ),
+    );
+    let plan = Plan {
+        owner: "own".to_owned(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([(
+            "rc".into(),
+            Action::Remove {
+                expected: Some(NodeSignature {
+                    kind: EntryKind::Block {
+                        marker: "# theirs".to_owned(),
+                        placement: Placement::Append,
+                    },
+                    hash: sha256_hex(b"their tail\n"),
+                    executable: false,
+                }),
+            },
+        )]),
+    };
+
+    let error = apply_at(&dest, &state, &manifest, &plan)
+        .expect_err("the expectation names a region the manifest does not record");
+
+    match error {
+        Error::Block { blocks } => assert_eq!(
+            blocks,
+            BTreeMap::from([("rc".into(), BlockFault::SignatureNotRecorded)])
+        ),
+        other => panic!("expected Block, got {other:?}"),
+    }
+    // Nothing of the author's was stripped.
+    assert_eq!(container(&dest, "rc"), author);
+}
+
+#[test]
+fn a_recorded_region_back_under_the_old_marker_refuses_rather_than_stranding_it() {
+    let (dest, state) = fixtures();
+    let author = "author\n";
+    Tree::new().file("rc", author).write_under(dest.root());
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &block_tree("rc", "managed\n", Placement::Append),
+        DriftPolicy::Refuse,
+    )
+    .expect("project under the first marker");
+
+    // The region goes missing, so changing the marker plans a write rather
+    // than the overwrite that would have migrated it.
+    fs::write(dest.path("rc"), author).expect("strip the region by hand");
+    let renamed = BTreeMap::from([(
+        Utf8PathBuf::from("rc"),
+        Entry::Block {
+            body: b"managed\n".to_vec(),
+            marker: "# renamed".to_owned(),
+            placement: Placement::Append,
+        },
+    )]);
+    let (manifest, plan) = plan_for(&dest, &state, "own", &renamed, DriftPolicy::Refuse);
+    assert!(matches!(
+        plan.actions[Utf8Path::new("rc")],
+        Action::Write { .. }
+    ));
+
+    // And it comes back in the gap. Splicing under the new marker would
+    // leave this one standing with nothing recording it — one stranded body
+    // per marker change.
+    let restored = "author\n# proiectio\nmanaged\n";
+    fs::write(dest.path("rc"), restored).expect("restore the old region");
+
+    let error =
+        apply_at(&dest, &state, &manifest, &plan).expect_err("the region changed under the plan");
+    match error {
+        Error::Drift { paths } => assert_eq!(paths, BTreeSet::from(["rc".into()])),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+    assert_eq!(container(&dest, "rc"), restored);
+}
+
+#[test]
 fn drift_policy_overwrite_lifts_the_refusal_but_still_guards_the_gap() {
     let (dest, state) = fixtures();
     let v1 = Tree::new().file("m.txt", "recorded");

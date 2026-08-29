@@ -630,6 +630,14 @@ pub enum BlockFault {
     /// direction — one side of the change would have the projection own a
     /// file it must not, or abandon one it does.
     KindChange,
+    /// A plan's expected signature names a marker or placement the manifest
+    /// does not record at that path. The marker is what tells the
+    /// projection's bytes from the author's, so an expectation naming
+    /// another one would have apply strip or replace lines the projection
+    /// never wrote. The *desired* entry may name a new marker — that is the
+    /// migration a single publish performs — but the expectation is what the
+    /// disk is re-checked against, and it is the record's.
+    SignatureNotRecorded,
 }
 
 impl std::fmt::Display for BlockFault {
@@ -649,6 +657,9 @@ impl std::fmt::Display for BlockFault {
                 "the container is not there, and a block never creates one"
             }
             BlockFault::KindChange => "a path never changes between a whole node and a block",
+            BlockFault::SignatureNotRecorded => {
+                "the expected signature names a region the manifest does not record"
+            }
         };
         f.write_str(reason)
     }
