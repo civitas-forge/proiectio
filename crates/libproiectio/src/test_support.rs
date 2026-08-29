@@ -1,40 +1,10 @@
 //! Test scaffolding: declarative trees, `TempDir` fixtures, and directory
-//! assertions (`docs/implementation.lex` section 2).
-//!
-//! A [`Tree`] declares paths, contents, links, and exec bits in one chained
-//! expression. The same value serves both sides of a scenario: [`Tree::entries`]
-//! produces the desired-tree map `plan` takes, and [`Tree::materialize`] writes
-//! the nodes into a fresh [`tempfile::TempDir`], returned as a [`Fixture`].
-//! The one exception is `Entry::Block`, which has no [`Node`] counterpart: a
-//! block scenario declares its container as an ordinary file and injects the
-//! block entry into the map by hand.
-//! [`assert_tree`] diffs a directory against an expected tree — contents, exec
-//! bit, link targets — and panics with every divergence listed.
-//!
-//! # The rule of the house
-//!
-//! Tests never touch the process's current directory. `cargo test` runs tests
-//! in parallel threads and `std::env::set_current_dir` is process-global: one
-//! test chdir-ing reroutes every relative path in every concurrently running
-//! test. So everything here hands out **absolute** paths — [`Fixture::root`]
-//! and [`Fixture::path`] — and every helper asserts it was given one.
-//! `set_current_dir` is banned crate-wide via `clippy.toml`
-//! (`disallowed-methods`), which the CI clippy step turns into a build failure.
-//!
-//! Teardown is RAII: dropping the [`Fixture`] drops the underlying `TempDir`,
-//! which deletes the directory. No shared state, no ordering, no cleanup code
-//! in tests.
-//!
-//! The scaffolding defends its own isolation promise: tree paths admit only
-//! normal segments (no `..`, no `.`, no absolute paths, no empty segments),
-//! and no node may sit under a declared file or symlink — so a declared tree
-//! cannot reach outside the fixture directory, by dot-dot or by writing
-//! through a declared link. [`Tree::write_under`] extends the same promise to
-//! overlays on an existing root: it refuses to write through an on-disk
-//! symlink ancestor, and it unlinks (never follows) an existing leaf whose
-//! kind differs from the declared node. This module is Unix-only
-//! (`cfg(unix)` at the declaration site): exec bits and symlinks are the
-//! behavior under test.
+//! assertions. Every path handed out is absolute and every helper asserts it
+//! was given one — tests never chdir, which `clippy.toml` bans crate-wide,
+//! since `set_current_dir` is process-global and `cargo test` runs in
+//! parallel threads. `Entry::Block` has no [`Node`] counterpart: a block
+//! scenario declares its container as an ordinary file and injects the block
+//! entry into the map by hand.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -45,54 +15,33 @@ use camino::{Utf8Path, Utf8PathBuf};
 use crate::Entry;
 
 /// One node of a declared tree.
-///
-/// Distinct from [`Entry`]: a fixture on disk needs plain directories and
-/// carries no `Block` variant — a region is bytes inside a container, so a
-/// scenario declares the container as an ordinary [`Node::File`] and hands
-/// the block entry to the plan itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Node {
-    /// A regular file.
     File {
-        /// The exact bytes.
         contents: Vec<u8>,
-        /// Whether the owner-executable bit is set.
         executable: bool,
     },
-    /// A symbolic link whose target string is written verbatim.
+    /// The target string, written verbatim and never resolved.
     Symlink {
-        /// The target string, never resolved by the scaffolding.
         target: String,
     },
-    /// A directory declared explicitly — needed only for *empty* directories;
-    /// parents of other nodes are implied.
+    /// Needed only for *empty* directories; parents of other nodes are
+    /// implied.
     Dir,
 }
 
 /// A declarative tree: relative paths mapped to [`Node`]s, built in one
 /// chained expression.
-///
-/// ```ignore
-/// let tree = Tree::new()
-///     .file("notes/a.txt", "alpha")
-///     .executable("bin/run", "#!/bin/sh\n")
-///     .symlink("latest", "notes/a.txt")
-///     .dir("empty");
-/// let desired = tree.entries();      // BTreeMap<Utf8PathBuf, Entry>
-/// let fixture = tree.materialize();  // the same shape on disk, RAII-cleaned
-/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Tree {
     nodes: BTreeMap<Utf8PathBuf, Node>,
 }
 
 impl Tree {
-    /// An empty tree.
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Adds a regular, non-executable file.
     pub(crate) fn file(self, path: impl AsRef<str>, contents: impl Into<Vec<u8>>) -> Self {
         self.insert(
             path,
@@ -103,7 +52,6 @@ impl Tree {
         )
     }
 
-    /// Adds a regular file with the executable bit set.
     pub(crate) fn executable(self, path: impl AsRef<str>, contents: impl Into<Vec<u8>>) -> Self {
         self.insert(
             path,
@@ -114,7 +62,6 @@ impl Tree {
         )
     }
 
-    /// Adds a symlink; `target` reaches disk verbatim.
     pub(crate) fn symlink(self, path: impl AsRef<str>, target: impl Into<String>) -> Self {
         self.insert(
             path,
@@ -124,8 +71,8 @@ impl Tree {
         )
     }
 
-    /// Declares a directory explicitly. Only empty directories need this;
-    /// parents of files and links are created implicitly.
+    /// Only empty directories need this; parents of files and links are
+    /// created implicitly.
     pub(crate) fn dir(self, path: impl AsRef<str>) -> Self {
         self.insert(path, Node::Dir)
     }
@@ -164,11 +111,7 @@ impl Tree {
         self
     }
 
-    /// The desired-tree value `plan` takes.
-    ///
-    /// [`Node::Dir`] entries are omitted: [`Entry`] has no directory variant —
-    /// a desired tree implies its directories from the parent components of
-    /// its files and links.
+    /// The desired-tree value `plan` takes; [`Node::Dir`] entries are omitted.
     pub(crate) fn entries(&self) -> BTreeMap<Utf8PathBuf, Entry> {
         self.nodes
             .iter()
@@ -191,12 +134,10 @@ impl Tree {
             .collect()
     }
 
-    /// Writes the tree into a fresh temporary directory and returns the
-    /// [`Fixture`] owning it. The fixture's root is absolute and
-    /// canonicalized (on macOS the temp dir sits behind the `/var` symlink).
-    // The canonicalize ban guards tree containment, which is lexical; this
-    // call resolves the fixture's own trusted temp root (on macOS it sits
-    // behind the `/var` symlink), not an untrusted tree path.
+    /// Writes the tree into a fresh temporary directory. The fixture's root
+    /// is absolute and canonicalized.
+    // The canonicalize ban guards tree containment; this call resolves the
+    // fixture's own temp root (on macOS it sits behind the `/var` symlink).
     #[allow(clippy::disallowed_methods)]
     pub(crate) fn materialize(&self) -> Fixture {
         let temp = tempfile::TempDir::new().expect("create TempDir");
@@ -207,15 +148,9 @@ impl Tree {
         Fixture { _temp: temp, root }
     }
 
-    /// Writes the tree's nodes under an existing absolute `root`, in sorted
-    /// path order (parents before children), creating implied parent
-    /// directories.
-    ///
-    /// Overlaying on a non-empty root stays inside it: a write whose on-disk
-    /// ancestor is a symlink panics instead of following it, and an existing
-    /// leaf is unlinked (never followed, never errored on) when its kind
-    /// differs from the declared node — so a declared file replaces a stale
-    /// symlink rather than writing through it.
+    /// Writes the tree's nodes under an existing absolute `root`, creating
+    /// implied parent directories. A write whose on-disk ancestor is a
+    /// symlink panics instead of following it.
     pub(crate) fn write_under(&self, root: &Utf8Path) {
         assert!(root.is_absolute(), "write_under takes an absolute root");
         for (path, node) in &self.nodes {
@@ -230,9 +165,8 @@ impl Tree {
                     executable,
                 } => {
                     fs::write(&abs, contents).unwrap_or_else(|e| panic!("write {abs:?}: {e}"));
-                    // Set the mode unconditionally: `fs::write` over an
-                    // existing file keeps its permissions, so a declared
-                    // non-executable must also *clear* a stale exec bit.
+                    // `fs::write` over an existing file keeps its permissions,
+                    // so set the mode unconditionally.
                     let mode = if *executable { 0o755 } else { 0o644 };
                     fs::set_permissions(&abs, fs::Permissions::from_mode(mode))
                         .unwrap_or_else(|e| panic!("chmod {abs:?}: {e}"));
@@ -249,19 +183,15 @@ impl Tree {
     }
 }
 
-/// A materialized tree in a temporary directory.
-///
-/// Owns the `TempDir`: dropping the fixture deletes the directory (RAII
-/// teardown). All paths it hands out are absolute.
+/// A materialized tree in a temporary directory; dropping the fixture deletes
+/// the directory. All paths it hands out are absolute.
 #[derive(Debug)]
 pub(crate) struct Fixture {
-    /// Held only for its `Drop`; the directory lives as long as the fixture.
     _temp: tempfile::TempDir,
     root: Utf8PathBuf,
 }
 
 impl Fixture {
-    /// The absolute, canonicalized root of the fixture directory.
     pub(crate) fn root(&self) -> &Utf8Path {
         &self.root
     }
@@ -274,11 +204,8 @@ impl Fixture {
     }
 }
 
-/// Asserts `path` is relative and made only of normal segments — no `..`,
-/// no `.`, no leading `/`, no empty segments (so no `a//b` and no trailing
-/// slash) — so joining it under a fixture root can never resolve outside the
-/// root. Checks the raw string, because `Utf8Path::components()` silently
-/// normalizes `.` and empty segments away.
+/// Asserts `path` is relative and made only of normal segments. Checks the
+/// raw string: `Utf8Path::components()` normalizes `.` and empty segments away.
 fn assert_normal_relative(path: &Utf8Path) {
     let raw = path.as_str();
     assert!(
@@ -292,8 +219,7 @@ fn assert_normal_relative(path: &Utf8Path) {
 }
 
 /// Panics if any on-disk component strictly below `root`, down to `parent`,
-/// exists and is a symlink: `create_dir_all` and `fs::write` would follow it,
-/// and the write could land outside the fixture.
+/// exists and is a symlink.
 fn assert_no_symlink_ancestor(root: &Utf8Path, parent: &Utf8Path) {
     let rel = parent
         .strip_prefix(root)
@@ -310,14 +236,8 @@ fn assert_no_symlink_ancestor(root: &Utf8Path, parent: &Utf8Path) {
     }
 }
 
-/// Unlinks an existing path at `abs` before `node` is written, so the write
-/// lands on a fresh inode and never reaches anything else: a declared file
-/// over an existing symlink must replace the link, not write through it; over
-/// an existing regular file it must not truncate in place, because a
-/// hard-linked inode is shared and truncation would mutate every other name
-/// for it; and a declared symlink or directory over a different kind would
-/// otherwise fail with `EEXIST`/`ENOTDIR`. Only a directory over a directory
-/// is left in place. Never follows the existing path.
+/// Unlinks an existing path at `abs` before `node` is written, never
+/// following it. Only a directory over a directory is left in place.
 fn unlink_mismatched_leaf(abs: &Utf8Path, node: &Node) {
     let Ok(meta) = fs::symlink_metadata(abs) else {
         return;
@@ -341,12 +261,8 @@ fn unlink_mismatched_leaf(abs: &Utf8Path, node: &Node) {
     }
 }
 
-/// Diffs the directory at `root` against `expected`, returning one line per
-/// divergence: paths missing from disk, paths on disk the tree does not
-/// declare, and per-path mismatches of kind, contents, exec bit, or link
-/// target. Empty means the directory matches.
-///
-/// Ancestor directories of declared nodes are implied and never reported.
+/// Diffs the directory at `root` against `expected`, one line per divergence;
+/// empty means it matches. Implied ancestor directories are never reported.
 pub(crate) fn tree_diff(root: &Utf8Path, expected: &Tree) -> Vec<String> {
     assert!(root.is_absolute(), "tree_diff takes an absolute root");
 
@@ -377,8 +293,6 @@ pub(crate) fn tree_diff(root: &Utf8Path, expected: &Tree) -> Vec<String> {
     diff
 }
 
-/// Asserts the directory at `root` matches `expected`, panicking with every
-/// divergence [`tree_diff`] found.
 pub(crate) fn assert_tree(root: &Utf8Path, expected: &Tree) {
     let diff = tree_diff(root, expected);
     assert!(
@@ -420,8 +334,8 @@ fn observe(root: &Utf8Path, dir: &Utf8Path, into: &mut BTreeMap<Utf8PathBuf, Nod
                 },
             );
         } else {
-            // A FIFO or device node: `fs::read` on a writerless FIFO blocks
-            // forever, so report the kind instead of opening it.
+            // `fs::read` on a writerless FIFO blocks forever, so report the
+            // kind instead of opening it.
             panic!(
                 "unsupported node kind at {abs:?}: {:?} — fixtures hold only \
                  files, directories, and symlinks",

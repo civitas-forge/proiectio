@@ -8,30 +8,22 @@ use crate::Manifest;
 /// What apply did to one path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ApplyOutcome {
-    /// The path did not exist and was created. For a
-    /// [`Block`](crate::EntryKind::Block) entry the unit is the region: the
-    /// container may have existed, the region did not.
+    /// The path did not exist and was created; for a block entry, the region
+    /// did not exist.
     Written,
     /// The path existed and was replaced.
     Overwritten,
-    /// Disk already matched desired; nothing was written. A planned write
-    /// reports this too where it found the region already carrying the
-    /// desired body and adopted it.
+    /// Disk already matched desired; nothing was written.
     Skipped,
     /// The orphaned path was removed.
     Removed,
-    /// This owner was dropped from the path's manifest entry; the disk was
-    /// not touched because other owners still hold the path.
+    /// This owner was dropped from the path's manifest entry; other owners
+    /// still hold the path, so the disk was not touched.
     Released,
 }
 
-/// What a successful apply run did: one outcome per path, and the
-/// manifest as persisted at the end of the run.
-///
-/// A failed apply returns an [`Error`](crate::Error) alone — no report —
-/// but the on-disk manifest still records the entries applied before the
-/// error, so a partial run heals on re-run instead of classifying its own
-/// writes as foreign.
+/// What a successful apply run did: one outcome per path, and the manifest as
+/// persisted at the end of the run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApplyReport {
     /// Per-path outcomes, keyed by path relative to the destination.

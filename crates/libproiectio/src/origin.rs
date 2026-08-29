@@ -3,31 +3,13 @@ use std::fmt;
 use camino::Utf8PathBuf;
 use serde::Serialize;
 
-/// Where a desired tree came from, carried so a refusal can name it.
-///
-/// A member path is not enough to act on: `refusing paths that violate
-/// containment: ../etc/passwd` says which path the projection declined and
-/// nothing about which file to go and edit. An origin travels with the
-/// [`Plan`](crate::Plan) rather than being attached by whichever loader
-/// built the tree, so a refusal the deciding stage produces names the source
-/// as well as one produced while parsing it, and every source names itself
-/// the same way.
-///
-/// It is carried by the four refusals whose offending value is a path or a
-/// pointer the source chose: [`Error::Containment`](crate::Error::Containment),
-/// [`Error::TreeConflict`](crate::Error::TreeConflict),
-/// [`Error::ExternalTarget`](crate::Error::ExternalTarget) and
-/// [`Error::InvalidTarget`](crate::Error::InvalidTarget).
-///
-/// [`Display`](std::fmt::Display) renders the phrase those messages carry —
-/// `from mapping /etc/harness/skills.toml` — and renders
-/// [`Caller`](Origin::Caller) as the empty string, so a tree the caller
-/// computed reads as a plain refusal instead of apologising for having no
-/// source to name.
+/// Where a desired tree came from, carried on the [`Plan`](crate::Plan) so a
+/// refusal can name its source; [`Display`](std::fmt::Display) renders the
+/// phrase refusal messages carry, as in `from mapping /etc/skills.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub enum Origin {
-    /// A tree the caller computed itself, and every removal — nothing to
-    /// name. Renders as nothing.
+    /// A tree the caller computed itself, and every removal; renders as the
+    /// empty string.
     #[default]
     Caller,
     /// A TOML mapping file, at this absolute path
@@ -47,8 +29,7 @@ pub enum Origin {
         /// The archive's location.
         path: Utf8PathBuf,
         /// The mapping whose `[archives]` table named this archive, where a
-        /// mapping did. One mapping may name several archives, and a member
-        /// path says neither which archive to open nor which line to edit.
+        /// mapping did.
         via: Option<Utf8PathBuf>,
     },
     /// Files named one at a time on the invocation rather than through a
