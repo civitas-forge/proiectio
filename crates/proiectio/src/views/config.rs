@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
+use camino::Utf8PathBuf;
 use clapfig::ConfigResult;
+use libproiectio::Error;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -36,19 +38,25 @@ pub(crate) enum ConfigView {
         body: String,
     },
     TemplateWritten {
-        path: PathBuf,
+        path: Utf8PathBuf,
     },
     Schema {
         body: String,
     },
     SchemaWritten {
-        path: PathBuf,
+        path: Utf8PathBuf,
     },
 }
 
-impl From<ConfigResult> for ConfigView {
-    fn from(result: ConfigResult) -> Self {
-        match result {
+/// The written-file variants name a path, and a path this CLI cannot render is
+/// the one thing clapfig can hand back that no output mode can carry. Reading
+/// `--file` as UTF-8 refuses such a path at the command line, so what is left
+/// here is a path clapfig chose itself.
+impl TryFrom<ConfigResult> for ConfigView {
+    type Error = Error;
+
+    fn try_from(result: ConfigResult) -> Result<Self, Error> {
+        Ok(match result {
             ConfigResult::Listing { entries, rendered } => Self::Listing {
                 entries: entries
                     .into_iter()
@@ -78,11 +86,17 @@ impl From<ConfigResult> for ConfigView {
             },
             ConfigResult::ValueUnset { key } => Self::ValueUnset { key },
             ConfigResult::Template(body) => Self::Template { body },
-            ConfigResult::TemplateWritten { path } => Self::TemplateWritten { path },
+            ConfigResult::TemplateWritten { path } => Self::TemplateWritten { path: utf8(path)? },
             ConfigResult::Schema(body) => Self::Schema { body },
-            ConfigResult::SchemaWritten { path } => Self::SchemaWritten { path },
-        }
+            ConfigResult::SchemaWritten { path } => Self::SchemaWritten { path: utf8(path)? },
+        })
     }
+}
+
+fn utf8(path: PathBuf) -> Result<Utf8PathBuf, Error> {
+    Utf8PathBuf::from_path_buf(path).map_err(|path| Error::PathNotUtf8 {
+        path: path.to_string_lossy().into_owned(),
+    })
 }
 
 #[cfg(test)]

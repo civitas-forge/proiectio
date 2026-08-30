@@ -524,3 +524,35 @@ fn a_config_value_carrying_an_escape_sequence_renders_as_itself() {
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
     assert_eq!(value["value"], SPELLED);
 }
+
+/// Clapfig creates the file before it reports the path it wrote, so a `--file`
+/// this CLI could not render has to be refused first. The run leaves with 1 and
+/// the directory it named is untouched.
+#[cfg(unix)]
+#[test]
+#[serial]
+fn a_config_file_path_that_is_not_utf8_is_rejected_before_anything_is_written() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = TempDir::new().expect("a temporary directory");
+    let mut file = dir.path().as_os_str().to_owned();
+    file.push(OsString::from_vec(vec![0x2f, 0xff]));
+    let argv = vec![
+        OsString::from("proiectio"),
+        OsString::from("config"),
+        OsString::from("gen"),
+        OsString::from("--file"),
+        file,
+    ];
+
+    let result = harness(&dir).run(&app(), cli::command(), argv);
+
+    assert_eq!(exit::status(result.outcome()), exit::FAILURE);
+    assert_eq!(
+        std::fs::read_dir(dir.path())
+            .expect("the temporary directory")
+            .count(),
+        0
+    );
+}

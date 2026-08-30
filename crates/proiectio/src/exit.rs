@@ -19,7 +19,7 @@ pub(crate) fn of_error(error: &Error) -> u8 {
 
 pub(crate) fn failure(error: Error) -> anyhow::Error {
     let status = of_error(&error);
-    let diagnostic = format!("Error: {error}\n");
+    let diagnostic = format!("Error: {error}");
     match ExternalFailure::new(status, diagnostic) {
         Ok(external) => anyhow::Error::new(external.with_source(error)),
         Err(_) => anyhow::Error::new(error),
@@ -74,10 +74,7 @@ fn emit_to(
         RunResult::Binary(bytes, _) => write_bytes(out, bytes),
         RunResult::Artifact(run) => write_artifact(out, err, run),
         RunResult::Silent => Ok(()),
-        RunResult::Error(error) if error.kind() == RunErrorKind::External => {
-            write(err, error.as_str())
-        }
-        RunResult::Error(error) => write(err, &format!("{error}\n")),
+        RunResult::Error(error) => diagnostic(err, error.as_str()),
         RunResult::NoMatch(_) => write(err, NO_COMMAND),
         _ => {
             let _ = write(err, UNSUPPORTED);
@@ -105,17 +102,27 @@ fn write_artifact(
         write_bytes(out, run.bytes())?;
     }
     match run.report().filter(|report| !report.is_empty()) {
-        Some(report) if to_stdout => write(err, &format!("{report}\n")),
-        Some(report) => write(out, &format!("{report}\n")),
+        Some(report) if to_stdout => diagnostic(err, report),
+        Some(report) => diagnostic(out, report),
         None => Ok(()),
     }
 }
 
 fn warn(err: &mut impl Write, warnings: &[String]) -> std::io::Result<()> {
     for warning in warnings {
-        write(err, &format!("Warning: {warning}\n"))?;
+        diagnostic(err, &format!("Warning: {warning}"))?;
     }
     Ok(())
+}
+
+/// What this CLI writes about a run rather than as its output. A message
+/// carries a filename, and a filename is data: every character a terminal acts
+/// on leaves as an escape, so an OSC sequence a destination put in a name is
+/// shown rather than run. The line breaks clap spelled are the message's own
+/// layout; the terminator is this CLI's, and there is exactly one.
+fn diagnostic(stream: &mut impl Write, text: &str) -> std::io::Result<()> {
+    let escaped = crate::app::control_escaped_block(text.trim_end_matches('\n'));
+    write(stream, &format!("{escaped}\n"))
 }
 
 fn write(stream: &mut impl Write, text: &str) -> std::io::Result<()> {

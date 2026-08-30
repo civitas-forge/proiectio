@@ -1,5 +1,6 @@
 use super::*;
 
+use camino::Utf8PathBuf;
 use clap::error::ErrorKind;
 
 /// The two options every command reads, on the root so each leaf carries them.
@@ -76,9 +77,33 @@ fn config_gen_writes_through_the_renamed_flag() {
         .expect("the leaf");
 
     assert_eq!(
-        generated.get_one::<std::path::PathBuf>("output"),
-        Some(&std::path::PathBuf::from("proiectio.toml"))
+        generated.get_one::<Utf8PathBuf>("output"),
+        Some(&Utf8PathBuf::from("proiectio.toml"))
     );
+}
+
+/// Clapfig writes the file before it names the path, so a path this CLI could
+/// not render has to be refused at the command line rather than after the
+/// write. Both leaves that take one read it as UTF-8.
+#[cfg(unix)]
+#[test]
+fn a_config_file_path_that_is_not_utf8_is_refused_at_the_command_line() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    for leaf in ["gen", "schema"] {
+        let error = command()
+            .try_get_matches_from([
+                OsString::from("proiectio"),
+                OsString::from("config"),
+                OsString::from(leaf),
+                OsString::from("--file"),
+                OsString::from_vec(vec![0x2f, 0xff]),
+            ])
+            .expect_err("a usage error");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidUtf8, "{leaf}: {error}");
+    }
 }
 
 #[test]

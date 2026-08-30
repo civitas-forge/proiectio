@@ -1,5 +1,6 @@
 //! The clap surface: the one place every command and option is named.
 
+use camino::Utf8PathBuf;
 use clap::{CommandFactory, Parser, Subcommand};
 use clapfig::ConfigCommand;
 
@@ -40,8 +41,20 @@ pub(crate) fn command() -> clap::Command {
         config_command()
             .as_command("config")
             .visible_alias("conf")
-            .long_about(CONFIG_ABOUT),
+            .long_about(CONFIG_ABOUT)
+            .mut_subcommand("gen", utf8_destination)
+            .mut_subcommand("schema", utf8_destination),
     )
+}
+
+/// Clapfig parses `--file` as a `PathBuf` and writes the file before it
+/// reports the path, so a path the CLI cannot render would be created and
+/// then fail. Reading it as a `Utf8PathBuf` refuses it at the command line,
+/// before clapfig is asked for anything.
+fn utf8_destination(command: clap::Command) -> clap::Command {
+    command.mut_arg("output", |argument| {
+        argument.value_parser(clap::value_parser!(Utf8PathBuf))
+    })
 }
 
 const CONFIG_ABOUT: &str = "\

@@ -2,9 +2,7 @@
 
 #![allow(non_snake_case)]
 
-use std::path::PathBuf;
-
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use clapfig::ConfigAction;
 use libproiectio::{Projection, Status};
 use standout::cli::Output;
@@ -29,7 +27,9 @@ pub(crate) fn status(
 
 fn run_config(action: ConfigAction) -> Result<Output<ConfigView>, anyhow::Error> {
     let result = settings::builder().handle(&action)?;
-    Ok(Output::Render(ConfigView::from(result)))
+    ConfigView::try_from(result)
+        .map(Output::Render)
+        .map_err(exit::failure)
 }
 
 #[handler]
@@ -73,16 +73,20 @@ pub(crate) fn config_unset(
 
 #[handler]
 pub(crate) fn config_gen(
-    #[arg] output: Option<PathBuf>,
+    #[arg] output: Option<Utf8PathBuf>,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
-    run_config(ConfigAction::Gen { output })
+    run_config(ConfigAction::Gen {
+        output: output.map(Utf8PathBuf::into_std_path_buf),
+    })
 }
 
 #[handler]
 pub(crate) fn config_schema(
-    #[arg] output: Option<PathBuf>,
+    #[arg] output: Option<Utf8PathBuf>,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
-    run_config(ConfigAction::Schema { output })
+    run_config(ConfigAction::Schema {
+        output: output.map(Utf8PathBuf::into_std_path_buf),
+    })
 }
 
 #[cfg(test)]

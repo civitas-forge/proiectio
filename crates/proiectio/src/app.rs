@@ -15,10 +15,27 @@ pub(crate) fn templates() -> EmbeddedTemplates {
 /// markup pass reads back as literal brackets. A value cannot then forge a
 /// row, restyle the display, or reach the terminal as a command.
 pub(crate) fn verbatim(value: &str) -> String {
+    escape(value, Brackets::Escaped)
+}
+
+/// The control-character half of [`verbatim_block`], for the diagnostics this
+/// CLI writes about a run: no markup pass reads those, so a bracket is already
+/// itself, and a message clap spelled over several lines keeps them.
+pub(crate) fn control_escaped_block(value: &str) -> String {
+    block(value, |line| escape(line, Brackets::Literal))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Brackets {
+    Escaped,
+    Literal,
+}
+
+fn escape(value: &str, brackets: Brackets) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
         match character {
-            '[' | ']' => {
+            '[' | ']' if brackets == Brackets::Escaped => {
                 escaped.push('\\');
                 escaped.push(character);
             }
@@ -32,9 +49,13 @@ pub(crate) fn verbatim(value: &str) -> String {
 /// The same escaping over a block whose lines this CLI asked for: the line
 /// breaks are the layout, everything inside one is data.
 pub(crate) fn verbatim_block(value: &str) -> String {
+    block(value, verbatim)
+}
+
+fn block(value: &str, line: impl Fn(&str) -> String) -> String {
     value
         .split('\n')
-        .map(verbatim)
+        .map(line)
         .collect::<Vec<String>>()
         .join("\n")
 }

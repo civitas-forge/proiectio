@@ -148,7 +148,7 @@ fn a_library_failure_carries_its_status_and_message_to_the_shell() {
             .downcast::<ExternalFailure>()
             .expect("an external failure");
         assert_eq!(external.exit_status().code(), expected);
-        assert_eq!(external.diagnostic(), format!("Error: {message}\n"));
+        assert_eq!(external.diagnostic(), format!("Error: {message}"));
     }
 }
 
@@ -171,7 +171,7 @@ fn a_command_line_clap_rejects_exits_one() {
 
 #[test]
 fn a_declared_refusal_reaches_the_shell_as_two() {
-    let declared = ExternalFailure::new(REFUSAL, "Error: refused\n").expect("an external failure");
+    let declared = ExternalFailure::new(REFUSAL, "Error: refused").expect("an external failure");
     let result = RunResult::Error(RunError::from(declared));
     assert_eq!(status(&result), REFUSAL);
 }
@@ -259,7 +259,7 @@ fn a_stdout_write_that_fails_otherwise_exits_one() {
 /// A declared refusal keeps its 2 even when the diagnostic cannot be written.
 #[test]
 fn a_write_failure_never_lowers_a_refusal() {
-    let declared = ExternalFailure::new(REFUSAL, "Error: refused\n").expect("an external failure");
+    let declared = ExternalFailure::new(REFUSAL, "Error: refused").expect("an external failure");
     let result = RunResult::Error(RunError::from(declared));
     let mut out = Vec::new();
 
@@ -274,12 +274,12 @@ fn a_write_failure_never_lowers_a_refusal() {
     );
 }
 
-/// An external failure carries the diagnostic the handler spelled, newline
-/// and all; every other error is one line the shell terminates itself.
+/// Every diagnostic is one line, and the line terminator is this shell's own
+/// rather than anything the message carried.
 #[test]
 fn diagnostics_reach_stderr_with_exactly_one_newline() {
     let declared =
-        ExternalFailure::new(FAILURE, "Error: no such destination\n").expect("an external failure");
+        ExternalFailure::new(FAILURE, "Error: no such destination").expect("an external failure");
     let mut out = Vec::new();
     let mut err = Vec::new();
 
@@ -473,5 +473,84 @@ fn a_warning_that_cannot_be_written_exits_one() {
             &warnings
         ),
         FAILURE
+    );
+}
+
+/// A destination-relative filename reaches the diagnostic, and a Unix filename
+/// may hold an escape sequence. It leaves as the characters it is: an OSC that
+/// writes the clipboard is text the shell shows, not a command the terminal
+/// runs, and no message can end a line the shell did not.
+#[test]
+fn a_diagnostic_carrying_control_characters_reaches_stderr_as_escapes() {
+    const OSC: &str = "\u{1b}]52;c;cGF5bG9hZA==\u{7}";
+
+    let library = failure(Error::DestinationTooDeep {
+        path: Utf8PathBuf::from(format!("/srv/{OSC}")),
+        limit: 64,
+    })
+    .downcast::<ExternalFailure>()
+    .expect("an external failure");
+    let cases = [
+        RunResult::Error(RunError::from(library)),
+        RunResult::Error(RunError::new(
+            format!("read /srv/{OSC}"),
+            RunErrorKind::Handler,
+        )),
+    ];
+
+    for result in cases {
+        let mut err = Vec::new();
+
+        assert_eq!(
+            emit_to(&mut Vec::new(), &mut err, &result, NO_WARNINGS),
+            FAILURE
+        );
+
+        let text = String::from_utf8(err).expect("text");
+        assert!(text.contains(r"\u{1b}]52;c;cGF5bG9hZA==\u{7}"), "{text:?}");
+        assert_eq!(text.matches('\n').count(), 1, "{text:?}");
+        assert!(
+            !text.trim_end_matches('\n').chars().any(char::is_control),
+            "a control character reached the terminal: {text:?}"
+        );
+    }
+}
+
+/// A warning the framework queued goes to the same stream on the same terms.
+#[test]
+fn a_warning_carrying_control_characters_reaches_stderr_as_escapes() {
+    let warnings = vec!["a template named \u{1b}[31m".to_owned()];
+    let mut err = Vec::new();
+
+    assert_eq!(
+        emit_to(&mut Vec::new(), &mut err, &handled(""), &warnings),
+        OK
+    );
+
+    assert_eq!(
+        String::from_utf8(err).expect("text"),
+        "Warning: a template named \\u{1b}[31m\n"
+    );
+}
+
+/// Clap spells a usage error over several lines, and those line breaks are the
+/// message's own layout rather than anything a filename smuggled in. They
+/// survive, and the shell still ends the message exactly once.
+#[test]
+fn a_diagnostic_clap_spelled_over_several_lines_keeps_them() {
+    let usage = RunResult::Error(RunError::new(
+        "error: unexpected argument '--nope' found\n\nUsage: proiectio status [OPTIONS]\n",
+        RunErrorKind::ClapUsage,
+    ));
+    let mut err = Vec::new();
+
+    assert_eq!(
+        emit_to(&mut Vec::new(), &mut err, &usage, NO_WARNINGS),
+        FAILURE
+    );
+
+    assert_eq!(
+        String::from_utf8(err).expect("text"),
+        "error: unexpected argument '--nope' found\n\nUsage: proiectio status [OPTIONS]\n"
     );
 }
