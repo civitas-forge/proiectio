@@ -45,6 +45,11 @@ fn each_verdict_spells_one_style_and_one_verb() {
         (json!("Removed"), "removed", "removed"),
         (json!("Release"), "removed", "would release"),
         (json!("Released"), "removed", "released"),
+        (
+            json!({ "Refuse": { "refusal": "Drift" } }),
+            "refused",
+            "would refuse",
+        ),
     ] {
         let row = only(planned(json!({ "one": file(verdict.clone()) })));
         assert_eq!((row.style, row.verb.as_str()), (style, verb), "{verdict}");
@@ -70,9 +75,45 @@ fn a_symlink_reads_as_a_link_only_where_the_run_writes_it() {
 /// family the stylesheet spells.
 #[test]
 fn an_unknown_verdict_renders_its_own_name() {
-    let row = only(planned(json!({ "one": file(json!("Refuse")) })));
+    let row = only(planned(json!({ "one": file(json!("Ponder")) })));
 
-    assert_eq!((row.style, row.verb.as_str()), ("unknown", "Refuse"));
+    assert_eq!((row.style, row.verb.as_str()), ("unknown", "Ponder"));
+}
+
+/// A refused row names the refusal it carries, in the vocabulary the exit
+/// table names the kinds with; one this CLI does not know reads as the name
+/// the library spelled, escaped.
+#[test]
+fn a_refused_row_names_the_refusal() {
+    for (refusal, note) in [
+        (json!("Drift"), "(drifted)"),
+        (json!("Foreign"), "(foreign)"),
+        (json!("Containment"), "(containment)"),
+        (
+            json!({ "TreeConflict": { "paths": ["other"] } }),
+            "(tree conflict)",
+        ),
+        (
+            json!({ "OwnerConflict": { "owners": ["site"] } }),
+            "(owner conflict)",
+        ),
+        (
+            json!({ "ExternalTarget": { "target": "/opt/x" } }),
+            "(external target)",
+        ),
+        (
+            json!({ "InvalidTarget": { "target": "" } }),
+            "(invalid target)",
+        ),
+        (json!({ "Block": { "fault": "MarkerEmpty" } }), "(block)"),
+        (json!("[wrote]"), "(\\[wrote\\])"),
+    ] {
+        let row = only(planned(json!({
+            "one": { "facts": null, "verdict": { "Refuse": { "refusal": refusal.clone() } } },
+        })));
+
+        assert_eq!(row.note.as_deref(), Some(note), "{refusal}");
+    }
 }
 
 /// A name spelled like markup reaches the terminal as the characters it is.

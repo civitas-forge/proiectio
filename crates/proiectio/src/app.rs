@@ -6,6 +6,7 @@ use standout::cli::App;
 use standout::context::RenderContext;
 use standout::{EmbeddedTemplates, MiniJinjaEngine, embed_styles, embed_templates};
 
+use crate::exit::Verdict;
 use crate::handlers;
 use crate::views;
 
@@ -71,9 +72,10 @@ pub(crate) fn engine() -> MiniJinjaEngine {
     engine
 }
 
-pub(crate) fn build() -> Result<App> {
+pub(crate) fn build(verdict: Verdict) -> Result<App> {
     Ok(App::builder()
         .version(env!("CARGO_PKG_VERSION"))
+        .app_state(verdict)
         .template_engine(Box::new(engine()))
         .templates(templates())
         .styles(embed_styles!("src/styles"))

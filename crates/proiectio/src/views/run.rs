@@ -58,6 +58,7 @@ fn spelling(verdict: &str, symlink: bool) -> Option<(&'static str, &'static str)
         ("Removed", _) => ("removed", "removed"),
         ("Release", _) => ("removed", "would release"),
         ("Released", _) => ("removed", "released"),
+        ("Refuse", _) => ("refused", "would refuse"),
         _ => return None,
     })
 }
@@ -73,6 +74,15 @@ fn counted(verdict: &str) -> Option<Counted> {
     })
 }
 
+/// What a verdict's payload says about the row: why a plan would overwrite a
+/// path, or why it would refuse one.
+fn qualifying(fields: &JsonValue) -> Option<String> {
+    if let Some(reason) = fields.get("reason").and_then(JsonValue::as_str) {
+        return Some(overwriting(reason).to_owned());
+    }
+    fields.get("refusal").map(refusing)
+}
+
 /// Why a plan would overwrite a path.
 fn overwriting(reason: &str) -> &'static str {
     match reason {
@@ -80,6 +90,24 @@ fn overwriting(reason: &str) -> &'static str {
         "ExecutableChanged" => "(executable changed)",
         _ => "(drifted, forced)",
     }
+}
+
+/// Why a plan refuses a path: the refusal's own name, in the vocabulary the
+/// exit table names the refusal kinds with.
+fn refusing(refusal: &JsonValue) -> String {
+    let (kind, _) = named(Some(refusal));
+    let spelled = match kind {
+        "Containment" => "containment",
+        "TreeConflict" => "tree conflict",
+        "Foreign" => "foreign",
+        "Drift" => "drifted",
+        "OwnerConflict" => "owner conflict",
+        "ExternalTarget" => "external target",
+        "InvalidTarget" => "invalid target",
+        "Block" => "block",
+        unknown => return format!("({})", verbatim(unknown)),
+    };
+    format!("({spelled})")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -181,11 +209,8 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
         if let Some(counted) = counted(verdict) {
             tally.count(counted);
         }
-        let qualifier = fields
-            .and_then(|fields| fields.get("reason"))
-            .and_then(JsonValue::as_str)
-            .map(overwriting);
-        let note = note(target, qualifier, executable(shape));
+        let qualifier = fields.and_then(qualifying);
+        let note = note(target, qualifier.as_deref(), executable(shape));
 
         lines.push(RowView {
             style,

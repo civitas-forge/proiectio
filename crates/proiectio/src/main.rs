@@ -15,7 +15,8 @@ use std::io::Write;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let app = match app::build() {
+    let verdict = exit::Verdict::default();
+    let app = match app::build(verdict.clone()) {
         Ok(app) => app,
         Err(error) => {
             let _ = writeln!(std::io::stderr().lock(), "Error: {error}");
@@ -23,5 +24,5 @@ fn main() -> ExitCode {
         }
     };
     let result = app.run_to_string(cli::command(), std::env::args_os());
-    ExitCode::from(exit::emit(&result))
+    ExitCode::from(verdict.over(exit::emit(&result)))
 }

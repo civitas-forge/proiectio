@@ -7,10 +7,10 @@ use std::collections::BTreeSet;
 use camino::{Utf8Path, Utf8PathBuf};
 use clapfig::ConfigAction;
 use libproiectio::{
-    Desired, DriftPolicy, Error, ExternalTargetPolicy, Plan, PlanOptions, Projection, RemovalScope,
-    Status, load_files, load_mapping, load_source,
+    Desired, DriftPolicy, Error, ExternalTargetPolicy, Plan, PlanOptions, PlannedAction,
+    Projection, RemovalScope, Report, Status, load_files, load_mapping, load_source,
 };
-use standout::cli::Output;
+use standout::cli::{CommandContext, Output};
 use standout::handler;
 
 use crate::exit;
@@ -32,6 +32,7 @@ pub(crate) fn write(
     #[flag(name = "dry-run")] dry_run: bool,
     #[flag] force: bool,
     #[flag(name = "allow-external-targets")] allow_external_targets: bool,
+    #[ctx] ctx: &CommandContext,
 ) -> Result<Output<RunView>, anyhow::Error> {
     let desired = desired(&paths, tree.as_deref(), strip).map_err(exit::failure)?;
     let owner = owner_or_configured(owner)?;
@@ -49,8 +50,7 @@ pub(crate) fn write(
         let planned = projection
             .plan(&owner, &desired, options)
             .map_err(exit::failure)?;
-        refusals(&planned.plan)?;
-        return Ok(Output::Render(RunView::Planned(planned.report())));
+        return planned_report(&planned.plan, planned.report(), ctx);
     }
     let mut run = projection.begin().map_err(exit::failure)?;
     let plan = run.plan(&owner, &desired, options).map_err(exit::failure)?;
@@ -68,6 +68,7 @@ pub(crate) fn rm(
     #[arg] owner: Option<String>,
     #[flag(name = "dry-run")] dry_run: bool,
     #[flag] force: bool,
+    #[ctx] ctx: &CommandContext,
 ) -> Result<Output<RunView>, anyhow::Error> {
     let named: BTreeSet<Utf8PathBuf> = paths.into_iter().collect();
     let scope = if named.is_empty() {
@@ -83,8 +84,7 @@ pub(crate) fn rm(
         let planned = projection
             .plan_removal(&owner, scope, drift)
             .map_err(exit::failure)?;
-        refusals(&planned.plan)?;
-        return Ok(Output::Render(RunView::Planned(planned.report())));
+        return planned_report(&planned.plan, planned.report(), ctx);
     }
     let mut run = projection.begin().map_err(exit::failure)?;
     let plan = run
@@ -116,8 +116,25 @@ fn projection(dest: &str, state_dir: Option<&str>) -> Result<Projection, anyhow:
     Projection::new(Utf8Path::new(dest), state_dir.map(Utf8Path::new)).map_err(exit::failure)
 }
 
-/// A plan carrying refusals reaches the shell as `Error::Refused`, which
-/// spends the refusal status; one carrying none passes.
+/// A dry run reports the whole plan, refused rows and all: the rows are what
+/// the run is for, so a refusal records the status the run leaves with rather
+/// than replacing the report with a diagnostic.
+fn planned_report(
+    plan: &Plan,
+    report: Report<PlannedAction>,
+    ctx: &CommandContext,
+) -> Result<Output<RunView>, anyhow::Error> {
+    if plan.refusals().next().is_some() {
+        ctx.app_state
+            .get_required::<exit::Verdict>()?
+            .record(exit::REFUSAL);
+    }
+    Ok(Output::Render(RunView::Planned(report)))
+}
+
+/// A real run acts, so a plan carrying refusals reaches the shell as
+/// `Error::Refused`, which spends the refusal status; one carrying none
+/// passes.
 fn refusals(plan: &Plan) -> Result<(), anyhow::Error> {
     match plan.refused() {
         Some(refused) => Err(exit::failure(Error::Refused(refused))),

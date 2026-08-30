@@ -22,7 +22,19 @@ use crate::testing::{
 };
 
 fn app() -> App {
-    build().expect("an app")
+    over(&exit::Verdict::default())
+}
+
+/// The app over a verdict the test keeps: a refused dry run renders its plan
+/// and leaves the refusal there rather than in the run's result.
+fn over(verdict: &exit::Verdict) -> App {
+    build(verdict.clone()).expect("an app")
+}
+
+/// The status the process leaves with: what emitting the run reports, over
+/// what the run recorded.
+fn leaving(result: &standout_test::TestResult, verdict: &exit::Verdict) -> u8 {
+    verdict.over(exit::status(result.outcome()))
 }
 
 /// The library's own report of a destination, for the document `--output json`
@@ -771,13 +783,15 @@ fn re_running_a_write_skips_every_path_and_keeps_their_mtimes() {
 fn a_dry_run_reports_the_plan_and_writes_nothing() {
     let (dir, dest, deploy) = tour();
 
+    let verdict = exit::Verdict::default();
     let result = harness(&dir).run(
-        &app(),
+        &over(&verdict),
         cli::command(),
         write_argv(&[deploy.as_str(), "--dry-run"], &dest),
     );
 
     result.assert_success();
+    assert_eq!(leaving(&result, &verdict), exit::OK);
     assert_eq!(
         result.stdout(),
         "would write      bin/tool              (exec)\n\
@@ -842,6 +856,150 @@ const MAPPING_WITH_CHANGED_CONTENT: &[u8] = b"version = 1\n\
     [files.\"config/settings.toml\"]\n\
     contents = \"listen = \\\":9090\\\"\\n\"\n";
 
+/// The same three entries the tour projects, with the settings file's
+/// contents changed, so a plan over a projected destination carries an
+/// overwrite beside whatever else it found.
+const MAPPING_WITH_CHANGED_SETTINGS: &[u8] = b"version = 1\n\
+    \n\
+    [files.\"config/settings.toml\"]\n\
+    contents = \"listen = \\\":9090\\\"\\n\"\n\
+    \n\
+    [files.\"bin/tool\"]\n\
+    source = \"./assets/tool.sh\"\n\
+    executable = true\n\
+    \n\
+    [links.\"current\"]\n\
+    target = \"releases/1.2.3\"\n";
+
+/// A destination whose plan carries a refusal beside the rows a run would
+/// act on: one path edited on disk, and one the mapping changed.
+fn refused_and_overwritten(dir: &TempDir, dest: &Utf8PathBuf, deploy: &Utf8PathBuf) {
+    harness(dir)
+        .run(&app(), cli::command(), write_argv(&[deploy.as_str()], dest))
+        .assert_success();
+    std::fs::write(dest.join("bin/tool"), b"#!/bin/sh\necho edited\n").expect("a local edit");
+    std::fs::write(deploy.as_std_path(), MAPPING_WITH_CHANGED_SETTINGS).expect("an edited mapping");
+}
+
+/// A refused dry run is still a dry run: it renders the whole plan — the rows
+/// a run would act on beside the rows it refuses, each naming its reason —
+/// and leaves with the refusal rather than replacing the plan with a
+/// diagnostic.
+#[test]
+#[serial]
+fn a_refused_dry_run_renders_the_whole_plan() {
+    let (dir, dest, deploy) = tour();
+    refused_and_overwritten(&dir, &dest, &deploy);
+    let verdict = exit::Verdict::default();
+
+    let result = harness(&dir).run(
+        &over(&verdict),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--dry-run"], &dest),
+    );
+
+    assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
+    assert_eq!(
+        result.stdout(),
+        "would refuse     bin/tool              (drifted)\n\
+         would overwrite  config/settings.toml  (content changed)\n\
+         would skip       current               -> releases/1.2.3\n"
+    );
+    assert_eq!(result.error(), None);
+    assert_eq!(
+        std::fs::read(dest.join("bin/tool")).expect("the edited file"),
+        b"#!/bin/sh\necho edited\n"
+    );
+}
+
+/// And structured output is the library's own plan document, refusals and
+/// all, on the same status.
+#[test]
+#[serial]
+fn a_refused_dry_run_is_the_librarys_own_plan_document() {
+    let (dir, dest, deploy) = tour();
+    refused_and_overwritten(&dir, &dest, &deploy);
+    let verdict = exit::Verdict::default();
+
+    let result = harness(&dir).output_mode(OutputMode::Json).run(
+        &over(&verdict),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--dry-run"], &dest),
+    );
+
+    assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
+    let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
+    let planned = Projection::new(&dest, None)
+        .expect("a projection")
+        .plan(
+            crate::testing::OWNER,
+            &libproiectio::load_mapping(&deploy).expect("a desired tree"),
+            libproiectio::PlanOptions::default(),
+        )
+        .expect("a plan");
+    assert_eq!(
+        value,
+        serde_json::to_value(planned.report()).expect("a serialized report")
+    );
+    assert_eq!(
+        value["rows"]["bin/tool"]["verdict"]["Refuse"]["refusal"],
+        "Drift"
+    );
+}
+
+/// A refused real run performed nothing, so it keeps the error channel and
+/// the diagnostic that names what it refused.
+#[test]
+#[serial]
+fn a_refused_real_run_keeps_the_error_channel() {
+    let (dir, dest, deploy) = tour();
+    refused_and_overwritten(&dir, &dest, &deploy);
+    let verdict = exit::Verdict::default();
+
+    let result = harness(&dir).run(
+        &over(&verdict),
+        cli::command(),
+        write_argv(&[deploy.as_str()], &dest),
+    );
+
+    assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
+    assert_eq!(result.stdout(), "");
+    assert!(
+        result
+            .error()
+            .unwrap_or_default()
+            .contains("refusing to touch drifted paths"),
+        "{}",
+        result.error().unwrap_or_default()
+    );
+}
+
+/// A refused row is styled like every other: the stylesheet declares its
+/// family and the theme resolves it under both colour modes.
+#[test]
+#[serial]
+fn a_refused_row_names_only_styles_the_stylesheet_declares() {
+    let (dir, dest, deploy) = tour();
+    refused_and_overwritten(&dir, &dest, &deploy);
+    let argv = write_argv(&[deploy.as_str(), "--dry-run"], &dest);
+
+    let debug =
+        harness(&dir)
+            .output_mode(OutputMode::TermDebug)
+            .run(&app(), cli::command(), argv.clone());
+    assert_tags_declared("a refused plan", debug.stdout());
+    assert!(
+        debug.stdout().contains("[refused]would refuse[/refused]"),
+        "{}",
+        debug.stdout()
+    );
+
+    let term = harness(&dir)
+        .output_mode(OutputMode::Term)
+        .run(&app(), cli::command(), argv);
+    assert_styles_resolved("a refused plan", term.stdout());
+}
+
 /// The exit code is the verdict on a dry run and a real one alike: a drifted
 /// path refuses either way, and names itself.
 #[test]
@@ -860,20 +1018,25 @@ fn a_drifted_path_refuses_on_a_dry_run_and_a_real_one_alike() {
     for extra in [vec![], vec!["--dry-run"]] {
         let mut source = vec![deploy.as_str()];
         source.extend_from_slice(&extra);
+        let verdict = exit::Verdict::default();
 
-        let result = harness(&dir).run(&app(), cli::command(), write_argv(&source, &dest));
+        let result = harness(&dir).run(&over(&verdict), cli::command(), write_argv(&source, &dest));
 
         assert_eq!(
-            exit::status(result.outcome()),
+            leaving(&result, &verdict),
             exit::REFUSAL,
             "{extra:?}: {}",
             result.error().unwrap_or_default()
         );
-        assert!(
-            result.error().unwrap_or_default().contains("bin/tool"),
-            "{extra:?}: {}",
-            result.error().unwrap_or_default()
-        );
+        if extra.is_empty() {
+            assert!(
+                result.error().unwrap_or_default().contains("bin/tool"),
+                "{extra:?}: {}",
+                result.error().unwrap_or_default()
+            );
+        } else {
+            result.assert_stdout_contains("would refuse     bin/tool              (drifted)");
+        }
     }
     assert_eq!(
         std::fs::read(dest.join("bin/tool")).expect("the edited file"),
