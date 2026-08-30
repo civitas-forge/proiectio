@@ -100,7 +100,7 @@ pub(crate) fn rm(
 fn owner_or_configured(owner: Option<String>) -> Result<String, anyhow::Error> {
     match owner {
         Some(named) => Ok(named),
-        None => Ok(settings::builder().load()?.owner),
+        None => Ok(settings::builder()?.load()?.owner),
     }
 }
 
@@ -166,8 +166,9 @@ pub(crate) fn status(
 }
 
 fn run_config(action: ConfigAction) -> Result<Output<ConfigView>, anyhow::Error> {
-    let result = settings::builder().handle(&action)?;
-    ConfigView::try_from(result)
+    let scope = settings::user_config_path()?;
+    let result = settings::builder()?.handle(&action)?;
+    ConfigView::of(result, scope)
         .map(Output::Render)
         .map_err(exit::failure)
 }
@@ -208,6 +209,7 @@ pub(crate) fn config_unset(
     #[arg] key: String,
     #[arg] scope: Option<String>,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
+    settings::require_key(&key)?;
     run_config(ConfigAction::Unset { key, scope })
 }
 

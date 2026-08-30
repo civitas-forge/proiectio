@@ -16,6 +16,9 @@ anyhow.workspace = true
 camino.workspace = true
 clap.workspace = true
 clapfig.workspace = true
+# The user scope's directory, resolved the way clapfig's own Platform scope
+# resolves it, so the echoed path is the path the edit landed in.
+directories.workspace = true
 libproiectio = { path = "../libproiectio", version = "0.9.1" }
 # Standout takes a render-only template context as a `minijinja::Value`.
 minijinja.workspace = true
@@ -24,6 +27,7 @@ serde_json.workspace = true
 standout.workspace = true
 # The #[handler] macro expands to code that names this crate directly.
 standout-dispatch.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 flate2.workspace = true
@@ -31,4 +35,3 @@ serial_test.workspace = true
 standout-test.workspace = true
 tar.workspace = true
 tempfile.workspace = true
-toml.workspace = true

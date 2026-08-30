@@ -6,8 +6,10 @@
 {{ rendered|verbatim_block }}
 {% elif kind == "value_set" -%}
 [ok]set[/ok] {{ rendered|verbatim_block }}
+[ok]wrote[/ok] {{ path|verbatim }}
 {% elif kind == "value_unset" -%}
 [ok]unset[/ok] [key]{{ key|verbatim }}[/key]
+[ok]wrote[/ok] {{ path|verbatim }}
 {% elif kind == "template" -%}
 {{ body|verbatim_block }}
 {% elif kind == "template_written" -%}

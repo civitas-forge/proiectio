@@ -4,8 +4,11 @@ use std::path::PathBuf;
 
 use camino::Utf8PathBuf;
 use clapfig::ConfigResult;
+use clapfig::runtime::LeafType;
 use libproiectio::Error;
 use serde::Serialize;
+
+use crate::settings;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ConfigEntryView {
@@ -30,9 +33,11 @@ pub(crate) enum ConfigView {
         key: String,
         value: String,
         rendered: String,
+        path: Utf8PathBuf,
     },
     ValueUnset {
         key: String,
+        path: Utf8PathBuf,
     },
     Template {
         body: String,
@@ -48,48 +53,71 @@ pub(crate) enum ConfigView {
     },
 }
 
-/// The written-file variants name a path, and a path this CLI cannot render is
-/// the one thing clapfig can hand back that no output mode can carry. Reading
-/// `--file` as UTF-8 refuses such a path at the command line, so what is left
-/// here is a path clapfig chose itself.
-impl TryFrom<ConfigResult> for ConfigView {
-    type Error = Error;
-
-    fn try_from(result: ConfigResult) -> Result<Self, Error> {
+impl ConfigView {
+    /// `scope` is the file the invocation's scope persists to: the results that
+    /// edited it name it, and the rest ignore it.
+    ///
+    /// The written-file variants name a path of clapfig's own, and a path this
+    /// CLI cannot render is the one thing clapfig can hand back that no output
+    /// mode can carry. Reading `--file` as UTF-8 refuses such a path at the
+    /// command line, so what is left here is a path clapfig chose itself.
+    pub(crate) fn of(result: ConfigResult, scope: Utf8PathBuf) -> Result<Self, Error> {
         Ok(match result {
-            ConfigResult::Listing { entries, rendered } => Self::Listing {
-                entries: entries
+            ConfigResult::Listing { entries, .. } => {
+                let entries: Vec<(String, String)> = entries
                     .into_iter()
-                    .map(|(key, value)| ConfigEntryView { key, value })
-                    .collect(),
-                rendered,
-            },
+                    .filter(|(key, _)| !settings::is_comment_key(key))
+                    .collect();
+                Self::Listing {
+                    rendered: entries
+                        .iter()
+                        .map(|(key, value)| assignment(key, value))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    entries: entries
+                        .into_iter()
+                        .map(|(key, value)| ConfigEntryView { key, value })
+                        .collect(),
+                }
+            }
             ConfigResult::KeyValue {
-                key,
-                value,
-                doc,
-                rendered,
+                key, value, doc, ..
             } => Self::KeyValue {
+                rendered: documented(&key, &value, &doc),
                 key,
                 value,
                 doc,
-                rendered,
             },
-            ConfigResult::ValueSet {
+            ConfigResult::ValueSet { key, value, .. } => Self::ValueSet {
+                rendered: assignment(&key, &value),
                 key,
                 value,
-                rendered,
-            } => Self::ValueSet {
-                key,
-                value,
-                rendered,
+                path: scope,
             },
-            ConfigResult::ValueUnset { key } => Self::ValueUnset { key },
+            ConfigResult::ValueUnset { key } => Self::ValueUnset { key, path: scope },
             ConfigResult::Template(body) => Self::Template { body },
             ConfigResult::TemplateWritten { path } => Self::TemplateWritten { path: utf8(path)? },
             ConfigResult::Schema(body) => Self::Schema { body },
             ConfigResult::SchemaWritten { path } => Self::SchemaWritten { path: utf8(path)? },
         })
+    }
+}
+
+fn documented(key: &str, value: &str, doc: &[String]) -> String {
+    doc.iter()
+        .map(|line| format!("# {line}"))
+        .chain(std::iter::once(assignment(key, value)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One line of the config file the reader can paste back into it: clapfig
+/// spells a value for a human to read, which leaves a string that needs quotes
+/// bare.
+fn assignment(key: &str, value: &str) -> String {
+    match settings::leaf_type(key) {
+        Some(LeafType::String) => format!("{key} = {}", toml::Value::from(value)),
+        _ => format!("{key} = {value}"),
     }
 }
 
