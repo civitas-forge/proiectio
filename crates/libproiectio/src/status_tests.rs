@@ -184,22 +184,31 @@ fn a_status_serializes_one_row_per_path() {
 }
 
 #[test]
-fn a_directory_the_projection_created_still_reports_foreign() {
+fn a_directory_the_projection_created_reports_no_row() {
     let dest = Tree::new().materialize();
     let state = Tree::new().materialize();
     let projection = projection(dest.root(), state.root());
     let tree = Tree::new().file("a/b/mine.txt", "projected");
     project(&projection, "own", tree.entries());
 
-    // The manifest records no directories, so the parents apply created
-    // for an owned file are unrecorded like any other directory.
     assert_eq!(
         states(&projection.status().expect("status")),
-        vec![
-            ("a", PathState::Foreign),
-            ("a/b", PathState::Foreign),
-            ("a/b/mine.txt", PathState::Clean),
-        ]
+        vec![("a/b/mine.txt", PathState::Clean)]
+    );
+}
+
+#[test]
+fn an_empty_unrecorded_directory_reports_no_row() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(dest.root(), state.root());
+    let tree = Tree::new().file("mine.txt", "projected");
+    project(&projection, "own", tree.entries());
+    fs::create_dir(dest.path("stray")).expect("an empty stray directory");
+
+    assert_eq!(
+        states(&projection.status().expect("status")),
+        vec![("mine.txt", PathState::Clean)]
     );
 }
 

@@ -7,7 +7,7 @@ use cap_std::fs_utf8::Dir;
 
 use crate::{
     BlockMarkers, Desired, Error, Manifest, Plan, PlanOptions, RemovalScope, Result, Status,
-    absolutize, block_markers, classify, decide, decide_removal, load_manifest, observe,
+    absolutize, block_markers, decide, decide_removal, load_manifest, observe, status,
 };
 
 const DEFAULT_STATE_DIR: &str = ".proiectio";
@@ -71,7 +71,7 @@ impl Projection {
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
         let observations = observe(&dest, &manifest, &BlockMarkers::new())?;
-        Ok(classify(&manifest, &observations, self.state_prefix()))
+        Ok(status(&manifest, &observations, self.state_prefix()))
     }
 
     /// The recorded state: what the projection wrote, per path, with its

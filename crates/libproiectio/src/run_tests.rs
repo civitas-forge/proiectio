@@ -171,10 +171,7 @@ fn beginning_creates_a_nested_in_dest_state_directory() {
     run.apply().expect("apply");
 
     assert!(state.join(MANIFEST_FILE_NAME).is_file());
-    // The state subtree itself never classifies. The directories above it
-    // are unrecorded directories like any other and read Foreign, which is
-    // what keeps the manifest and the lock file out of the report while
-    // nothing pretends the projection owns `.local`.
+    // The state subtree itself never classifies.
     assert_eq!(
         projection
             .status()
@@ -182,11 +179,7 @@ fn beginning_creates_a_nested_in_dest_state_directory() {
             .iter()
             .map(|(path, row)| (path.to_string(), row.verdict))
             .collect::<Vec<_>>(),
-        vec![
-            (".local".to_owned(), PathState::Foreign),
-            (".local/state".to_owned(), PathState::Foreign),
-            ("a.txt".to_owned(), PathState::Clean),
-        ]
+        vec![("a.txt".to_owned(), PathState::Clean)]
     );
 }
 

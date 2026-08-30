@@ -25,9 +25,7 @@ fn the_two_options_become_the_projection_the_library_classifies() {
     assert_eq!(
         verdicts,
         vec![
-            ("bin".to_owned(), PathState::Foreign),
             ("bin/tool".to_owned(), PathState::Drifted),
-            ("config".to_owned(), PathState::Foreign),
             ("config/settings.toml".to_owned(), PathState::Clean),
             ("current".to_owned(), PathState::Missing),
         ]
@@ -48,7 +46,7 @@ fn a_state_directory_outside_the_destination_still_names_the_manifest() {
         panic!("expected rendered data");
     };
 
-    assert_eq!(report.rows.len(), 5);
+    assert_eq!(report.rows.len(), 3);
 }
 
 /// A destination the projection cannot open is an operational failure, and it
