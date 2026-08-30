@@ -34,6 +34,7 @@ pub(crate) enum ConfigView {
         value: String,
         rendered: String,
         path: Utf8PathBuf,
+        wrote: bool,
     },
     ValueUnset {
         key: String,
@@ -93,12 +94,16 @@ impl ConfigView {
                 value,
                 doc,
             },
-            ConfigResult::ValueSet { key, value, .. } => Self::ValueSet {
-                rendered: assignment(&key, &value),
-                key,
-                value,
-                path: edit()?.path,
-            },
+            ConfigResult::ValueSet { key, value, .. } => {
+                let edit = edit()?;
+                Self::ValueSet {
+                    rendered: assignment(&key, &value),
+                    key,
+                    value,
+                    path: edit.path,
+                    wrote: edit.wrote,
+                }
+            }
             ConfigResult::ValueUnset { key } => {
                 let edit = edit()?;
                 Self::ValueUnset {
@@ -124,13 +129,34 @@ fn documented(key: &str, value: &str, doc: &[String]) -> String {
 }
 
 /// One line of the config file the reader can paste back into it: clapfig
-/// spells a value for a human to read, which leaves a string that needs quotes
-/// bare.
+/// spells both halves for a human to read, which leaves a string value that
+/// needs quotes bare, and a key a bare TOML key cannot carry unquoted.
 fn assignment(key: &str, value: &str) -> String {
-    match settings::leaf_type(key) {
-        Some(LeafType::String) => format!("{key} = {}", toml::Value::from(value)),
-        _ => format!("{key} = {value}"),
-    }
+    let spelled = match settings::leaf_type(key) {
+        Some(LeafType::String) => toml::Value::from(value).to_string(),
+        _ => value.to_owned(),
+    };
+    format!("{} = {spelled}", dotted(key))
+}
+
+/// The key as a document spells it: one segment per dot, each quoted where a
+/// bare TOML key cannot carry it. A scoped listing reads the file itself, so
+/// the keys reaching here are the writer's rather than the schema's.
+fn dotted(key: &str) -> String {
+    key.split('.')
+        .map(|segment| {
+            if !segment.is_empty() && segment.chars().all(is_bare_key_char) {
+                segment.to_owned()
+            } else {
+                toml::Value::from(segment).to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn is_bare_key_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_' || character == '-'
 }
 
 fn utf8(path: PathBuf) -> Result<Utf8PathBuf, Error> {

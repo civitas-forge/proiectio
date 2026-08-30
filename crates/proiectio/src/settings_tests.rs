@@ -1,5 +1,6 @@
 use super::*;
 
+use clapfig::runtime::{Field, Schema as RuntimeSchema};
 use tempfile::TempDir;
 
 /// Loads a `proiectio.toml` from `dir` alone: [`builder`]'s own scopes reach
@@ -102,4 +103,67 @@ fn the_schemas_leaf_types_are_what_a_rendered_line_is_spelled_from() {
     assert!(matches!(leaf_type("owner"), Some(LeafType::String)));
     assert!(leaf_type("onwer").is_none());
     assert!(leaf_type("owner.deeper").is_none());
+}
+
+/// A listing flattens a map's entries into dotted keys, so the walk drops the
+/// entry key the writer chose and reads the item shape underneath it — the
+/// same step clapfig's own `doc_for_shape` takes.
+#[test]
+fn a_key_under_a_map_resolves_to_the_item_shapes_leaf() {
+    let shape = Shape::Object(
+        RuntimeSchema::object("Demo")
+            .field("owner", Field::string())
+            .map_of(
+                "hosts",
+                RuntimeSchema::object("Host")
+                    .field("label", Field::string())
+                    .field("port", Field::integer()),
+            )
+            .build(),
+    );
+
+    let segments = |key: &'static str| key.split('.').collect::<Vec<_>>();
+    assert!(matches!(
+        leaf_type_in(&shape, &segments("hosts.a.label")),
+        Some(LeafType::String)
+    ));
+    assert!(matches!(
+        leaf_type_in(&shape, &segments("hosts.a.port")),
+        Some(LeafType::Integer { .. })
+    ));
+    assert!(leaf_type_in(&shape, &segments("hosts.a.nope")).is_none());
+    assert!(leaf_type_in(&shape, &segments("hosts")).is_none());
+}
+
+/// An optional field is a leaf carrying `optional`, not a shape wrapped around
+/// one, so the walk reaches its type the way it reaches a required field's.
+#[test]
+fn an_optional_field_resolves_to_the_leaf_type_it_wraps() {
+    let shape = Shape::Object(
+        RuntimeSchema::object("Demo")
+            .field("nickname", Field::string().optional())
+            .build(),
+    );
+
+    assert!(matches!(
+        leaf_type_in(&shape, &["nickname"]),
+        Some(LeafType::String)
+    ));
+}
+
+/// `require_key` asks the schema whether the path resolves, not whether anyone
+/// documented it: clapfig answers `Some(vec![])` for a declared field with no
+/// doc comment, so an undocumented key is still a key.
+#[test]
+fn a_key_the_schema_declares_without_a_doc_comment_is_still_a_key() {
+    let shape = Shape::Object(
+        RuntimeSchema::object("Demo")
+            .field("undocumented", Field::string())
+            .build(),
+    );
+
+    assert_eq!(
+        clapfig::meta::doc_for_shape(&shape, "undocumented"),
+        Some(Vec::new())
+    );
 }

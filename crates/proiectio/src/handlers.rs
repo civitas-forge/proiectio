@@ -166,6 +166,7 @@ pub(crate) fn status(
 }
 
 fn run_config(action: ConfigAction) -> Result<Output<ConfigView>, anyhow::Error> {
+    settings::check_edit_path(&action).map_err(exit::failure)?;
     let result = settings::builder().handle(&action)?;
     ConfigView::of(result, settings::persisted_edit)
         .map(Output::Render)
@@ -191,6 +192,7 @@ pub(crate) fn config_get(
     #[arg] key: String,
     #[arg] scope: Option<String>,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
+    settings::require_key(&key)?;
     run_config(ConfigAction::Get { key, scope })
 }
 
@@ -200,6 +202,7 @@ pub(crate) fn config_set(
     #[arg] value: String,
     #[arg] scope: Option<String>,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
+    settings::require_key(&key)?;
     run_config(ConfigAction::Set { key, value, scope })
 }
 

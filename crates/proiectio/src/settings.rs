@@ -3,7 +3,7 @@
 use camino::Utf8PathBuf;
 use clapfig::error::ClapfigError;
 use clapfig::runtime::{LeafType, Shape};
-use clapfig::{Clapfig, Schema, SearchPath, TypedBuilder, UnknownKeyDecision};
+use clapfig::{Clapfig, ConfigAction, Schema, SearchPath, TypedBuilder, UnknownKeyDecision};
 use libproiectio::Error;
 use serde::{Deserialize, Serialize};
 
@@ -40,9 +40,23 @@ pub(crate) struct Edit {
     pub(crate) wrote: bool,
 }
 
+/// Resolves the file a `set` or `unset` is about to edit, so that a platform
+/// path this CLI cannot spell refuses the run before clapfig writes rather
+/// than after. Clapfig persists through a `PathBuf`, which carries paths the
+/// report cannot; reading one back afterwards would fail a run whose edit had
+/// already reached the disk.
+pub(crate) fn check_edit_path(action: &ConfigAction) -> Result<(), Error> {
+    match action {
+        ConfigAction::Set { .. } | ConfigAction::Unset { .. } => user_config_path().map(drop),
+        _ => Ok(()),
+    }
+}
+
 /// What a `set` or `unset` through the `user` scope just did, read after
 /// clapfig persisted it: a set always leaves the file behind, and an unset
-/// with no file to remove the key from writes nothing.
+/// with no file to remove the key from writes nothing. Clapfig rewrites a file
+/// that is there whether or not it held the key, so `wrote` reports the write
+/// itself and not a change in the file's contents.
 pub(crate) fn persisted_edit() -> Result<Edit, Error> {
     let path = user_config_path()?;
     Ok(Edit {
@@ -86,20 +100,24 @@ pub(crate) fn require_key(key: &str) -> Result<(), ClapfigError> {
 }
 
 pub(crate) fn leaf_type(key: &str) -> Option<LeafType> {
-    let mut shape = ProiectioConfig::shape();
-    for segment in key.split('.') {
-        let Shape::Object(schema) = shape else {
-            return None;
-        };
-        shape = schema
-            .fields
-            .iter()
-            .find(|field| field.name == segment)?
-            .field
-            .clone();
-    }
+    let segments: Vec<&str> = key.split('.').collect();
+    leaf_type_in(&ProiectioConfig::shape(), &segments)
+}
+
+/// Walks `shape` the way clapfig's own `doc_for_shape` walks it, so the schema
+/// answers for every key a listing can carry: a map's first segment is the
+/// entry key the writer chose, and the rest name fields of the item shape. A
+/// segment that lands on an array or a tagged union has no single leaf type,
+/// and the value keeps clapfig's spelling.
+fn leaf_type_in(shape: &Shape, segments: &[&str]) -> Option<LeafType> {
     match shape {
-        Shape::Leaf(leaf) => Some(leaf.ty),
+        Shape::Leaf(leaf) if segments.is_empty() => Some(leaf.ty.clone()),
+        Shape::Object(schema) => {
+            let (name, rest) = segments.split_first()?;
+            let field = schema.fields.iter().find(|field| field.name == *name)?;
+            leaf_type_in(&field.field, rest)
+        }
+        Shape::Map(map) => leaf_type_in(&map.item, segments.split_first()?.1),
         _ => None,
     }
 }

@@ -584,6 +584,106 @@ fn a_comment_table_is_left_out_of_the_scope_that_reads_the_file_itself() {
     }
 }
 
+/// `set`, `get` and `unset` all read the same key argument, so an invocation
+/// wrong in both its key and its scope reports the same one of them first
+/// whichever command it named.
+#[test]
+#[serial]
+fn the_edit_commands_agree_on_which_wrong_argument_they_report_first() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    for argv in [
+        vec![
+            "proiectio",
+            "conf",
+            "set",
+            "--scope",
+            "local",
+            "onwer",
+            "site",
+        ],
+        vec!["proiectio", "conf", "get", "--scope", "local", "onwer"],
+        vec!["proiectio", "conf", "unset", "--scope", "local", "onwer"],
+    ] {
+        let result = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        let error = result.error().unwrap_or_default();
+        assert!(
+            error.contains("Key not found: onwer"),
+            "{argv:?} reported the scope before the key: {error}"
+        );
+    }
+}
+
+/// A note is not a setting, so it is not a key `get` answers for, any more
+/// than `set` and `unset` accept one. The listing leaves it in the file for
+/// the same reason.
+#[test]
+#[serial]
+fn a_comment_key_is_not_one_the_reading_commands_answer_for() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let json = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "owner", "site"],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"));
+    std::fs::write(&path, "owner = \"site\"\n\"//\" = \"a note\"\n").expect("a noted config file");
+
+    for argv in [
+        vec!["proiectio", "conf", "get", "//"],
+        vec!["proiectio", "conf", "get", "//", "--scope", "user"],
+    ] {
+        let result = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        assert!(
+            result
+                .error()
+                .unwrap_or_default()
+                .contains("Key not found: //"),
+            "{argv:?}: {}",
+            result.error().unwrap_or_default()
+        );
+    }
+}
+
+/// A scoped listing reads the file itself rather than the merged schema, so
+/// the keys it prints are the writer's. One a bare TOML key cannot carry is
+/// quoted, or the line it prints would not parse back.
+#[test]
+#[serial]
+fn a_listed_key_a_bare_toml_key_cannot_carry_is_quoted() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let json = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "owner", "site"],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"));
+    std::fs::write(&path, "owner = \"site\"\n\"a b\" = 1\n")
+        .expect("a config file with an odd key");
+
+    let listing = harness(&dir).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "list", "--scope", "user"],
+    );
+
+    listing.assert_success();
+    let parsed: toml::Table = listing
+        .stdout()
+        .parse()
+        .unwrap_or_else(|error| panic!("the listing printed {:?}: {error}", listing.stdout()));
+    assert_eq!(parsed["a b"].as_integer(), Some(1));
+    assert_eq!(parsed["owner"].as_str(), Some("site"));
+}
+
 /// `user` is the only scope the builder registers, so no other spelling can
 /// reach a file — and the run that names one says which scopes exist rather
 /// than reporting a write to the user scope.
