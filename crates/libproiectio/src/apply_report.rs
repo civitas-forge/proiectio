@@ -1,6 +1,8 @@
+use std::collections::BTreeSet;
+
 use serde::Serialize;
 
-use crate::{Manifest, Report};
+use crate::{Dropped, Manifest, Report};
 
 /// What apply did to one path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -30,6 +32,11 @@ pub enum ApplyOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApplyReport {
     pub report: Report<ApplyOutcome>,
+    /// Archive members `strip` erased on the way to the desired tree, which
+    /// no row can state: they reached no path in the destination, so the run
+    /// wrote nothing for them.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub dropped: BTreeSet<Dropped>,
     /// The manifest as written after the run.
     pub manifest: Manifest,
 }

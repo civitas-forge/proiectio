@@ -19,7 +19,6 @@ fn row(facts: Option<PathFacts>, verdict: PathState) -> Row<PathState> {
 // only the disk knows about.
 fn two_rows() -> Report<PathState> {
     Report {
-        dropped: BTreeSet::new(),
         rows: BTreeMap::from([
             (
                 Utf8PathBuf::from("bin/tool"),
@@ -61,7 +60,6 @@ fn iterating_walks_every_row_in_path_order() {
 #[test]
 fn a_summary_counts_the_rows_of_each_verdict() {
     let report = Report {
-        dropped: BTreeSet::new(),
         rows: BTreeMap::from([
             (Utf8PathBuf::from("a.txt"), row(None, PathState::Clean)),
             (Utf8PathBuf::from("b.txt"), row(None, PathState::Clean)),
@@ -80,7 +78,6 @@ fn a_summary_counts_the_rows_of_each_verdict() {
 #[test]
 fn a_summary_orders_verdicts_by_declaration() {
     let report = Report {
-        dropped: BTreeSet::new(),
         rows: BTreeMap::from([
             (Utf8PathBuf::from("a.txt"), row(None, PathState::Foreign)),
             (Utf8PathBuf::from("b.txt"), row(None, PathState::Clean)),
@@ -97,40 +94,12 @@ fn a_summary_orders_verdicts_by_declaration() {
 #[test]
 fn an_empty_report_summarizes_to_nothing() {
     let report = Report::<PathState> {
-        dropped: BTreeSet::new(),
         rows: BTreeMap::new(),
     };
 
     assert!(report.is_empty());
     assert_eq!(report.iter().count(), 0);
     assert!(report.summary().is_empty());
-}
-
-// A report holding drops and nothing else still has something to say, so a
-// consumer that suppresses empty reports must not suppress this one.
-#[test]
-fn a_report_holding_only_drops_is_not_empty() {
-    let report = Report::<PathState> {
-        rows: BTreeMap::new(),
-        dropped: BTreeSet::from([Dropped {
-            member: Utf8PathBuf::from("._pkg"),
-            origin: Origin::Archive {
-                path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
-                via: None,
-            },
-        }]),
-    };
-
-    assert!(!report.is_empty());
-    assert_eq!(report.iter().count(), 0);
-    assert!(report.summary().is_empty());
-    assert_eq!(
-        serde_json::to_value(&report).expect("serialize")["dropped"],
-        serde_json::json!([{
-            "member": "._pkg",
-            "origin": { "Archive": { "path": "/assets/vendor.tar.gz", "via": null } },
-        }])
-    );
 }
 
 #[test]
@@ -161,7 +130,6 @@ fn a_report_serializes_with_paths_as_keys_and_no_bytes() {
 #[test]
 fn a_symlink_row_carries_its_target_verbatim() {
     let report = Report {
-        dropped: BTreeSet::new(),
         rows: BTreeMap::from([(
             Utf8PathBuf::from("current"),
             row(
@@ -190,7 +158,6 @@ fn a_symlink_row_carries_its_target_verbatim() {
 #[test]
 fn a_row_can_name_neither_target_nor_origin() {
     let report = Report {
-        dropped: BTreeSet::new(),
         rows: BTreeMap::from([(
             Utf8PathBuf::from("current"),
             row(

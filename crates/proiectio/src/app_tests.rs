@@ -723,7 +723,7 @@ fn write_drops_the_members_strip_erases_and_projects_the_rest() {
         result.stdout(),
         format!(
             "wrote      top\n\
-             dropped    ._skeleton-1.2  (no path left after strip) (from archive {archive})\n\
+             dropped    ._skeleton-1.2  (no path left after strip 1) (from archive {archive})\n\
              1 written, 0 skipped\n"
         )
     );
@@ -734,16 +734,24 @@ fn write_drops_the_members_strip_erases_and_projects_the_rest() {
     assert!(!dest.join("._skeleton-1.2").exists());
 }
 
-/// The same drop under structured output: it rides the library's own report,
-/// beside the rows rather than among them, since a dropped member is spelled
-/// as the archive spells it and not as a path in the destination.
+/// The same drop under structured output, in both tenses: it rides the
+/// library's own report, beside the rows rather than among them, since a
+/// dropped member is spelled as the archive spells it and not as a path in
+/// the destination. A plan flattens its rows beside `dropped` and an apply
+/// nests them under `report`, so `dropped` sits at the top level either way.
 #[test]
 #[serial]
 fn a_dropped_member_rides_the_librarys_own_report() {
     let (dir, dest, _) = tour();
     let archive = appledouble_tarball(&utf8(&dir));
+    let record = serde_json::json!([{
+        "member": "._skeleton-1.2",
+        "prefix": "",
+        "strip": 1,
+        "origin": { "Archive": { "path": archive.as_str(), "via": null } },
+    }]);
 
-    let result = harness(&dir).output_mode(OutputMode::Json).run(
+    let planned = harness(&dir).output_mode(OutputMode::Json).run(
         &app(),
         cli::command(),
         write_argv(
@@ -752,17 +760,24 @@ fn a_dropped_member_rides_the_librarys_own_report() {
         ),
     );
 
-    result.assert_success();
-    let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
+    planned.assert_success();
+    let value: JsonValue = serde_json::from_str(planned.stdout()).expect("a JSON document");
     assert_eq!(value["rows"]["top"]["verdict"], "Write");
     assert!(value["rows"].get("._skeleton-1.2").is_none());
-    assert_eq!(
-        value["dropped"],
-        serde_json::json!([{
-            "member": "._skeleton-1.2",
-            "origin": { "Archive": { "path": archive.as_str(), "via": null } },
-        }])
+    assert_eq!(value["dropped"], record);
+
+    let applied = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        write_argv(&["--tree", archive.as_str(), "--strip", "1"], &dest),
     );
+
+    applied.assert_success();
+    let value: JsonValue = serde_json::from_str(applied.stdout()).expect("a JSON document");
+    assert_eq!(value["report"]["rows"]["top"]["verdict"], "Written");
+    assert!(value["report"]["rows"].get("._skeleton-1.2").is_none());
+    assert!(value["report"].get("dropped").is_none());
+    assert_eq!(value["dropped"], record);
 }
 
 /// Without `--strip` the wrapper is part of the tree, which is the same rule

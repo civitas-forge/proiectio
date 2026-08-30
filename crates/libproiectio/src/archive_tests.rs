@@ -573,6 +573,8 @@ fn a_file_member_strip_erases_is_dropped_and_the_rest_loads() {
         expanded.dropped(),
         &BTreeSet::from([Dropped {
             member: Utf8PathBuf::from("._pkg"),
+            prefix: Utf8PathBuf::new(),
+            strip: 1,
             origin: Origin::Archive {
                 path: fixture.path("pkg.tar"),
                 via: None,

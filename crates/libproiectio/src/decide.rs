@@ -57,10 +57,7 @@ pub(crate) fn classify(
             verdict: PathState::Missing,
         });
     }
-    Report {
-        rows,
-        dropped: BTreeSet::new(),
-    }
+    Report { rows }
 }
 
 /// [`classify`], less every unrecorded path observed as a directory.

@@ -79,9 +79,9 @@ pub fn load_archive(source: &Utf8Path, strip: u32) -> Result<Desired> {
         via: None,
     };
     let expanded = expand(source, strip, Utf8Path::new(""), None, &new_budget())?;
-    let mut desired = Desired::from_source(expanded.tree, origin.clone());
-    for member in expanded.dropped {
-        desired.record_dropped(member, origin.clone());
+    let mut desired = Desired::from_source(expanded.tree, origin);
+    for dropped in expanded.dropped {
+        desired.record_dropped(dropped);
     }
     Ok(desired)
 }
@@ -160,14 +160,45 @@ pub(crate) fn expand(
     }
     Ok(Expanded {
         tree: expansion.tree,
-        dropped: expansion.dropped,
+        dropped: expansion
+            .dropped
+            .into_iter()
+            .map(|member| Dropped {
+                member,
+                prefix: prefix.to_owned(),
+                strip,
+                origin: Origin::Archive {
+                    path: source.to_owned(),
+                    via: via.map(Utf8Path::to_owned),
+                },
+            })
+            .collect(),
     })
 }
 
 #[derive(Debug)]
 pub(crate) struct Expanded {
     pub(crate) tree: BTreeMap<Utf8PathBuf, Entry>,
-    pub(crate) dropped: BTreeSet<Utf8PathBuf>,
+    pub(crate) dropped: BTreeSet<Dropped>,
+}
+
+/// An archive member `strip` left with no path at all. One expansion is
+/// identified by all four fields: the same archive expanded under two
+/// `[archives]` prefixes, or at two `strip` counts, drops its members twice,
+/// and each drop names the expansion that erased it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct Dropped {
+    /// The member's path as its archive spells it, normalized.
+    pub member: Utf8PathBuf,
+    /// Where in the destination the expansion places the archive: a mapping's
+    /// `[archives]` key, and empty for an archive loaded on its own. The
+    /// dropped member never reaches it.
+    pub prefix: Utf8PathBuf,
+    /// The number of leading components the expansion asked `strip` to drop,
+    /// which is what left this member with no path.
+    pub strip: u32,
+    /// The archive that carried the member.
+    pub origin: Origin,
 }
 
 /// What is left of [`MAX_EXPANDED_BYTES`], and whether something ran it out.

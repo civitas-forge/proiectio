@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use cap_std::ambient_authority;
 use cap_std::fs_utf8::Dir;
 
@@ -159,6 +161,7 @@ impl Run {
         let Some(plan) = &self.plan else {
             return Ok(ApplyReport {
                 report: Report::default(),
+                dropped: BTreeSet::new(),
                 manifest: self.manifest,
             });
         };

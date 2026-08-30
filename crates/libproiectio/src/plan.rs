@@ -70,8 +70,9 @@ pub struct Plan {
     pub external_targets: ExternalTargetPolicy,
     /// The per-path actions.
     pub actions: BTreeMap<Utf8PathBuf, Action>,
-    /// Archive members `strip` erased, which no action can state: they
-    /// reached no path in the destination.
+    /// Archive members `strip` erased on the way to the desired tree, which
+    /// no action can state: they reach no path in the destination, so there
+    /// is nothing to do about them.
     pub dropped: BTreeSet<Dropped>,
 }
 
@@ -104,7 +105,6 @@ impl Plan {
                     (path.clone(), row)
                 })
                 .collect(),
-            dropped: self.dropped.clone(),
         }
     }
 

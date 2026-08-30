@@ -27,32 +27,15 @@ pub struct Row<V> {
     pub verdict: V,
 }
 
-/// An archive member `strip` left with no path at all, named with the archive
-/// that carried it. A member name is unique only within its own archive, so a
-/// drop is a record rather than a keyed entry: two archives dropping the same
-/// name are two records.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub struct Dropped {
-    /// The member's path as its archive spells it, normalized.
-    pub member: Utf8PathBuf,
-    /// The archive that carried the member.
-    pub origin: Origin,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Report<V> {
     pub rows: BTreeMap<Utf8PathBuf, Row<V>>,
-    /// Archive members `strip` erased, which no row can state: they reached
-    /// no path in the destination.
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
-    pub dropped: BTreeSet<Dropped>,
 }
 
 impl<V> Default for Report<V> {
     fn default() -> Self {
         Self {
             rows: BTreeMap::new(),
-            dropped: BTreeSet::new(),
         }
     }
 }
@@ -71,7 +54,7 @@ impl<V: Ord + Clone> Report<V> {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.rows.is_empty() && self.dropped.is_empty()
+        self.rows.is_empty()
     }
 }
 

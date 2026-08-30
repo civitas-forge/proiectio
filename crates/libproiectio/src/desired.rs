@@ -39,10 +39,9 @@ impl Desired {
         self.entries.insert(path, (entry, origin)).is_none()
     }
 
-    /// Record an archive member `strip` erased, against the archive that
-    /// carried it.
-    pub fn record_dropped(&mut self, member: Utf8PathBuf, origin: Origin) {
-        self.dropped.insert(Dropped { member, origin });
+    /// Record an archive member `strip` erased on the way to this tree.
+    pub fn record_dropped(&mut self, dropped: Dropped) {
+        self.dropped.insert(dropped);
     }
 
     /// Every archive member `strip` erased on the way to this tree.

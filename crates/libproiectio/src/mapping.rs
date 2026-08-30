@@ -191,8 +191,8 @@ fn parse(path: &Utf8Path, text: &str) -> Result<Desired> {
                 });
             }
         }
-        for member in expanded.dropped {
-            tree.record_dropped(member, origin.clone());
+        for dropped in expanded.dropped {
+            tree.record_dropped(dropped);
         }
     }
     Ok(tree)

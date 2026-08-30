@@ -8,8 +8,9 @@ use cap_std::fs_utf8::Dir;
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree, paths_of, refusals_of, sourced_of};
 use crate::{
-    BlockMarkers, Desired, DriftPolicy, EntryKind, ExternalTargetPolicy, Origin, OverwriteReason,
-    PlanOptions, RefusalKind, RemovalScope, block_markers, decide, decide_removal, observe,
+    BlockMarkers, Desired, DriftPolicy, Dropped, EntryKind, ExternalTargetPolicy, Origin,
+    OverwriteReason, PlanOptions, RefusalKind, RemovalScope, block_markers, decide, decide_removal,
+    observe,
 };
 
 // Opens a capability handle at a fixture root. Ambient authority is the
@@ -722,6 +723,37 @@ fn a_write_target_appearing_in_the_gap_refuses_as_foreign() {
         other => panic!("expected Foreign, got {other:?}"),
     }
     assert_tree(dest.root(), &Tree::new().file("a.txt", "squatter"));
+}
+
+// A drop is not an action, so apply performs nothing for it and records
+// nothing in the manifest. It rides the report beside the rows rather than
+// among them, which is what leaves a run whose only news is a dropped member
+// with something to say.
+#[test]
+fn applying_a_plan_carries_its_drops_onto_the_report() {
+    let (dest, state) = fixtures();
+    let dropped = Dropped {
+        member: Utf8PathBuf::from("._pkg"),
+        prefix: Utf8PathBuf::new(),
+        strip: 1,
+        origin: Origin::Archive {
+            path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+            via: None,
+        },
+    };
+    let plan = Plan {
+        dropped: BTreeSet::from([dropped.clone()]),
+        owner: "own".to_owned(),
+        origins: BTreeMap::new(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::new(),
+    };
+
+    let applied = apply_at(&dest, &state, &Manifest::new(), &plan).expect("apply");
+
+    assert!(applied.report.is_empty());
+    assert_eq!(applied.dropped, BTreeSet::from([dropped]));
+    assert!(applied.manifest.entries.is_empty());
 }
 
 // A plan carrying two kinds of refusal reports the least `RefusalKind`;

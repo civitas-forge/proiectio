@@ -15,7 +15,7 @@ use standout::handler;
 
 use crate::exit;
 use crate::settings;
-use crate::views::{ConfigView, RunView};
+use crate::views::{ConfigView, PlannedRun, RunView};
 
 #[handler]
 #[expect(
@@ -129,7 +129,10 @@ fn planned_report(
             .get_required::<exit::Verdict>()?
             .record(exit::REFUSAL);
     }
-    Ok(Output::Render(RunView::Planned(report)))
+    Ok(Output::Render(RunView::Planned(PlannedRun {
+        report,
+        dropped: plan.dropped.clone(),
+    })))
 }
 
 /// A real run acts, so a plan carrying refusals reaches the shell as
