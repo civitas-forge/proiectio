@@ -354,7 +354,7 @@ fn a_config_value_spelled_like_a_style_tag_renders_as_itself() {
 
     let text = harness(&dir).run(&app(), cli::command(), argv);
     text.assert_success();
-    text.assert_stdout_contains(&format!("set owner = {SPELLED}"));
+    text.assert_stdout_contains(&format!("set owner = \"{SPELLED}\""));
 
     let json = harness(&dir)
         .output_mode(OutputMode::Json)
@@ -364,11 +364,11 @@ fn a_config_value_spelled_like_a_style_tag_renders_as_itself() {
     assert_eq!(value["value"], SPELLED);
 }
 
-/// Every config line the CLI prints is clapfig's own, so a string value keeps
-/// the spelling the active format gives it.
+/// The term output and the `rendered` field are one spelling, so what a reader
+/// copies off the terminal is what a structured consumer reads.
 #[test]
 #[serial]
-fn config_lines_are_the_spelling_clapfig_rendered() {
+fn config_lines_are_the_spelling_the_view_rendered() {
     let dir = TempDir::new().expect("a temporary directory");
 
     let listing = harness(&dir).run(&app(), cli::command(), ["proiectio", "conf", "list"]);
@@ -386,9 +386,338 @@ fn config_lines_are_the_spelling_clapfig_rendered() {
     assert_eq!(get.stdout(), format!("{rendered}\n"));
 }
 
+/// What `list` and `get` print goes back into the file it came from: a value
+/// needing quotes carries them.
+#[test]
+#[serial]
+fn a_config_line_parses_as_the_config_file_it_looks_like() {
+    const SPELLED: &str = "me and you";
+
+    let dir = TempDir::new().expect("a temporary directory");
+    harness(&dir)
+        .run(
+            &app(),
+            cli::command(),
+            ["proiectio", "conf", "set", "owner", SPELLED],
+        )
+        .assert_success();
+
+    for argv in [
+        vec!["proiectio", "conf", "list"],
+        vec!["proiectio", "conf", "get", "owner"],
+    ] {
+        let rendered = rendered_field(&dir, argv.clone());
+        let parsed: toml::Table = rendered
+            .parse()
+            .unwrap_or_else(|error| panic!("{argv:?} printed {rendered:?}: {error}"));
+        assert_eq!(parsed["owner"].as_str(), Some(SPELLED));
+    }
+}
+
+/// A set and an unset change a file every invocation on the machine reads, so
+/// each names the file it wrote.
+#[test]
+#[serial]
+fn a_persisted_value_names_the_file_it_was_written_to() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let set = ["proiectio", "conf", "set", "owner", "site"];
+
+    let json = harness(&dir)
+        .output_mode(OutputMode::Json)
+        .run(&app(), cli::command(), set);
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"));
+    assert!(path.starts_with(utf8(&dir)), "{path}");
+    assert!(
+        std::fs::read_to_string(&path)
+            .expect("the file the set named")
+            .contains("site")
+    );
+
+    for argv in [set.to_vec(), vec!["proiectio", "conf", "unset", "owner"]] {
+        let text = harness(&dir).run(&app(), cli::command(), argv.clone());
+        text.assert_success();
+        text.assert_stdout_contains(&format!("wrote {path}"));
+    }
+}
+
+/// Clapfig treats an unset with no file to read as a successful no-op. A CLI
+/// that claimed `wrote` there would name a file that does not exist, so the
+/// run says which file it found nothing at.
+#[test]
+#[serial]
+fn an_unset_with_no_file_to_edit_names_no_written_file() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let argv = ["proiectio", "conf", "unset", "owner"];
+
+    let json = harness(&dir)
+        .output_mode(OutputMode::Json)
+        .run(&app(), cli::command(), argv);
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the unset targeted"));
+    assert_eq!(value["wrote"], false);
+    assert!(!path.exists(), "the unset created {path}");
+
+    let text = harness(&dir).run(&app(), cli::command(), argv);
+    text.assert_success();
+    assert!(
+        !text.stdout().contains("wrote"),
+        "an unset that wrote nothing claimed it wrote: {}",
+        text.stdout()
+    );
+    text.assert_stdout_contains(&format!("no file at {path}"));
+
+    let debug = harness(&dir)
+        .output_mode(OutputMode::TermDebug)
+        .run(&app(), cli::command(), argv);
+    debug.assert_success();
+    assert_tags_declared("an unset with no file", debug.stdout());
+}
+
+/// Unsetting is an edit like setting, so a key the schema does not declare is
+/// the same typo it is there rather than a silent success.
+#[test]
+#[serial]
+fn unsetting_a_key_the_schema_does_not_declare_fails_as_setting_one_does() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    for argv in [
+        vec!["proiectio", "conf", "unset", "onwer"],
+        vec!["proiectio", "conf", "set", "onwer", "site"],
+    ] {
+        let result = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        assert!(
+            result
+                .error()
+                .unwrap_or_default()
+                .contains("Key not found: onwer"),
+            "{argv:?}: {}",
+            result.error().unwrap_or_default()
+        );
+    }
+}
+
+/// `config schema` allowlists `^//` on every object, so a file spelling a note
+/// that way loads. A note is not a setting, and the listing leaves it in the
+/// file the writer put it in.
+#[test]
+#[serial]
+fn a_comment_key_the_schema_allowlists_loads_and_is_not_a_setting() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let json = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "owner", "site"],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"));
+    let noted = format!(
+        "\"//\" = \"a note\"\n{}",
+        std::fs::read_to_string(&path).expect("the file the set named")
+    );
+    std::fs::write(&path, &noted).expect("a config file carrying a note");
+
+    let listing = harness(&dir).run(&app(), cli::command(), ["proiectio", "conf", "list"]);
+
+    listing.assert_success();
+    assert_eq!(listing.stdout(), "owner = \"site\"\n");
+}
+
+/// The allowlist the loader honours is the one `config schema` publishes, read
+/// off the emitted document rather than restated here: a validator handed that
+/// schema and a file carrying a note agrees with the loader about both.
+#[test]
+#[serial]
+fn the_emitted_schema_allowlists_the_comment_keys_the_loader_accepts() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    let schema = harness(&dir).run(&app(), cli::command(), ["proiectio", "conf", "schema"]);
+    schema.assert_success();
+    let emitted: JsonValue = serde_json::from_str(schema.stdout()).expect("a JSON Schema document");
+
+    assert_eq!(
+        emitted["patternProperties"]["^//"],
+        serde_json::json!({}),
+        "the schema publishes no comment-key allowlist: {}",
+        schema.stdout()
+    );
+    assert_eq!(
+        emitted["additionalProperties"], false,
+        "the schema closes no object, so nothing needs allowlisting"
+    );
+}
+
+/// A note under a table of its own is a note at every depth the schema
+/// allowlists it, and the listing leaves the whole subtree in the file — the
+/// key the loader saw is the table, not the leaf beneath it.
+#[test]
+#[serial]
+fn a_comment_table_is_left_out_of_the_scope_that_reads_the_file_itself() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let json = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "owner", "site"],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"));
+    std::fs::write(
+        &path,
+        "owner = \"site\"\n\n[\"//notes\"]\nwhy = \"a note\"\n",
+    )
+    .expect("a config file carrying a noted table");
+
+    for argv in [
+        vec!["proiectio", "conf", "list"],
+        vec!["proiectio", "conf", "list", "--scope", "user"],
+    ] {
+        let listing = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        listing.assert_success();
+        assert_eq!(listing.stdout(), "owner = \"site\"\n", "{argv:?}");
+    }
+}
+
+/// `set`, `get` and `unset` all read the same key argument, so an invocation
+/// wrong in both its key and its scope reports the same one of them first
+/// whichever command it named.
+#[test]
+#[serial]
+fn the_edit_commands_agree_on_which_wrong_argument_they_report_first() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    for argv in [
+        vec![
+            "proiectio",
+            "conf",
+            "set",
+            "--scope",
+            "local",
+            "onwer",
+            "site",
+        ],
+        vec!["proiectio", "conf", "get", "--scope", "local", "onwer"],
+        vec!["proiectio", "conf", "unset", "--scope", "local", "onwer"],
+    ] {
+        let result = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        let error = result.error().unwrap_or_default();
+        assert!(
+            error.contains("Key not found: onwer"),
+            "{argv:?} reported the scope before the key: {error}"
+        );
+    }
+}
+
+/// A note is not a setting, so it is not a key `get` answers for, any more
+/// than `set` and `unset` accept one. The listing leaves it in the file for
+/// the same reason.
+#[test]
+#[serial]
+fn a_comment_key_is_not_one_the_reading_commands_answer_for() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let json = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "owner", "site"],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"));
+    std::fs::write(&path, "owner = \"site\"\n\"//\" = \"a note\"\n").expect("a noted config file");
+
+    for argv in [
+        vec!["proiectio", "conf", "get", "//"],
+        vec!["proiectio", "conf", "get", "//", "--scope", "user"],
+    ] {
+        let result = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        assert!(
+            result
+                .error()
+                .unwrap_or_default()
+                .contains("Key not found: //"),
+            "{argv:?}: {}",
+            result.error().unwrap_or_default()
+        );
+    }
+}
+
+/// A scoped listing reads the file itself rather than the merged schema, so
+/// the keys it prints are the writer's. One a bare TOML key cannot carry is
+/// quoted, or the line it prints would not parse back.
+#[test]
+#[serial]
+fn a_listed_key_a_bare_toml_key_cannot_carry_is_quoted() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let json = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "owner", "site"],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"));
+    std::fs::write(&path, "owner = \"site\"\n\"a b\" = 1\n")
+        .expect("a config file with an odd key");
+
+    let listing = harness(&dir).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "list", "--scope", "user"],
+    );
+
+    listing.assert_success();
+    let parsed: toml::Table = listing
+        .stdout()
+        .parse()
+        .unwrap_or_else(|error| panic!("the listing printed {:?}: {error}", listing.stdout()));
+    assert_eq!(parsed["a b"].as_integer(), Some(1));
+    assert_eq!(parsed["owner"].as_str(), Some("site"));
+}
+
+/// `user` is the only scope the builder registers, so no other spelling can
+/// reach a file — and the run that names one says which scopes exist rather
+/// than reporting a write to the user scope.
+#[test]
+#[serial]
+fn a_scope_the_builder_does_not_register_is_refused_by_name() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    for argv in [
+        vec![
+            "proiectio",
+            "conf",
+            "set",
+            "--scope",
+            "local",
+            "owner",
+            "site",
+        ],
+        vec!["proiectio", "conf", "unset", "--scope", "local", "owner"],
+    ] {
+        let result = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        let error = result.error().unwrap_or_default();
+        assert!(
+            error.contains("Unknown scope 'local'") && error.contains("user"),
+            "{argv:?}: {error}"
+        );
+    }
+}
+
 /// The `rendered` field of a config view, read back through the same run under
 /// `--output json`.
-fn rendered_field<const N: usize>(dir: &TempDir, argv: [&str; N]) -> String {
+fn rendered_field<'a>(dir: &TempDir, argv: impl IntoIterator<Item = &'a str>) -> String {
     let result = harness(dir)
         .output_mode(OutputMode::Json)
         .run(&app(), cli::command(), argv);
@@ -521,7 +850,7 @@ fn a_config_value_carrying_an_escape_sequence_renders_as_itself() {
 
     let text = harness(&dir).run(&app(), cli::command(), argv);
     text.assert_success();
-    text.assert_stdout_contains(r"owner = \u{1b}[31mred");
+    text.assert_stdout_contains(r#"owner = "\u001B[31mred""#);
     assert!(
         !text.stdout().contains('\u{1b}'),
         "an escape sequence reached the terminal: {:?}",
