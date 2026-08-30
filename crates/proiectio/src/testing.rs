@@ -135,6 +135,78 @@ pub(crate) fn tarball(dir: &Utf8Path) -> Utf8PathBuf {
     path
 }
 
+/// One file under `x/`, named the way `tar czf dot.tgz -C skel .` names its
+/// members: with a leading `./`.
+pub(crate) fn dot_tarball(dir: &Utf8Path) -> Utf8PathBuf {
+    use std::io::Write;
+
+    let path = dir.join("dot.tgz");
+    let mut bytes = Vec::new();
+    ustar_member(&mut bytes, "./", DIRECTORY, 0o755, b"");
+    ustar_member(&mut bytes, "./x/", DIRECTORY, 0o755, b"");
+    ustar_member(&mut bytes, "./x/a.txt", REGULAR, 0o644, b"a\n");
+    bytes.extend_from_slice(&[0u8; 1024]);
+    assert_eq!(
+        member_names(&bytes),
+        ["./", "./x/", "./x/a.txt"],
+        "the fixture no longer spells its members with a leading ./"
+    );
+    let mut encoder = flate2::write::GzEncoder::new(
+        std::fs::File::create(&path).expect("an archive"),
+        flate2::Compression::default(),
+    );
+    encoder.write_all(&bytes).expect("a written archive");
+    encoder.finish().expect("a flushed archive");
+    path
+}
+
+const REGULAR: u8 = b'0';
+const DIRECTORY: u8 = b'5';
+
+/// Appends one member under a hand-written ustar header, which spells the
+/// name byte for byte where `tar::Builder` would normalize it.
+fn ustar_member(out: &mut Vec<u8>, name: &str, kind: u8, mode: u32, body: &[u8]) {
+    assert!(name.len() <= 100, "{name} needs a ustar name prefix");
+    let mut header = [0u8; 512];
+    header[..name.len()].copy_from_slice(name.as_bytes());
+    octal(&mut header[100..108], u64::from(mode), 7);
+    octal(&mut header[108..116], 0, 7);
+    octal(&mut header[116..124], 0, 7);
+    octal(&mut header[124..136], body.len() as u64, 11);
+    octal(&mut header[136..148], 0, 11);
+    header[156] = kind;
+    header[257..263].copy_from_slice(b"ustar\0");
+    header[263..265].copy_from_slice(b"00");
+    header[148..156].copy_from_slice(b"        ");
+    let sum: u32 = header.iter().map(|&byte| u32::from(byte)).sum();
+    octal(&mut header[148..156], u64::from(sum), 6);
+    header[154] = 0;
+    header[155] = b' ';
+    out.extend_from_slice(&header);
+    out.extend_from_slice(body);
+    out.extend_from_slice(&vec![0u8; (512 - body.len() % 512) % 512]);
+}
+
+/// Writes `value` as a NUL-terminated octal string of `digits` digits.
+fn octal(field: &mut [u8], value: u64, digits: usize) {
+    let text = format!("{value:0digits$o}");
+    field[..digits].copy_from_slice(text.as_bytes());
+    field[digits] = 0;
+}
+
+/// The member names an archive carries, as its headers spell them.
+fn member_names(tar: &[u8]) -> Vec<String> {
+    let mut archive = tar::Archive::new(tar);
+    archive
+        .entries()
+        .expect("the archive's members")
+        .map(|entry| {
+            String::from_utf8(entry.expect("a member").path_bytes().to_vec())
+                .expect("a utf-8 member name")
+        })
+        .collect()
+}
+
 fn executable(path: &Utf8Path) {
     use std::os::unix::fs::PermissionsExt;
 

@@ -356,6 +356,106 @@ fn a_directory_member_projects_nothing() {
     assert_eq!(tree, Desired::new());
 }
 
+#[test]
+fn a_leading_dot_expands_like_the_name_without_it() {
+    let dotted = vec![
+        Member::dir("./"),
+        Member::dir("./x/"),
+        Member::file("./x/a.txt", "a\n"),
+        Member::file("././deep.txt", "deep\n"),
+        Member::symlink("./current", "x/a.txt"),
+    ];
+    let plain = vec![
+        Member::dir("x/"),
+        Member::file("x/a.txt", "a\n"),
+        Member::file("deep.txt", "deep\n"),
+        Member::symlink("current", "x/a.txt"),
+    ];
+    let expected = Tree::new()
+        .file("x/a.txt", "a\n")
+        .file("deep.txt", "deep\n")
+        .symlink("current", "x/a.txt")
+        .entries();
+
+    let (fixture, expanded) = expand_at("dot.tgz", &gzip(&tar(&dotted)), 0);
+    assert_eq!(
+        expanded.unwrap(),
+        from_archive(&fixture, "dot.tgz", expected.clone())
+    );
+    let (fixture, expanded) = expand_at("plain.tgz", &gzip(&tar(&plain)), 0);
+    assert_eq!(
+        expanded.unwrap(),
+        from_archive(&fixture, "plain.tgz", expected)
+    );
+}
+
+#[test]
+fn a_member_naming_only_the_root_projects_nothing() {
+    for name in ["./", ".", "././"] {
+        let tree = expand_bytes("root.tar", &tar(&[Member::dir(name)]), 0)
+            .unwrap_or_else(|error| panic!("{name:?}: expected acceptance, got {error}"));
+        assert_eq!(tree, Desired::new(), "{name:?}");
+    }
+}
+
+#[test]
+fn strip_never_spends_a_level_on_a_leading_dot() {
+    let members = vec![
+        Member::dir("./"),
+        Member::dir("./top/"),
+        Member::file("./top/x", "x\n"),
+    ];
+    let (fixture, expanded) = expand_at("dot.tar", &tar(&members), 1);
+    assert_eq!(
+        expanded.unwrap(),
+        from_archive(&fixture, "dot.tar", Tree::new().file("x", "x\n").entries())
+    );
+}
+
+#[test]
+fn a_leading_dot_never_admits_an_escaping_member() {
+    let members = vec![
+        Member::file("./../escape", "out\n"),
+        Member::file("./x/../../escape", "out\n"),
+        Member::file("../plain-escape", "out\n"),
+        Member::file("/etc/passwd", "root::0:0\n"),
+        Member::file("./ok", "kept\n"),
+    ];
+    let refused = match expand_bytes("escape.tar", &tar(&members), 0).unwrap_err() {
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
+            origins_of(&refused)
+        }
+        other => panic!("expected a containment refusal, got {other}"),
+    };
+    let named: Vec<&str> = refused.keys().map(|path| path.as_str()).collect();
+    assert_eq!(
+        named,
+        vec![
+            "/etc/passwd",
+            "./../escape",
+            "./x/../../escape",
+            "../plain-escape",
+        ]
+    );
+}
+
+#[test]
+fn a_zips_leading_dot_normalizes_too() {
+    let members = vec![
+        ZipMember::Dir("./".to_owned()),
+        zip_file("./README", "read me\n"),
+    ];
+    let (fixture, expanded) = expand_at("dot.zip", &zip(&members), 0);
+    assert_eq!(
+        expanded.unwrap(),
+        from_archive(
+            &fixture,
+            "dot.zip",
+            Tree::new().file("README", "read me\n").entries()
+        )
+    );
+}
+
 // The definition of done for the happy path: an archive projects, and the
 // relative link inside it still resolves at the destination because the
 // layout came along.
