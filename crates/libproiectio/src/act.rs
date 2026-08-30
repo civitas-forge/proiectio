@@ -22,7 +22,8 @@ use crate::observe::{Container, io_error, read_container, sha256_hex_of_reader};
 use crate::{
     Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error, ExternalTargetPolicy,
     MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature,
-    Origin, Placement, Plan, Refusal, Refused, Result, sha256_hex,
+    Origin, PathFacts, PathShape, Placement, Plan, Refusal, Refused, Report, Result, Row,
+    sha256_hex,
 };
 
 /// Loads the manifest from `state`'s [`MANIFEST_FILE_NAME`]; a state
@@ -83,14 +84,17 @@ pub(crate) fn apply(
 ) -> Result<ApplyReport> {
     validate(manifest, plan)?;
     let mut manifest = manifest.clone();
-    let mut outcomes = BTreeMap::new();
-    match run(dest, &mut manifest, plan, &mut outcomes) {
+    let mut rows = BTreeMap::new();
+    match run(dest, &mut manifest, plan, &mut rows) {
         Ok(()) => {
             save_manifest(state, &manifest)?;
-            Ok(ApplyReport { outcomes, manifest })
+            Ok(ApplyReport {
+                report: Report { rows },
+                manifest,
+            })
         }
         Err(error) => {
-            if !outcomes.is_empty() {
+            if !rows.is_empty() {
                 let _ = save_manifest(state, &manifest);
             }
             Err(error)
@@ -227,17 +231,18 @@ fn entry_block_fault(entry: &Entry) -> Option<BlockFault> {
 }
 
 /// Executes a validated plan's actions, recording into `manifest` and
-/// `outcomes` as each one lands, so a mid-run error leaves both holding
+/// `rows` as each one lands, so a mid-run error leaves both holding
 /// exactly what was applied.
 fn run(
     dest: &Dir,
     manifest: &mut Manifest,
     plan: &Plan,
-    outcomes: &mut BTreeMap<Utf8PathBuf, ApplyOutcome>,
+    rows: &mut BTreeMap<Utf8PathBuf, Row<ApplyOutcome>>,
 ) -> Result<()> {
     let mut removed_dirs_candidates: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, action) in plan.actions.iter().rev() {
         if let Action::Remove { expected } = action {
+            let recorded = manifest.entries.get(path).cloned();
             acting_on(plan, path, || {
                 if manifest
                     .entries
@@ -255,7 +260,13 @@ fn run(
                 Ok(())
             })?;
             manifest.entries.remove(path);
-            outcomes.insert(path.clone(), ApplyOutcome::Removed);
+            rows.insert(
+                path.clone(),
+                Row {
+                    facts: recorded_facts(recorded.as_ref(), plan.origin_of(path)),
+                    verdict: ApplyOutcome::Removed,
+                },
+            );
         }
     }
     prune(dest, manifest, &removed_dirs_candidates)?;
@@ -284,7 +295,10 @@ fn run(
             Action::Write { entry } if matches!(entry, Entry::Block { .. }) => {
                 let outcome = acting_on(plan, path, || write_block(dest, manifest, path, entry))?;
                 record(manifest, path, entry, &plan.owner);
-                outcomes.insert(path.clone(), outcome);
+                rows.insert(
+                    path.clone(),
+                    entry_row(manifest, plan, path, entry, outcome),
+                );
             }
             Action::Overwrite {
                 entry, expected, ..
@@ -293,14 +307,20 @@ fn run(
                     overwrite_block(dest, manifest, path, entry, expected)
                 })?;
                 record(manifest, path, entry, &plan.owner);
-                outcomes.insert(path.clone(), ApplyOutcome::Overwritten);
+                rows.insert(
+                    path.clone(),
+                    entry_row(manifest, plan, path, entry, ApplyOutcome::Overwritten),
+                );
             }
             Action::Write { entry } => {
                 acting_on(plan, path, || {
                     write(dest, manifest, path, entry, true, plan, &unpublished)
                 })?;
                 record(manifest, path, entry, &plan.owner);
-                outcomes.insert(path.clone(), ApplyOutcome::Written);
+                rows.insert(
+                    path.clone(),
+                    entry_row(manifest, plan, path, entry, ApplyOutcome::Written),
+                );
             }
             Action::Overwrite {
                 entry, expected, ..
@@ -310,27 +330,40 @@ fn run(
                     write(dest, manifest, path, entry, false, plan, &unpublished)
                 })?;
                 record(manifest, path, entry, &plan.owner);
-                outcomes.insert(path.clone(), ApplyOutcome::Overwritten);
+                rows.insert(
+                    path.clone(),
+                    entry_row(manifest, plan, path, entry, ApplyOutcome::Overwritten),
+                );
             }
-            Action::Skip { expected, .. } => {
+            Action::Skip { entry, expected } => {
                 acting_on(plan, path, || {
                     check_expected(dest, manifest, path, expected)
                 })?;
                 skip(manifest, path, expected, &plan.owner);
-                outcomes.insert(path.clone(), ApplyOutcome::Skipped);
+                rows.insert(
+                    path.clone(),
+                    entry_row(manifest, plan, path, entry, ApplyOutcome::Skipped),
+                );
             }
             Action::Release => {
+                let recorded = manifest.entries.get(path).cloned();
                 if let Some(entry) = manifest.entries.get_mut(path) {
                     entry.owners.remove(&plan.owner);
                     if entry.owners.is_empty() {
                         manifest.entries.remove(path);
                     }
                 }
-                outcomes.insert(path.clone(), ApplyOutcome::Released);
+                rows.insert(
+                    path.clone(),
+                    Row {
+                        facts: recorded_facts(recorded.as_ref(), plan.origin_of(path)),
+                        verdict: ApplyOutcome::Released,
+                    },
+                );
             }
         }
     }
-    settle_links(dest, manifest, plan, outcomes, links, unpublished)
+    settle_links(dest, manifest, plan, rows, links, unpublished)
 }
 
 fn skip(manifest: &mut Manifest, path: &Utf8Path, expected: &NodeSignature, owner: &str) {
@@ -351,6 +384,55 @@ fn skip(manifest: &mut Manifest, path: &Utf8Path, expected: &NodeSignature, owne
     );
 }
 
+fn owners_of(manifest: &Manifest, path: &Utf8Path) -> BTreeSet<String> {
+    manifest
+        .entries
+        .get(path)
+        .map(|entry| entry.owners.clone())
+        .unwrap_or_default()
+}
+
+fn entry_row(
+    manifest: &Manifest,
+    plan: &Plan,
+    path: &Utf8Path,
+    entry: &Entry,
+    verdict: ApplyOutcome,
+) -> Row<ApplyOutcome> {
+    Row {
+        facts: Some(PathFacts {
+            shape: match entry {
+                Entry::File { executable, .. } => PathShape::File {
+                    executable: *executable,
+                },
+                Entry::Symlink { target } => PathShape::Symlink {
+                    target: Some(target.clone()),
+                },
+                Entry::Block { .. } => PathShape::Block,
+            },
+            owners: owners_of(manifest, path),
+            origin: Some(plan.origin_of(path)),
+        }),
+        verdict,
+    }
+}
+
+fn recorded_shape(kind: &EntryKind, executable: bool) -> PathShape {
+    match kind {
+        EntryKind::File => PathShape::File { executable },
+        EntryKind::Symlink => PathShape::Symlink { target: None },
+        EntryKind::Block { .. } => PathShape::Block,
+    }
+}
+
+fn recorded_facts(recorded: Option<&ManifestEntry>, origin: Origin) -> Option<PathFacts> {
+    recorded.map(|recorded| PathFacts {
+        shape: recorded_shape(&recorded.kind, recorded.executable),
+        owners: recorded.owners.clone(),
+        origin: Some(origin),
+    })
+}
+
 /// Executes the plan's symlink actions last, holding each link until its
 /// target grades in-dest and its resolution crosses no path the run is
 /// still going to publish a link at.
@@ -358,7 +440,7 @@ fn settle_links(
     dest: &Dir,
     manifest: &mut Manifest,
     plan: &Plan,
-    outcomes: &mut BTreeMap<Utf8PathBuf, ApplyOutcome>,
+    rows: &mut BTreeMap<Utf8PathBuf, Row<ApplyOutcome>>,
     links: Vec<(&Utf8PathBuf, &Action)>,
     mut unpublished: BTreeSet<Utf8PathBuf>,
 ) -> Result<()> {
@@ -385,7 +467,10 @@ fn settle_links(
                 Written::Published => {
                     unpublished.remove(path);
                     record(manifest, path, entry, &plan.owner);
-                    outcomes.insert(path.clone(), outcome);
+                    rows.insert(
+                        path.clone(),
+                        entry_row(manifest, plan, path, entry, outcome),
+                    );
                 }
                 Written::Held => {
                     let Entry::Symlink { target } = entry else {
@@ -410,7 +495,7 @@ fn settle_links(
         pending = held;
     }
     for (path, action) in skips {
-        let Action::Skip { expected, .. } = action else {
+        let Action::Skip { entry, expected } = action else {
             unreachable!("only skips are left here");
         };
         acting_on(plan, path, || {
@@ -418,7 +503,10 @@ fn settle_links(
             regrade_recorded_link(dest, manifest, plan, path)
         })?;
         skip(manifest, path, expected, &plan.owner);
-        outcomes.insert(path.clone(), ApplyOutcome::Skipped);
+        rows.insert(
+            path.clone(),
+            entry_row(manifest, plan, path, entry, ApplyOutcome::Skipped),
+        );
     }
     Ok(())
 }
