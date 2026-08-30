@@ -201,17 +201,6 @@ pub enum Error {
         /// The projected path both members claim, relative to any prefix.
         member: Utf8PathBuf,
     },
-    /// A file or symlink member of an archive has no path left after `strip`
-    /// dropped its leading components. Not a refusal.
-    #[error("archive {path}: member {member} has nothing left after strip {strip}")]
-    ArchiveMemberStripped {
-        /// The archive's location.
-        path: Utf8PathBuf,
-        /// The member's path as the archive spells it, normalized.
-        member: Utf8PathBuf,
-        /// The number of leading components dropped.
-        strip: u32,
-    },
     /// An archive member nests deeper than an expansion places. Not a
     /// refusal.
     #[error(

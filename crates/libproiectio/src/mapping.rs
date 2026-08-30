@@ -183,13 +183,16 @@ fn parse(path: &Utf8Path, text: &str) -> Result<Desired> {
             path: source.clone(),
             via: Some(path.to_owned()),
         };
-        for (key, entry) in expanded.iter() {
-            if !tree.insert(key.clone(), entry.clone(), origin.clone()) {
+        for (key, entry) in expanded.tree {
+            if !tree.insert(key.clone(), entry, origin.clone()) {
                 return Err(Error::MappingDuplicate {
                     path: path.to_owned(),
-                    key: key.clone(),
+                    key,
                 });
             }
+        }
+        for member in expanded.dropped {
+            tree.record_dropped(member, origin.clone());
         }
     }
     Ok(tree)

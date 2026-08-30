@@ -70,6 +70,7 @@ pub struct Plan {
     pub external_targets: ExternalTargetPolicy,
     /// The per-path actions.
     pub actions: BTreeMap<Utf8PathBuf, Action>,
+    pub dropped: BTreeMap<Utf8PathBuf, Origin>,
 }
 
 impl Plan {
@@ -101,6 +102,7 @@ impl Plan {
                     (path.clone(), row)
                 })
                 .collect(),
+            dropped: self.dropped.clone(),
         }
     }
 

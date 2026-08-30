@@ -7,6 +7,7 @@ use crate::{Entry, Origin};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Desired {
     entries: BTreeMap<Utf8PathBuf, (Entry, Origin)>,
+    dropped: BTreeMap<Utf8PathBuf, Origin>,
 }
 
 impl Desired {
@@ -20,6 +21,7 @@ impl Desired {
                 .into_iter()
                 .map(|(path, entry)| (path, (entry, Origin::Caller)))
                 .collect(),
+            dropped: BTreeMap::new(),
         }
     }
 
@@ -29,11 +31,20 @@ impl Desired {
                 .into_iter()
                 .map(|(path, entry)| (path, (entry, origin.clone())))
                 .collect(),
+            dropped: BTreeMap::new(),
         }
     }
 
     pub fn insert(&mut self, path: Utf8PathBuf, entry: Entry, origin: Origin) -> bool {
         self.entries.insert(path, (entry, origin)).is_none()
+    }
+
+    pub fn record_dropped(&mut self, member: Utf8PathBuf, origin: Origin) {
+        self.dropped.insert(member, origin);
+    }
+
+    pub fn dropped(&self) -> &BTreeMap<Utf8PathBuf, Origin> {
+        &self.dropped
     }
 
     pub fn get(&self, path: &Utf8Path) -> Option<&Entry> {

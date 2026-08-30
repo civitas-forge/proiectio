@@ -91,7 +91,11 @@ fn qualifying(fields: &JsonValue, facts: Option<&JsonValue>) -> Option<String> {
 /// spells it with; `None` where the caller named the path itself, or the row
 /// states no source.
 fn sourcing(facts: Option<&JsonValue>) -> Option<String> {
-    let (kind, payload) = named(facts?.get("origin"));
+    origin_phrase(facts?.get("origin"))
+}
+
+fn origin_phrase(origin: Option<&JsonValue>) -> Option<String> {
+    let (kind, payload) = named(origin);
     let string = |field| payload?.get(field).and_then(JsonValue::as_str);
     let phrase = match kind {
         "Mapping" => format!("from mapping {}", verbatim(string("path")?)),
@@ -266,13 +270,16 @@ impl Tally {
 const PLANNED_VERBS: usize = "would overwrite".len();
 const APPLIED_VERBS: usize = "overwrote".len();
 
+const DROPPED: &str = "dropped";
+const STRIPPED: &str = "(no path left after strip)";
+
 /// The lines `run.jinja` prints for one write-pass document.
 pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
-    let (rows, planning) = match document.get("report") {
-        Some(applied) => (applied.get("rows"), false),
-        None => (document.get("rows"), true),
+    let (report, planning) = match document.get("report") {
+        Some(applied) => (applied, false),
+        None => (document, true),
     };
-    let Some(rows) = rows.and_then(JsonValue::as_object) else {
+    let Some(rows) = report.get("rows").and_then(JsonValue::as_object) else {
         return RunLines::default();
     };
 
@@ -280,8 +287,19 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
         .iter()
         .map(|(path, row)| (verbatim(path), row))
         .collect();
+    let dropped: Vec<(String, &JsonValue)> = report
+        .get("dropped")
+        .and_then(JsonValue::as_object)
+        .map(|members| {
+            members
+                .iter()
+                .map(|(member, origin)| (verbatim(member), origin))
+                .collect()
+        })
+        .unwrap_or_default();
     let column = paths
         .iter()
+        .chain(dropped.iter())
         .map(|(path, _)| visible_width_with_policy(path, width))
         .max()
         .unwrap_or_default();
@@ -318,6 +336,20 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
             path_pad: pad(column, &path, width),
             path,
             note,
+        });
+    }
+    for (member, origin) in dropped {
+        let note = match origin_phrase(Some(origin)) {
+            Some(source) => format!("{STRIPPED} {source}"),
+            None => STRIPPED.to_owned(),
+        };
+        lines.push(RowView {
+            style: "skipped",
+            verb_pad: pad(verbs, DROPPED, width),
+            verb: DROPPED.to_owned(),
+            path_pad: pad(column, &member, width),
+            path: member,
+            note: Some(note),
         });
     }
 

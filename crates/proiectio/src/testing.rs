@@ -160,6 +160,33 @@ pub(crate) fn dot_tarball(dir: &Utf8Path) -> Utf8PathBuf {
     path
 }
 
+/// The same tree as [`tarball`], as stock macOS `tar` writes it: an
+/// AppleDouble `._skeleton-1.2` sibling at depth 1, which `--strip 1` leaves
+/// with no path at all.
+pub(crate) fn appledouble_tarball(dir: &Utf8Path) -> Utf8PathBuf {
+    use std::io::Write;
+
+    let path = dir.join("appledouble.tgz");
+    let mut bytes = Vec::new();
+    ustar_member(
+        &mut bytes,
+        "._skeleton-1.2",
+        REGULAR,
+        0o644,
+        b"Mac OS X\0\0\0",
+    );
+    ustar_member(&mut bytes, "skeleton-1.2/", DIRECTORY, 0o755, b"");
+    ustar_member(&mut bytes, "skeleton-1.2/top", REGULAR, 0o644, b"top\n");
+    bytes.extend_from_slice(&[0u8; 1024]);
+    let mut encoder = flate2::write::GzEncoder::new(
+        std::fs::File::create(&path).expect("an archive"),
+        flate2::Compression::default(),
+    );
+    encoder.write_all(&bytes).expect("a written archive");
+    encoder.finish().expect("a flushed archive");
+    path
+}
+
 const REGULAR: u8 = b'0';
 const DIRECTORY: u8 = b'5';
 

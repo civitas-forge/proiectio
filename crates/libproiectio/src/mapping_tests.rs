@@ -380,6 +380,44 @@ fn archive_members_expand_under_their_prefix_as_ordinary_entries() {
     );
 }
 
+// The archive stock macOS `tar` writes: an AppleDouble `._vendor-1.0` beside
+// the wrapper, which `strip = 1` leaves with no path. The mapping loads, and
+// the dropped member is named against the archive that carried it — not
+// against the prefix, which it never reaches.
+#[test]
+fn an_archive_member_strip_erases_is_dropped_and_named_by_its_archive() {
+    let text = r#"
+        version = 1
+        [archives."vendor/"]
+        source = "./assets/vendor.tar.gz"
+        strip = 1
+    "#;
+    let vendor = targz(&[
+        ("._vendor-1.0", "Mac OS X\n", false),
+        ("vendor-1.0/lib/tool.so", "so\n", false),
+    ]);
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .file("assets/vendor.tar.gz", vendor)
+        .materialize();
+
+    let origin = Origin::Archive {
+        path: fixture.path("assets/vendor.tar.gz"),
+        via: Some(fixture.path("deploy.toml")),
+    };
+    let loaded = load_mapping(&fixture.path("deploy.toml")).unwrap();
+    assert_eq!(
+        loaded.iter().collect::<Vec<_>>(),
+        sourced(&[("vendor/lib/tool.so", file("so\n", false), origin.clone())])
+            .iter()
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        loaded.dropped(),
+        &BTreeMap::from([(Utf8PathBuf::from("._vendor-1.0"), origin)])
+    );
+}
+
 // A member is judged before the prefix is joined, so a prefix confines
 // rather than absorbs: joined first, `../escape` under `vendor/` would have
 // normalized to `escape` — a projected path outside the prefix the mapping

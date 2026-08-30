@@ -540,16 +540,122 @@ fn strip_drops_a_zips_wrapper_directory_too() {
     );
 }
 
-// `strip` erasing a *file* is content dropped silently, which the load
-// refuses to do — while the wrapper directory it erases carried no entry to
-// lose.
+// `strip` erasing a *file* drops that member and keeps the archive, the way
+// GNU tar's `--strip-components` does — stock macOS `tar` writes an
+// AppleDouble `._pkg` beside every `pkg`, and one of those must not cost the
+// whole load. The drop is named rather than silent.
 #[test]
-fn a_file_member_strip_erases_fails_the_load() {
-    let members = vec![Member::dir("pkg/"), Member::file("README", "read me\n")];
+fn a_file_member_strip_erases_is_dropped_and_the_rest_loads() {
+    let members = vec![
+        Member::file("._pkg", "AppleDouble\n"),
+        Member::dir("pkg/"),
+        Member::file("pkg/README", "read me\n"),
+    ];
+    let (fixture, expanded) = expand_at("pkg.tar", &tar(&members), 1);
+    let expanded = expanded.unwrap();
+    assert_eq!(
+        expanded.iter().collect::<BTreeMap<_, _>>(),
+        Tree::new()
+            .file("README", "read me\n")
+            .entries()
+            .iter()
+            .collect::<BTreeMap<_, _>>()
+    );
+    assert_eq!(
+        expanded.dropped(),
+        &BTreeMap::from([(
+            Utf8PathBuf::from("._pkg"),
+            Origin::Archive {
+                path: fixture.path("pkg.tar"),
+                via: None,
+            }
+        )])
+    );
+}
+
+// The boundary: `strip` that leaves exactly one component leaves a member
+// whole, and nothing is dropped.
+#[test]
+fn strip_leaving_one_component_drops_nothing() {
+    let members = vec![Member::dir("pkg/"), Member::file("pkg/README", "read me\n")];
+    let (fixture, expanded) = expand_at("pkg.tar", &tar(&members), 1);
+    assert_eq!(
+        expanded.unwrap(),
+        from_archive(
+            &fixture,
+            "pkg.tar",
+            Tree::new().file("README", "read me\n").entries()
+        )
+    );
+}
+
+// A symlink `strip` erases is dropped on the same terms as a file.
+#[test]
+fn a_symlink_member_strip_erases_is_dropped() {
+    let members = vec![
+        Member::symlink("current", "pkg/README"),
+        Member::file("pkg/README", "read me\n"),
+    ];
+    let expanded = expand_bytes("pkg.tar", &tar(&members), 1).unwrap();
+    assert_eq!(
+        expanded.dropped().keys().collect::<Vec<_>>(),
+        vec![&Utf8PathBuf::from("current")]
+    );
+}
+
+// A zip goes through the same admission, so its members drop on the same
+// terms.
+#[test]
+fn a_zip_member_strip_erases_is_dropped_and_the_rest_loads() {
+    let members = vec![
+        zip_file("._pkg", "AppleDouble\n"),
+        ZipMember::Dir("pkg/".to_owned()),
+        zip_file("pkg/README", "read me\n"),
+    ];
+    let (fixture, expanded) = expand_at("pkg.zip", &zip(&members), 1);
+    let expanded = expanded.unwrap();
+    assert_eq!(
+        expanded.iter().collect::<BTreeMap<_, _>>(),
+        Tree::new()
+            .file("README", "read me\n")
+            .entries()
+            .iter()
+            .collect::<BTreeMap<_, _>>()
+    );
+    assert_eq!(
+        expanded.dropped().keys().collect::<Vec<_>>(),
+        vec![&Utf8PathBuf::from("._pkg")]
+    );
+    let _ = fixture;
+}
+
+// A dropped member is still a member: it costs a place against the cap on
+// how many one archive may carry, so an archive cannot buy headroom by
+// filling itself with members `strip` erases.
+#[test]
+fn members_strip_erases_still_count_against_the_member_cap() {
+    let fixture = Tree::new().materialize();
+    let path = fixture.path("many.tar.gz");
+    {
+        let file = fs::File::create(&path).expect("create the archive");
+        let mut encoder =
+            flate2::write::GzEncoder::new(BufWriter::new(file), flate2::Compression::fast());
+        for index in 0..=MAX_MEMBERS {
+            write_header(
+                &mut encoder,
+                format!("._m{index}").as_bytes(),
+                REGULAR,
+                0o644,
+                "",
+                0,
+            );
+        }
+        write_end(&mut encoder);
+        encoder.finish().expect("finish the archive");
+    }
     assert!(matches!(
-        expand_bytes("pkg.tar", &tar(&members), 1).unwrap_err(),
-        Error::ArchiveMemberStripped { member, strip, .. }
-            if member == "README" && strip == 1
+        load_archive(&path, 1).unwrap_err(),
+        Error::ArchiveTooManyMembers { limit, .. } if limit == MAX_MEMBERS
     ));
 }
 
@@ -1173,7 +1279,8 @@ fn a_prefix_places_every_member_beneath_it() {
         None,
         &new_budget(),
     )
-    .unwrap();
+    .unwrap()
+    .tree;
     assert_eq!(
         tree.keys().map(|path| path.as_str()).collect::<Vec<_>>(),
         vec![
@@ -1229,7 +1336,8 @@ fn a_prefix_leaves_a_symlink_target_verbatim() {
         None,
         &new_budget(),
     )
-    .unwrap();
+    .unwrap()
+    .tree;
     assert_eq!(
         tree.get(Utf8Path::new("vendor/current")),
         Some(&Entry::Symlink {

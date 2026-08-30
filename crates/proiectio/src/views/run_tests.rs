@@ -461,3 +461,52 @@ fn a_document_that_names_no_rows_prints_nothing() {
         RunLines::default()
     );
 }
+
+/// A member `strip` left no path prints its own row, in both tenses, naming
+/// the archive that carried it. The path column is the member as the archive
+/// spells it, not a location in the destination.
+#[test]
+fn a_dropped_member_prints_a_row_naming_the_archive() {
+    let origin = Origin::Archive {
+        path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+        via: None,
+    };
+    let dropped = json!({ "._pkg": serialized(&origin) });
+    for document in [
+        json!({ "rows": {}, "dropped": dropped }),
+        json!({ "report": { "rows": {}, "dropped": dropped } }),
+    ] {
+        let row = only(lines(&document, AmbiguousWidth::Narrow));
+        assert_eq!(row.style, "skipped");
+        assert_eq!(row.verb, "dropped");
+        assert_eq!(row.path, "._pkg");
+        assert_eq!(
+            row.note.as_deref(),
+            Some("(no path left after strip) (from archive /assets/vendor.tar.gz)")
+        );
+    }
+}
+
+/// A dropped member takes the same path column as the rows beside it, so the
+/// notes line up.
+#[test]
+fn dropped_members_share_the_path_column_with_the_rows() {
+    let document = json!({
+        "rows": { "a/very/long/path": file(json!("Write")) },
+        "dropped": { "._pkg": serialized(Origin::Archive {
+            path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+            via: Some(Utf8PathBuf::from("/srv/deploy.toml")),
+        }) },
+    });
+    let rows = lines(&document, AmbiguousWidth::Narrow).rows;
+    assert_eq!(rows.len(), 2);
+    let width = |row: &RowView| row.path.len() + row.path_pad.len();
+    assert_eq!(width(&rows[0]), width(&rows[1]));
+    assert_eq!(
+        rows[1].note.as_deref(),
+        Some(
+            "(no path left after strip) (from archive /assets/vendor.tar.gz, \
+             named by mapping /srv/deploy.toml)"
+        )
+    );
+}

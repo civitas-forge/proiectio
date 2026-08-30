@@ -114,11 +114,6 @@ fn every_variant() -> Vec<Error> {
             path: Utf8PathBuf::from("/assets/vendor.zip"),
             member: Utf8PathBuf::from("lib/tool"),
         },
-        Error::ArchiveMemberStripped {
-            path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
-            member: Utf8PathBuf::from("README"),
-            strip: 1,
-        },
         Error::ArchiveMemberTooDeep {
             path: Utf8PathBuf::from("/assets/vendor.tar"),
             member: Utf8PathBuf::from("a/b/c"),
@@ -181,7 +176,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    let (refusals, failures) = (8, 30);
+    let (refusals, failures) = (8, 29);
     assert_eq!(codes.len(), refusals + failures);
     assert!(codes[..refusals].iter().all(|&code| code == 2));
     assert!(codes[refusals..].iter().all(|&code| code == 1));
@@ -478,7 +473,7 @@ fn every_variant_serializes_under_a_kind_of_its_own() {
         })
         .collect();
 
-    let (refusals, failures) = (8, 30);
+    let (refusals, failures) = (8, 29);
     assert_eq!(kinds.len(), refusals + failures);
     assert!(kinds[..refusals].iter().all(|kind| kind == "refused"));
     assert_eq!(

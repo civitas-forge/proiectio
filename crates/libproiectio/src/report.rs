@@ -30,12 +30,15 @@ pub struct Row<V> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Report<V> {
     pub rows: BTreeMap<Utf8PathBuf, Row<V>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub dropped: BTreeMap<Utf8PathBuf, Origin>,
 }
 
 impl<V> Default for Report<V> {
     fn default() -> Self {
         Self {
             rows: BTreeMap::new(),
+            dropped: BTreeMap::new(),
         }
     }
 }

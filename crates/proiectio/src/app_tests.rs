@@ -17,8 +17,8 @@ use tempfile::TempDir;
 use crate::cli;
 use crate::exit;
 use crate::testing::{
-    assert_styles_resolved, assert_tags_declared, classified, dot_tarball, harness, manifest_of,
-    modified, skeleton, tarball, tour, utf8,
+    appledouble_tarball, assert_styles_resolved, assert_tags_declared, classified, dot_tarball,
+    harness, manifest_of, modified, skeleton, tarball, tour, utf8,
 };
 
 fn app() -> App {
@@ -699,6 +699,66 @@ fn write_projects_an_archive_under_strip() {
     assert_eq!(
         std::fs::read(dest.join("nested/leaf.txt")).expect("the projected member"),
         b"leaf\n"
+    );
+}
+
+/// A tarball from stock macOS `tar` carries an AppleDouble `._*` sibling at
+/// depth 1, which `--strip 1` leaves with no path. The rest of the archive
+/// projects, and the run says which member was dropped and where it came
+/// from.
+#[test]
+#[serial]
+fn write_drops_the_members_strip_erases_and_projects_the_rest() {
+    let (dir, dest, _) = tour();
+    let archive = appledouble_tarball(&utf8(&dir));
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&["--tree", archive.as_str(), "--strip", "1"], &dest),
+    );
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        format!(
+            "wrote      top\n\
+             dropped    ._skeleton-1.2  (no path left after strip) (from archive {archive})\n\
+             1 written, 0 skipped\n"
+        )
+    );
+    assert_eq!(
+        std::fs::read(dest.join("top")).expect("the projected member"),
+        b"top\n"
+    );
+    assert!(!dest.join("._skeleton-1.2").exists());
+}
+
+/// The same drop under structured output: it rides the library's own report,
+/// beside the rows rather than among them, since a dropped member is spelled
+/// as the archive spells it and not as a path in the destination.
+#[test]
+#[serial]
+fn a_dropped_member_rides_the_librarys_own_report() {
+    let (dir, dest, _) = tour();
+    let archive = appledouble_tarball(&utf8(&dir));
+
+    let result = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        write_argv(
+            &["--tree", archive.as_str(), "--strip", "1", "--dry-run"],
+            &dest,
+        ),
+    );
+
+    result.assert_success();
+    let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
+    assert_eq!(value["rows"]["top"]["verdict"], "Write");
+    assert!(value["rows"].get("._skeleton-1.2").is_none());
+    assert_eq!(
+        value["dropped"]["._skeleton-1.2"]["Archive"]["path"],
+        JsonValue::from(archive.as_str())
     );
 }
 
