@@ -69,12 +69,11 @@ The CLI
 
     The three exit codes:
 
-        | 0 | applied, or nothing to do                              |
-        | 1 | usage or I/O error                                     |
-        | 2 | refusal — drift, foreign file, containment, external   |
-        |   | symlink target                                         |
+        | 0 | applied, or nothing to do                                           |
+        | 1 | usage or I/O error                                                  |
+        | 2 | refusal — drift, foreign file, containment, external symlink target |
 
-    :: table ::
+    :: table header=0 ::
 
     A clean dry run:
 
@@ -200,19 +199,15 @@ The CLI
 
 6. Options
 
-    Every flag:
+    The projection flags:
 
-        | --dest <dir>             | target directory; default cwd       |
-        | --owner <name>           | manifest owner; default from the    |
-        |                          | configuration                       |
-        | --state-dir <dir>        | manifest location; default          |
-        |                          | <dest>/.proiectio                   |
-        | --dry-run                | plan and report, write nothing      |
-        | --force                  | overwrite drifted files; remove     |
-        |                          | them under rm                       |
-        | --allow-external-targets | permit symlink targets outside dest |
-        | --tree <path>            | project a directory or archive      |
-        | --strip <n>              | drop n leading components           |
-        |                          | (archive trees)                     |
+        | --dest <dir>             | target directory; default cwd                  |
+        | --owner <name>           | manifest owner; default from the configuration |
+        | --state-dir <dir>        | manifest location; default <dest>/.proiectio   |
+        | --dry-run                | plan and report, write nothing                 |
+        | --force                  | overwrite drifted files; remove them under rm  |
+        | --allow-external-targets | permit symlink targets outside dest            |
+        | --tree <path>            | project a directory or archive                 |
+        | --strip <n>              | drop n leading components (archive trees)      |
 
-    :: table ::
+    :: table header=0 ::
