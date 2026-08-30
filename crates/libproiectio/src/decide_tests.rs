@@ -2366,6 +2366,37 @@ fn drift_to_a_directory_holding_anything_refuses_under_either_policy() {
     }
 }
 
+// Both rules that refuse a directory name what holds it the same way: the
+// node itself, not the directory it sits in. A drifted directory holding
+// `a/sub/note.md` names the file, since naming `a/sub` would only say that
+// something is in there without saying what.
+#[test]
+fn a_drifted_directory_names_what_holds_it_rather_than_the_directory_between() {
+    let manifest = manifest_of(&[("a", recorded(&file("v1\n", false), &[OWNER]))]);
+    let observations = observed(&[
+        ("a", Observation::Directory),
+        ("a/sub", Observation::Directory),
+        ("a/sub/note.md", on_disk(&file("theirs\n", false))),
+    ]);
+
+    let plan = plan(
+        &tree(&[("a", &file("v2\n", false))]),
+        &manifest,
+        &observations,
+        DriftPolicy::Overwrite,
+    );
+
+    assert_eq!(
+        action(&plan, "a"),
+        &Action::Refuse {
+            refusal: Refusal::DirectoryInTheWay {
+                holding: BTreeMap::from([("a/sub/note.md".into(), BTreeSet::new())]),
+                unreadable: BTreeSet::new(),
+            },
+        }
+    );
+}
+
 // An empty one is the case forcing does clear, so the unforced refusal stays
 // the ordinary drift, which is the one that names the flag.
 #[test]

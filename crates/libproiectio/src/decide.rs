@@ -460,9 +460,13 @@ fn drifted_directory(
     {
         return None;
     }
-    let holding = children_of(path, manifest, observations);
+    // Nothing beneath a drifted directory is recorded at that location, so no
+    // removal reaches any of it: everything standing there holds it.
     let unreadable = unreadable_beneath(path, observations);
-    if !holding.is_empty() || !unreadable.is_empty() {
+    let (held, holding) = holding_beneath(path, manifest, observations, |node, _| {
+        unreadable.contains(node)
+    });
+    if held || !unreadable.is_empty() {
         return Some(refuse(Refusal::DirectoryInTheWay {
             holding,
             unreadable,
@@ -506,38 +510,51 @@ fn directory_in_the_way(
             .any(|key| key.starts_with(directory) && *key != directory)
     };
     let unreadable = unreadable_beneath(path, observations);
-    let mut blocked = !unreadable.is_empty();
-    let mut holding = BTreeMap::new();
-    for (node, observation) in beneath(path, observations) {
+    let (held, holding) = holding_beneath(path, manifest, observations, |node, observation| {
         // What this run removes from a directory holding an unrepresentable
         // name never adds up to an empty one, and `unreadable` already names
         // it with the reason it stays.
-        if unreadable.contains(node) {
+        unreadable.contains(node)
+            || match observation {
+                // A directory this run removes outright is one
+                // `drifted_directory` already found empty, so it goes whether
+                // or not a deeper removal empties it.
+                Observation::Directory => vacating.contains(node) || emptied(node),
+                _ => vacating.contains(node),
+            }
+    });
+    let blocked = held || !unreadable.is_empty();
+    (blocked || !emptied(path)).then_some(Refusal::DirectoryInTheWay {
+        holding,
+        unreadable,
+    })
+}
+
+/// What stands beneath `path` that `cleared` does not account for, and whether
+/// anything does. Both rules that refuse a directory name the same thing by
+/// it: a directory still standing because of what it holds is not itself worth
+/// naming, since whatever holds it up is named below it, so the map carries
+/// the leaves. One holding nothing has nothing below it to name, so it is
+/// named here.
+fn holding_beneath(
+    path: &Utf8Path,
+    manifest: &Manifest,
+    observations: &Observations,
+    cleared: impl Fn(&Utf8Path, &Observation) -> bool,
+) -> (bool, BTreeMap<Utf8PathBuf, BTreeSet<String>>) {
+    let mut held = false;
+    let mut holding = BTreeMap::new();
+    for (node, observation) in beneath(path, observations) {
+        if cleared(node, observation) {
             continue;
         }
-        let cleared = match observation {
-            // A directory this run removes outright is one `drifted_directory`
-            // already found empty, so it goes whether or not a deeper removal
-            // empties it.
-            Observation::Directory => vacating.contains(node) || emptied(node),
-            _ => vacating.contains(node),
-        };
-        if cleared {
-            continue;
-        }
-        blocked = true;
-        // A directory still standing because of what it holds is not itself
-        // worth naming: whatever holds it up is named below it. One holding
-        // nothing has nothing below it to name, so it is named here.
+        held = true;
         if *observation == Observation::Directory && beneath(node, observations).next().is_some() {
             continue;
         }
         holding.insert(node.to_owned(), owners_of(manifest, node));
     }
-    (blocked || !emptied(path)).then_some(Refusal::DirectoryInTheWay {
-        holding,
-        unreadable,
-    })
+    (held, holding)
 }
 
 /// The directory at `path` and every one beneath it that observation could
@@ -549,20 +566,6 @@ fn unreadable_beneath(path: &Utf8Path, observations: &Observations) -> BTreeSet<
         .iter()
         .filter(|directory| directory.starts_with(path))
         .cloned()
-        .collect()
-}
-
-/// What the directory at `path` holds on disk directly, each with the owners
-/// recording it: the children whose presence alone keeps the directory from
-/// being removed.
-fn children_of(
-    path: &Utf8Path,
-    manifest: &Manifest,
-    observations: &Observations,
-) -> BTreeMap<Utf8PathBuf, BTreeSet<String>> {
-    beneath(path, observations)
-        .filter(|(node, _)| node.parent() == Some(path))
-        .map(|(node, _)| (node.to_owned(), owners_of(manifest, node)))
         .collect()
 }
 

@@ -270,12 +270,14 @@ fn run(
         // removals run before pruning and the writes both.
         if matches!(action, Action::OverwriteDirectory { .. }) {
             let recorded = manifest.entries.get(path).cloned();
-            acting_on(plan, path, || remove_directory(dest, manifest, path))?;
+            let vacated = acting_on(plan, path, || remove_directory(dest, manifest, path))?;
             // The write that replaces the directory is a whole pass away, and
             // anything failing in between ends the run with the directory
-            // gone. So the removal is recorded where it lands, and the write
-            // below records the entry it publishes over it. Nothing prunes
-            // above this location: it is one the run writes to.
+            // gone. So the removal is recorded where it lands, and the ancestry
+            // it emptied is pruned as any removal's is: the write below
+            // recreates whatever it needs, and a run that never reaches it
+            // leaves no empty directory of its own making behind.
+            prune_above(&vacated, &mut removed_dirs_candidates);
             manifest.entries.remove(path);
             rows.insert(
                 path.clone(),

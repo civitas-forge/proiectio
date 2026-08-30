@@ -866,6 +866,49 @@ fn a_directory_overwrite_interrupted_before_its_write_states_the_removal() {
     assert_tree(dest.root(), &next);
 }
 
+// The same interruption one directory down. Removing the drifted directory
+// empties the directory above it, which nothing records once the removal is
+// recorded, so the run prunes it rather than leaving an empty directory of
+// its own making that the next run would meet as somebody else's.
+#[test]
+fn a_directory_overwrite_interrupted_before_its_write_leaves_no_empty_ancestor() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new()
+        .file("b.txt", "projected\n")
+        .file("only/z", "one\n");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    fs::remove_file(dest.path("only/z")).expect("remove the file");
+    fs::create_dir(dest.path("only/z")).expect("put a directory there");
+    fs::write(dest.path("b.txt"), "edited\n").expect("edit in place");
+
+    let next = Tree::new()
+        .file("b.txt", "wanted\n")
+        .file("only/z", "two\n");
+    let (manifest, plan) = plan_for(
+        &dest,
+        &state,
+        "own",
+        &next.entries(),
+        DriftPolicy::Overwrite,
+    );
+    fs::write(dest.path("b.txt"), "tampered\n").expect("tamper in the gap");
+
+    apply_at(&dest, &state, &manifest, &plan).expect_err("the re-check refuses");
+
+    // `only` held nothing but the directory that was removed, so it goes too.
+    assert!(!dest.path("only").exists(), "no empty ancestor is left");
+    assert_eq!(
+        persisted(&state).entries.keys().collect::<Vec<_>>(),
+        [Utf8Path::new("b.txt")]
+    );
+
+    // The write recreates the ancestry it needs, so the next run reconciles.
+    fs::write(dest.path("b.txt"), "wanted\n").expect("settle the drift by hand");
+    pipeline(&dest, &state, "own", &next.entries(), DriftPolicy::Refuse)
+        .expect("the next run reconciles");
+    assert_tree(dest.root(), &next);
+}
+
 #[test]
 fn a_removal_clears_a_path_drifted_to_an_empty_directory_under_force() {
     let (dest, state) = fixtures();
