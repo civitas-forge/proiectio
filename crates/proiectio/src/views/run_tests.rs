@@ -1,11 +1,11 @@
 use super::*;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use camino::Utf8PathBuf;
 use libproiectio::{
-    ApplyOutcome, BlockFault, Dropped, EntryKind, ManifestEntry, Origin, OverwriteReason, Refusal,
-    RefusalKind,
+    ApplyOutcome, BlockFault, Dropped, EntryKind, Error, ManifestEntry, Origin, OverwriteReason,
+    Refusal, RefusalKind,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -146,7 +146,7 @@ fn every_verdict_the_library_declares_reads_as_one_spelling() {
         let document = applied(json!({ "one": file(serialized(verdict)) }));
         let row = only(RunLines {
             rows: document.rows,
-            summary: None,
+            ..RunLines::default()
         });
 
         assert_eq!((row.style, row.verb.as_str()), spelled, "{verdict:?}");
@@ -787,36 +787,27 @@ fn a_refused_row_states_the_owners_the_manifest_records() {
     );
 }
 
-/// A run that stopped part-way renders both halves at once: what it applied,
-/// in the tense it applied it in, then the key it refused, and a summary
-/// saying the run stopped. Nothing about the document reads as a plan.
+/// A run that stopped part-way renders both halves at once, in one table laid
+/// out in path order: a refused key sorting before an applied one prints
+/// before it, as it would in any other report. Each row reads in the tense of
+/// what happened to it, and the summary says the run stopped.
 #[test]
 fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
     let refused = Refused::one(
-        Utf8PathBuf::from("config/settings.toml"),
+        Utf8PathBuf::from("bin/tool"),
         Refusal::Drift,
         Origin::Caller,
     );
-    let applied = ApplyReport {
-        report: Report {
-            rows: BTreeMap::from([(
-                Utf8PathBuf::from("bin/tool"),
-                Row {
-                    facts: None,
-                    verdict: ApplyOutcome::Written,
-                },
-            )]),
-        },
-        dropped: BTreeSet::new(),
-        manifest: Manifest::new(),
-    };
 
     let document = serialized(AbortedRun::new(
-        applied,
+        wrote(&["config/settings.toml"]),
         refused_rows(&refused, &Manifest::new()),
+        &Stopped::Applying(Error::Refused(refused.clone())),
     ));
 
     assert_eq!(document["aborted"], json!(true));
+    assert_eq!(document["recorded"], json!(true));
+    assert_eq!(document.get("stopped"), None);
     let rendered = lines(&document, AmbiguousWidth::Narrow);
     assert_eq!(
         rendered
@@ -825,8 +816,8 @@ fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
             .map(|row| (row.path.as_str(), row.verb.as_str(), row.style))
             .collect::<Vec<_>>(),
         vec![
-            ("bin/tool", "wrote", "wrote"),
-            ("config/settings.toml", "refused", "refused"),
+            ("bin/tool", "refused", "refused"),
+            ("config/settings.toml", "wrote", "wrote"),
         ]
     );
     assert_eq!(
@@ -836,6 +827,115 @@ fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
              through the plan, and what it applied stands"
         )
     );
+    assert!(rendered.stopped.is_empty());
+}
+
+/// A failure rather than a refusal stops a run on the same terms: the rows it
+/// applied, and the diagnostic that would otherwise have replaced them, which
+/// reaches the reader in the document because a rendered run leaves nothing on
+/// stderr.
+#[test]
+fn a_run_a_failure_stopped_states_its_rows_and_the_failure() {
+    let document = serialized(AbortedRun::new(
+        wrote(&["bin/tool"]),
+        Report::default(),
+        &Stopped::Applying(held("lock")),
+    ));
+
+    assert_eq!(document["aborted"], json!(true));
+    assert_eq!(document["recorded"], json!(true));
+    assert_eq!(document.get("refused"), None);
+    let rendered = lines(&document, AmbiguousWidth::Narrow);
+    assert_eq!(rendered.rows.len(), 1);
+    assert_eq!(
+        rendered.stopped,
+        vec!["state lock lock is held by another writer"]
+    );
+}
+
+/// A run whose manifest never reached the state directory says so in the
+/// document and in `recorded`: the destination holds writes nothing on disk
+/// records, which is the one thing a reader of these rows must not assume
+/// away.
+#[test]
+fn a_run_that_could_not_record_what_it_applied_says_so() {
+    let document = serialized(AbortedRun::new(
+        wrote(&["bin/tool"]),
+        Report::default(),
+        &Stopped::Recording(held("state.lock")),
+    ));
+
+    assert_eq!(document["recorded"], json!(false));
+    let rendered = lines(&document, AmbiguousWidth::Narrow);
+    assert_eq!(
+        rendered.stopped,
+        vec![
+            "state lock state.lock is held by another writer",
+            "the state directory does not record what the run applied: \
+             state lock state.lock is held by another writer",
+        ]
+    );
+}
+
+/// A run that lost both halves states both: the keys it refused as rows, and
+/// the record it could not write as a line. The refusal states itself in the
+/// rows, so only the record is spelled out.
+#[test]
+fn a_run_that_refused_and_could_not_record_states_the_rows_and_the_record() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+
+    let document = serialized(AbortedRun::new(
+        wrote(&["config/settings.toml"]),
+        refused_rows(&refused, &Manifest::new()),
+        &Stopped::ApplyingAndRecording {
+            applying: Error::Refused(refused.clone()),
+            recording: held("state.lock"),
+        },
+    ));
+
+    assert_eq!(document["recorded"], json!(false));
+    let rendered = lines(&document, AmbiguousWidth::Narrow);
+    assert_eq!(rendered.rows.len(), 2);
+    assert_eq!(
+        rendered.stopped,
+        vec![
+            "the state directory does not record what the run applied: \
+             state lock state.lock is held by another writer"
+        ]
+    );
+}
+
+/// An `ApplyReport` writing the paths named.
+fn wrote(paths: &[&str]) -> ApplyReport {
+    ApplyReport {
+        report: Report {
+            rows: paths
+                .iter()
+                .map(|path| {
+                    (
+                        Utf8PathBuf::from(*path),
+                        Row {
+                            facts: None,
+                            verdict: ApplyOutcome::Written,
+                        },
+                    )
+                })
+                .collect(),
+        },
+        dropped: BTreeSet::new(),
+        manifest: Manifest::new(),
+    }
+}
+
+/// A failure that is not a refusal, and carries no `io::Error` to build.
+fn held(path: &str) -> Error {
+    Error::LockHeld {
+        path: Utf8PathBuf::from(path),
+    }
 }
 
 /// A manifest recording one path under the owners named.

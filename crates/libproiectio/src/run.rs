@@ -159,7 +159,7 @@ impl Run {
     ///
     /// A run that decided no plan writes nothing and reports the manifest as
     /// loaded.
-    pub fn apply(self) -> std::result::Result<ApplyReport, Aborted> {
+    pub fn apply(self) -> std::result::Result<ApplyReport, Box<Aborted>> {
         let Some(plan) = &self.plan else {
             return Ok(ApplyReport {
                 report: Report::default(),

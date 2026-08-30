@@ -91,7 +91,7 @@ fn apply_at(
     manifest: &Manifest,
     plan: &Plan,
 ) -> Result<ApplyReport> {
-    stopping(dest, state, manifest, plan).map_err(|aborted| aborted.error)
+    stopping(dest, state, manifest, plan).map_err(|aborted| aborted.stopped.into_error())
 }
 
 // The same, keeping the whole stop: the error, and the rows the run applied
@@ -101,12 +101,12 @@ fn stopping(
     state: &Fixture,
     manifest: &Manifest,
     plan: &Plan,
-) -> std::result::Result<ApplyReport, Aborted> {
+) -> std::result::Result<ApplyReport, Box<Aborted>> {
     apply(&dir_at(dest.root()), &dir_at(state.root()), manifest, plan)
 }
 
 // The stop a run that cannot finish leaves.
-fn stopping_at(dest: &Fixture, state: &Fixture, manifest: &Manifest, plan: &Plan) -> Aborted {
+fn stopping_at(dest: &Fixture, state: &Fixture, manifest: &Manifest, plan: &Plan) -> Box<Aborted> {
     stopping(dest, state, manifest, plan).expect_err("a run that stops part-way")
 }
 
@@ -1544,7 +1544,7 @@ fn a_link_released_and_reappearing_in_the_gap_does_not_relocate_the_write() {
 
     let stopped = stopping_at(&dest, &state, &manifest, &plan);
 
-    match &stopped.error {
+    match stopped.stopped.error() {
         Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
             assert_eq!(paths_of(refused), BTreeSet::from(["pivot/x.txt".into()]))
         }
@@ -1568,12 +1568,126 @@ fn a_link_released_and_reappearing_in_the_gap_does_not_relocate_the_write() {
     );
     // The release landed and was persisted with the partial run: the owner
     // who stayed still holds the link, and nothing records the aliased path.
+    // The stop says the record landed, which is what makes the rows above
+    // safe to read as the state of the destination.
+    assert!(stopped.stopped.recorded());
+    assert!(matches!(stopped.stopped, Stopped::Applying(_)));
     let after = persisted(&state);
     assert_eq!(
         after.entries[Utf8Path::new("pivot")].owners,
         BTreeSet::from(["other".to_owned()])
     );
     assert!(!after.entries.contains_key(Utf8Path::new("pivot/x.txt")));
+}
+
+// A run whose every action applied and whose manifest never reached the state
+// directory is not a run that stopped part-way, and does not report as one:
+// the destination is whole and unrecorded. The rule that leaves is the one
+// this pins — with nothing recording the write, the next run reads it as
+// foreign rather than healing it — so a caller has to be told, not left to
+// discover it a run later.
+#[test]
+fn a_run_that_could_not_record_what_it_applied_leaves_foreign_paths() {
+    let (dest, state) = fixtures();
+    let desired = BTreeMap::from([(
+        Utf8PathBuf::from("bin/tool"),
+        Entry::File {
+            contents: b"tool".to_vec(),
+            executable: false,
+        },
+    )]);
+    let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
+    let (dest_dir, state_dir) = (dir_at(dest.root()), dir_at(state.root()));
+    // The state directory goes out from under the run, so every action applies
+    // and the manifest recording them cannot be written. The handle stays open
+    // and stays useless, which is what a state directory a run cannot write to
+    // looks like from inside the run.
+    std::fs::remove_dir_all(state.root()).expect("the state directory goes");
+
+    let stopped =
+        apply(&dest_dir, &state_dir, &manifest, &plan).expect_err("the manifest cannot be written");
+
+    assert!(matches!(stopped.stopped, Stopped::Recording(_)));
+    assert!(!stopped.stopped.recorded());
+    assert!(stopped.stopped.recording().is_some());
+    assert_eq!(
+        stopped.applied.report.rows[Utf8Path::new("bin/tool")].verdict,
+        ApplyOutcome::Written
+    );
+    assert!(
+        stopped
+            .to_string()
+            .starts_with("the run applied 1 path and could not record them"),
+        "{stopped}"
+    );
+    assert_tree(
+        dest.root(),
+        &Tree::new().dir("bin").file("bin/tool", "tool"),
+    );
+
+    // The write is on the destination and no manifest records it, so the next
+    // run classifies it as foreign.
+    std::fs::create_dir_all(state.root()).expect("a state directory again");
+    let (_, next) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
+    assert_eq!(
+        next.actions.get(Utf8Path::new("bin/tool")),
+        Some(&Action::Refuse {
+            refusal: Refusal::Foreign
+        })
+    );
+}
+
+// A run can lose both halves at once: an action stops it, and the manifest
+// recording the rows before that action cannot be written either. The stop
+// keeps both errors, because the refusal alone would leave a caller believing
+// the state directory records what the destination holds.
+#[test]
+fn a_run_that_stopped_part_way_and_could_not_record_it_keeps_both_errors() {
+    let (dest, state) = fixtures();
+    Tree::new().dir("real").write_under(dest.root());
+    let mut seeded = Manifest::new();
+    seeded.entries.insert(
+        "pivot".into(),
+        recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own", "other"]),
+    );
+    save_manifest(&dir_at(state.root()), &seeded).expect("seed the state dir");
+    let desired = BTreeMap::from([(
+        Utf8PathBuf::from("pivot/x.txt"),
+        Entry::File {
+            contents: b"aliased".to_vec(),
+            executable: false,
+        },
+    )]);
+    let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
+    let (dest_dir, state_dir) = (dir_at(dest.root()), dir_at(state.root()));
+    std::os::unix::fs::symlink("real", dest.path("pivot")).expect("the link reappears");
+    std::fs::remove_dir_all(state.root()).expect("the state directory goes");
+
+    let stopped =
+        apply(&dest_dir, &state_dir, &manifest, &plan).expect_err("the write refuses part-way");
+
+    let Stopped::ApplyingAndRecording {
+        applying,
+        recording,
+    } = &stopped.stopped
+    else {
+        panic!("expected both halves, got {:?}", stopped.stopped)
+    };
+    assert!(
+        matches!(applying, Error::Refused(refused) if refused.kind() == RefusalKind::Containment)
+    );
+    assert!(matches!(recording, Error::Io { .. }));
+    assert!(!stopped.stopped.recorded());
+    assert_eq!(
+        stopped.applied.report.rows[Utf8Path::new("pivot")].verdict,
+        ApplyOutcome::Released
+    );
+    assert!(
+        stopped
+            .to_string()
+            .contains("the state directory does not record"),
+        "{stopped}"
+    );
 }
 
 // Release is the one action that re-checks nothing, and this is what that

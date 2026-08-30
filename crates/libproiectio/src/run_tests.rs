@@ -321,7 +321,7 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
         .apply()
         .expect_err("a plan carrying a refusal applies nothing");
 
-    match &stopped.error {
+    match stopped.stopped.error() {
         Error::Refused(refused) => {
             assert_eq!(
                 origins_of(refused),
@@ -366,7 +366,7 @@ fn the_plans_refused_is_the_error_applying_it_raises() {
         .expect_err("a plan carrying a refusal applies nothing");
 
     assert!(!stopped.applied_anything());
-    match stopped.error {
+    match stopped.stopped.into_error() {
         Error::Refused(raised) => assert_eq!(raised, refused),
         other => panic!("expected a refusal, got {other:?}"),
     }

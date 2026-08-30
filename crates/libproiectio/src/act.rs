@@ -24,7 +24,7 @@ use crate::{
     Aborted, Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error,
     ExternalTargetPolicy, MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest,
     ManifestEntry, NodeSignature, Origin, PathFacts, PathShape, Placement, Plan, Refusal, Refused,
-    Report, Result, Row, sha256_hex,
+    Report, Result, Row, Stopped, sha256_hex,
 };
 
 /// Loads the manifest from `state`'s [`MANIFEST_FILE_NAME`]; a state
@@ -85,27 +85,35 @@ pub(crate) fn apply(
     state: &Dir,
     manifest: &Manifest,
     plan: &Plan,
-) -> std::result::Result<ApplyReport, Aborted> {
+) -> std::result::Result<ApplyReport, Box<Aborted>> {
     if let Err(error) = validate(manifest, plan) {
-        return Err(Aborted {
-            error,
-            applied: Box::new(ApplyReport {
+        return Err(Box::new(Aborted {
+            stopped: Stopped::Applying(error),
+            applied: ApplyReport {
                 report: Report::default(),
                 dropped: plan.dropped.clone(),
                 manifest: manifest.clone(),
-            }),
-        });
+            },
+        }));
     }
     let mut manifest = manifest.clone();
     let mut rows = BTreeMap::new();
     let stopped = match run(dest, &mut manifest, plan, &mut rows) {
-        Ok(()) => save_manifest(state, &manifest).err(),
-        Err(error) => {
-            if !rows.is_empty() {
-                let _ = save_manifest(state, &manifest);
-            }
-            Some(error)
-        }
+        // Every action applied, so only the record can still stop the run.
+        Ok(()) => save_manifest(state, &manifest)
+            .err()
+            .map(Stopped::Recording),
+        // The rows before the error are on the destination whether or not the
+        // manifest saying so reaches the state directory, and a run that
+        // wrote nothing has nothing to record.
+        Err(applying) if rows.is_empty() => Some(Stopped::Applying(applying)),
+        Err(applying) => Some(match save_manifest(state, &manifest) {
+            Ok(()) => Stopped::Applying(applying),
+            Err(recording) => Stopped::ApplyingAndRecording {
+                applying,
+                recording,
+            },
+        }),
     };
     let applied = ApplyReport {
         report: Report { rows },
@@ -113,10 +121,7 @@ pub(crate) fn apply(
         manifest,
     };
     match stopped {
-        Some(error) => Err(Aborted {
-            error,
-            applied: Box::new(applied),
-        }),
+        Some(stopped) => Err(Box::new(Aborted { stopped, applied })),
         None => Ok(applied),
     }
 }

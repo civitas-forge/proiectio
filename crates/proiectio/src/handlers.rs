@@ -48,15 +48,15 @@ pub(crate) fn write(
 
     let projection = projection(&dest, state_dir.as_deref())?;
     if dry_run {
-        return match projection.plan(&owner, &desired, options) {
-            Ok(planned) => planned_report(&planned.plan, planned.report(), ctx),
-            Err(error) => planned_refusal(error, &projection, ctx),
-        };
+        let planned = projection
+            .plan(&owner, &desired, options)
+            .map_err(exit::failure)?;
+        return planned_report(&planned.plan, planned.report(), ctx);
     }
     let mut run = projection.begin().map_err(exit::failure)?;
-    if let Err(error) = run.plan(&owner, &desired, options).map(|_| ()) {
-        return refusal_or_failure(error, run.manifest(), ctx);
-    }
+    run.plan(&owner, &desired, options)
+        .map(|_| ())
+        .map_err(exit::failure)?;
     apply(run, ctx)
 }
 
@@ -81,15 +81,15 @@ pub(crate) fn rm(
 
     let projection = projection(&dest, state_dir.as_deref())?;
     if dry_run {
-        return match projection.plan_removal(&owner, scope, drift) {
-            Ok(planned) => planned_report(&planned.plan, planned.report(), ctx),
-            Err(error) => planned_refusal(error, &projection, ctx),
-        };
+        let planned = projection
+            .plan_removal(&owner, scope, drift)
+            .map_err(exit::failure)?;
+        return planned_report(&planned.plan, planned.report(), ctx);
     }
     let mut run = projection.begin().map_err(exit::failure)?;
-    if let Err(error) = run.plan_removal(&owner, scope, drift).map(|_| ()) {
-        return refusal_or_failure(error, run.manifest(), ctx);
-    }
+    run.plan_removal(&owner, scope, drift)
+        .map(|_| ())
+        .map_err(exit::failure)?;
     apply(run, ctx)
 }
 
@@ -154,27 +154,33 @@ pub(crate) fn apply(run: Run, ctx: &CommandContext) -> Result<Output<RunView>, a
 /// applied anything when it stopped.
 ///
 /// One that had not states the refusal the way the planning stages state
-/// theirs: the keys it declined, and nothing acted on. One that had states
-/// those keys beside the rows it applied, in the tense it applied them in and
-/// under a document marked as stopped — a run part-way through a plan reading
-/// as a plan would claim a destination nobody touched, which is the one thing
-/// this output must never claim. A failure rather than a refusal keeps the
-/// diagnostic, which names what the run applied before it.
-fn stopped(aborted: Aborted, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
-    let Aborted { error, applied } = aborted;
+/// theirs — the keys it declined, and nothing acted on — and a failure there
+/// replaces the output with its diagnostic, the run having nothing to report.
+/// A run that applied nothing wrote no manifest either, so there is no record
+/// to have lost.
+///
+/// One that had renders the rows it applied whatever stopped it, in the tense
+/// it applied them in and under a document marked as stopped: a refusal adds
+/// the keys it declined, a failure the diagnostic that would otherwise have
+/// replaced the rows, and either adds what the state directory does not
+/// record. A run part-way through a plan reading as a plan would claim a
+/// destination nobody touched, which is the one thing this output must never
+/// claim; dropping the rows for a failure would claim it just as loudly.
+fn stopped(aborted: Box<Aborted>, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
+    let Aborted { stopped, applied } = *aborted;
     if applied.report.is_empty() {
-        return refusal_or_failure(error, &applied.manifest, ctx);
+        return refusal_or_failure(stopped.into_error(), &applied.manifest, ctx);
     }
-    match error {
-        Error::Refused(refused) => {
-            let rows = refused_rows(&refused, &applied.manifest);
-            refusal(
-                RunView::Aborted(Box::new(AbortedRun::new(*applied, rows))),
-                ctx,
-            )
-        }
-        error => Err(exit::stopped(Aborted { error, applied })),
-    }
+    let refused = match stopped.error() {
+        Error::Refused(refused) => refused_rows(refused, &applied.manifest),
+        _ => Report::default(),
+    };
+    ctx.app_state
+        .get_required::<exit::Verdict>()?
+        .record(exit::of_error(stopped.error()));
+    Ok(Output::Render(RunView::Aborted(Box::new(AbortedRun::new(
+        applied, refused, &stopped,
+    )))))
 }
 
 /// A refusal a run met without acting on anything states the keys it declined,
@@ -206,28 +212,6 @@ fn refusal(stated: RunView, ctx: &CommandContext) -> Result<Output<RunView>, any
         .get_required::<exit::Verdict>()?
         .record(exit::REFUSAL);
     Ok(Output::Render(stated))
-}
-
-/// What a dry run reports for an error deciding raised: a refusal states the
-/// keys it declined, with the owners recorded at them, and every other error
-/// replaces the output with its diagnostic. Deciding holds no manifest open,
-/// so the refusal reads one back — which only a refusal does, a failure never
-/// being reported as whatever a second read of the manifest raises.
-fn planned_refusal(
-    error: Error,
-    projection: &Projection,
-    ctx: &CommandContext,
-) -> Result<Output<RunView>, anyhow::Error> {
-    match error {
-        Error::Refused(refused) => {
-            let manifest = projection.manifest().map_err(exit::failure)?;
-            refusal(
-                RunView::Planned(PlannedRun::refused(&refused, &manifest)),
-                ctx,
-            )
-        }
-        failure => Err(exit::failure(failure)),
-    }
 }
 
 /// `--tree` names the tree, one positional a mapping file, two or more the

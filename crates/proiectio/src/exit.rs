@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::io::{ErrorKind, Write};
 use std::rc::Rc;
 
-use libproiectio::{Aborted, Error};
+use libproiectio::Error;
 use standout::cli::{ArtifactRun, ExternalFailure, RunError, RunErrorKind, RunResult};
 
 pub(crate) const OK: u8 = 0;
@@ -45,17 +45,7 @@ pub(crate) fn of_error(error: &Error) -> u8 {
 }
 
 pub(crate) fn failure(error: Error) -> anyhow::Error {
-    external(of_error(&error), error)
-}
-
-/// A run that stopped part-way and has no document to render fails with what
-/// it had already applied named in the diagnostic, so a partial destination
-/// never reads as an untouched one.
-pub(crate) fn stopped(aborted: Aborted) -> anyhow::Error {
-    external(of_error(&aborted.error), aborted)
-}
-
-fn external<E: std::error::Error + Send + Sync + 'static>(status: u8, error: E) -> anyhow::Error {
+    let status = of_error(&error);
     let diagnostic = format!("Error: {error}");
     match ExternalFailure::new(status, diagnostic) {
         Ok(external) => anyhow::Error::new(external.with_source(error)),

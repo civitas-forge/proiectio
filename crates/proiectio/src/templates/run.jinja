@@ -4,3 +4,7 @@
 {% endfor -%}
 {%- if run.summary %}{{ run.summary }}
 {% endif -%}
+{#- What a run that stopped says past its counts, in the style a refusal
+    reads in: a rendered document leaves no diagnostic on stderr. -#}
+{%- for line in run.stopped %}{{ line|style_as("refused") }}
+{% endfor -%}

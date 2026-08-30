@@ -1221,6 +1221,29 @@ fn moved_under(#[arg] dest: String, #[ctx] ctx: &CommandContext) -> Result<Outpu
     handlers::apply(run, ctx)
 }
 
+/// A run whose every action applies and whose manifest never reaches the state
+/// directory, which is what a state directory a run cannot write to leaves.
+/// The removal is this test's; the plan, the apply and the document are the
+/// CLI's own.
+#[handler]
+fn unrecorded(#[arg] dest: String, #[ctx] ctx: &CommandContext) -> Result<Output<views::RunView>> {
+    let dest = Utf8PathBuf::from(dest);
+    let projection = Projection::new(&dest, None).expect("a projection");
+    let mut run = projection.begin().expect("a run");
+    let desired = Desired::from_caller(std::collections::BTreeMap::from([(
+        Utf8PathBuf::from("bin/tool"),
+        Entry::File {
+            contents: b"tool\n".to_vec(),
+            executable: false,
+        },
+    )]));
+    run.plan("own", &desired, PlanOptions::default())
+        .expect("a plan writing one path");
+    std::fs::remove_dir_all(projection.state_dir().as_std_path())
+        .expect("the state directory goes");
+    handlers::apply(run, ctx)
+}
+
 /// The app a stand-in handler runs under: this CLI's own templates, styles and
 /// context injection, with `write` bound to the handler named.
 macro_rules! stand_in_app {
@@ -1247,6 +1270,81 @@ fn mid_run_app(verdict: &exit::Verdict) -> App {
 
 fn moved_under_app(verdict: &exit::Verdict) -> App {
     stand_in_app!(verdict, moved_under__handler)
+}
+
+fn unrecorded_app(verdict: &exit::Verdict) -> App {
+    stand_in_app!(verdict, unrecorded__handler)
+}
+
+/// A failure stops a run on the terms a refusal does: the rows it applied are
+/// rendered rather than replaced by the diagnostic, which reaches the reader
+/// in the document instead — a JSON caller reads what the run left on disk
+/// rather than a sentence counting it. The run failed, so it leaves with 1.
+#[test]
+#[serial]
+fn a_run_a_failure_stopped_renders_its_rows_and_the_failure() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let dest = utf8(&dir).join("dest");
+    std::fs::create_dir(&dest).expect("a destination");
+
+    let verdict = exit::Verdict::default();
+    let structured = harness(&dir).output_mode(OutputMode::Json).run(
+        &unrecorded_app(&verdict),
+        cli::command(),
+        ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
+    );
+
+    assert_eq!(leaving(&structured, &verdict), exit::FAILURE);
+    assert_eq!(structured.error(), None);
+    let value: JsonValue = serde_json::from_str(structured.stdout()).expect("a JSON document");
+    assert_eq!(value["aborted"], JsonValue::Bool(true));
+    assert_eq!(value["report"]["rows"]["bin/tool"]["verdict"], "Written");
+    // The write is on the destination and the state directory does not record
+    // it, which the document says twice: as a flag, and as the sentence the
+    // failure would otherwise have been reported with alone.
+    assert_eq!(value["recorded"], JsonValue::Bool(false));
+    let stopped = value["stopped"]
+        .as_array()
+        .expect("what stopped the run")
+        .iter()
+        .map(|line| line.as_str().unwrap_or_default().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(stopped.len(), 2, "{stopped:?}");
+    assert!(
+        stopped[1].starts_with("the state directory does not record what the run applied"),
+        "{stopped:?}"
+    );
+    assert!(dest.join("bin/tool").exists());
+}
+
+/// The same run rendered: the row it applied, the count, and the two lines
+/// saying it stopped and left nothing recording the write.
+#[test]
+#[serial]
+fn a_run_a_failure_stopped_prints_its_rows_and_the_failure() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let dest = utf8(&dir).join("dest");
+    std::fs::create_dir(&dest).expect("a destination");
+
+    let verdict = exit::Verdict::default();
+    let rendered = harness(&dir).run(
+        &unrecorded_app(&verdict),
+        cli::command(),
+        ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
+    );
+
+    assert_eq!(leaving(&rendered, &verdict), exit::FAILURE);
+    assert_eq!(rendered.error(), None);
+    let printed = rendered.stdout();
+    assert!(printed.starts_with("wrote      bin/tool\n"), "{printed}");
+    assert!(
+        printed.contains("1 written, 0 skipped — the run stopped part-way"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("the state directory does not record what the run applied"),
+        "{printed}"
+    );
 }
 
 /// A destination two owners hold, whose recorded link is no longer on disk:
