@@ -2,6 +2,8 @@
 
 mod app;
 mod cli;
+#[cfg(test)]
+mod e2e_tests;
 mod exit;
 mod handlers;
 mod settings;

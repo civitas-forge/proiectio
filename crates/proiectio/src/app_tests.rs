@@ -17,8 +17,8 @@ use tempfile::TempDir;
 use crate::cli;
 use crate::exit;
 use crate::testing::{
-    assert_styles_resolved, assert_tags_declared, classified, harness, mapping, skeleton, tarball,
-    utf8,
+    assert_styles_resolved, assert_tags_declared, classified, harness, manifest_of, modified,
+    skeleton, tarball, tour, utf8,
 };
 
 fn app() -> App {
@@ -556,37 +556,11 @@ fn a_config_file_path_that_is_not_utf8_is_rejected_before_anything_is_written() 
     );
 }
 
-/// The tour's own material: a mapping beside its assets, and an empty
-/// destination under the same working directory.
-fn tour() -> (TempDir, Utf8PathBuf, Utf8PathBuf) {
-    let dir = TempDir::new().expect("a temporary directory");
-    let root = utf8(&dir);
-    let dest = root.join("dest");
-    std::fs::create_dir(&dest).expect("a destination");
-    let deploy = mapping(&root);
-    (dir, dest, deploy)
-}
-
 fn write_argv<'a>(source: &[&'a str], dest: &'a Utf8PathBuf) -> Vec<&'a str> {
     let mut argv = vec!["proiectio", "write"];
     argv.extend_from_slice(source);
     argv.extend_from_slice(&["--dest", dest.as_str()]);
     argv
-}
-
-/// What a projection recorded, read back through the library.
-fn manifest_of(dest: &Utf8PathBuf) -> Manifest {
-    Projection::new(dest, None)
-        .expect("a projection")
-        .manifest()
-        .expect("a manifest")
-}
-
-fn modified(path: &Utf8Path) -> std::time::SystemTime {
-    std::fs::metadata(path)
-        .expect("a projected path")
-        .modified()
-        .expect("a modification time")
 }
 
 /// A mapping file names each projected path, its content, and its executable

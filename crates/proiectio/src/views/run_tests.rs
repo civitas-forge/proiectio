@@ -2,11 +2,11 @@ use super::*;
 
 use serde_json::json;
 
-fn planned(rows: JsonValue) -> WriteLines {
+fn planned(rows: JsonValue) -> RunLines {
     lines(&json!({ "rows": rows }), AmbiguousWidth::Narrow)
 }
 
-fn applied(rows: JsonValue) -> WriteLines {
+fn applied(rows: JsonValue) -> RunLines {
     lines(
         &json!({ "report": { "rows": rows } }),
         AmbiguousWidth::Narrow,
@@ -21,7 +21,7 @@ fn link(verdict: JsonValue, target: &str) -> JsonValue {
     json!({ "facts": { "shape": { "Symlink": { "target": target } } }, "verdict": verdict })
 }
 
-fn only(document: WriteLines) -> RowView {
+fn only(document: RunLines) -> RowView {
     let mut rows = document.rows;
     assert_eq!(rows.len(), 1, "one row");
     rows.remove(0)
@@ -159,8 +159,9 @@ fn the_verb_column_pads_to_the_widest_verb_the_run_spells() {
     assert_eq!(real.verb.len() + real.verb_pad.len(), 9);
 }
 
-/// A plan states no count; a real run counts what it did, naming a column
-/// only where it holds something.
+/// A plan states no count; a real run counts what it did. A pass that
+/// projected leads with the written/skipped pair, one that only cleared paths
+/// counts what it cleared, and one that touched nothing says so.
 #[test]
 fn a_real_run_counts_what_it_did_and_a_plan_counts_nothing() {
     assert_eq!(
@@ -186,7 +187,17 @@ fn a_real_run_counts_what_it_did_and_a_plan_counts_nothing() {
             vec!["Written", "Removed", "Released"],
             "1 written, 0 skipped, 1 removed, 1 released",
         ),
-        (vec!["Removed"], "0 written, 0 skipped, 1 removed"),
+        (vec!["Removed"], "1 removed"),
+        (
+            vec!["Removed", "Removed", "Released"],
+            "2 removed, 1 released",
+        ),
+        (vec!["Released"], "1 released"),
+        (
+            vec!["Skipped", "Removed"],
+            "0 written, 1 skipped, 1 removed",
+        ),
+        (vec![], "nothing to do"),
     ] {
         let rows: serde_json::Map<String, JsonValue> = verdicts
             .iter()
@@ -202,11 +213,11 @@ fn a_real_run_counts_what_it_did_and_a_plan_counts_nothing() {
 }
 
 /// A document naming no rows prints nothing: the injected context is resolved
-/// for every command, and only `write` reads it.
+/// for every command, and only `write` and `rm` read it.
 #[test]
 fn a_document_that_names_no_rows_prints_nothing() {
     assert_eq!(
         lines(&json!({ "kind": "listing" }), AmbiguousWidth::Narrow),
-        WriteLines::default()
+        RunLines::default()
     );
 }

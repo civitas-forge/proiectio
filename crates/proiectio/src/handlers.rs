@@ -2,18 +2,20 @@
 
 #![allow(non_snake_case)]
 
+use std::collections::BTreeSet;
+
 use camino::{Utf8Path, Utf8PathBuf};
 use clapfig::ConfigAction;
 use libproiectio::{
-    Desired, DriftPolicy, Error, ExternalTargetPolicy, Plan, PlanOptions, Projection, Status,
-    load_files, load_mapping, load_source,
+    Desired, DriftPolicy, Error, ExternalTargetPolicy, Plan, PlanOptions, Projection, RemovalScope,
+    Status, load_files, load_mapping, load_source,
 };
 use standout::cli::Output;
 use standout::handler;
 
 use crate::exit;
 use crate::settings;
-use crate::views::{ConfigView, WriteView};
+use crate::views::{ConfigView, RunView};
 
 #[handler]
 #[expect(
@@ -30,18 +32,11 @@ pub(crate) fn write(
     #[flag(name = "dry-run")] dry_run: bool,
     #[flag] force: bool,
     #[flag(name = "allow-external-targets")] allow_external_targets: bool,
-) -> Result<Output<WriteView>, anyhow::Error> {
+) -> Result<Output<RunView>, anyhow::Error> {
     let desired = desired(&paths, tree.as_deref(), strip).map_err(exit::failure)?;
-    let owner = match owner {
-        Some(named) => named,
-        None => settings::builder().load()?.owner,
-    };
+    let owner = owner_or_configured(owner)?;
     let options = PlanOptions {
-        drift: if force {
-            DriftPolicy::Overwrite
-        } else {
-            DriftPolicy::Refuse
-        },
+        drift: drift(force),
         external_targets: if allow_external_targets {
             ExternalTargetPolicy::Allow
         } else {
@@ -49,24 +44,76 @@ pub(crate) fn write(
         },
     };
 
-    let projection = Projection::new(
-        Utf8Path::new(&dest),
-        state_dir.as_deref().map(Utf8Path::new),
-    )
-    .map_err(exit::failure)?;
+    let projection = projection(&dest, state_dir.as_deref())?;
     if dry_run {
         let planned = projection
             .plan(&owner, &desired, options)
             .map_err(exit::failure)?;
         refusals(&planned.plan)?;
-        return Ok(Output::Render(WriteView::Planned(planned.report())));
+        return Ok(Output::Render(RunView::Planned(planned.report())));
     }
     let mut run = projection.begin().map_err(exit::failure)?;
     let plan = run.plan(&owner, &desired, options).map_err(exit::failure)?;
     refusals(plan)?;
     run.apply()
-        .map(|applied| Output::Render(WriteView::Applied(Box::new(applied))))
+        .map(|applied| Output::Render(RunView::Applied(Box::new(applied))))
         .map_err(exit::failure)
+}
+
+#[handler]
+pub(crate) fn rm(
+    #[arg] dest: String,
+    #[arg(name = "state-dir")] state_dir: Option<String>,
+    #[arg] paths: Vec<Utf8PathBuf>,
+    #[arg] owner: Option<String>,
+    #[flag(name = "dry-run")] dry_run: bool,
+    #[flag] force: bool,
+) -> Result<Output<RunView>, anyhow::Error> {
+    let named: BTreeSet<Utf8PathBuf> = paths.into_iter().collect();
+    let scope = if named.is_empty() {
+        RemovalScope::Everything
+    } else {
+        RemovalScope::Paths(&named)
+    };
+    let owner = owner_or_configured(owner)?;
+    let drift = drift(force);
+
+    let projection = projection(&dest, state_dir.as_deref())?;
+    if dry_run {
+        let planned = projection
+            .plan_removal(&owner, scope, drift)
+            .map_err(exit::failure)?;
+        refusals(&planned.plan)?;
+        return Ok(Output::Render(RunView::Planned(planned.report())));
+    }
+    let mut run = projection.begin().map_err(exit::failure)?;
+    let plan = run
+        .plan_removal(&owner, scope, drift)
+        .map_err(exit::failure)?;
+    refusals(plan)?;
+    run.apply()
+        .map(|applied| Output::Render(RunView::Applied(Box::new(applied))))
+        .map_err(exit::failure)
+}
+
+/// The owner the invocation names, and otherwise the configured one.
+fn owner_or_configured(owner: Option<String>) -> Result<String, anyhow::Error> {
+    match owner {
+        Some(named) => Ok(named),
+        None => Ok(settings::builder().load()?.owner),
+    }
+}
+
+fn drift(force: bool) -> DriftPolicy {
+    if force {
+        DriftPolicy::Overwrite
+    } else {
+        DriftPolicy::Refuse
+    }
+}
+
+fn projection(dest: &str, state_dir: Option<&str>) -> Result<Projection, anyhow::Error> {
+    Projection::new(Utf8Path::new(dest), state_dir.map(Utf8Path::new)).map_err(exit::failure)
 }
 
 /// A plan carrying refusals reaches the shell as `Error::Refused`, which
@@ -97,11 +144,7 @@ pub(crate) fn status(
     #[arg] dest: String,
     #[arg(name = "state-dir")] state_dir: Option<String>,
 ) -> Result<Output<Status>, anyhow::Error> {
-    let projection = Projection::new(
-        Utf8Path::new(&dest),
-        state_dir.as_deref().map(Utf8Path::new),
-    )
-    .map_err(exit::failure)?;
+    let projection = projection(&dest, state_dir.as_deref())?;
     Ok(Output::Render(projection.status().map_err(exit::failure)?))
 }
 
