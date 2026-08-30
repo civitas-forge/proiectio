@@ -5,7 +5,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs_utf8::Dir as Utf8Dir;
 
 use super::*;
-use crate::test_support::{Fixture, Tree, assert_tree, origins_of};
+use crate::test_support::{Fixture, MissingName, Tree, assert_tree, origins_of};
 use crate::{
     Action, ApplyReport, Manifest, Origin, PlanOptions, Refusal, RefusalKind, apply, block_markers,
     decide, load_manifest, observe,
@@ -453,7 +453,11 @@ fn a_source_that_is_a_file_is_an_io_error_naming_it() {
 }
 
 #[test]
-#[should_panic(expected = "tree source path must be absolute")]
-fn a_relative_source_path_is_rejected() {
-    let _ = load_tree(Utf8Path::new("skeleton"));
+fn a_relative_source_path_resolves_against_the_current_directory() {
+    let absent = MissingName::with_suffix("");
+
+    assert!(matches!(
+        load_tree(absent.relative()).unwrap_err(),
+        Error::Io { path, .. } if path == absent.absolute()
+    ));
 }

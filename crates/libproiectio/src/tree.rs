@@ -19,15 +19,9 @@ use crate::{Desired, Entry, Error, MAX_WALK_DEPTH, Origin, Refusal, Refused, Res
 /// [`Refusal::Containment`]; a name or target that is not UTF-8, a node kind
 /// the projection never writes, and a tree nesting past [`MAX_WALK_DEPTH`]
 /// each fail the load.
-///
-/// # Panics
-///
-/// Panics if `source` is relative.
 pub fn load_tree(source: &Utf8Path) -> Result<Desired> {
-    assert!(
-        source.is_absolute(),
-        "tree source path must be absolute, got {source}"
-    );
+    let source = crate::absolutize(source)?;
+    let source = source.as_path();
     let root = Dir::open_ambient_dir(source, ambient_authority()).map_err(|e| Error::Io {
         path: source.to_owned(),
         source: e,

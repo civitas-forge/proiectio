@@ -6,7 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs_utf8::Dir as Utf8Dir;
 
 use super::*;
-use crate::test_support::{Fixture, Tree, assert_tree, origins_of};
+use crate::test_support::{Fixture, MissingName, Tree, assert_tree, origins_of};
 use crate::{
     Manifest, Origin, PlanOptions, Refusal, RefusalKind, apply, block_markers, decide,
     load_manifest, observe,
@@ -528,6 +528,16 @@ fn the_extension_match_ignores_ascii_case() {
         expanded.unwrap(),
         from_archive(&fixture, "SKELETON.TAR.GZ", declared_tree().entries())
     );
+}
+
+#[test]
+fn a_relative_archive_path_resolves_against_the_current_directory() {
+    let absent = MissingName::with_suffix(".tar");
+
+    assert!(matches!(
+        load_archive(absent.relative(), 0).unwrap_err(),
+        Error::Io { path, .. } if path == absent.absolute()
+    ));
 }
 
 #[test]

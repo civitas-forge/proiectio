@@ -4,7 +4,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
 use crate::RefusalKind;
-use crate::test_support::origins_of;
+use crate::test_support::{MissingName, origins_of};
 
 // A fixed absolute location for table tests: entries that only carry
 // inline `contents` never read the filesystem, so the file need not exist.
@@ -707,8 +707,14 @@ fn a_missing_mapping_file_is_an_io_error() {
     ));
 }
 
+// A relative path resolves against the current directory rather than
+// failing, so the error names where the load actually looked.
 #[test]
-#[should_panic(expected = "mapping path must be absolute")]
-fn a_relative_mapping_path_is_rejected() {
-    let _ = load_mapping(Utf8Path::new("deploy.toml"));
+fn a_relative_mapping_path_resolves_against_the_current_directory() {
+    let absent = MissingName::with_suffix(".toml");
+
+    assert!(matches!(
+        load_mapping(absent.relative()).unwrap_err(),
+        Error::Io { path, .. } if path == absent.absolute()
+    ));
 }

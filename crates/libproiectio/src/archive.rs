@@ -71,11 +71,9 @@ pub(crate) const ARCHIVE_EXTENSIONS: &str = ".tar, .tar.gz, .tgz, .tar.zst, .zip
 /// Expands an archive into a desired tree, dropping `strip` leading path
 /// components from each member and keeping only files, directories, and
 /// symlinks.
-///
-/// # Panics
-///
-/// Panics if `source` is relative.
 pub fn load_archive(source: &Utf8Path, strip: u32) -> Result<Desired> {
+    let source = crate::absolutize(source)?;
+    let source = source.as_path();
     Ok(Desired::from_source(
         expand(source, strip, Utf8Path::new(""), None, &new_budget())?,
         Origin::Archive {
@@ -101,10 +99,6 @@ pub(crate) fn expand(
     via: Option<&Utf8Path>,
     budget: &Rc<Budget>,
 ) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
-    assert!(
-        source.is_absolute(),
-        "archive source path must be absolute, got {source}"
-    );
     let format = ArchiveFormat::for_path(source).ok_or_else(|| Error::ArchiveFormatUnknown {
         path: source.to_owned(),
     })?;
