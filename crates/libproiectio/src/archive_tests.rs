@@ -256,7 +256,7 @@ fn zip(members: &[ZipMember]) -> Vec<u8> {
 
 fn expand_at(name: &str, bytes: &[u8], strip: u32) -> (Fixture, Result<Desired>) {
     let fixture = Tree::new().file(name, bytes.to_vec()).materialize();
-    let expanded = load_archive(&fixture.path(name), strip);
+    let expanded = load_archive(&fixture.path(name), strip, crate::Limits::default());
     (fixture, expanded)
 }
 
@@ -757,7 +757,7 @@ fn members_strip_erases_still_count_against_the_member_cap() {
         encoder.finish().expect("finish the archive");
     }
     assert!(matches!(
-        load_archive(&path, 1).unwrap_err(),
+        load_archive(&path, 1, crate::Limits::default()).unwrap_err(),
         Error::ArchiveTooManyMembers { limit, .. } if limit == MAX_MEMBERS
     ));
 }
@@ -844,7 +844,7 @@ fn a_relative_archive_path_resolves_against_the_current_directory() {
     let absent = MissingName::with_suffix(".tar");
 
     assert!(matches!(
-        load_archive(absent.relative(), 0).unwrap_err(),
+        load_archive(absent.relative(), 0, crate::Limits::default()).unwrap_err(),
         Error::Io { path, .. } if path == absent.absolute()
     ));
 }
@@ -890,7 +890,7 @@ fn a_zstd_frame_asking_for_too_large_a_window_fails_to_decode() {
     // A frame header and nothing else: magic, a descriptor claiming no
     // content size and no dictionary, and a window descriptor whose
     // exponent asks for 2^27 — twice the byte bound.
-    let exponent = MAX_EXPANDED_BYTES.trailing_zeros() - 10 + 1;
+    let exponent = window_log_max(Limits::DEFAULT_MAX_SOURCE_BYTES) - 10 + 1;
     let mut bytes = vec![0x28, 0xB5, 0x2F, 0xFD, 0x00];
     bytes.push(u8::try_from(exponent << 3).unwrap());
     let error = expand_bytes("wide.tar.zst", &bytes, 0).unwrap_err();
@@ -937,7 +937,8 @@ fn hostile_member_names_are_refused_and_named() {
         Member::file("ok", "kept\n"),
     ];
     let fixture = Tree::new().file("hostile.tar", tar(&members)).materialize();
-    let error = load_archive(&fixture.path("hostile.tar"), 0).unwrap_err();
+    let error =
+        load_archive(&fixture.path("hostile.tar"), 0, crate::Limits::default()).unwrap_err();
     let refused = match &error {
         Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
             origins_of(refused)
@@ -1239,14 +1240,16 @@ fn a_member_nesting_past_the_depth_limit_fails_the_load() {
 }
 
 // A decompression bomb: a few kilobytes of gzip expanding past what one
-// archive may allocate. The bound stops it while it is still being read,
-// so the memory it wanted is never taken.
+// load may hold. The bound stops it while it is still being read, so the
+// memory it wanted is never taken. Every bomb here is built and judged
+// against BOMB_LIMIT rather than the 500 MiB default, so the tests also say
+// that a caller's own limit is the one enforced.
 #[test]
 fn an_archive_expanding_past_the_byte_bound_fails_the_load() {
     let bomb = bomb_at("bomb.tar.gz", b"big", REGULAR, "");
     assert!(matches!(
-        load_archive(&bomb.path("bomb.tar.gz"), 0).unwrap_err(),
-        Error::ArchiveTooLarge { limit, .. } if limit == MAX_EXPANDED_BYTES
+        load_archive(&bomb.path("bomb.tar.gz"), 0, BOMB_LIMIT).unwrap_err(),
+        Error::ArchiveTooLarge { limit, .. } if limit == BOMB_LIMIT.max_source_bytes
     ));
 }
 
@@ -1258,8 +1261,8 @@ fn an_archive_expanding_past_the_byte_bound_fails_the_load() {
 fn a_declined_members_bytes_spend_the_budget_too() {
     let bomb = bomb_at("declined.tar.gz", b"/etc/passwd", REGULAR, "");
     assert!(matches!(
-        load_archive(&bomb.path("declined.tar.gz"), 0).unwrap_err(),
-        Error::ArchiveTooLarge { limit, .. } if limit == MAX_EXPANDED_BYTES
+        load_archive(&bomb.path("declined.tar.gz"), 0, BOMB_LIMIT).unwrap_err(),
+        Error::ArchiveTooLarge { limit, .. } if limit == BOMB_LIMIT.max_source_bytes
     ));
 }
 
@@ -1270,8 +1273,8 @@ fn a_declined_members_bytes_spend_the_budget_too() {
 fn a_symlink_header_claiming_a_body_spends_the_budget_too() {
     let bomb = bomb_at("claimed.tar.gz", b"current", SYMLINK, "releases/1.2.3");
     assert!(matches!(
-        load_archive(&bomb.path("claimed.tar.gz"), 0).unwrap_err(),
-        Error::ArchiveTooLarge { limit, .. } if limit == MAX_EXPANDED_BYTES
+        load_archive(&bomb.path("claimed.tar.gz"), 0, BOMB_LIMIT).unwrap_err(),
+        Error::ArchiveTooLarge { limit, .. } if limit == BOMB_LIMIT.max_source_bytes
     ));
 }
 
@@ -1285,8 +1288,8 @@ fn a_long_name_header_cannot_outspend_the_budget() {
     const GNU_LONGNAME: u8 = b'L';
     let bomb = bomb_at("longname.tar.gz", b"././@LongLink", GNU_LONGNAME, "");
     assert!(matches!(
-        load_archive(&bomb.path("longname.tar.gz"), 0).unwrap_err(),
-        Error::ArchiveTooLarge { limit, .. } if limit == MAX_EXPANDED_BYTES
+        load_archive(&bomb.path("longname.tar.gz"), 0, BOMB_LIMIT).unwrap_err(),
+        Error::ArchiveTooLarge { limit, .. } if limit == BOMB_LIMIT.max_source_bytes
     ));
 }
 
@@ -1296,7 +1299,7 @@ fn a_long_name_header_cannot_outspend_the_budget() {
 // spent.
 #[test]
 fn a_header_claiming_more_than_the_stream_holds_fails_to_decode() {
-    let member = Member::new("short", REGULAR).declaring(MAX_EXPANDED_BYTES + 1);
+    let member = Member::new("short", REGULAR).declaring(Limits::DEFAULT_MAX_SOURCE_BYTES + 1);
     let mut bytes = Vec::new();
     write_member(&mut bytes, &member);
     write_end(&mut bytes);
@@ -1306,14 +1309,20 @@ fn a_header_claiming_more_than_the_stream_holds_fails_to_decode() {
     ));
 }
 
+// The bound the bombs below are built and loaded against: small enough that
+// building one is cheap, and nothing about the bound depends on its size.
+const BOMB_LIMIT: Limits = Limits {
+    max_source_bytes: 1 << 20,
+};
+
 // Writes a gzipped tar into a fresh fixture under `file`: one member of
 // kind `kind` named `name`, whose body really carries
-// `MAX_EXPANDED_BYTES + 1` bytes. The bytes are zeros, so what lands on
-// disk is a few hundred kilobytes — which is the whole point of the bound.
+// `BOMB_LIMIT.max_source_bytes + 1` bytes. The bytes are zeros, so what lands
+// on disk is a few kilobytes — which is the whole point of the bound.
 fn bomb_at(file: &str, name: &[u8], kind: u8, link: &str) -> Fixture {
     let fixture = Tree::new().materialize();
     let path = fixture.path(file);
-    let size = MAX_EXPANDED_BYTES + 1;
+    let size = BOMB_LIMIT.max_source_bytes + 1;
     let file = fs::File::create(&path).expect("create the bomb");
     let mut encoder =
         flate2::write::GzEncoder::new(BufWriter::new(file), flate2::Compression::fast());
@@ -1358,7 +1367,7 @@ fn an_archive_carrying_too_many_members_fails_the_load() {
         encoder.finish().expect("finish the archive");
     }
     assert!(matches!(
-        load_archive(&path, 0).unwrap_err(),
+        load_archive(&path, 0, crate::Limits::default()).unwrap_err(),
         Error::ArchiveTooManyMembers { limit, .. } if limit == MAX_MEMBERS
     ));
 }
@@ -1380,7 +1389,7 @@ fn a_prefix_places_every_member_beneath_it() {
         0,
         Utf8Path::new("vendor/lib"),
         None,
-        &new_budget(),
+        &Rc::new(Budget::new(Limits::default())),
     )
     .unwrap()
     .tree;
@@ -1409,7 +1418,7 @@ fn a_prefix_never_absorbs_a_climbing_member() {
         0,
         Utf8Path::new("vendor"),
         None,
-        &new_budget(),
+        &Rc::new(Budget::new(Limits::default())),
     )
     .unwrap_err()
     {
@@ -1437,7 +1446,7 @@ fn a_prefix_leaves_a_symlink_target_verbatim() {
         0,
         Utf8Path::new("vendor"),
         None,
-        &new_budget(),
+        &Rc::new(Budget::new(Limits::default())),
     )
     .unwrap()
     .tree;

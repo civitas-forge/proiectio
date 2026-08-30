@@ -1,14 +1,16 @@
 use std::collections::BTreeMap;
-use std::io::Read;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
+use crate::limits::Budget;
 use crate::tree::{is_executable, open_file_nofollow};
-use crate::{Desired, Entry, Error, Origin, Result};
+use crate::{Desired, Entry, Error, Limits, Origin, Result};
 
-pub fn load_files(paths: &[Utf8PathBuf]) -> Result<Desired> {
+/// Loads each path as an entry keyed by its own basename. One budget of
+/// [`Limits::max_source_bytes`] covers every file the call reads.
+pub fn load_files(paths: &[Utf8PathBuf], limits: Limits) -> Result<Desired> {
     let mut named: BTreeMap<String, Utf8PathBuf> = BTreeMap::new();
     for path in paths {
         let path = crate::absolutize(path)?;
@@ -29,14 +31,15 @@ pub fn load_files(paths: &[Utf8PathBuf]) -> Result<Desired> {
         }
     }
 
+    let budget = Budget::new(limits);
     let mut tree = BTreeMap::new();
     for (name, path) in named {
-        tree.insert(Utf8PathBuf::from(name), load_one(&path)?);
+        tree.insert(Utf8PathBuf::from(name), load_one(&path, &budget)?);
     }
     Ok(Desired::from_source(tree, Origin::Files))
 }
 
-fn load_one(path: &Utf8Path) -> Result<Entry> {
+fn load_one(path: &Utf8Path, budget: &Budget) -> Result<Entry> {
     let parent = path.parent().expect("an absolute path has a parent");
     let name = path.file_name().expect("a named path has a file name");
     let io = |source| Error::Io {
@@ -75,8 +78,14 @@ fn load_one(path: &Utf8Path) -> Result<Entry> {
         });
     }
     let executable = is_executable(&meta);
-    let mut contents = Vec::new();
-    file.read_to_end(&mut contents).map_err(io)?;
+    let contents =
+        budget
+            .read_to_end(&mut file)
+            .map_err(io)?
+            .ok_or_else(|| Error::SourceTooLarge {
+                path: path.to_owned(),
+                limit: budget.limit(),
+            })?;
     Ok(Entry::File {
         contents,
         executable,

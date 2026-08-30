@@ -234,12 +234,27 @@ pub enum Error {
         /// above the member as it projects — after `strip`.
         limit: usize,
     },
-    /// An archive expands to more bytes than one may allocate. Not a refusal.
-    #[error("archive {path} expands past the {limit} bytes an archive may allocate")]
+    /// An archive expands past what one load may hold in memory. Not a
+    /// refusal.
+    #[error("archive {path} expands past the {limit} bytes one load may hold in memory")]
     ArchiveTooLarge {
         /// The archive's location.
         path: Utf8PathBuf,
-        /// The most an expansion may allocate, summed over its members.
+        /// The load's [`Limits::max_source_bytes`](crate::Limits::max_source_bytes),
+        /// which every source the load reads spends together.
+        limit: u64,
+    },
+    /// A file a load reads — a walked tree's, a loose one, a mapping file or
+    /// a file its `source` names — ran the load past what it may hold in
+    /// memory. The named file is the one the load was reading when the bytes
+    /// ran out, which need not be the largest: the budget is spent across
+    /// every source. Not a refusal.
+    #[error("source {path} reads past the {limit} bytes one load may hold in memory")]
+    SourceTooLarge {
+        /// The file being read when the budget ran out.
+        path: Utf8PathBuf,
+        /// The load's [`Limits::max_source_bytes`](crate::Limits::max_source_bytes),
+        /// which every source the load reads spends together.
         limit: u64,
     },
     /// An archive carries more members than an expansion places. Not a

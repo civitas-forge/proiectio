@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
 use std::os::fd::AsFd;
 use std::path::Path;
 
@@ -8,7 +7,8 @@ use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
-use crate::{Desired, Entry, Error, MAX_WALK_DEPTH, Origin, Refusal, Refused, Result};
+use crate::limits::Budget;
+use crate::{Desired, Entry, Error, Limits, MAX_WALK_DEPTH, Origin, Refusal, Refused, Result};
 
 /// Walks `source` into a desired tree: every regular file becomes an
 /// [`Entry::File`] with its bytes and owner-executable bit, every symlink an
@@ -17,19 +17,21 @@ use crate::{Desired, Entry, Error, MAX_WALK_DEPTH, Origin, Refusal, Refused, Res
 ///
 /// Walked keys the containment gateway refuses are aggregated into one
 /// [`Refusal::Containment`]; a name or target that is not UTF-8, a node kind
-/// the projection never writes, and a tree nesting past [`MAX_WALK_DEPTH`]
-/// each fail the load.
-pub fn load_tree(source: &Utf8Path) -> Result<Desired> {
+/// the projection never writes, a tree nesting past [`MAX_WALK_DEPTH`], and a
+/// walk whose files sum past [`Limits::max_source_bytes`] each fail the load.
+pub fn load_tree(source: &Utf8Path, limits: Limits) -> Result<Desired> {
     let source = crate::absolutize(source)?;
     let source = source.as_path();
     let root = Dir::open_ambient_dir(source, ambient_authority()).map_err(|e| Error::Io {
         path: source.to_owned(),
         source: e,
     })?;
+    let budget = Budget::new(limits);
     let mut walk = Walk {
         source,
         tree: BTreeMap::new(),
         refused: BTreeSet::new(),
+        budget: &budget,
     };
     walk.descend(&root, Utf8Path::new(""), 0)?;
     if !walk.refused.is_empty() {
@@ -58,6 +60,9 @@ struct Walk<'a> {
     source: &'a Utf8Path,
     tree: BTreeMap<Utf8PathBuf, Entry>,
     refused: BTreeSet<Utf8PathBuf>,
+    /// One budget across the whole walk: every file it reads is held in the
+    /// tree at once.
+    budget: &'a Budget,
 }
 
 impl Walk<'_> {
@@ -115,9 +120,14 @@ impl Walk<'_> {
                     });
                 }
                 let executable = is_executable(&meta);
-                let mut contents = Vec::new();
-                file.read_to_end(&mut contents)
-                    .map_err(io_at(self.absolute(&rel)))?;
+                let contents = self
+                    .budget
+                    .read_to_end(&mut file)
+                    .map_err(io_at(self.absolute(&rel)))?
+                    .ok_or_else(|| Error::SourceTooLarge {
+                        path: self.absolute(&rel),
+                        limit: self.budget.limit(),
+                    })?;
                 Entry::File {
                     contents,
                     executable,

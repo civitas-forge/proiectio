@@ -14,6 +14,12 @@ pub(crate) struct ProiectioConfig {
     /// Default for `--owner`; the flag always wins.
     #[clapfig(default = "default")]
     pub(crate) owner: String,
+
+    /// How many bytes one write may read from its sources, counting an
+    /// archive as it expands rather than as it sits on disk.
+    /// Default for `--max-source-size`; the flag always wins.
+    #[clapfig(default = 524_288_000)]
+    pub(crate) max_source_size: u64,
 }
 
 const APP: &str = "proiectio";

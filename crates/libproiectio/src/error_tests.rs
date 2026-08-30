@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use camino::Utf8PathBuf;
 
 use super::*;
-use crate::{BlockFault, Manifest, Origin, Refusal, RefusalKind, Refused};
+use crate::{BlockFault, Limits, Manifest, Origin, Refusal, RefusalKind, Refused};
 
 fn every_variant() -> Vec<Error> {
     let refusal = |kind: RefusalKind| -> Error {
@@ -305,8 +305,21 @@ fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
     assert!(!large.is_refusal());
     assert_eq!(
         large.to_string(),
-        "archive /assets/vendor.tar.gz expands past the 67108864 bytes an \
-         archive may allocate"
+        "archive /assets/vendor.tar.gz expands past the 67108864 bytes one \
+         load may hold in memory"
+    );
+
+    // The same bound over a file read outside an archive: the message names
+    // the file the load was reading, and the bound the whole load shares.
+    let source = Error::SourceTooLarge {
+        path: Utf8PathBuf::from("/assets/blob.bin"),
+        limit: Limits::DEFAULT_MAX_SOURCE_BYTES,
+    };
+    assert!(!source.is_refusal());
+    assert_eq!(
+        source.to_string(),
+        "source /assets/blob.bin reads past the 524288000 bytes one load may \
+         hold in memory"
     );
 
     // The count is what tells the operator the strip is wrong rather than the

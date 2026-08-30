@@ -34,6 +34,35 @@ fn an_omitted_key_takes_its_compiled_default() {
     );
 }
 
+/// A clapfig default is a literal, so the schema cannot spell the library's
+/// constant. This is what holds the two to each other: the bound a run takes
+/// with nothing configured is the one `libproiectio` would have applied on
+/// its own.
+#[test]
+fn the_size_bounds_default_is_the_librarys_own() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    assert_eq!(
+        load_from(&dir)
+            .expect("a loaded configuration")
+            .max_source_size,
+        libproiectio::Limits::DEFAULT_MAX_SOURCE_BYTES
+    );
+}
+
+#[test]
+fn a_file_declaring_the_size_bound_loads_it() {
+    let dir = TempDir::new().expect("a temporary directory");
+    config(&dir, "max_source_size = 4096\n");
+
+    assert_eq!(
+        load_from(&dir)
+            .expect("a loaded configuration")
+            .max_source_size,
+        4096
+    );
+}
+
 #[test]
 fn a_file_declaring_the_owner_loads_it() {
     let dir = TempDir::new().expect("a temporary directory");
