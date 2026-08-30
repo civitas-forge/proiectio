@@ -26,14 +26,26 @@ fn only(document: StatusLines) -> StateView {
 
 /// One classified path reads as one word in one style, for every state the
 /// library declares.
+///
+/// `spelling` matches the names states serialize under, which agree with the
+/// library only as long as nobody renames a variant. This drives the mapping
+/// from the enum itself, as `run_tests.rs` does for its own verdicts: the
+/// `match` fails to compile when a state is added, and the assertion fails
+/// when one is renamed, since a name `spelling` does not know reads as itself.
 #[test]
 fn each_state_spells_one_style_and_one_word() {
-    for (state, style, word) in [
-        (PathState::Clean, "clean", "clean"),
-        (PathState::Drifted, "drifted", "drifted"),
-        (PathState::Missing, "missing", "missing"),
-        (PathState::Foreign, "foreign", "foreign"),
+    for state in [
+        PathState::Clean,
+        PathState::Drifted,
+        PathState::Missing,
+        PathState::Foreign,
     ] {
+        let (style, word) = match state {
+            PathState::Clean => ("clean", "clean"),
+            PathState::Drifted => ("drifted", "drifted"),
+            PathState::Missing => ("missing", "missing"),
+            PathState::Foreign => ("foreign", "foreign"),
+        };
         let verdict = serde_json::to_value(state).expect("a serialized state");
         let row = only(status(
             json!({ "one": { "verdict": verdict, "facts": null } }),

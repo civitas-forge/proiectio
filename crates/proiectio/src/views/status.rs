@@ -108,7 +108,14 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> StatusLines 
 /// verdict that ever carried fields would otherwise arrive as a JSON object in
 /// a column every other row spells as a word, and the two outputs would
 /// disagree about the same row. What such a payload said would need a column
-/// of its own, as `origin` does.
+/// of its own.
+///
+/// The row states two things no column here reads. A status row's facts come
+/// from the manifest, which records what a path is and who holds it, not which
+/// input named it and not where a link points, so `origin` and a link's target
+/// are null in every status row of every destination; a column for either
+/// would promise what the document never carries. A `write` or `rm` row states
+/// both, and neither command has a projection — see #121.
 pub(crate) fn csv() -> StructuredOutputProjection {
     StructuredOutputProjection::csv(
         CsvProjection::builder("rows")
@@ -138,10 +145,7 @@ fn cell(value: Option<String>) -> JsonValue {
     JsonValue::String(value.unwrap_or_default())
 }
 
-/// The shape the manifest records for the path, in one word. A recorded link
-/// states no target beside it, and no column here can: the manifest records a
-/// link by the hash of its target, so every status row spells a link's shape
-/// as `Symlink { target: null }`.
+/// The shape the manifest records for the path, in one word.
 fn shape(row: &JsonValue) -> Option<String> {
     let shape = row.get("facts")?.get("shape")?;
     let named = match shape {
