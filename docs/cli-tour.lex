@@ -34,10 +34,10 @@ The CLI
 
     An archive as the tree — --tree accepts .tar, .tar.gz/.tgz,
     .tar.zst and .zip, and treats the archive's members as the
-    source tree. The
-    extension picks the decoder; a wrong pick is an error, not a
-    guess. --strip N drops N leading path components, for release
-    tarballs wrapped in a top-level directory:
+    source tree. The extension picks the decoder; a wrong pick is an
+    error, not a guess. --strip N drops N leading path components.
+
+    A release tarball wrapped in a top-level directory:
 
         $ proiectio write --tree ./skeleton-1.2.tar.gz --strip 1
 
@@ -49,8 +49,9 @@ The CLI
 
     :: shell ::
 
-    Re-running any write is a no-op: unchanged files are skipped and
-    their mtimes survive.
+    Unchanged files are skipped and their mtimes survive.
+
+    Re-running any write is a no-op:
 
         $ proiectio write deploy.toml
         skipped    bin/tool              (exec)
@@ -64,12 +65,18 @@ The CLI
 
     --dry-run prints the plan — the same classification apply would
     act on — and writes nothing. Exit codes are the verdict, on dry
-    and real runs alike, so CI can gate on either:
+    and real runs alike, so CI can gate on either.
 
-    | 0 | applied, or nothing to do                              |
-    | 1 | usage or I/O error                                     |
-    | 2 | refusal — drift, foreign file, containment, external   |
-    |   | symlink target                                         |
+    The three exit codes:
+
+        | 0 | applied, or nothing to do                              |
+        | 1 | usage or I/O error                                     |
+        | 2 | refusal — drift, foreign file, containment, external   |
+        |   | symlink target                                         |
+
+    :: table ::
+
+    A clean dry run:
 
         $ proiectio write deploy.toml --dry-run
         would skip       bin/tool              (exec)
@@ -83,7 +90,9 @@ The CLI
     A plan carrying a refusal is not a plan anything can act on, so
     the run names its most severe refusal kind and every path
     refused for that reason in place of the rows, and leaves with
-    the 2 a real run would:
+    the 2 a real run would.
+
+    A dry run over a drifted path:
 
         $ echo edited >> bin/tool
         $ proiectio write deploy.toml --dry-run
@@ -93,8 +102,7 @@ The CLI
 
     :: shell ::
 
-    Refusals are overridden one policy at a time, always from the
-    invocation:
+    Refusals are overridden one policy at a time, always from the invocation:
 
         $ proiectio write deploy.toml --force                   # overwrite drifted files
         $ proiectio write deploy.toml --allow-external-targets  # permit symlinks out of dest
@@ -103,8 +111,7 @@ The CLI
 
 3. Status
 
-    Reads the manifest, classifies every recorded path, writes
-    nothing:
+    Reads the manifest, classifies every recorded path, writes nothing:
 
         $ proiectio status --dest ~/apps/site
         clean    config/settings.toml
@@ -115,9 +122,10 @@ The CLI
 
 4. Removal
 
-    rm removes what the manifest owns — everything under an owner, or
-    a subset by path. A drifted file refuses (exit 2) unless --force;
-    directories emptied by removal are pruned.
+    rm removes what the manifest owns. A drifted file refuses (exit 2)
+    unless --force; directories emptied by removal are pruned.
+
+    Everything under an owner, or a subset by path:
 
         $ proiectio rm --dest ~/apps/site --owner site
         $ proiectio rm config/settings.toml
@@ -133,32 +141,34 @@ The CLI
     assets travel together. Metadata is the executable bit — from the source file,
     or platform default for inline contents, overridable per entry.
 
-    version = 1
+    A mapping:
 
-    [files."config/settings.toml"]
-    contents = """
-    listen = ":8080"
-    """
+        version = 1
 
-    [files."bin/tool"]
-    source = "./assets/tool.sh"
-    executable = true
+        [files."config/settings.toml"]
+        contents = """
+        listen = ":8080"
+        """
 
-    # standard symlink semantics: target is written verbatim and
-    # resolves relative to the link's parent, inside dest
-    [links."current"]
-    target = "releases/1.2.3"
+        [files."bin/tool"]
+        source = "./assets/tool.sh"
+        executable = true
 
-    # absolute target: refused unless the invoker passes
-    # --allow-external-targets
-    [links."toolchain"]
-    target = "/opt/toolchains/rust-1.80"
+        # standard symlink semantics: target is written verbatim and
+        # resolves relative to the link's parent, inside dest
+        [links."current"]
+        target = "releases/1.2.3"
 
-    # extracted under the key prefix at plan time; each member
-    # becomes an ordinary manifest entry
-    \[archives."vendor/"]
-    source = "./assets/vendor.tar.gz"
-    strip = 1
+        # absolute target: refused unless the invoker passes
+        # --allow-external-targets
+        [links."toolchain"]
+        target = "/opt/toolchains/rust-1.80"
+
+        # extracted under the key prefix at plan time; each member
+        # becomes an ordinary manifest entry
+        [archives."vendor/"]
+        source = "./assets/vendor.tar.gz"
+        strip = 1
 
     :: toml ::
 
@@ -178,13 +188,17 @@ The CLI
 
 6. Options
 
-    | --dest <dir>             | target directory; default cwd       |
-    | --owner <name>           | manifest owner; default "default"   |
-    | --state-dir <dir>        | manifest location; default          |
-    |                          | <dest>/.proiectio                   |
-    | --dry-run                | plan and report, write nothing      |
-    | --force                  | overwrite drifted files             |
-    | --allow-external-targets | permit symlink targets outside dest |
-    | --tree <path>            | project a directory or archive      |
-    | --strip <n>              | drop n leading components           |
-    |                          | (archive trees)                     |
+    Every flag:
+
+        | --dest <dir>             | target directory; default cwd       |
+        | --owner <name>           | manifest owner; default "default"   |
+        | --state-dir <dir>        | manifest location; default          |
+        |                          | <dest>/.proiectio                   |
+        | --dry-run                | plan and report, write nothing      |
+        | --force                  | overwrite drifted files             |
+        | --allow-external-targets | permit symlink targets outside dest |
+        | --tree <path>            | project a directory or archive      |
+        | --strip <n>              | drop n leading components           |
+        |                          | (archive trees)                     |
+
+    :: table ::
