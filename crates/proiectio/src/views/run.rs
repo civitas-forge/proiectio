@@ -13,6 +13,7 @@ use standout::AmbiguousWidth;
 use standout::tabular::visible_width_with_policy;
 
 use crate::app::verbatim;
+use crate::views::pad;
 
 /// A plan on a dry run, what apply did on a real one; untagged, so structured
 /// output is the library's own either way.
@@ -318,13 +319,13 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
         Some(applied) => (applied, false),
         None => (document, true),
     };
-    let Some(rows) = report.get("rows").and_then(JsonValue::as_object) else {
+    let Some(rows) = report.get("rows").and_then(JsonValue::as_array) else {
         return RunLines::default();
     };
 
     let paths: Vec<(String, &JsonValue)> = rows
         .iter()
-        .map(|(path, row)| (verbatim(path), row))
+        .filter_map(|row| Some((verbatim(row.get("path")?.as_str()?), row)))
         .collect();
     // A plan flattens its rows into the document that carries `dropped`, and
     // an apply nests its rows under `report` beside it, so drops read from
@@ -448,10 +449,6 @@ fn executable(shape: Option<&JsonValue>) -> bool {
         .and_then(|file| file.get("executable"))
         .and_then(JsonValue::as_bool)
         .unwrap_or_default()
-}
-
-fn pad(column: usize, cell: &str, width: AmbiguousWidth) -> String {
-    " ".repeat(column.saturating_sub(visible_width_with_policy(cell, width)))
 }
 
 #[cfg(test)]

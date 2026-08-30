@@ -334,23 +334,31 @@ fn a_summary_counts_the_rows_of_each_action() {
 }
 
 #[test]
-fn a_report_serializes_with_paths_as_keys_and_no_bytes() {
+fn a_report_serializes_one_record_per_row_and_no_bytes() {
     let json = serde_json::to_value(one_of_each().report(&recorded())).expect("serialize");
+    let rows = json["rows"].as_array().expect("a rows array");
+    let row = |wanted: &str| {
+        rows.iter()
+            .find(|row| row["path"] == wanted)
+            .unwrap_or_else(|| panic!("a row for {wanted}"))
+            .clone()
+    };
 
     assert_eq!(
-        json["rows"]["bin/tool"],
+        row("bin/tool"),
         serde_json::json!({
+            "path": "bin/tool",
+            "verdict": { "Overwrite": { "reason": "ForcedDrift" } },
             "facts": {
                 "shape": { "File": { "executable": true } },
                 "owners": ["ops", "site"],
                 "origin": { "Mapping": { "path": "/etc/deploy.toml" } },
             },
-            "verdict": { "Overwrite": { "reason": "ForcedDrift" } },
         })
     );
-    assert_eq!(json["rows"]["shared/.zshrc"]["verdict"], "Release");
+    assert_eq!(row("shared/.zshrc")["verdict"], "Release");
     assert_eq!(
-        json["rows"]["toolchain"]["verdict"]["Refuse"]["refusal"]["ExternalTarget"]["target"],
+        row("toolchain")["verdict"]["Refuse"]["refusal"]["ExternalTarget"]["target"],
         "/opt/rust"
     );
 }

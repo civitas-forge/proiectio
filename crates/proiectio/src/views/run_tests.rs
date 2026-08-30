@@ -9,13 +9,29 @@ use libproiectio::{
 use serde::Serialize;
 use serde_json::json;
 
+/// The `rows` sequence a report serializes, from the rows a case states by
+/// path: each record carries its path as a field beside what the row states.
+fn records(rows: JsonValue) -> JsonValue {
+    JsonValue::Array(
+        rows.as_object()
+            .expect("rows stated by path")
+            .iter()
+            .map(|(path, row)| {
+                let mut record = row.as_object().expect("a row").clone();
+                record.insert("path".to_owned(), json!(path));
+                JsonValue::Object(record)
+            })
+            .collect(),
+    )
+}
+
 fn planned(rows: JsonValue) -> RunLines {
-    lines(&json!({ "rows": rows }), AmbiguousWidth::Narrow)
+    lines(&json!({ "rows": records(rows) }), AmbiguousWidth::Narrow)
 }
 
 fn applied(rows: JsonValue) -> RunLines {
     lines(
-        &json!({ "report": { "rows": rows } }),
+        &json!({ "report": { "rows": records(rows) } }),
         AmbiguousWidth::Narrow,
     )
 }
@@ -562,8 +578,8 @@ fn a_dropped_member_prints_a_row_naming_the_archive() {
         },
     })]);
     for document in [
-        json!({ "rows": {}, "dropped": dropped }),
-        json!({ "report": { "rows": {} }, "dropped": dropped }),
+        json!({ "rows": [], "dropped": dropped }),
+        json!({ "report": { "rows": [] }, "dropped": dropped }),
     ] {
         let row = only(lines(&document, AmbiguousWidth::Narrow));
         assert_eq!(row.style, "skipped");
@@ -593,7 +609,7 @@ fn two_archives_dropping_the_same_member_print_both_rows() {
         })
     };
     let document = json!({
-        "rows": {},
+        "rows": [],
         "dropped": [carried_by("/assets/plugins.tar.gz"), carried_by("/assets/vendor.tar.gz")],
     });
 
@@ -632,7 +648,7 @@ fn one_archive_under_two_prefixes_prints_a_row_per_entry() {
         })
     };
     let document = json!({
-        "rows": {},
+        "rows": [],
         "dropped": [asked_by("backup", 2), asked_by("vendor", 1)],
     });
 
@@ -659,7 +675,7 @@ fn one_archive_under_two_prefixes_prints_a_row_per_entry() {
 #[test]
 fn dropped_members_share_the_path_column_with_the_rows() {
     let document = json!({
-        "rows": { "a/very/long/path": file(json!("Write")) },
+        "rows": records(json!({ "a/very/long/path": file(json!("Write")) })),
         "dropped": [serialized(Dropped {
             member: Utf8PathBuf::from("._pkg"),
             prefix: Utf8PathBuf::new(),

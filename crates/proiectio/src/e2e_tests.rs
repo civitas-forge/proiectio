@@ -12,7 +12,8 @@ use crate::app;
 use crate::cli;
 use crate::exit;
 use crate::testing::{
-    assert_styles_resolved, assert_tags_declared, harness, manifest_of, modified, tour, utf8,
+    assert_styles_resolved, assert_tags_declared, harness, manifest_of, modified, stated, tour,
+    utf8,
 };
 
 /// One invocation through the whole argv-to-output pipeline, under the
@@ -497,7 +498,7 @@ fn rm_of_a_path_the_owner_never_recorded_says_so_and_still_succeeds() {
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
     assert_eq!(
-        value["report"]["rows"]["typo.txt"]["verdict"],
+        stated(&value["report"]["rows"], "typo.txt")["verdict"],
         "NotRecorded"
     );
 }
@@ -559,7 +560,7 @@ fn rm_of_a_path_another_owner_holds_reports_it_and_leaves_it_alone() {
     );
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
-    let row = &value["report"]["rows"]["config/settings.toml"];
+    let row = stated(&value["report"]["rows"], "config/settings.toml");
     assert_eq!(row["verdict"], "NotRecorded");
     assert_eq!(row["facts"]["owners"], serde_json::json!(["them"]));
 }
@@ -594,10 +595,13 @@ fn a_refused_dry_run_of_rm_renders_the_whole_plan() {
     assert_eq!(leaving(&json, &structured), exit::REFUSAL);
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
     assert_eq!(
-        value["rows"]["bin/tool"]["verdict"]["Refuse"]["refusal"],
+        stated(&value["rows"], "bin/tool")["verdict"]["Refuse"]["refusal"],
         "Drift"
     );
-    assert_eq!(value["rows"]["config/settings.toml"]["verdict"], "Remove");
+    assert_eq!(
+        stated(&value["rows"], "config/settings.toml")["verdict"],
+        "Remove"
+    );
 }
 
 /// With nothing recorded under the owner there is nothing to remove, and the
@@ -633,8 +637,11 @@ fn rm_is_the_librarys_own_reports() {
     applied.assert_success();
     let planned: JsonValue = serde_json::from_str(dry.stdout()).expect("a JSON document");
     let real: JsonValue = serde_json::from_str(applied.stdout()).expect("a JSON document");
-    assert_eq!(planned["rows"]["bin/tool"]["verdict"], "Remove");
-    assert_eq!(real["report"]["rows"]["bin/tool"]["verdict"], "Removed");
+    assert_eq!(stated(&planned["rows"], "bin/tool")["verdict"], "Remove");
+    assert_eq!(
+        stated(&real["report"]["rows"], "bin/tool")["verdict"],
+        "Removed"
+    );
     assert_eq!(
         real["manifest"],
         serde_json::to_value(manifest_of(&dest)).expect("a serialized manifest")
