@@ -6,3 +6,4 @@ mod run;
 
 pub(crate) use config::ConfigView;
 pub(crate) use run::RunView;
+pub(crate) use run::lines as run_lines;
