@@ -143,7 +143,7 @@ Proiectio Design
     pub fn plan(&self, owner: &str, desired: &Desired,
     origin: Origin, options: PlanOptions) -> Result<Planned>;
     pub fn plan_removal(&self, owner: &str, scope: RemovalScope<'_>,
-    options: PlanOptions) -> Result<Planned>;
+    drift: DriftPolicy) -> Result<Planned>;
     // The write pass.
     pub fn begin(&self) -> Result<Run>;
     }

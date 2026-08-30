@@ -1,4 +1,5 @@
-//! The document `write` renders, and the lines its template lays out.
+//! The document a write pass renders — `write`'s and `rm`'s alike — and the
+//! lines its template lays out.
 //!
 //! The lines reach the template through Standout's context injection, which
 //! structured modes skip, so `--output json` stays the library's own report.
@@ -15,7 +16,7 @@ use crate::app::verbatim;
 /// output is the library's own either way.
 #[derive(Serialize)]
 #[serde(untagged)]
-pub(crate) enum WriteView {
+pub(crate) enum RunView {
     Planned(Report<PlannedAction>),
     Applied(Box<ApplyReport>),
 }
@@ -33,10 +34,10 @@ pub(crate) struct RowView {
     pub(crate) note: Option<String>,
 }
 
-/// What `write.jinja` prints: one row per path, and the count a real run
+/// What `run.jinja` prints: one row per path, and the count a real run
 /// closes with.
 #[derive(Debug, Default, PartialEq, Eq, Serialize)]
-pub(crate) struct WriteLines {
+pub(crate) struct RunLines {
     pub(crate) rows: Vec<RowView>,
     pub(crate) summary: Option<String>,
 }
@@ -108,19 +109,29 @@ impl Tally {
         *column += 1;
     }
 
-    /// A run that touched nothing reports what it left alone; every other run
-    /// reports what it did, naming a column only where it holds something.
+    /// A pass that projected reports what it wrote and skipped, and names a
+    /// cleared column only where it holds something; one that only cleared
+    /// paths reports what it cleared and nothing else. A pass that left every
+    /// path alone reports what it left alone, and one that touched nothing
+    /// says so.
     fn summary(&self) -> String {
-        if self.wrote == 0 && self.removed == 0 && self.released == 0 && self.skipped > 0 {
-            return format!("{} unchanged", self.skipped);
+        let cleared = self.removed + self.released;
+        if self.wrote == 0 && cleared == 0 {
+            return match self.skipped {
+                0 => "nothing to do".to_owned(),
+                skipped => format!("{skipped} unchanged"),
+            };
         }
-        let mut summary = format!("{} written, {} skipped", self.wrote, self.skipped);
+        let mut columns = Vec::new();
+        if self.wrote > 0 || self.skipped > 0 {
+            columns.push(format!("{} written, {} skipped", self.wrote, self.skipped));
+        }
         for (count, column) in [(self.removed, "removed"), (self.released, "released")] {
             if count > 0 {
-                summary.push_str(&format!(", {count} {column}"));
+                columns.push(format!("{count} {column}"));
             }
         }
-        summary
+        columns.join(", ")
     }
 }
 
@@ -129,14 +140,14 @@ impl Tally {
 const PLANNED_VERBS: usize = "would overwrite".len();
 const APPLIED_VERBS: usize = "overwrote".len();
 
-/// The lines `write.jinja` prints for one write document.
-pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> WriteLines {
+/// The lines `run.jinja` prints for one write-pass document.
+pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
     let (rows, planning) = match document.get("report") {
         Some(applied) => (applied.get("rows"), false),
         None => (document.get("rows"), true),
     };
     let Some(rows) = rows.and_then(JsonValue::as_object) else {
-        return WriteLines::default();
+        return RunLines::default();
     };
 
     let paths: Vec<(String, &JsonValue)> = rows
@@ -186,7 +197,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> WriteLines {
         });
     }
 
-    WriteLines {
+    RunLines {
         rows: lines,
         summary: (!planning).then(|| tally.summary()),
     }
@@ -228,5 +239,5 @@ fn pad(column: usize, cell: &str, width: AmbiguousWidth) -> String {
 }
 
 #[cfg(test)]
-#[path = "write_tests.rs"]
+#[path = "run_tests.rs"]
 mod tests;

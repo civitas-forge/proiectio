@@ -78,12 +78,13 @@ pub(crate) fn build() -> Result<App> {
         .templates(templates())
         .styles(embed_styles!("src/styles"))
         .default_theme("proiectio")
-        .context_fn("write", |context: &RenderContext| {
-            Value::from_serialize(views::write_lines(context.data, context.ambiguous_width()))
+        .context_fn("run", |context: &RenderContext| {
+            Value::from_serialize(views::run_lines(context.data, context.ambiguous_width()))
         })
         .command_with("write", handlers::write__handler, |cfg| {
-            cfg.template("write.jinja")
+            cfg.template("run.jinja")
         })?
+        .command_with("rm", handlers::rm__handler, |cfg| cfg.template("run.jinja"))?
         .command_with("status", handlers::status__handler, |cfg| {
             cfg.template("status.jinja")
         })?

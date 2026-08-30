@@ -113,9 +113,10 @@ The CLI
 
     Reads the manifest, classifies every recorded path, writes nothing:
 
+        $ rm current
         $ proiectio status --dest ~/apps/site
-        clean    config/settings.toml
         drifted  bin/tool
+        clean    config/settings.toml
         missing  current
 
     :: shell ::
@@ -125,10 +126,21 @@ The CLI
     rm removes what the manifest owns. A drifted file refuses (exit 2)
     unless --force; directories emptied by removal are pruned.
 
-    Everything under an owner, or a subset by path:
+    Everything under an owner:
 
         $ proiectio rm --dest ~/apps/site --owner site
+        removed    bin/tool              (exec)
+        removed    config/settings.toml
+        removed    current
+        3 removed
+
+    :: shell ::
+
+    Or a subset by path:
+
         $ proiectio rm config/settings.toml
+        removed    config/settings.toml
+        1 removed
 
     :: shell ::
 
@@ -191,11 +203,13 @@ The CLI
     Every flag:
 
         | --dest <dir>             | target directory; default cwd       |
-        | --owner <name>           | manifest owner; default "default"   |
+        | --owner <name>           | manifest owner; default from the    |
+        |                          | configuration                       |
         | --state-dir <dir>        | manifest location; default          |
         |                          | <dest>/.proiectio                   |
         | --dry-run                | plan and report, write nothing      |
-        | --force                  | overwrite drifted files             |
+        | --force                  | overwrite drifted files; remove     |
+        |                          | them under rm                       |
         | --allow-external-targets | permit symlink targets outside dest |
         | --tree <path>            | project a directory or archive      |
         | --strip <n>              | drop n leading components           |

@@ -1184,7 +1184,7 @@ fn a_recorded_path_the_state_dir_sits_beneath_is_refused_not_removed() {
         &manifest,
         &observations,
         Some(Utf8Path::new(NESTED_STATE)),
-        PlanOptions::default(),
+        DriftPolicy::Refuse,
     );
     assert_eq!(action(&sweep, ".local"), &refused);
 
@@ -1194,7 +1194,7 @@ fn a_recorded_path_the_state_dir_sits_beneath_is_refused_not_removed() {
         &manifest,
         &observations,
         Some(Utf8Path::new(NESTED_STATE)),
-        PlanOptions::default(),
+        DriftPolicy::Refuse,
     );
     assert_eq!(action(&by_name, ".local"), &refused);
 
@@ -1298,7 +1298,7 @@ fn the_state_subtree_is_invisible_to_planning() {
         &manifest,
         &observations,
         Some(Utf8Path::new(".proiectio")),
-        PlanOptions::default(),
+        DriftPolicy::Refuse,
     );
 
     assert_eq!(
@@ -1312,7 +1312,7 @@ fn the_state_subtree_is_invisible_to_planning() {
         &manifest,
         &observations,
         Some(Utf8Path::new(".proiectio")),
-        PlanOptions::default(),
+        DriftPolicy::Refuse,
     );
 
     assert_eq!(
@@ -2490,17 +2490,7 @@ fn removal(
     observations: &Observations,
     policy: DriftPolicy,
 ) -> Plan {
-    decide_removal(
-        OWNER,
-        scope,
-        manifest,
-        observations,
-        None,
-        PlanOptions {
-            drift: policy,
-            ..PlanOptions::default()
-        },
-    )
+    decide_removal(OWNER, scope, manifest, observations, None, policy)
 }
 
 fn requested(paths: &[&str]) -> BTreeSet<Utf8PathBuf> {
@@ -2649,7 +2639,7 @@ fn requested_paths_pass_the_same_containment_gateway_as_desired_keys() {
         &manifest,
         &observations,
         Some(Utf8Path::new(".proiectio")),
-        PlanOptions::default(),
+        DriftPolicy::Refuse,
     );
 
     // Refusals are keyed by the request verbatim, exactly as a refused
@@ -2691,7 +2681,7 @@ fn a_removal_request_the_state_dir_sits_beneath_refuses_containment() {
         &manifest,
         &observations,
         Some(Utf8Path::new(NESTED_STATE)),
-        PlanOptions::default(),
+        DriftPolicy::Refuse,
     );
 
     assert_eq!(
