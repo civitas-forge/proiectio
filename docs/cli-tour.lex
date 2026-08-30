@@ -81,8 +81,9 @@ The CLI
     :: shell ::
 
     A plan carrying a refusal is not a plan anything can act on, so
-    the run names every refused path and its reason in place of the
-    rows, and leaves with the 2 a real run would:
+    the run names its most severe refusal kind and every path
+    refused for that reason in place of the rows, and leaves with
+    the 2 a real run would:
 
         $ proiectio write deploy.toml --dry-run
         Error: refusing to touch drifted paths (edited on disk): bin/tool

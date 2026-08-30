@@ -6,8 +6,9 @@ use cap_std::ambient_authority;
 use cap_std::fs_utf8::Dir;
 
 use crate::{
-    BlockMarkers, Desired, Error, Manifest, Plan, PlanOptions, RemovalScope, Result, Status,
-    absolutize, block_markers, decide, decide_removal, load_manifest, observe, status,
+    BlockMarkers, Desired, Error, Manifest, Plan, PlanOptions, PlannedAction, RemovalScope, Report,
+    Result, Status, absolutize, block_markers, decide, decide_removal, load_manifest, observe,
+    status,
 };
 
 const DEFAULT_STATE_DIR: &str = ".proiectio";
@@ -97,20 +98,22 @@ impl Projection {
 
     /// Every write, overwrite, removal, and refusal applying `desired` under
     /// `owner` would perform, decided outside the single-writer guard and so
-    /// not applicable. An empty tree plans a removal; `origin` is named by
-    /// every refusal the plan carries.
-    pub fn plan(&self, owner: &str, desired: &Desired, options: PlanOptions) -> Result<Plan> {
+    /// not applicable, with the manifest it was decided against. An empty
+    /// tree plans a removal; `origin` is named by every refusal the plan
+    /// carries.
+    pub fn plan(&self, owner: &str, desired: &Desired, options: PlanOptions) -> Result<Planned> {
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
         let observations = observe(&dest, &manifest, &block_markers(desired))?;
-        decide(
+        let plan = decide(
             owner,
             desired,
             &manifest,
             &observations,
             self.state_prefix(),
             options,
-        )
+        )?;
+        Ok(Planned { plan, manifest })
     }
 
     /// The removal of everything `owner` holds, or of the recorded paths
@@ -172,6 +175,24 @@ impl Projection {
                 source,
             })),
         }
+    }
+}
+
+/// A plan and the manifest read in the same pass, so a report's owners come
+/// from the state the plan's verdicts were decided against rather than from a
+/// second read a concurrent writer could move between.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Planned {
+    /// What applying would do, per path.
+    pub plan: Plan,
+    /// The manifest the plan was decided against.
+    pub manifest: Manifest,
+}
+
+impl Planned {
+    /// The plan's rows, each carrying the owners this manifest records.
+    pub fn report(&self) -> Report<PlannedAction> {
+        self.plan.report(&self.manifest)
     }
 }
 

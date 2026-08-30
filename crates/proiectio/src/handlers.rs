@@ -55,12 +55,11 @@ pub(crate) fn write(
     )
     .map_err(exit::failure)?;
     if dry_run {
-        let manifest = projection.manifest().map_err(exit::failure)?;
-        let plan = projection
+        let planned = projection
             .plan(&owner, &desired, options)
             .map_err(exit::failure)?;
-        refusals(&plan)?;
-        return Ok(Output::Render(WriteView::Planned(plan.report(&manifest))));
+        refusals(&planned.plan)?;
+        return Ok(Output::Render(WriteView::Planned(planned.report())));
     }
     let mut run = projection.begin().map_err(exit::failure)?;
     let plan = run.plan(&owner, &desired, options).map_err(exit::failure)?;

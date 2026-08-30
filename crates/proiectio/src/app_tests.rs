@@ -1032,8 +1032,7 @@ fn a_dry_run_is_the_librarys_own_plan_report() {
     let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
     let projection = Projection::new(&dest, None).expect("a projection");
     let desired = libproiectio::load_mapping(&deploy).expect("a desired tree");
-    let manifest = projection.manifest().expect("a manifest");
-    let plan = projection
+    let planned = projection
         .plan(
             crate::testing::OWNER,
             &desired,
@@ -1042,7 +1041,7 @@ fn a_dry_run_is_the_librarys_own_plan_report() {
         .expect("a plan");
     assert_eq!(
         value,
-        serde_json::to_value(plan.report(&manifest)).expect("a serialized report")
+        serde_json::to_value(planned.report()).expect("a serialized report")
     );
 }
 
@@ -1137,6 +1136,65 @@ fn write_names_only_styles_the_stylesheet_declares_and_the_theme_resolves() {
     );
     term.assert_success();
     assert_styles_resolved("write", term.stdout());
+}
+
+/// The path column is measured in terminal columns, so an escaped bracket and
+/// a wide character leave every note at the same offset.
+#[test]
+#[serial]
+fn rows_align_on_display_width_rather_than_byte_length() {
+    let (dir, dest, _) = tour();
+    let links = utf8(&dir).join("links.toml");
+    std::fs::write(
+        links.as_std_path(),
+        "version = 1\n\n[links.\"[a]\"]\ntarget = \"x\"\n\n[links.\"\u{65e5}\u{672c}\u{8a9e}\"]\ntarget = \"y\"\n",
+    )
+    .expect("a mapping of two links");
+
+    let result = harness(&dir).run(&app(), cli::command(), write_argv(&[links.as_str()], &dest));
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        "linked     [a]     -> x\n\
+         linked     \u{65e5}\u{672c}\u{8a9e}  -> y\n\
+         2 written, 0 skipped\n"
+    );
+}
+
+/// A row keeps the style its verdict earned: only a link the run writes reads
+/// as one.
+#[test]
+#[serial]
+fn a_symlink_row_carries_the_style_of_its_verdict() {
+    let (dir, dest, deploy) = tour();
+    let argv = write_argv(&[deploy.as_str()], &dest);
+
+    let written =
+        harness(&dir)
+            .output_mode(OutputMode::TermDebug)
+            .run(&app(), cli::command(), argv.clone());
+    written.assert_success();
+    assert!(
+        written.stdout().contains("[linked]linked[/linked]"),
+        "a written link reads as one:\n{}",
+        written.stdout()
+    );
+
+    let again = harness(&dir)
+        .output_mode(OutputMode::TermDebug)
+        .run(&app(), cli::command(), argv);
+    again.assert_success();
+    assert!(
+        again.stdout().contains("[skipped]skipped[/skipped]"),
+        "a skipped link keeps the skip style:\n{}",
+        again.stdout()
+    );
+    assert!(
+        !again.stdout().contains("[linked]"),
+        "nothing was linked on the second run:\n{}",
+        again.stdout()
+    );
 }
 
 /// A projected path and a link target are data, not markup: both reach the

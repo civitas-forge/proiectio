@@ -3,7 +3,7 @@
 {%- set entries = (rows if planning else report.rows)|items -%}
 {%- set column = namespace(path=0) -%}
 {%- for entry in entries -%}
-{%- set shown = (entry[0]|verbatim)|length -%}
+{%- set shown = (entry[0]|verbatim)|display_width -%}
 {%- if shown > column.path %}{% set column.path = shown %}{% endif -%}
 {%- endfor -%}
 {%- set tally = namespace(wrote=0, skipped=0, removed=0, released=0) -%}
@@ -60,7 +60,7 @@
 {%- set verb = (verdict|string)|verbatim -%}
 {%- endif -%}
 {%- if target -%}
-{%- set style = "linked" -%}
+{%- set style = "linked" if verdict == "Write" or verdict == "Written" else style -%}
 {%- set note = ("-> " ~ (target|verbatim) ~ "  " ~ note)|trim -%}
 {%- elif shape and shape.File is defined and shape.File.executable and not note -%}
 {%- set note = "(exec)" -%}
