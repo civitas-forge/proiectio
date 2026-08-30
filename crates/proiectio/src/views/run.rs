@@ -6,7 +6,9 @@
 
 use std::collections::BTreeSet;
 
-use libproiectio::{ApplyReport, BlockFault, Dropped, PlannedAction, Report};
+use libproiectio::{
+    ApplyReport, BlockFault, Dropped, PathFacts, PlannedAction, Refused, Report, Row,
+};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use standout::AmbiguousWidth;
@@ -14,8 +16,8 @@ use standout::tabular::visible_width_with_policy;
 
 use crate::app::verbatim;
 
-/// A plan on a dry run, what apply did on a real one; untagged, so structured
-/// output is the library's own either way.
+/// Rows a run states without having acted on them, or what apply did; untagged,
+/// so structured output is the library's own either way.
 #[derive(Serialize)]
 #[serde(untagged)]
 pub(crate) enum RunView {
@@ -23,16 +25,50 @@ pub(crate) enum RunView {
     Applied(Box<ApplyReport>),
 }
 
-/// What a dry run has to report: the plan's rows, and the archive members
-/// `strip` erased on the way to the desired tree. Apply pairs the same two on
-/// [`ApplyReport`]; a plan has no such struct to sit on, so the rows flatten
-/// into this one and both documents carry `dropped` at their top level.
+/// The rows a pass states rather than performs — a dry run's whole plan, or
+/// the paths a refusal declined — and the archive members `strip` erased on
+/// the way to the desired tree. Apply pairs the same two on [`ApplyReport`];
+/// a plan has no such struct to sit on, so the rows flatten into this one and
+/// both documents carry `dropped` at their top level.
 #[derive(Serialize)]
 pub(crate) struct PlannedRun {
     #[serde(flatten)]
     pub(crate) report: Report<PlannedAction>,
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub(crate) dropped: BTreeSet<Dropped>,
+}
+
+impl PlannedRun {
+    /// The rows a refusal states on its own, for the stages that report one as
+    /// an error rather than as a plan: one row per refused key, carrying the
+    /// refusal and the source that named the key. A refusal names no shape and
+    /// no owners, so neither does the row — a plan's own refused rows leave the
+    /// shape out for the same reason — and it strips no archive, so the
+    /// document carries no `dropped`.
+    pub(crate) fn refused(refused: &Refused) -> PlannedRun {
+        PlannedRun {
+            report: Report {
+                rows: refused
+                    .paths()
+                    .iter()
+                    .map(|(path, refused)| {
+                        let row = Row {
+                            facts: Some(PathFacts {
+                                shape: None,
+                                owners: BTreeSet::new(),
+                                origin: Some(refused.origin.clone()),
+                            }),
+                            verdict: PlannedAction::Refuse {
+                                refusal: refused.refusal.clone(),
+                            },
+                        };
+                        (path.clone(), row)
+                    })
+                    .collect(),
+            },
+            dropped: BTreeSet::new(),
+        }
+    }
 }
 
 /// One printed line: the verb in its style, the path, and what qualifies it.

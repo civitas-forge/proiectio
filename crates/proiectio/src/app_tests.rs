@@ -10,7 +10,7 @@ use libproiectio::{Manifest, Origin, Projection, Refusal, Refused, Status};
 use serde_json::Value as JsonValue;
 use serial_test::serial;
 use standout::OutputMode;
-use standout::cli::Output;
+use standout::cli::{CommandContext, Output};
 use standout::handler;
 use tempfile::TempDir;
 
@@ -25,8 +25,8 @@ fn app() -> App {
     over(&exit::Verdict::default())
 }
 
-/// The app over a verdict the test keeps: a refused dry run renders its plan
-/// and leaves the refusal there rather than in the run's result.
+/// The app over a verdict the test keeps: a refused run renders its plan and
+/// leaves the refusal there rather than in the run's result.
 fn over(verdict: &exit::Verdict) -> App {
     build(verdict.clone()).expect("an app")
 }
@@ -1086,30 +1086,183 @@ fn a_refused_dry_run_is_the_librarys_own_plan_document() {
     );
 }
 
-/// A refused real run performed nothing, so it keeps the error channel and
-/// the diagnostic that names what it refused.
+/// A refused real run performed nothing, so it reports what a dry run of the
+/// same invocation reports: the plan's rows on stdout, byte for byte, with
+/// the error channel clear and the refusal in the verdict. A caller reading
+/// the refusal never has to ask a second time.
 #[test]
 #[serial]
-fn a_refused_real_run_keeps_the_error_channel() {
+fn a_refused_real_run_renders_the_document_its_dry_run_renders() {
     let (dir, dest, deploy) = tour();
     refused_and_overwritten(&dir, &dest, &deploy);
-    let verdict = exit::Verdict::default();
+    let real_verdict = exit::Verdict::default();
+    let dry_verdict = exit::Verdict::default();
 
-    let result = harness(&dir).run(
-        &over(&verdict),
+    let real = harness(&dir).output_mode(OutputMode::Json).run(
+        &over(&real_verdict),
         cli::command(),
         write_argv(&[deploy.as_str()], &dest),
     );
+    let dry = harness(&dir).output_mode(OutputMode::Json).run(
+        &over(&dry_verdict),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--dry-run"], &dest),
+    );
 
-    assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
-    assert_eq!(result.stdout(), "");
-    assert!(
-        result
-            .error()
-            .unwrap_or_default()
-            .contains("refusing to touch drifted paths"),
-        "{}",
-        result.error().unwrap_or_default()
+    assert_eq!(leaving(&real, &real_verdict), exit::REFUSAL);
+    assert_eq!(leaving(&dry, &dry_verdict), exit::REFUSAL);
+    assert_eq!(real.error(), None);
+    assert_eq!(real.stdout(), dry.stdout());
+    let value: JsonValue = serde_json::from_str(real.stdout()).expect("a JSON document");
+    assert_eq!(
+        value["rows"]["bin/tool"]["verdict"]["Refuse"]["refusal"],
+        "Drift"
+    );
+    assert_eq!(
+        value["rows"]["bin/tool"]["facts"]["origin"]["Mapping"]["path"],
+        deploy.as_str()
+    );
+}
+
+/// `rm` refuses on the same terms: the real removal renders the plan its own
+/// dry run renders, rendered and structured alike, and unlinks nothing.
+#[test]
+#[serial]
+fn a_refused_rm_renders_the_document_its_dry_run_renders() {
+    let (dir, dest, deploy) = tour();
+    harness(&dir)
+        .run(
+            &app(),
+            cli::command(),
+            write_argv(&[deploy.as_str()], &dest),
+        )
+        .assert_success();
+    std::fs::write(dest.join("bin/tool"), b"#!/bin/sh\necho edited\n").expect("a local edit");
+    let argv = ["proiectio", "rm", "--dest", dest.as_str()];
+
+    for mode in [OutputMode::Text, OutputMode::Json] {
+        let real_verdict = exit::Verdict::default();
+        let dry_verdict = exit::Verdict::default();
+        let mut dry_argv = argv.to_vec();
+        dry_argv.push("--dry-run");
+
+        let real = harness(&dir)
+            .output_mode(mode)
+            .run(&over(&real_verdict), cli::command(), argv);
+        let dry =
+            harness(&dir)
+                .output_mode(mode)
+                .run(&over(&dry_verdict), cli::command(), dry_argv);
+
+        assert_eq!(leaving(&real, &real_verdict), exit::REFUSAL, "{mode:?}");
+        assert_eq!(leaving(&dry, &dry_verdict), exit::REFUSAL, "{mode:?}");
+        assert_eq!(real.error(), None, "{mode:?}");
+        assert_eq!(real.stdout(), dry.stdout(), "{mode:?}");
+    }
+    let rendered = harness(&dir).run(&over(&exit::Verdict::default()), cli::command(), argv);
+    assert_eq!(
+        rendered.stdout(),
+        "would refuse     bin/tool              (drifted)\n\
+         would remove     config/settings.toml\n\
+         would remove     current\n"
+    );
+    assert!(dest.join("bin/tool").exists());
+}
+
+/// A refusal met after the plan was decided — the disk moved under an apply
+/// that had already started, or a re-check declined what the plan carried
+/// through — reaches the shell as `Error::Refused` and never as a plan.
+///
+/// Deciding and applying run back to back over one destination, so no command
+/// line reaches that gap: `plan` refuses everything it can see, and what is
+/// left needs the disk to move mid-run. The seam both commands hand such an
+/// error to is driven here instead, over the same app, template and verdict
+/// every run goes through.
+#[handler]
+fn mid_run(#[ctx] ctx: &CommandContext) -> Result<Output<views::RunView>> {
+    handlers::refusal_or_failure(
+        libproiectio::Error::Refused(Refused::one(
+            Utf8PathBuf::from("bin/tool"),
+            Refusal::Drift,
+            Origin::Mapping {
+                path: Utf8PathBuf::from("/srv/deploy.toml"),
+            },
+        )),
+        ctx,
+    )
+}
+
+fn mid_run_app(verdict: &exit::Verdict) -> App {
+    App::builder()
+        .app_state(verdict.clone())
+        .templates(templates())
+        .styles(embed_styles!("src/styles"))
+        .default_theme("proiectio")
+        .template_engine(Box::new(engine()))
+        .context_fn("run", |context: &RenderContext| {
+            Value::from_serialize(views::run_lines(context.data, context.ambiguous_width()))
+        })
+        .command_with("write", mid_run__handler, |cfg| cfg.template("run.jinja"))
+        .expect("a command")
+        .build()
+        .expect("an app")
+}
+
+/// An apply-time refusal states its keys rather than a diagnostic, on the
+/// terms a plan's refused rows are stated on: rows on stdout, the error
+/// channel clear, and the refusal in the verdict.
+#[test]
+#[serial]
+fn a_refusal_met_while_applying_renders_the_keys_the_error_names() {
+    let (dir, _) = classified_dir();
+
+    let verdict = exit::Verdict::default();
+    let rendered = harness(&dir).run(
+        &mid_run_app(&verdict),
+        cli::command(),
+        ["proiectio", "write", "map.toml"],
+    );
+
+    assert_eq!(leaving(&rendered, &verdict), exit::REFUSAL);
+    assert_eq!(rendered.error(), None);
+    assert_eq!(
+        rendered.stdout(),
+        "would refuse     bin/tool  (drifted) (from mapping /srv/deploy.toml)\n"
+    );
+}
+
+/// And structured output carries the same row: the path, the refusal, and the
+/// source that named it, under the `rows` key a plan's document uses — so a
+/// caller reads one shape whichever stage refused.
+#[test]
+#[serial]
+fn a_refusal_met_while_applying_is_the_document_a_refused_plan_is() {
+    let (dir, _) = classified_dir();
+
+    let verdict = exit::Verdict::default();
+    let structured = harness(&dir).output_mode(OutputMode::Json).run(
+        &mid_run_app(&verdict),
+        cli::command(),
+        ["proiectio", "write", "map.toml"],
+    );
+
+    assert_eq!(leaving(&structured, &verdict), exit::REFUSAL);
+    assert_eq!(structured.error(), None);
+    let value: JsonValue = serde_json::from_str(structured.stdout()).expect("a JSON document");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "rows": {
+                "bin/tool": {
+                    "facts": {
+                        "shape": JsonValue::Null,
+                        "owners": [],
+                        "origin": { "Mapping": { "path": "/srv/deploy.toml" } },
+                    },
+                    "verdict": { "Refuse": { "refusal": "Drift" } },
+                },
+            },
+        })
     );
 }
 
@@ -1139,8 +1292,9 @@ fn a_refused_row_names_only_styles_the_stylesheet_declares() {
     assert_styles_resolved("a refused plan", term.stdout());
 }
 
-/// The exit code is the verdict on a dry run and a real one alike: a drifted
-/// path refuses either way, and names itself.
+/// The exit code is the verdict on a dry run and a real one alike, and so is
+/// the row: a drifted path refuses either way, and names itself in the plan
+/// rather than in a diagnostic.
 #[test]
 #[serial]
 fn a_drifted_path_refuses_on_a_dry_run_and_a_real_one_alike() {
@@ -1167,15 +1321,8 @@ fn a_drifted_path_refuses_on_a_dry_run_and_a_real_one_alike() {
             "{extra:?}: {}",
             result.error().unwrap_or_default()
         );
-        if extra.is_empty() {
-            assert!(
-                result.error().unwrap_or_default().contains("bin/tool"),
-                "{extra:?}: {}",
-                result.error().unwrap_or_default()
-            );
-        } else {
-            result.assert_stdout_contains("would refuse     bin/tool              (drifted)");
-        }
+        result.assert_stdout_contains("would refuse     bin/tool              (drifted)");
+        assert_eq!(result.error(), None, "{extra:?}");
     }
     assert_eq!(
         std::fs::read(dest.join("bin/tool")).expect("the edited file"),
@@ -1330,12 +1477,16 @@ fn an_external_symlink_target_refuses_until_the_invocation_allows_it() {
     )
     .expect("a mapping naming an external target");
 
+    let verdict = exit::Verdict::default();
     let refused = harness(&dir).run(
-        &app(),
+        &over(&verdict),
         cli::command(),
         write_argv(&[external.as_str()], &dest),
     );
-    assert_eq!(exit::status(refused.outcome()), exit::REFUSAL);
+    assert_eq!(leaving(&refused, &verdict), exit::REFUSAL);
+    refused.assert_stdout_contains(
+        "would refuse     toolchain  (external target) -> /opt/toolchains/rust-1.80",
+    );
     assert!(!dest.join("toolchain").exists());
 
     let allowed = harness(&dir).run(

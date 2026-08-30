@@ -682,3 +682,84 @@ fn dropped_members_share_the_path_column_with_the_rows() {
         )
     );
 }
+
+/// The document a refusal met past the plan renders: one row per refused key,
+/// carrying the refusal and the source the error names, in the same shape a
+/// plan's own refused row has — a null shape, and a verdict under `Refuse`.
+#[test]
+fn a_refusal_renders_the_row_shape_a_refused_plan_renders() {
+    let origin = Origin::Mapping {
+        path: Utf8PathBuf::from("/srv/deploy.toml"),
+    };
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        origin.clone(),
+    );
+
+    let document = serialized(PlannedRun::refused(&refused));
+
+    assert_eq!(
+        document,
+        json!({
+            "rows": {
+                "bin/tool": {
+                    "facts": { "shape": null, "owners": [], "origin": serialized(&origin) },
+                    "verdict": { "Refuse": { "refusal": "Drift" } },
+                },
+            },
+        })
+    );
+    let row = only(lines(&document, AmbiguousWidth::Narrow));
+    assert_eq!((row.style, row.verb.as_str()), ("refused", "would refuse"));
+    assert_eq!(row.path, "bin/tool");
+    assert_eq!(
+        row.note.as_deref(),
+        Some("(drifted) (from mapping /srv/deploy.toml)")
+    );
+}
+
+/// Every refused key the error names gets a row, each stating the source that
+/// named it, and a refusal strips no archive so the document carries no
+/// `dropped`.
+#[test]
+fn a_refusal_of_several_keys_renders_a_row_for_each() {
+    let held_by = |owner: &str| Refusal::OwnerConflict {
+        owners: BTreeSet::from([owner.to_owned()]),
+    };
+    let aggregated = Refused::aggregate([
+        (
+            Utf8PathBuf::from("bin/tool"),
+            held_by("site"),
+            Origin::Files,
+        ),
+        (
+            Utf8PathBuf::from("config/settings.toml"),
+            held_by("other"),
+            Origin::Caller,
+        ),
+    ])
+    .expect("a refusal over two keys");
+
+    let document = serialized(PlannedRun::refused(&aggregated));
+
+    assert_eq!(document.get("dropped"), None);
+    let rows = lines(&document, AmbiguousWidth::Narrow).rows;
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.path.as_str(), row.verb.as_str(), row.note.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "bin/tool",
+                "would refuse",
+                Some("(owner conflict) (held by site) (from individually named files)")
+            ),
+            (
+                "config/settings.toml",
+                "would refuse",
+                Some("(owner conflict) (held by other)")
+            ),
+        ]
+    );
+}

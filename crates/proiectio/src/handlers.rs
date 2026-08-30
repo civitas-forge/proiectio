@@ -8,7 +8,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use clapfig::ConfigAction;
 use libproiectio::{
     Desired, DriftPolicy, Error, ExternalTargetPolicy, Plan, PlanOptions, PlannedAction,
-    Projection, RemovalScope, Report, Status, load_files, load_mapping, load_source,
+    Projection, RemovalScope, Report, Run, Status, load_files, load_mapping, load_source,
 };
 use standout::cli::{CommandContext, Output};
 use standout::handler;
@@ -47,17 +47,16 @@ pub(crate) fn write(
 
     let projection = projection(&dest, state_dir.as_deref())?;
     if dry_run {
-        let planned = projection
-            .plan(&owner, &desired, options)
-            .map_err(exit::failure)?;
-        return planned_report(&planned.plan, planned.report(), ctx);
+        return match projection.plan(&owner, &desired, options) {
+            Ok(planned) => planned_report(&planned.plan, planned.report(), ctx),
+            Err(error) => refusal_or_failure(error, ctx),
+        };
     }
     let mut run = projection.begin().map_err(exit::failure)?;
-    let plan = run.plan(&owner, &desired, options).map_err(exit::failure)?;
-    refusals(plan)?;
-    run.apply()
-        .map(|applied| Output::Render(RunView::Applied(Box::new(applied))))
-        .map_err(exit::failure)
+    if let Err(error) = run.plan(&owner, &desired, options).map(|_| ()) {
+        return refusal_or_failure(error, ctx);
+    }
+    apply(run, ctx)
 }
 
 #[handler]
@@ -81,19 +80,16 @@ pub(crate) fn rm(
 
     let projection = projection(&dest, state_dir.as_deref())?;
     if dry_run {
-        let planned = projection
-            .plan_removal(&owner, scope, drift)
-            .map_err(exit::failure)?;
-        return planned_report(&planned.plan, planned.report(), ctx);
+        return match projection.plan_removal(&owner, scope, drift) {
+            Ok(planned) => planned_report(&planned.plan, planned.report(), ctx),
+            Err(error) => refusal_or_failure(error, ctx),
+        };
     }
     let mut run = projection.begin().map_err(exit::failure)?;
-    let plan = run
-        .plan_removal(&owner, scope, drift)
-        .map_err(exit::failure)?;
-    refusals(plan)?;
-    run.apply()
-        .map(|applied| Output::Render(RunView::Applied(Box::new(applied))))
-        .map_err(exit::failure)
+    if let Err(error) = run.plan_removal(&owner, scope, drift).map(|_| ()) {
+        return refusal_or_failure(error, ctx);
+    }
+    apply(run, ctx)
 }
 
 /// The owner the invocation names, and otherwise the configured one.
@@ -116,33 +112,68 @@ fn projection(dest: &str, state_dir: Option<&str>) -> Result<Projection, anyhow:
     Projection::new(Utf8Path::new(dest), state_dir.map(Utf8Path::new)).map_err(exit::failure)
 }
 
-/// A dry run reports the whole plan, refused rows and all: the rows are what
-/// the run is for, so a refusal records the status the run leaves with rather
-/// than replacing the report with a diagnostic.
+/// A run reports the whole plan, refused rows and all — a dry run because the
+/// rows are what it is for, a real one because a plan that refuses acts on
+/// nothing and has only the plan to report. Either way a refusal records the
+/// status the run leaves with rather than replacing the report with a
+/// diagnostic.
 fn planned_report(
     plan: &Plan,
     report: Report<PlannedAction>,
     ctx: &CommandContext,
 ) -> Result<Output<RunView>, anyhow::Error> {
-    if plan.refusals().next().is_some() {
-        ctx.app_state
-            .get_required::<exit::Verdict>()?
-            .record(exit::REFUSAL);
-    }
-    Ok(Output::Render(RunView::Planned(PlannedRun {
+    let stated = PlannedRun {
         report,
         dropped: plan.dropped.clone(),
-    })))
+    };
+    if plan.refusals().next().is_some() {
+        return refusal(stated, ctx);
+    }
+    Ok(Output::Render(RunView::Planned(stated)))
 }
 
-/// A real run acts, so a plan carrying refusals reaches the shell as
-/// `Error::Refused`, which spends the refusal status; one carrying none
-/// passes.
-fn refusals(plan: &Plan) -> Result<(), anyhow::Error> {
-    match plan.refused() {
-        Some(refused) => Err(exit::failure(Error::Refused(refused))),
-        None => Ok(()),
+/// A real run acts unless something refuses. A plan carrying refusals writes
+/// nothing and reports itself, which is the document a dry run of the same
+/// invocation reports; a refusal apply meets past that reports the keys the
+/// error names and no others, the error being all the run knows by then.
+fn apply(run: Run, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
+    if let Some(plan) = run
+        .planned()
+        .filter(|plan| plan.refusals().next().is_some())
+    {
+        return planned_report(plan, plan.report(run.manifest()), ctx);
     }
+    match run.apply() {
+        Ok(applied) => Ok(Output::Render(RunView::Applied(Box::new(applied)))),
+        Err(error) => refusal_or_failure(error, ctx),
+    }
+}
+
+/// A refusal the library reports as an error states the keys it declined, on
+/// the terms a plan's own refused rows are stated on; every other error
+/// replaces the output with its diagnostic.
+///
+/// Deciding and applying run back to back over one destination, so no command
+/// line reaches an apply-time refusal on its own — the disk has to move in
+/// between — and that half of the contract is driven from `app_tests` over
+/// this function, which is what it is visible past this module for.
+pub(crate) fn refusal_or_failure(
+    error: Error,
+    ctx: &CommandContext,
+) -> Result<Output<RunView>, anyhow::Error> {
+    match error {
+        Error::Refused(refused) => refusal(PlannedRun::refused(&refused), ctx),
+        failure => Err(exit::failure(failure)),
+    }
+}
+
+/// Renders the rows a refusal leaves the run with, recording the refusal so
+/// the process leaves with 2 though the run rendered rather than failed.
+fn refusal(stated: PlannedRun, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
+    ctx.app_state
+        .get_required::<exit::Verdict>()?
+        .record(exit::REFUSAL);
+    Ok(Output::Render(RunView::Planned(stated)))
 }
 
 /// `--tree` names the tree, one positional a mapping file, two or more the
