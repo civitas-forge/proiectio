@@ -1,0 +1,5 @@
+{#- One line per classified path: the state, padded, then the path. -#}
+{%- for path, row in rows|items -%}
+{%- set state = row.verdict|lower -%}
+{{ ("[" ~ state ~ "]" ~ state ~ "[/" ~ state ~ "]")|pad_right(7) }}  {{ path|verbatim }}
+{% endfor -%}
