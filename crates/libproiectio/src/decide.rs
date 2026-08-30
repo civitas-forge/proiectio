@@ -168,8 +168,12 @@ pub(crate) fn decide_removal(
     manifest: &Manifest,
     observations: &Observations,
     state_prefix: Option<&Utf8Path>,
-    options: PlanOptions,
+    drift: DriftPolicy,
 ) -> Plan {
+    let options = PlanOptions {
+        drift,
+        external_targets: ExternalTargetPolicy::Refuse,
+    };
     let (judged, refused) = match scope {
         RemovalScope::Everything => (Judged::Everything, BTreeMap::new()),
         RemovalScope::Paths(requested) => {

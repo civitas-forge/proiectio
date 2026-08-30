@@ -103,24 +103,36 @@ The CLI
 
 3. Status
 
-    Reads the manifest, classifies every recorded path, writes
-    nothing:
+    Reads the manifest, classifies every recorded path, writes nothing:
 
+        $ rm current
         $ proiectio status --dest ~/apps/site
-        clean    config/settings.toml
         drifted  bin/tool
+        clean    config/settings.toml
         missing  current
 
     :: shell ::
 
 4. Removal
 
-    rm removes what the manifest owns — everything under an owner, or
-    a subset by path. A drifted file refuses (exit 2) unless --force;
-    directories emptied by removal are pruned.
+    rm removes what the manifest owns. A drifted file refuses (exit 2)
+    unless --force; directories emptied by removal are pruned.
+
+    Everything under an owner:
 
         $ proiectio rm --dest ~/apps/site --owner site
+        removed    bin/tool              (exec)
+        removed    config/settings.toml
+        removed    current
+        3 removed
+
+    :: shell ::
+
+    Or a subset by path:
+
         $ proiectio rm config/settings.toml
+        removed    config/settings.toml
+        1 removed
 
     :: shell ::
 
@@ -133,32 +145,34 @@ The CLI
     assets travel together. Metadata is the executable bit — from the source file,
     or platform default for inline contents, overridable per entry.
 
-    version = 1
+    A mapping:
 
-    [files."config/settings.toml"]
-    contents = """
-    listen = ":8080"
-    """
+        version = 1
 
-    [files."bin/tool"]
-    source = "./assets/tool.sh"
-    executable = true
+        [files."config/settings.toml"]
+        contents = """
+        listen = ":8080"
+        """
 
-    # standard symlink semantics: target is written verbatim and
-    # resolves relative to the link's parent, inside dest
-    [links."current"]
-    target = "releases/1.2.3"
+        [files."bin/tool"]
+        source = "./assets/tool.sh"
+        executable = true
 
-    # absolute target: refused unless the invoker passes
-    # --allow-external-targets
-    [links."toolchain"]
-    target = "/opt/toolchains/rust-1.80"
+        # standard symlink semantics: target is written verbatim and
+        # resolves relative to the link's parent, inside dest
+        [links."current"]
+        target = "releases/1.2.3"
 
-    # extracted under the key prefix at plan time; each member
-    # becomes an ordinary manifest entry
-    \[archives."vendor/"]
-    source = "./assets/vendor.tar.gz"
-    strip = 1
+        # absolute target: refused unless the invoker passes
+        # --allow-external-targets
+        [links."toolchain"]
+        target = "/opt/toolchains/rust-1.80"
+
+        # extracted under the key prefix at plan time; each member
+        # becomes an ordinary manifest entry
+        [archives."vendor/"]
+        source = "./assets/vendor.tar.gz"
+        strip = 1
 
     :: toml ::
 
@@ -179,11 +193,13 @@ The CLI
 6. Options
 
     | --dest <dir>             | target directory; default cwd       |
-    | --owner <name>           | manifest owner; default "default"   |
+    | --owner <name>           | manifest owner; default from the    |
+    |                          | configuration                       |
     | --state-dir <dir>        | manifest location; default          |
     |                          | <dest>/.proiectio                   |
     | --dry-run                | plan and report, write nothing      |
-    | --force                  | overwrite drifted files             |
+    | --force                  | overwrite drifted files; remove     |
+    |                          | them under rm                       |
     | --allow-external-targets | permit symlink targets outside dest |
     | --tree <path>            | project a directory or archive      |
     | --strip <n>              | drop n leading components           |
