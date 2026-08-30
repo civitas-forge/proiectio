@@ -317,11 +317,11 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
         })
     );
 
-    let error = run
+    let stopped = run
         .apply()
         .expect_err("a plan carrying a refusal applies nothing");
 
-    match &error {
+    match &stopped.error {
         Error::Refused(refused) => {
             assert_eq!(
                 origins_of(refused),
@@ -333,8 +333,10 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
         }
         other => panic!("expected Containment, got {other:?}"),
     }
+    // Nothing was applied, so the stop says only what the refusal says.
+    assert!(!stopped.applied_anything());
     assert_eq!(
-        error.to_string(),
+        stopped.to_string(),
         "refusing paths that violate containment: \
          ../escape (from mapping /etc/harness/skills.toml)"
     );
@@ -359,11 +361,12 @@ fn the_plans_refused_is_the_error_applying_it_raises() {
         .refused()
         .expect("the foreign path is refused");
 
-    let error = run
+    let stopped = run
         .apply()
         .expect_err("a plan carrying a refusal applies nothing");
 
-    match error {
+    assert!(!stopped.applied_anything());
+    match stopped.error {
         Error::Refused(raised) => assert_eq!(raised, refused),
         other => panic!("expected a refusal, got {other:?}"),
     }

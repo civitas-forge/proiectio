@@ -1,10 +1,11 @@
 use super::*;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camino::Utf8PathBuf;
 use libproiectio::{
-    ApplyOutcome, BlockFault, Dropped, Origin, OverwriteReason, Refusal, RefusalKind,
+    ApplyOutcome, BlockFault, Dropped, EntryKind, ManifestEntry, Origin, OverwriteReason, Refusal,
+    RefusalKind,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -697,7 +698,7 @@ fn a_refusal_renders_the_row_shape_a_refused_plan_renders() {
         origin.clone(),
     );
 
-    let document = serialized(PlannedRun::refused(&refused));
+    let document = serialized(PlannedRun::refused(&refused, &Manifest::new()));
 
     assert_eq!(
         document,
@@ -741,7 +742,7 @@ fn a_refusal_of_several_keys_renders_a_row_for_each() {
     ])
     .expect("a refusal over two keys");
 
-    let document = serialized(PlannedRun::refused(&aggregated));
+    let document = serialized(PlannedRun::refused(&aggregated, &Manifest::new()));
 
     assert_eq!(document.get("dropped"), None);
     let rows = lines(&document, AmbiguousWidth::Narrow).rows;
@@ -762,4 +763,92 @@ fn a_refusal_of_several_keys_renders_a_row_for_each() {
             ),
         ]
     );
+}
+
+/// A refused row states the owners the manifest records at the path, which is
+/// what a plan's own refused row states: a caller reading the two documents
+/// reads one shape, whichever stage refused.
+#[test]
+fn a_refused_row_states_the_owners_the_manifest_records() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+
+    let document = serialized(PlannedRun::refused(
+        &refused,
+        &holding("bin/tool", &["site"]),
+    ));
+
+    assert_eq!(
+        document["rows"]["bin/tool"]["facts"]["owners"],
+        json!(["site"])
+    );
+}
+
+/// A run that stopped part-way renders both halves at once: what it applied,
+/// in the tense it applied it in, then the key it refused, and a summary
+/// saying the run stopped. Nothing about the document reads as a plan.
+#[test]
+fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("config/settings.toml"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+    let applied = ApplyReport {
+        report: Report {
+            rows: BTreeMap::from([(
+                Utf8PathBuf::from("bin/tool"),
+                Row {
+                    facts: None,
+                    verdict: ApplyOutcome::Written,
+                },
+            )]),
+        },
+        dropped: BTreeSet::new(),
+        manifest: Manifest::new(),
+    };
+
+    let document = serialized(AbortedRun::new(
+        applied,
+        refused_rows(&refused, &Manifest::new()),
+    ));
+
+    assert_eq!(document["aborted"], json!(true));
+    let rendered = lines(&document, AmbiguousWidth::Narrow);
+    assert_eq!(
+        rendered
+            .rows
+            .iter()
+            .map(|row| (row.path.as_str(), row.verb.as_str(), row.style))
+            .collect::<Vec<_>>(),
+        vec![
+            ("bin/tool", "wrote", "wrote"),
+            ("config/settings.toml", "refused", "refused"),
+        ]
+    );
+    assert_eq!(
+        rendered.summary.as_deref(),
+        Some(
+            "1 written, 0 skipped, 1 refused — the run stopped part-way \
+             through the plan, and what it applied stands"
+        )
+    );
+}
+
+/// A manifest recording one path under the owners named.
+fn holding(path: &str, owners: &[&str]) -> Manifest {
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        Utf8PathBuf::from(path),
+        ManifestEntry {
+            kind: EntryKind::File,
+            hash: String::new(),
+            executable: false,
+            owners: owners.iter().map(|owner| (*owner).to_owned()).collect(),
+        },
+    );
+    manifest
 }

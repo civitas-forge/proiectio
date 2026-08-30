@@ -82,14 +82,32 @@ fn plan_from(
     (manifest, plan)
 }
 
-// Applies a plan against the fixtures.
+// Applies a plan against the fixtures, keeping the error a run that stopped
+// stopped with. Tests weighing what such a run had already applied take the
+// whole stop from [`stopping_at`].
 fn apply_at(
     dest: &Fixture,
     state: &Fixture,
     manifest: &Manifest,
     plan: &Plan,
 ) -> Result<ApplyReport> {
+    stopping(dest, state, manifest, plan).map_err(|aborted| aborted.error)
+}
+
+// The same, keeping the whole stop: the error, and the rows the run applied
+// before it met that error.
+fn stopping(
+    dest: &Fixture,
+    state: &Fixture,
+    manifest: &Manifest,
+    plan: &Plan,
+) -> std::result::Result<ApplyReport, Aborted> {
     apply(&dir_at(dest.root()), &dir_at(state.root()), manifest, plan)
+}
+
+// The stop a run that cannot finish leaves.
+fn stopping_at(dest: &Fixture, state: &Fixture, manifest: &Manifest, plan: &Plan) -> Aborted {
+    stopping(dest, state, manifest, plan).expect_err("a run that stops part-way")
 }
 
 // One full observe → decide → apply run.
@@ -1524,15 +1542,26 @@ fn a_link_released_and_reappearing_in_the_gap_does_not_relocate_the_write() {
     // The other owner's run puts the link back, exactly as recorded.
     std::os::unix::fs::symlink("real", dest.path("pivot")).expect("the link reappears");
 
-    let error = apply_at(&dest, &state, &manifest, &plan)
-        .expect_err("the write refuses rather than land under the link");
+    let stopped = stopping_at(&dest, &state, &manifest, &plan);
 
-    match error {
+    match &stopped.error {
         Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
-            assert_eq!(paths_of(&refused), BTreeSet::from(["pivot/x.txt".into()]))
+            assert_eq!(paths_of(refused), BTreeSet::from(["pivot/x.txt".into()]))
         }
         other => panic!("expected Containment, got {other:?}"),
     }
+    // The stop carries the release the run had already applied, so a caller
+    // reporting it reports a destination the run changed rather than one it
+    // left alone.
+    assert!(stopped.applied_anything());
+    assert_eq!(
+        stopped.applied.report.rows[Utf8Path::new("pivot")].verdict,
+        ApplyOutcome::Released
+    );
+    assert_eq!(
+        stopped.applied.manifest.entries[Utf8Path::new("pivot")].owners,
+        BTreeSet::from(["other".to_owned()])
+    );
     assert_tree(
         dest.root(),
         &Tree::new().dir("real").symlink("pivot", "real"),

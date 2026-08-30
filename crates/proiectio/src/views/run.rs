@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 
 use libproiectio::{
-    ApplyReport, BlockFault, Dropped, PathFacts, PlannedAction, Refused, Report, Row,
+    ApplyReport, BlockFault, Dropped, Manifest, PathFacts, PlannedAction, Refused, Report, Row,
 };
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -16,13 +16,15 @@ use standout::tabular::visible_width_with_policy;
 
 use crate::app::verbatim;
 
-/// Rows a run states without having acted on them, or what apply did; untagged,
-/// so structured output is the library's own either way.
+/// Rows a run states without having acted on them, what apply did, or — where
+/// a run stopped part-way — both at once; untagged, so structured output is
+/// the library's own either way.
 #[derive(Serialize)]
 #[serde(untagged)]
 pub(crate) enum RunView {
     Planned(PlannedRun),
     Applied(Box<ApplyReport>),
+    Aborted(Box<AbortedRun>),
 }
 
 /// The rows a pass states rather than performs — a dry run's whole plan, or
@@ -39,34 +41,70 @@ pub(crate) struct PlannedRun {
 }
 
 impl PlannedRun {
-    /// The rows a refusal states on its own, for the stages that report one as
-    /// an error rather than as a plan: one row per refused key, carrying the
-    /// refusal and the source that named the key. A refusal names no shape and
-    /// no owners, so neither does the row — a plan's own refused rows leave the
-    /// shape out for the same reason — and it strips no archive, so the
-    /// document carries no `dropped`.
-    pub(crate) fn refused(refused: &Refused) -> PlannedRun {
+    /// The document a run that acted on nothing renders for a refusal the
+    /// library reported as an error: the refused rows alone. Such a run strips
+    /// no archive, so the document carries no `dropped`.
+    pub(crate) fn refused(refused: &Refused, manifest: &Manifest) -> PlannedRun {
         PlannedRun {
-            report: Report {
-                rows: refused
-                    .paths()
-                    .iter()
-                    .map(|(path, refused)| {
-                        let row = Row {
-                            facts: Some(PathFacts {
-                                shape: None,
-                                owners: BTreeSet::new(),
-                                origin: Some(refused.origin.clone()),
-                            }),
-                            verdict: PlannedAction::Refuse {
-                                refusal: refused.refusal.clone(),
-                            },
-                        };
-                        (path.clone(), row)
-                    })
-                    .collect(),
-            },
+            report: refused_rows(refused, manifest),
             dropped: BTreeSet::new(),
+        }
+    }
+}
+
+/// The rows a refusal states on its own, for the stages that report one as an
+/// error rather than as a plan: one row per refused key, carrying the refusal,
+/// the source that named the key, and the owners the manifest records at it —
+/// the same owners a plan's own refused row states, so the two stages state a
+/// refusal alike. A refusal names no shape, as a plan's refused rows do not.
+pub(crate) fn refused_rows(refused: &Refused, manifest: &Manifest) -> Report<PlannedAction> {
+    Report {
+        rows: refused
+            .paths()
+            .iter()
+            .map(|(path, refused)| {
+                let row = Row {
+                    facts: Some(PathFacts {
+                        shape: None,
+                        owners: manifest
+                            .entries
+                            .get(path)
+                            .map(|recorded| recorded.owners.clone())
+                            .unwrap_or_default(),
+                        origin: Some(refused.origin.clone()),
+                    }),
+                    verdict: PlannedAction::Refuse {
+                        refusal: refused.refusal.clone(),
+                    },
+                };
+                (path.clone(), row)
+            })
+            .collect(),
+    }
+}
+
+/// The document a run that stopped part-way renders: what it applied before it
+/// stopped, and the keys the refusal that stopped it declined. `aborted` marks
+/// it for a reader that goes no further than the top level — the destination
+/// holds the applied rows, which no plan document of the same shape would say.
+#[derive(Serialize)]
+pub(crate) struct AbortedRun {
+    /// What the run applied, flattened so its rows sit under the `report` key
+    /// a finished run's rows sit under.
+    #[serde(flatten)]
+    pub(crate) applied: ApplyReport,
+    /// The keys the run refused; it acted on none of them.
+    pub(crate) refused: Report<PlannedAction>,
+    /// Always true: only a run that stopped part-way renders this document.
+    pub(crate) aborted: bool,
+}
+
+impl AbortedRun {
+    pub(crate) fn new(applied: ApplyReport, refused: Report<PlannedAction>) -> AbortedRun {
+        AbortedRun {
+            applied,
+            refused,
+            aborted: true,
         }
     }
 }
@@ -114,8 +152,18 @@ fn spelling(verdict: &str, symlink: bool) -> Option<(&'static str, &'static str)
         // did anything, and the row is there to say the path was named.
         ("NotRecorded", _) => ("skipped", "no record"),
         ("Refuse", _) => ("refused", "would refuse"),
+        ("Refused", _) => ("refused", "refused"),
         _ => return None,
     })
+}
+
+/// A refusal reads in the tense of the pass that met it: a plan says what it
+/// would refuse, a run that had already applied rows says what it refused.
+fn tensed(verdict: &str, planning: bool) -> &str {
+    match (verdict, planning) {
+        ("Refuse", false) => "Refused",
+        _ => verdict,
+    }
 }
 
 /// The column a real run counts a verdict under; a plan counts nothing.
@@ -127,6 +175,7 @@ fn counted(verdict: &str) -> Option<Counted> {
         "Forgot" => Counted::Forgot,
         "Released" => Counted::Released,
         "NotRecorded" => Counted::NotRecorded,
+        "Refused" => Counted::Refused,
         _ => return None,
     })
 }
@@ -282,6 +331,7 @@ enum Counted {
     Forgot,
     Released,
     NotRecorded,
+    Refused,
 }
 
 #[derive(Default)]
@@ -292,6 +342,7 @@ struct Tally {
     forgot: usize,
     released: usize,
     not_recorded: usize,
+    refused: usize,
 }
 
 impl Tally {
@@ -303,6 +354,7 @@ impl Tally {
             Counted::Forgot => &mut self.forgot,
             Counted::Released => &mut self.released,
             Counted::NotRecorded => &mut self.not_recorded,
+            Counted::Refused => &mut self.refused,
         };
         *column += 1;
     }
@@ -314,10 +366,10 @@ impl Tally {
     /// says so. Paths the owner turned out not to hold are counted apart from
     /// all of it: the run did nothing at them, and a summary reading `nothing
     /// to do` over rows naming them would be the thing the count is there to
-    /// prevent.
+    /// prevent. So are the paths a run that stopped part-way refused.
     fn summary(&self) -> String {
         let cleared = self.removed + self.forgot + self.released;
-        if self.wrote == 0 && cleared == 0 && self.not_recorded == 0 {
+        if self.wrote == 0 && cleared == 0 && self.not_recorded == 0 && self.refused == 0 {
             return match self.skipped {
                 0 => "nothing to do".to_owned(),
                 skipped => format!("{skipped} unchanged"),
@@ -332,6 +384,7 @@ impl Tally {
             (self.forgot, "forgotten"),
             (self.released, "released"),
             (self.not_recorded, "not recorded"),
+            (self.refused, "refused"),
         ] {
             if count > 0 {
                 columns.push(format!("{count} {column}"));
@@ -357,9 +410,17 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
     let Some(rows) = report.get("rows").and_then(JsonValue::as_object) else {
         return RunLines::default();
     };
+    // A run that stopped part-way states the keys it refused beside the rows
+    // it applied. Both groups are rows of the same shape, so they lay out as
+    // one table; only the tense tells them apart.
+    let refused = document
+        .get("refused")
+        .and_then(|refused| refused.get("rows"))
+        .and_then(JsonValue::as_object);
 
     let paths: Vec<(String, &JsonValue)> = rows
         .iter()
+        .chain(refused.into_iter().flatten())
         .map(|(path, row)| (verbatim(path), row))
         .collect();
     // A plan flattens its rows into the document that carries `dropped`, and
@@ -401,6 +462,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
             .and_then(|symlink| symlink.get("target"))
             .and_then(JsonValue::as_str);
         let (verdict, fields) = named(row.get("verdict"));
+        let verdict = tensed(verdict, planning);
         let (style, verb) = match spelling(verdict, target.is_some()) {
             Some((style, verb)) => (style, verb.to_owned()),
             None => ("unknown", verbatim(verdict)),
@@ -433,7 +495,20 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
 
     RunLines {
         rows: lines,
-        summary: (!planning).then(|| tally.summary()),
+        summary: (!planning).then(|| closing(&tally, document)),
+    }
+}
+
+/// The line a real run closes with: its counts, and — where the run stopped
+/// part-way — that it stopped, so the rows above are read as a destination
+/// left half way through the plan rather than as a finished run.
+fn closing(tally: &Tally, document: &JsonValue) -> String {
+    let counts = tally.summary();
+    match document.get("aborted").and_then(JsonValue::as_bool) {
+        Some(true) => format!(
+            "{counts} — the run stopped part-way through the plan, and what it applied stands"
+        ),
+        _ => counts,
     }
 }
 

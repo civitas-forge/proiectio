@@ -5,8 +5,12 @@
 
 use super::*;
 
+use std::collections::BTreeSet;
+
 use camino::{Utf8Path, Utf8PathBuf};
-use libproiectio::{Manifest, Origin, Projection, Refusal, Refused, Status};
+use libproiectio::{
+    Desired, Entry, Manifest, Origin, PlanOptions, Projection, Refusal, Refused, Status,
+};
 use serde_json::Value as JsonValue;
 use serial_test::serial;
 use standout::OutputMode;
@@ -1169,9 +1173,10 @@ fn a_refused_rm_renders_the_document_its_dry_run_renders() {
     assert!(dest.join("bin/tool").exists());
 }
 
-/// A refusal met after the plan was decided — the disk moved under an apply
-/// that had already started, or a re-check declined what the plan carried
-/// through — reaches the shell as `Error::Refused` and never as a plan.
+/// A refusal met after the plan was decided by a run that had applied nothing —
+/// the whole-plan check declining what the plan carried through — reaches the
+/// shell as `Error::Refused` and states its keys the way the planning stages
+/// state theirs.
 ///
 /// Deciding and applying run back to back over one destination, so no command
 /// line reaches that gap: `plan` refuses everything it can see, and what is
@@ -1188,24 +1193,165 @@ fn mid_run(#[ctx] ctx: &CommandContext) -> Result<Output<views::RunView>> {
                 path: Utf8PathBuf::from("/srv/deploy.toml"),
             },
         )),
+        &Manifest::new(),
         ctx,
     )
 }
 
+/// A run that applies rows and then meets a refusal, which is what the disk
+/// moving under an apply leaves. The move is this test's — it stands in for
+/// the other owner's run putting the released link back — and everything past
+/// it is the CLI's own: its plan, its apply, its document.
+#[handler]
+fn moved_under(#[arg] dest: String, #[ctx] ctx: &CommandContext) -> Result<Output<views::RunView>> {
+    let dest = Utf8PathBuf::from(dest);
+    let projection = Projection::new(&dest, None).expect("a projection");
+    let mut run = projection.begin().expect("a run");
+    let desired = Desired::from_caller(std::collections::BTreeMap::from([(
+        Utf8PathBuf::from("pivot/x.txt"),
+        Entry::File {
+            contents: b"aliased".to_vec(),
+            executable: false,
+        },
+    )]));
+    run.plan("own", &desired, PlanOptions::default())
+        .expect("a plan releasing the link and writing under it");
+    std::os::unix::fs::symlink("real", dest.join("pivot").as_std_path())
+        .expect("the released link reappears");
+    handlers::apply(run, ctx)
+}
+
+/// The app a stand-in handler runs under: this CLI's own templates, styles and
+/// context injection, with `write` bound to the handler named.
+macro_rules! stand_in_app {
+    ($verdict:expr, $handler:path) => {
+        App::builder()
+            .app_state($verdict.clone())
+            .templates(templates())
+            .styles(embed_styles!("src/styles"))
+            .default_theme("proiectio")
+            .template_engine(Box::new(engine()))
+            .context_fn("run", |context: &RenderContext| {
+                Value::from_serialize(views::run_lines(context.data, context.ambiguous_width()))
+            })
+            .command_with("write", $handler, |cfg| cfg.template("run.jinja"))
+            .expect("a command")
+            .build()
+            .expect("an app")
+    };
+}
+
 fn mid_run_app(verdict: &exit::Verdict) -> App {
-    App::builder()
-        .app_state(verdict.clone())
-        .templates(templates())
-        .styles(embed_styles!("src/styles"))
-        .default_theme("proiectio")
-        .template_engine(Box::new(engine()))
-        .context_fn("run", |context: &RenderContext| {
-            Value::from_serialize(views::run_lines(context.data, context.ambiguous_width()))
-        })
-        .command_with("write", mid_run__handler, |cfg| cfg.template("run.jinja"))
-        .expect("a command")
-        .build()
-        .expect("an app")
+    stand_in_app!(verdict, mid_run__handler)
+}
+
+fn moved_under_app(verdict: &exit::Verdict) -> App {
+    stand_in_app!(verdict, moved_under__handler)
+}
+
+/// A destination two owners hold, whose recorded link is no longer on disk:
+/// `real/keep.txt` and a `pivot` link to the directory holding it, both under
+/// `own` and `other`, with `pivot` deleted by hand so a plan sees no link at
+/// it and writes under the path all the same.
+fn held_by_two() -> (TempDir, Utf8PathBuf) {
+    let dir = TempDir::new().expect("a temporary directory");
+    let root = utf8(&dir);
+    let dest = root.join("dest");
+    let source = root.join("source");
+    std::fs::create_dir(&dest).expect("a destination");
+    std::fs::create_dir_all(source.join("real")).expect("a source tree");
+    std::fs::write(source.join("real/keep.txt"), b"kept\n").expect("a file");
+    std::os::unix::fs::symlink("real", source.join("pivot").as_std_path()).expect("a link");
+    for owner in ["other", "own"] {
+        harness(&dir)
+            .run(
+                &app(),
+                cli::command(),
+                [
+                    "proiectio",
+                    "write",
+                    "--tree",
+                    source.as_str(),
+                    "--dest",
+                    dest.as_str(),
+                    "--owner",
+                    owner,
+                ],
+            )
+            .assert_success();
+    }
+    std::fs::remove_file(dest.join("pivot").as_std_path()).expect("the link goes by hand");
+    (dir, dest)
+}
+
+/// A run that applied rows before it refused states both: what it did, in the
+/// tense it did it in, then what it refused, then a summary saying the run
+/// stopped part-way. Rendering these rows as a plan would tell the caller the
+/// destination is as it was, which it is not.
+#[test]
+#[serial]
+fn a_run_that_stopped_part_way_states_the_rows_it_applied() {
+    let (dir, dest) = held_by_two();
+
+    let verdict = exit::Verdict::default();
+    let rendered = harness(&dir).run(
+        &moved_under_app(&verdict),
+        cli::command(),
+        // The clap command requires a source positional; this handler decides
+        // the desired tree itself and never reads one.
+        ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
+    );
+
+    assert_eq!(leaving(&rendered, &verdict), exit::REFUSAL);
+    assert_eq!(rendered.error(), None);
+    assert_eq!(
+        rendered.stdout(),
+        "released   pivot\n\
+         refused    pivot/x.txt  (containment)\n\
+         1 released, 1 refused — the run stopped part-way through the plan, \
+         and what it applied stands\n"
+    );
+    // The release the run applied stands: `own` no longer holds the link, and
+    // the release the plan decided for the path past the refusal never ran.
+    let manifest = manifest_of(&dest);
+    assert_eq!(
+        manifest.entries[Utf8Path::new("pivot")].owners,
+        BTreeSet::from(["other".to_owned()])
+    );
+    assert_eq!(
+        manifest.entries[Utf8Path::new("real/keep.txt")].owners,
+        BTreeSet::from(["other".to_owned(), "own".to_owned()])
+    );
+}
+
+/// And structured output says so too: the applied rows under the `report` key
+/// an apply's document uses, the refused keys under `refused`, and `aborted`
+/// marking the run as one that stopped. No `rows` key at the top level, which
+/// is what a plan document carries.
+#[test]
+#[serial]
+fn the_document_a_run_that_stopped_part_way_renders_is_not_a_plan() {
+    let (dir, dest) = held_by_two();
+
+    let verdict = exit::Verdict::default();
+    let structured = harness(&dir).output_mode(OutputMode::Json).run(
+        &moved_under_app(&verdict),
+        cli::command(),
+        // The clap command requires a source positional; this handler decides
+        // the desired tree itself and never reads one.
+        ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
+    );
+
+    assert_eq!(leaving(&structured, &verdict), exit::REFUSAL);
+    assert_eq!(structured.error(), None);
+    let value: JsonValue = serde_json::from_str(structured.stdout()).expect("a JSON document");
+    assert_eq!(value["aborted"], JsonValue::Bool(true));
+    assert_eq!(value.get("rows"), None);
+    assert_eq!(value["report"]["rows"]["pivot"]["verdict"], "Released");
+    assert_eq!(
+        value["refused"]["rows"]["pivot/x.txt"]["verdict"]["Refuse"]["refusal"],
+        "Containment"
+    );
 }
 
 /// An apply-time refusal states its keys rather than a diagnostic, on the
