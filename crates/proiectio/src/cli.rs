@@ -60,6 +60,27 @@ pub(crate) enum Commands {
         allow_external_targets: bool,
     },
 
+    /// Removes what the manifest records under an owner: everything it
+    /// holds, or the recorded paths named as positionals.
+    Rm {
+        /// The recorded paths to remove; none names everything the owner
+        /// holds.
+        #[arg(value_name = "PATH", value_parser = clap::value_parser!(Utf8PathBuf))]
+        paths: Vec<Utf8PathBuf>,
+
+        /// Manifest owner; default from the configuration.
+        #[arg(long, value_name = "NAME")]
+        owner: Option<String>,
+
+        /// Plan and report, remove nothing.
+        #[arg(long, id = "dry-run")]
+        dry_run: bool,
+
+        /// Remove drifted files.
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Classifies the manifest's paths and everything else under the
     /// destination, writing nothing.
     Status,

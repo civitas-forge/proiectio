@@ -1,4 +1,4 @@
-//! The document `write` renders.
+//! The document a write pass renders, whether it projected or removed.
 
 use libproiectio::{ApplyReport, PlannedAction, Report};
 use serde::Serialize;
@@ -7,7 +7,7 @@ use serde::Serialize;
 /// output is the library's own either way.
 #[derive(Serialize)]
 #[serde(untagged)]
-pub(crate) enum WriteView {
+pub(crate) enum RunView {
     Planned(Report<PlannedAction>),
     Applied(Box<ApplyReport>),
 }

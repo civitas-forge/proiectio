@@ -69,16 +69,20 @@
 {{ verb|pad_right(15 if planning else 9) }}  {% if note %}{{ (path|verbatim)|pad_right(column.path) }}  {{ note }}{% else %}{{ path|verbatim }}{% endif %}
 {% endfor -%}
 {%- if not planning -%}
-{%- if tally.wrote == 0 and tally.removed == 0 and tally.released == 0 and tally.skipped > 0 -%}
+{%- set cleared = tally.removed + tally.released -%}
+{#- A pass that only cleared paths counts what it cleared, and nothing else. -#}
+{%- if tally.wrote == 0 and cleared == 0 and tally.skipped > 0 -%}
 {%- set summary = tally.skipped ~ " unchanged" -%}
+{%- elif tally.wrote == 0 and tally.skipped == 0 -%}
+{%- set summary = "" -%}
 {%- else -%}
 {%- set summary = tally.wrote ~ " written, " ~ tally.skipped ~ " skipped" -%}
+{%- endif -%}
 {%- if tally.removed -%}
-{%- set summary = summary ~ ", " ~ tally.removed ~ " removed" -%}
+{%- set summary = (summary ~ ", " if summary else "") ~ tally.removed ~ " removed" -%}
 {%- endif -%}
 {%- if tally.released -%}
-{%- set summary = summary ~ ", " ~ tally.released ~ " released" -%}
+{%- set summary = (summary ~ ", " if summary else "") ~ tally.released ~ " released" -%}
 {%- endif -%}
-{%- endif -%}
-{{ summary }}
+{{ summary if summary else "nothing to do" }}
 {% endif -%}
