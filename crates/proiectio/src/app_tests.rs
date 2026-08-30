@@ -1071,6 +1071,147 @@ fn write_falls_back_to_the_configured_owner() {
     );
 }
 
+/// The file the `user` scope persists to, learned the way an operator learns
+/// it: `config set` reports the path it wrote.
+fn user_config_file(dir: &TempDir) -> Utf8PathBuf {
+    let json = harness(dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "owner", "site"],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"))
+}
+
+/// `config set` is the layer that would put the phantom in the file, so it
+/// refuses one: the run leaves with 1 and the file keeps the owner it had.
+#[test]
+#[serial]
+fn config_set_refuses_an_owner_that_names_nothing() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = user_config_file(&dir);
+    let before = std::fs::read_to_string(&path).expect("the config file");
+
+    for value in ["", "  "] {
+        let result = harness(&dir).run(
+            &app(),
+            cli::command(),
+            ["proiectio", "conf", "set", "owner", value],
+        );
+
+        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{value:?}");
+        assert!(
+            result
+                .error()
+                .unwrap_or_default()
+                .contains(crate::settings::OWNER_RULE),
+            "{value:?}: {}",
+            result.error().unwrap_or_default()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the config file"),
+            before,
+            "{value:?}"
+        );
+    }
+}
+
+/// A file can carry the phantom without `config set` — an editor wrote it, or
+/// `PROIECTIO__OWNER` arrived empty — so the run keeps the rule again where it
+/// reads the owner. Both commands that record one stop before touching the
+/// destination.
+#[test]
+#[serial]
+fn a_configured_owner_that_names_nothing_stops_a_run() {
+    let (dir, dest, deploy) = tour();
+    let path = user_config_file(&dir);
+    std::fs::write(&path, "owner = \"\"\n").expect("a config file naming no owner");
+    let write = write_argv(&[deploy.as_str()], &dest);
+    let remove = vec!["proiectio", "rm", "--dest", dest.as_str()];
+
+    for argv in [write, remove] {
+        let result = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        assert!(
+            result
+                .error()
+                .unwrap_or_default()
+                .contains(crate::settings::OWNER_RULE),
+            "{argv:?}: {}",
+            result.error().unwrap_or_default()
+        );
+        assert!(!dest.join("bin/tool").exists(), "{argv:?}");
+    }
+}
+
+/// The environment layer is refused by the same check, over a file that names
+/// an owner: `PROIECTIO__OWNER` wins the resolution, so an unset variable
+/// spelled into it is the owner the run would have recorded.
+#[test]
+#[serial]
+fn an_owner_the_environment_leaves_empty_stops_a_run() {
+    let (dir, dest, deploy) = tour();
+    user_config_file(&dir);
+
+    let result = harness(&dir).env("PROIECTIO__OWNER", "").run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str()], &dest),
+    );
+
+    assert_eq!(exit::status(result.outcome()), exit::FAILURE);
+    assert!(
+        result
+            .error()
+            .unwrap_or_default()
+            .contains(crate::settings::OWNER_RULE),
+        "{}",
+        result.error().unwrap_or_default()
+    );
+    assert!(!dest.join("bin/tool").exists());
+}
+
+/// The rule stops runs, not readers: a file carrying the phantom still lists,
+/// which is how an operator sees what to unset.
+#[test]
+#[serial]
+fn a_configured_owner_that_names_nothing_still_lists() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = user_config_file(&dir);
+    std::fs::write(&path, "owner = \"\"\n").expect("a config file naming no owner");
+
+    let result = harness(&dir).run(&app(), cli::command(), ["proiectio", "conf", "list"]);
+
+    result.assert_success();
+    assert!(
+        result.stdout().contains("owner = \"\""),
+        "{}",
+        result.stdout()
+    );
+}
+
+/// The rule refuses a name with nothing in it, not a name with a space in it:
+/// an owner spelled with one is recorded exactly as the invocation spelled it.
+#[test]
+#[serial]
+fn an_owner_with_a_space_in_it_is_recorded_as_it_is_spelled() {
+    let (dir, dest, deploy) = tour();
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--owner", "my site"], &dest),
+    );
+
+    result.assert_success();
+    assert_eq!(
+        manifest_of(&dest).entries[Utf8Path::new("bin/tool")].owners,
+        std::collections::BTreeSet::from(["my site".to_owned()])
+    );
+}
+
 /// A directory is projected verbatim, keyed relative to its root.
 #[test]
 #[serial]

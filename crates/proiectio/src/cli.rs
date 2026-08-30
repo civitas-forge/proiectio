@@ -4,6 +4,8 @@ use camino::Utf8PathBuf;
 use clap::{CommandFactory, Parser, Subcommand};
 use clapfig::ConfigCommand;
 
+use crate::settings;
+
 #[derive(Parser)]
 #[command(
     name = "proiectio",
@@ -16,11 +18,23 @@ use clapfig::ConfigCommand;
 )]
 pub(crate) struct Cli {
     /// Target directory; default cwd.
-    #[arg(long, global = true, default_value = ".", value_name = "DIR")]
+    #[arg(
+        long,
+        global = true,
+        default_value = ".",
+        value_name = "DIR",
+        value_parser = a_directory
+    )]
     pub(crate) dest: String,
 
     /// Manifest location; default .proiectio inside the destination.
-    #[arg(long, id = "state-dir", global = true, value_name = "DIR")]
+    #[arg(
+        long,
+        id = "state-dir",
+        global = true,
+        value_name = "DIR",
+        value_parser = a_directory
+    )]
     pub(crate) state_dir: Option<String>,
 
     #[command(subcommand)]
@@ -37,12 +51,12 @@ pub(crate) enum Commands {
             value_name = "PATH",
             required_unless_present = "tree",
             conflicts_with = "tree",
-            value_parser = clap::value_parser!(Utf8PathBuf)
+            value_parser = a_path
         )]
         paths: Vec<Utf8PathBuf>,
 
         /// Project a directory or an archive as the desired tree.
-        #[arg(long, value_name = "PATH", value_parser = clap::value_parser!(Utf8PathBuf))]
+        #[arg(long, value_name = "PATH", value_parser = a_path)]
         tree: Option<Utf8PathBuf>,
 
         /// Drop N leading path components from archive members (archives only,
@@ -54,7 +68,7 @@ pub(crate) enum Commands {
         ///
         /// Owners group entries so independent producers can share a
         /// destination; a path is deleted only when its last owner releases it.
-        #[arg(long, value_name = "NAME")]
+        #[arg(long, value_name = "NAME", value_parser = an_owner)]
         owner: Option<String>,
 
         /// Most bytes one run may read from its sources; default from the
@@ -85,14 +99,14 @@ pub(crate) enum Commands {
     Rm {
         /// The recorded paths to remove; none names everything the owner
         /// holds.
-        #[arg(value_name = "PATH", value_parser = clap::value_parser!(Utf8PathBuf))]
+        #[arg(value_name = "PATH", value_parser = a_path)]
         paths: Vec<Utf8PathBuf>,
 
         /// Manifest owner; default from the configuration.
         ///
         /// Owners group entries so independent producers can share a
         /// destination; a path is deleted only when its last owner releases it.
-        #[arg(long, value_name = "NAME")]
+        #[arg(long, value_name = "NAME", value_parser = an_owner)]
         owner: Option<String>,
 
         /// Plan and report, remove nothing.
@@ -161,12 +175,41 @@ fn name_the_key(command: clap::Command) -> clap::Command {
 
 /// Clapfig parses `--file` as a `PathBuf` and writes the file before it
 /// reports the path, so a path the CLI cannot render would be created and
-/// then fail. Reading it as a `Utf8PathBuf` refuses it at the command line,
+/// then fail. Reading it through [`a_path`] refuses it at the command line,
 /// before clapfig is asked for anything.
 fn utf8_destination(command: clap::Command) -> clap::Command {
-    command.mut_arg("output", |argument| {
-        argument.value_parser(clap::value_parser!(Utf8PathBuf))
-    })
+    command.mut_arg("output", |argument| argument.value_parser(a_path))
+}
+
+/// An empty argument is a shell variable nobody set, and this CLI reads none
+/// of them as a value: `--dest ""` is not the working directory, `--owner ""`
+/// is not an owner, and `write ""` names no file. Every argument that carries
+/// a path or a name parses through one of the three below, so the refusal is
+/// clap's own usage error, naming the option and quoting what arrived.
+fn a_directory(value: &str) -> Result<String, String> {
+    non_empty(value).map(str::to_owned)
+}
+
+fn a_path(value: &str) -> Result<Utf8PathBuf, String> {
+    non_empty(value).map(Utf8PathBuf::from)
+}
+
+/// An owner is also refused when it is nothing but whitespace: it is a name
+/// the manifest records and a listing prints, and a blank one is a phantom
+/// owner no reader of that file can see. A path is left to the filesystem,
+/// which answers for a blank name itself.
+fn an_owner(value: &str) -> Result<String, String> {
+    match settings::names_an_owner(value) {
+        true => Ok(value.to_owned()),
+        false => Err(settings::OWNER_RULE.to_owned()),
+    }
+}
+
+fn non_empty(value: &str) -> Result<&str, String> {
+    match value.is_empty() {
+        true => Err("empty is not a value".to_owned()),
+        false => Ok(value),
+    }
 }
 
 const WRITE_ABOUT: &str = "\
