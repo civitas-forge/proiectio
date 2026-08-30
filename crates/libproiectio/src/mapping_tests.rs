@@ -508,8 +508,8 @@ fn an_entry_strip_erases_entirely_fails_the_whole_mapping() {
     let junk = fixture.path("assets/junk.tar.gz");
     assert!(matches!(
         load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
-        Error::ArchiveFullyStripped { path, strip, members }
-            if path == junk && strip == 1 && members == 2
+        Error::ArchiveFullyStripped { path, strip, dropped }
+            if path == junk && strip == 1 && dropped == 2
     ));
 }
 

@@ -117,7 +117,7 @@ fn every_variant() -> Vec<Error> {
         Error::ArchiveFullyStripped {
             path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
             strip: 3,
-            members: 4,
+            dropped: 4,
         },
         Error::ArchiveMemberTooDeep {
             path: Utf8PathBuf::from("/assets/vendor.tar"),
@@ -309,18 +309,20 @@ fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
          archive may allocate"
     );
 
-    // The count is what tells the operator the number is wrong rather than
-    // the archive being empty, so the message carries both it and the strip.
+    // The count is what tells the operator the strip is wrong rather than the
+    // archive being empty, so the message carries both it and the strip. It
+    // claims only what it counts: members that would have projected and were
+    // erased, not every member the archive holds.
     let stripped = Error::ArchiveFullyStripped {
         path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
         strip: 3,
-        members: 4,
+        dropped: 4,
     };
     assert!(!stripped.is_refusal());
     assert_eq!(
         stripped.to_string(),
-        "archive /assets/vendor.tar.gz: strip 3 consumed all 4 of its \
-         members, leaving nothing to project"
+        "archive /assets/vendor.tar.gz: strip 3 left nothing to project \
+         (4 members dropped)"
     );
 }
 

@@ -119,6 +119,7 @@ pub(crate) fn expand(
         tree: BTreeMap::new(),
         refused: BTreeSet::new(),
         dropped: BTreeSet::new(),
+        dropped_members: 0,
         members: 0,
         budget: Rc::clone(budget),
     };
@@ -159,14 +160,16 @@ pub(crate) fn expand(
         .into());
     }
     // A drop is tolerable among members that survive; one that leaves the
-    // expansion with nothing is a `strip` deeper than the archive. Letting it
-    // through would project an empty tree, and an empty desired tree plans a
-    // removal — so a mistyped `strip` would clear everything the owner holds.
-    if expansion.tree.is_empty() && !expansion.dropped.is_empty() {
+    // expansion with nothing to project is a `strip` deeper than the archive.
+    // Letting it through would project an empty tree, and an empty desired
+    // tree plans a removal — so a mistyped `strip` would clear everything the
+    // owner holds. An archive that drops nothing never reaches this: one
+    // carrying only directories projects nothing on its own terms.
+    if expansion.tree.is_empty() && expansion.dropped_members > 0 {
         return Err(Error::ArchiveFullyStripped {
             path: source.to_owned(),
             strip,
-            members: expansion.dropped.len(),
+            dropped: expansion.dropped_members,
         });
     }
     Ok(Expanded {
@@ -277,7 +280,12 @@ struct Expansion<'a> {
     prefix: &'a Utf8Path,
     tree: BTreeMap<Utf8PathBuf, Entry>,
     refused: BTreeSet<Utf8PathBuf>,
+    /// One record per dropped name, which is what a report states: two
+    /// members of one archive carrying the same name are one fact.
     dropped: BTreeSet<Utf8PathBuf>,
+    /// One count per dropped member, which is what a diagnostic states: a
+    /// name repeated across two members erased two of them.
+    dropped_members: usize,
     members: usize,
     budget: Rc<Budget>,
 }
@@ -432,6 +440,7 @@ impl Expansion<'_> {
         if kept.is_empty() {
             if !is_dir {
                 self.dropped.insert(normalized);
+                self.dropped_members += 1;
             }
             return Ok(None);
         }

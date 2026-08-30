@@ -645,7 +645,51 @@ fn an_archive_strip_erases_entirely_fails_the_load() {
     ];
     assert!(matches!(
         expand_bytes("pkg.tar", &tar(&members), 1).unwrap_err(),
-        Error::ArchiveFullyStripped { strip, members, .. } if strip == 1 && members == 2
+        Error::ArchiveFullyStripped { strip, dropped, .. } if strip == 1 && dropped == 2
+    ));
+}
+
+// Two members of one archive may carry the same name — tar imposes no rule
+// against it, and two raw names can normalize onto one path. Both are erased,
+// and the two halves of the drop disagree on purpose: the report states one
+// record, because "._pkg had no path left" is one fact however many members
+// spelled it, while the diagnostic counts two, because two members are what
+// the strip actually consumed. A survivor keeps the load alive, so the count
+// is observed through a later drop rather than through the error.
+#[test]
+fn one_name_on_two_dropped_members_is_one_record_and_two_drops() {
+    let members = vec![
+        Member::file("._pkg", "first\n"),
+        Member::file("._pkg", "second\n"),
+        Member::file("pkg/README", "read me\n"),
+    ];
+    let expanded = expand_bytes("pkg.tar", &tar(&members), 1).unwrap();
+
+    assert_eq!(dropped_members(&expanded), vec!["._pkg"]);
+
+    // The same pair with no survivor: the error counts members, not names,
+    // so it says two rather than the one the record set holds.
+    let members = vec![
+        Member::file("._pkg", "first\n"),
+        Member::file("._pkg", "second\n"),
+    ];
+    assert!(matches!(
+        expand_bytes("pkg.tar", &tar(&members), 1).unwrap_err(),
+        Error::ArchiveFullyStripped { dropped, .. } if dropped == 2
+    ));
+}
+
+// Two members that survive and claim one projected path are refused, so a
+// repeated name only ever reaches the drop set — never the tree.
+#[test]
+fn one_name_on_two_surviving_members_is_refused_rather_than_recorded_once() {
+    let members = vec![
+        Member::file("pkg/README", "first\n"),
+        Member::file("pkg/README", "second\n"),
+    ];
+    assert!(matches!(
+        expand_bytes("pkg.tar", &tar(&members), 1).unwrap_err(),
+        Error::ArchiveMemberDuplicate { member, .. } if member == "README"
     ));
 }
 
@@ -658,6 +702,34 @@ fn an_archive_that_was_always_empty_still_expands_to_nothing() {
 
     assert!(expanded.is_empty());
     assert!(expanded.dropped().is_empty());
+}
+
+// Directories carry no entry, so an archive of nothing but directories
+// projects nothing whatever `strip` does to it — the tour says so — and it
+// drops nothing either, which is what keeps it outside the rule.
+#[test]
+fn an_archive_of_directories_alone_projects_nothing_without_failing() {
+    let members = vec![Member::dir("pkg/"), Member::dir("pkg/sub/")];
+    let expanded = expand_bytes("pkg.tar", &tar(&members), 1).unwrap();
+
+    assert!(expanded.is_empty());
+    assert!(expanded.dropped().is_empty());
+}
+
+// A directory surviving the strip is not something projected: it carries no
+// entry, so the expansion still has nothing to show for itself while a real
+// file was erased. That is the wrong-strip case the rule is for, and it
+// refuses — the surviving directory does not excuse the dropped file.
+#[test]
+fn a_surviving_directory_does_not_save_an_expansion_that_projects_nothing() {
+    let members = vec![
+        Member::file("._pkg", "AppleDouble\n"),
+        Member::dir("pkg/sub/"),
+    ];
+    assert!(matches!(
+        expand_bytes("pkg.tar", &tar(&members), 1).unwrap_err(),
+        Error::ArchiveFullyStripped { strip, dropped, .. } if strip == 1 && dropped == 1
+    ));
 }
 
 // A dropped member is still a member: it costs a place against the cap on

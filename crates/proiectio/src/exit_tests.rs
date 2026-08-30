@@ -90,7 +90,7 @@ fn operational_failures() -> Vec<Error> {
         Error::ArchiveFullyStripped {
             path: path(),
             strip: 3,
-            members: 4,
+            dropped: 4,
         },
         Error::ArchiveMemberTooDeep {
             path: path(),
