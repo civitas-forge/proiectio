@@ -19,9 +19,8 @@ pub enum PathState {
     Foreign,
 }
 
-/// The classification of every path in the union of the manifest and the
-/// destination directory, with nothing written. Non-UTF-8 entries on disk
-/// stay outside the report.
+/// Every recorded path, plus every unrecorded non-directory path on disk;
+/// the state subtree and non-UTF-8 entries stay outside the report.
 pub type Status = Report<PathState>;
 
 #[cfg(test)]

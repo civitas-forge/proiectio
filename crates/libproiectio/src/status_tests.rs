@@ -213,6 +213,22 @@ fn an_empty_unrecorded_directory_reports_no_row() {
 }
 
 #[test]
+fn a_projected_file_replaced_by_a_directory_reports_drifted() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(dest.root(), state.root());
+    let tree = Tree::new().file("mine.txt", "projected");
+    project(&projection, "own", tree.entries());
+    fs::remove_file(dest.path("mine.txt")).expect("delete the projected file");
+    fs::create_dir(dest.path("mine.txt")).expect("a directory over the projected path");
+
+    assert_eq!(
+        states(&projection.status().expect("status")),
+        vec![("mine.txt", PathState::Drifted)]
+    );
+}
+
+#[test]
 fn status_writes_nothing() {
     let dest = Tree::new().materialize();
     let state = Tree::new().materialize();

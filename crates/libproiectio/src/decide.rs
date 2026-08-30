@@ -60,16 +60,17 @@ pub(crate) fn classify(
     Report { rows }
 }
 
-/// [`classify`], less every path observed as a directory.
+/// [`classify`], less every unrecorded path observed as a directory.
 pub(crate) fn status(
     manifest: &Manifest,
     observations: &Observations,
     state_prefix: Option<&Utf8Path>,
 ) -> Status {
     let mut report = classify(manifest, observations, state_prefix);
-    report
-        .rows
-        .retain(|path, _| !matches!(observations.paths.get(path), Some(Observation::Directory)));
+    report.rows.retain(|path, row| {
+        !(row.verdict == PathState::Foreign
+            && matches!(observations.paths.get(path), Some(Observation::Directory)))
+    });
     report
 }
 

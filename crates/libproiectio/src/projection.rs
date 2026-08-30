@@ -64,9 +64,8 @@ impl Projection {
 /// The reads: each call opens the destination and the recorded state, takes
 /// no lock, and drops both handles before it returns.
 impl Projection {
-    /// The classification of every path in the union of the manifest and the
-    /// destination, with nothing written. A missing state directory or
-    /// manifest reads as the empty [`Manifest`].
+    /// The [`Status`] of the destination, with nothing written. A missing
+    /// state directory or manifest reads as the empty [`Manifest`].
     pub fn status(&self) -> Result<Status> {
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
