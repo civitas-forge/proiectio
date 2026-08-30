@@ -130,6 +130,25 @@ fn recorded(kind: EntryKind, hash: String, owners: &[&str]) -> ManifestEntry {
     }
 }
 
+// The report's verdicts alone, for the tests that assert what a run did
+// rather than what it recorded.
+fn verdicts(report: &ApplyReport) -> BTreeMap<Utf8PathBuf, ApplyOutcome> {
+    report
+        .report
+        .rows
+        .iter()
+        .map(|(path, row)| (path.clone(), row.verdict))
+        .collect()
+}
+
+// The facts a report carries for one path.
+fn facts_at<'a>(report: &'a ApplyReport, path: &str) -> &'a PathFacts {
+    report.report.rows[Utf8Path::new(path)]
+        .facts
+        .as_ref()
+        .expect("the row carries facts")
+}
+
 // The names in a fixture directory, sorted.
 fn names_in(fixture: &Fixture) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(fixture.root())
@@ -152,11 +171,23 @@ fn projects_a_fresh_tree_and_persists_the_manifest() {
 
     assert_tree(dest.root(), &tree);
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([
             ("notes/a.txt".into(), ApplyOutcome::Written),
             ("bin/run".into(), ApplyOutcome::Written),
         ])
+    );
+    assert_eq!(
+        facts_at(&report, "bin/run"),
+        &PathFacts {
+            shape: PathShape::File { executable: true },
+            owners: BTreeSet::from(["own".to_owned()]),
+            origin: Some(Origin::Caller),
+        }
+    );
+    assert_eq!(
+        facts_at(&report, "notes/a.txt").shape,
+        PathShape::File { executable: false }
     );
     // The report's manifest is the persisted one, atomically written with
     // no tempfile left beside it.
@@ -179,12 +210,11 @@ fn reapplying_an_unchanged_tree_skips_everything() {
         pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("second apply");
 
     assert!(
-        report
-            .outcomes
+        verdicts(&report)
             .values()
             .all(|outcome| *outcome == ApplyOutcome::Skipped),
         "expected every outcome skipped, got {:?}",
-        report.outcomes
+        verdicts(&report)
     );
     assert_tree(dest.root(), &tree);
 }
@@ -200,7 +230,7 @@ fn overwrites_changed_content_and_updates_the_exec_bit() {
         pipeline(&dest, &state, "own", &v2.entries(), DriftPolicy::Refuse).expect("second apply");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("tool".into(), ApplyOutcome::Overwritten)])
     );
     assert_tree(dest.root(), &v2);
@@ -237,7 +267,7 @@ fn a_mid_run_failure_persists_the_applied_entries_and_a_rerun_heals() {
         .expect("the re-run completes cleanly");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([
             ("a.txt".into(), ApplyOutcome::Skipped),
             ("ro/x.txt".into(), ApplyOutcome::Written),
@@ -346,8 +376,7 @@ fn removal_removes_owned_paths_in_reverse_and_prunes_emptied_dirs() {
         pipeline(&dest, &state, "own", &BTreeMap::new(), DriftPolicy::Refuse).expect("removal");
 
     assert!(
-        report
-            .outcomes
+        verdicts(&report)
             .values()
             .all(|outcome| *outcome == ApplyOutcome::Removed)
     );
@@ -490,7 +519,7 @@ fn a_subset_removal_clears_the_named_paths_and_leaves_the_rest() {
     .expect("removal");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("a/b/gone.txt".into(), ApplyOutcome::Removed)])
     );
     // The emptied `a/b` is pruned; `a` still holds kept.txt and survives.
@@ -543,7 +572,7 @@ fn removing_a_missing_path_drops_the_manifest_entry_alone() {
         pipeline(&dest, &state, "own", &BTreeMap::new(), DriftPolicy::Refuse).expect("removal");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("gone.txt".into(), ApplyOutcome::Removed)])
     );
     assert!(persisted(&state).entries.is_empty());
@@ -594,8 +623,17 @@ fn removing_a_recorded_symlink_unlinks_it_and_leaves_the_target() {
         pipeline(&dest, &state, "own", &BTreeMap::new(), DriftPolicy::Refuse).expect("removal");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("latest".into(), ApplyOutcome::Removed)])
+    );
+    // A removal reports the record it erased.
+    assert_eq!(
+        facts_at(&report, "latest"),
+        &PathFacts {
+            shape: PathShape::Symlink { target: None },
+            owners: BTreeSet::from(["own".to_owned()]),
+            origin: Some(Origin::Caller),
+        }
     );
     assert_tree(dest.root(), &Tree::new().file("notes", "the target"));
 }
@@ -609,11 +647,16 @@ fn a_skip_records_the_joining_owner_and_release_drops_it() {
     let report =
         pipeline(&dest, &state, "two", &tree.entries(), DriftPolicy::Refuse).expect("owner two");
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("shared.txt".into(), ApplyOutcome::Skipped)])
     );
     assert_eq!(
         report.manifest.entries[Utf8Path::new("shared.txt")].owners,
+        BTreeSet::from(["one".to_owned(), "two".to_owned()])
+    );
+    // The row's owners are the entry as it stands after the join.
+    assert_eq!(
+        facts_at(&report, "shared.txt").owners,
         BTreeSet::from(["one".to_owned(), "two".to_owned()])
     );
 
@@ -621,12 +664,17 @@ fn a_skip_records_the_joining_owner_and_release_drops_it() {
     let report =
         pipeline(&dest, &state, "two", &BTreeMap::new(), DriftPolicy::Refuse).expect("release");
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("shared.txt".into(), ApplyOutcome::Released)])
     );
     assert_eq!(
         report.manifest.entries[Utf8Path::new("shared.txt")].owners,
         BTreeSet::from(["one".to_owned()])
+    );
+    // A release reports the entry as it was, this owner still on it.
+    assert_eq!(
+        facts_at(&report, "shared.txt").owners,
+        BTreeSet::from(["one".to_owned(), "two".to_owned()])
     );
     assert_tree(dest.root(), &tree);
 
@@ -1263,7 +1311,7 @@ fn a_release_drops_the_owner_over_a_drifted_node_without_touching_it() {
     let report = apply_at(&dest, &state, &manifest, &plan).expect("the owner departs regardless");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("shared.txt".into(), ApplyOutcome::Released)])
     );
     assert_eq!(
@@ -1370,7 +1418,7 @@ fn a_removal_through_an_owned_link_prunes_the_resolved_directory() {
     let report = apply_at(&dest, &state, &manifest, &plan).expect("removal through the owned link");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("logs/x.txt".into(), ApplyOutcome::Removed)])
     );
     // The directory that actually lost the child — the resolved side, not
@@ -1553,14 +1601,94 @@ fn projects_links_with_their_targets_verbatim_dangling_included() {
     // a link is a pointer, and nothing resolves it.
     assert_tree(dest.root(), &tree);
     assert_eq!(
-        report.outcomes[Utf8Path::new("latest")],
+        report.report.rows[Utf8Path::new("latest")].verdict,
         ApplyOutcome::Written
+    );
+    assert_eq!(
+        facts_at(&report, "nested/up"),
+        &PathFacts {
+            shape: PathShape::Symlink {
+                target: Some("../notes/a.txt".to_owned()),
+            },
+            owners: BTreeSet::from(["own".to_owned()]),
+            origin: Some(Origin::Caller),
+        }
     );
     let entry = &report.manifest.entries[Utf8Path::new("nested/up")];
     assert_eq!(entry.kind, EntryKind::Symlink);
     assert!(!entry.executable);
     // The manifest hashes the target string, not what it points at.
     assert_eq!(entry.hash, sha256_hex(b"../notes/a.txt"));
+}
+
+#[test]
+fn re_applying_an_unchanged_link_reports_the_target_it_left_in_place() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new()
+        .file("notes/a.txt", "alpha")
+        .symlink("latest", "notes/a.txt");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("first apply");
+
+    let report =
+        pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("second apply");
+
+    // A skip touches nothing, and still reports the target the link holds.
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([
+            ("latest".into(), ApplyOutcome::Skipped),
+            ("notes/a.txt".into(), ApplyOutcome::Skipped),
+        ])
+    );
+    assert_eq!(
+        facts_at(&report, "latest"),
+        &PathFacts {
+            shape: PathShape::Symlink {
+                target: Some("notes/a.txt".to_owned()),
+            },
+            owners: BTreeSet::from(["own".to_owned()]),
+            origin: Some(Origin::Caller),
+        }
+    );
+}
+
+#[test]
+fn a_sourced_key_reports_its_source_at_the_path_the_action_lands_on() {
+    let (dest, state) = fixtures();
+    let desired = Desired::from_source(
+        BTreeMap::from([(
+            "a/../b.txt".into(),
+            Entry::File {
+                contents: b"alpha".to_vec(),
+                executable: false,
+            },
+        )]),
+        Origin::Files,
+    );
+    let dest_dir = dir_at(dest.root());
+    let state_dir = dir_at(state.root());
+    let manifest = load_manifest(&state_dir).expect("load manifest");
+    let observations =
+        observe(&dest_dir, &manifest, &block_markers(&desired)).expect("observe destination");
+    let plan = decide(
+        "own",
+        &desired,
+        &manifest,
+        &observations,
+        None,
+        PlanOptions::default(),
+    )
+    .expect("decide");
+
+    let report = apply(&dest_dir, &state_dir, &manifest, &plan).expect("apply");
+
+    // The key normalizes, so the action — and the row — is at `b.txt`; the
+    // origin has to follow it there rather than stay at the spelling.
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([("b.txt".into(), ApplyOutcome::Written)])
+    );
+    assert_eq!(facts_at(&report, "b.txt").origin, Some(Origin::Files));
 }
 
 #[test]
@@ -1631,7 +1759,7 @@ fn a_changed_link_target_is_replaced_in_place() {
         pipeline(&dest, &state, "own", &v2.entries(), DriftPolicy::Refuse).expect("project v2");
 
     assert_eq!(
-        report.outcomes[Utf8Path::new("current")],
+        report.report.rows[Utf8Path::new("current")].verdict,
         ApplyOutcome::Overwritten
     );
     assert_tree(dest.root(), &v2);
@@ -1656,7 +1784,7 @@ fn a_file_becomes_a_link_and_a_link_becomes_a_file() {
     let report = pipeline(&dest, &state, "own", &linked.entries(), DriftPolicy::Refuse)
         .expect("file → link");
     assert_eq!(
-        report.outcomes[Utf8Path::new("here")],
+        report.report.rows[Utf8Path::new("here")].verdict,
         ApplyOutcome::Overwritten
     );
     assert_tree(dest.root(), &linked);
@@ -1669,7 +1797,7 @@ fn a_file_becomes_a_link_and_a_link_becomes_a_file() {
     let report =
         pipeline(&dest, &state, "own", &files.entries(), DriftPolicy::Refuse).expect("link → file");
     assert_eq!(
-        report.outcomes[Utf8Path::new("here")],
+        report.report.rows[Utf8Path::new("here")].verdict,
         ApplyOutcome::Overwritten
     );
     assert_tree(dest.root(), &files);
@@ -2369,7 +2497,7 @@ fn a_path_beneath_a_link_this_run_removes_is_written_as_an_ordinary_path() {
     .expect("the removal clears the way for the write");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([
             ("logs".into(), ApplyOutcome::Removed),
             ("logs/x.txt".into(), ApplyOutcome::Written),
@@ -2426,7 +2554,7 @@ fn a_block_splices_a_region_into_a_container_it_does_not_own() {
     .expect("the container is unrecorded, which is what a block is for");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("rc".into(), ApplyOutcome::Written)])
     );
     assert_eq!(
@@ -2478,7 +2606,7 @@ fn re_applying_a_block_is_a_no_op() {
         pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("re-apply is a no-op");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("rc".into(), ApplyOutcome::Skipped)])
     );
     // The marker is what makes this idempotent: without one the second run
@@ -2498,7 +2626,7 @@ fn an_edit_outside_the_region_is_not_drift_and_an_edit_inside_it_is() {
     let report = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
         .expect("outside is not drift");
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("rc".into(), ApplyOutcome::Skipped)])
     );
     assert_eq!(
@@ -2569,7 +2697,7 @@ fn changing_the_body_replaces_only_the_region() {
     .expect("project v2");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("rc".into(), ApplyOutcome::Overwritten)])
     );
     assert_eq!(container(&dest, "rc"), "author\nkeep me\n# proiectio\nv2\n");
@@ -2600,7 +2728,7 @@ fn a_changed_marker_migrates_the_region_in_one_publish() {
         pipeline(&dest, &state, "own", &renamed, DriftPolicy::Refuse).expect("migrate the marker");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("rc".into(), ApplyOutcome::Overwritten)])
     );
     // One publish: the old region is gone, not left beside the new one.
@@ -2685,7 +2813,7 @@ fn removing_a_block_leaves_the_container_byte_identical_apart_from_the_region() 
         let report = apply_at(&dest, &state, &manifest, &plan).expect("strip the region");
 
         assert_eq!(
-            report.outcomes,
+            verdicts(&report),
             BTreeMap::from([("rc".into(), ApplyOutcome::Removed)])
         );
         // The container stays, and every byte outside the region is where it
@@ -2714,7 +2842,7 @@ fn a_region_whose_body_already_matches_is_adopted() {
     .expect("adopt the region already there");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("rc".into(), ApplyOutcome::Skipped)])
     );
     assert_eq!(container(&dest, "rc"), "author\n# proiectio\nmanaged\n");
@@ -3025,7 +3153,7 @@ fn force_overwrites_an_edited_region_and_leaves_the_author_alone() {
     .expect("--force lifts a drifted region");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("rc".into(), ApplyOutcome::Overwritten)])
     );
     // The author's edit outside the region survives; theirs inside it does
@@ -3045,7 +3173,7 @@ fn a_deleted_region_is_spliced_back_and_a_deleted_container_refuses() {
     let healed =
         pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("write heals");
     assert_eq!(
-        healed.outcomes,
+        verdicts(&healed),
         BTreeMap::from([("rc".into(), ApplyOutcome::Written)])
     );
     assert_eq!(container(&dest, "rc"), "author\n# proiectio\nmanaged\n");
@@ -3179,7 +3307,7 @@ fn a_marker_terminated_by_end_of_file_still_reads_and_strips() {
     .expect("an empty region already carries the desired body");
 
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("rc".into(), ApplyOutcome::Skipped)])
     );
 }
@@ -3412,7 +3540,7 @@ fn drift_policy_overwrite_lifts_the_refusal_but_still_guards_the_gap() {
     let report = pipeline(&dest, &state, "own", &v2.entries(), DriftPolicy::Overwrite)
         .expect("--force overwrites the edit");
     assert_eq!(
-        report.outcomes,
+        verdicts(&report),
         BTreeMap::from([("m.txt".into(), ApplyOutcome::Overwritten)])
     );
     assert_tree(dest.root(), &v2);

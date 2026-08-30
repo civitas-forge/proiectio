@@ -1,9 +1,6 @@
-use std::collections::BTreeMap;
-
-use camino::Utf8PathBuf;
 use serde::Serialize;
 
-use crate::Manifest;
+use crate::{Manifest, Report};
 
 /// What apply did to one path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -32,8 +29,7 @@ pub enum ApplyOutcome {
 /// partial run heals on re-run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApplyReport {
-    /// Per-path outcomes, keyed by path relative to the destination.
-    pub outcomes: BTreeMap<Utf8PathBuf, ApplyOutcome>,
+    pub report: Report<ApplyOutcome>,
     /// The manifest as written after the run.
     pub manifest: Manifest,
 }
