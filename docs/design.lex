@@ -159,7 +159,7 @@ Proiectio Design
         impl Run {
         pub fn plan(&mut self, ...) -> Result<&Plan>;
         pub fn plan_removal(&mut self, ...) -> Result<&Plan>;
-        pub fn apply(self) -> Result<ApplyReport>;
+        pub fn apply(self) -> Result<ApplyReport, Box<Aborted>>;
         }
 
     :: rust ::
@@ -171,8 +171,10 @@ Proiectio Design
     consume whole fails the load instead). The records ride the Plan
     and the ApplyReport so a run's caller sees what its archives shed.
     Everything else the crate exports is data: Plan, Status, Manifest,
-    ApplyReport, Dropped, Entry, Error. The three stages are
-    crate-internal.
+    ApplyReport, Aborted, Stopped, Dropped, Entry, Error. An apply
+    that stops early answers with Aborted — the rows it applied
+    beside a Stopped naming whether the state directory records
+    them. The three stages are crate-internal.
 
     Reads take no lock. The Plan they return says what applying would
     do; it is not a reservation, which is why nothing applies one.
