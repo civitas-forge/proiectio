@@ -253,8 +253,13 @@ fn run(
                     .is_some_and(|recorded| recorded.kind.is_block())
                 {
                     remove_block(dest, manifest, path, expected.as_ref())?;
-                } else if let Some(resolved) = remove(dest, manifest, path, expected.as_ref())? {
-                    for ancestor in resolved.ancestors().skip(1) {
+                } else {
+                    // A hand deletion that took the walk's own ancestry with
+                    // it leaves no resolved location to prune upwards from;
+                    // the action key names the directories still standing.
+                    let vacated = remove(dest, manifest, path, expected.as_ref())?
+                        .unwrap_or_else(|| path.clone());
+                    for ancestor in vacated.ancestors().skip(1) {
                         if !ancestor.as_str().is_empty() {
                             removed_dirs_candidates.insert(ancestor.to_owned());
                         }

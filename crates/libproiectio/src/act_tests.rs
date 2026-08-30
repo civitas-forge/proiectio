@@ -519,6 +519,34 @@ fn removal_prunes_the_dirs_a_hand_deleted_path_left_empty() {
 }
 
 #[test]
+fn removal_prunes_the_dirs_left_standing_above_a_hand_deleted_one() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new().file("only/deep/file.txt", "projected");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    fs::remove_dir_all(dest.path("only/deep")).expect("delete the directory by hand");
+
+    let report = removal_pipeline(
+        &dest,
+        &state,
+        "own",
+        RemovalScope::Everything,
+        DriftPolicy::Refuse,
+    )
+    .expect("removal");
+
+    // The hand deletion took the walk's own ancestry with it, so the
+    // removal has no resolved location to prune upwards from. `only/` is
+    // empty all the same, and the destination the write found had no such
+    // directory.
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([("only/deep/file.txt".into(), ApplyOutcome::Forgot)])
+    );
+    assert_tree(dest.root(), &Tree::new());
+    assert!(persisted(&state).entries.is_empty());
+}
+
+#[test]
 fn a_named_path_the_owner_does_not_hold_is_reported_and_nothing_else() {
     let (dest, state) = fixtures();
     let tree = Tree::new().file("mine.txt", "projected");
