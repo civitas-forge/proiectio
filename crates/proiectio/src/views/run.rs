@@ -70,8 +70,13 @@ fn spelling(verdict: &str, symlink: bool) -> Option<(&'static str, &'static str)
         ("Skipped", _) => ("skipped", "skipped"),
         ("Remove", _) => ("removed", "would remove"),
         ("Removed", _) => ("removed", "removed"),
+        ("Forget", _) => ("removed", "would forget"),
+        ("Forgot", _) => ("removed", "forgot"),
         ("Release", _) => ("removed", "would release"),
         ("Released", _) => ("removed", "released"),
+        // The one verdict a dry run and a real run spell alike: neither one
+        // did anything, and the row is there to say the path was named.
+        ("NotRecorded", _) => ("skipped", "no record"),
         ("Refuse", _) => ("refused", "would refuse"),
         _ => return None,
     })
@@ -83,7 +88,9 @@ fn counted(verdict: &str) -> Option<Counted> {
         "Written" | "Overwritten" => Counted::Wrote,
         "Skipped" => Counted::Skipped,
         "Removed" => Counted::Removed,
+        "Forgot" => Counted::Forgot,
         "Released" => Counted::Released,
+        "NotRecorded" => Counted::NotRecorded,
         _ => return None,
     })
 }
@@ -236,7 +243,9 @@ enum Counted {
     Wrote,
     Skipped,
     Removed,
+    Forgot,
     Released,
+    NotRecorded,
 }
 
 #[derive(Default)]
@@ -244,7 +253,9 @@ struct Tally {
     wrote: usize,
     skipped: usize,
     removed: usize,
+    forgot: usize,
     released: usize,
+    not_recorded: usize,
 }
 
 impl Tally {
@@ -253,7 +264,9 @@ impl Tally {
             Counted::Wrote => &mut self.wrote,
             Counted::Skipped => &mut self.skipped,
             Counted::Removed => &mut self.removed,
+            Counted::Forgot => &mut self.forgot,
             Counted::Released => &mut self.released,
+            Counted::NotRecorded => &mut self.not_recorded,
         };
         *column += 1;
     }
@@ -262,10 +275,13 @@ impl Tally {
     /// cleared column only where it holds something; one that only cleared
     /// paths reports what it cleared and nothing else. A pass that left every
     /// path alone reports what it left alone, and one that touched nothing
-    /// says so.
+    /// says so. Paths the owner turned out not to hold are counted apart from
+    /// all of it: the run did nothing at them, and a summary reading `nothing
+    /// to do` over rows naming them would be the thing the count is there to
+    /// prevent.
     fn summary(&self) -> String {
-        let cleared = self.removed + self.released;
-        if self.wrote == 0 && cleared == 0 {
+        let cleared = self.removed + self.forgot + self.released;
+        if self.wrote == 0 && cleared == 0 && self.not_recorded == 0 {
             return match self.skipped {
                 0 => "nothing to do".to_owned(),
                 skipped => format!("{skipped} unchanged"),
@@ -275,7 +291,12 @@ impl Tally {
         if self.wrote > 0 || self.skipped > 0 {
             columns.push(format!("{} written, {} skipped", self.wrote, self.skipped));
         }
-        for (count, column) in [(self.removed, "removed"), (self.released, "released")] {
+        for (count, column) in [
+            (self.removed, "removed"),
+            (self.forgot, "forgotten"),
+            (self.released, "released"),
+            (self.not_recorded, "not recorded"),
+        ] {
             if count > 0 {
                 columns.push(format!("{count} {column}"));
             }

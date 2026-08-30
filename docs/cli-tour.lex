@@ -66,6 +66,12 @@ The CLI
 
     :: shell ::
 
+    The one exception is a mapping with an external-target link: the
+    write refuses without --allow-external-targets even when disk
+    already matches and status reports clean. The flag is
+    per-invocation permission, never recorded state, so every run of
+    that mapping needs it.
+
 2. Dry Runs and Exit Codes
 
     --dry-run prints the plan — the same classification apply would

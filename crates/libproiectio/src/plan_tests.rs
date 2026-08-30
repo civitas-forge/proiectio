@@ -168,7 +168,7 @@ fn a_report_carries_one_verdict_per_planned_path() {
             ("config/settings.toml", PlannedAction::Skip),
             ("config/theme", PlannedAction::Skip),
             ("current", PlannedAction::Write),
-            ("gone.txt", PlannedAction::Remove),
+            ("gone.txt", PlannedAction::Forget),
             ("orphan.txt", PlannedAction::Remove),
             ("shared/.zshrc", PlannedAction::Release),
             (
@@ -318,7 +318,8 @@ fn a_summary_counts_the_rows_of_each_action() {
                 1
             ),
             (PlannedAction::Skip, 2),
-            (PlannedAction::Remove, 2),
+            (PlannedAction::Remove, 1),
+            (PlannedAction::Forget, 1),
             (PlannedAction::Release, 1),
             (
                 PlannedAction::Refuse {

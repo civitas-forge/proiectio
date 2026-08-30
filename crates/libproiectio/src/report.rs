@@ -3,7 +3,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
-use crate::Origin;
+use crate::{EntryKind, Origin};
+
+/// The shape a row states for a node the projection knows by its recorded
+/// kind rather than by an [`Entry`](crate::Entry): a manifest entry or an
+/// action's expected signature. Both stages spell it here, so a plan's row
+/// and the apply row for the same path cannot drift apart.
+pub(crate) fn recorded_shape(kind: &EntryKind, executable: bool) -> PathShape {
+    match kind {
+        EntryKind::File => PathShape::File { executable },
+        EntryKind::Symlink => PathShape::Symlink { target: None },
+        EntryKind::Block { .. } => PathShape::Block,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum PathShape {
@@ -14,8 +26,10 @@ pub enum PathShape {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PathFacts {
-    /// What the row is about on disk; `None` where the verdict decides no
-    /// node, as a refusal does.
+    /// What the row is about on disk: the entry a write carries, the node a
+    /// removal expects, or the manifest's own record where the verdict
+    /// decides no node itself. `None` where nothing names a shape — a
+    /// refusal, or a path no manifest entry records.
     pub shape: Option<PathShape>,
     pub owners: BTreeSet<String>,
     pub origin: Option<Origin>,

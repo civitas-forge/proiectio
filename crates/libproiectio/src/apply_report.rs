@@ -18,9 +18,16 @@ pub enum ApplyOutcome {
     Skipped,
     /// The orphaned path was removed.
     Removed,
+    /// The record was dropped and nothing was unlinked: the path was already
+    /// gone when the plan was decided. Directories the absent path left empty
+    /// are pruned all the same.
+    Forgot,
     /// This owner was dropped from the path's manifest entry; other owners
     /// still hold the path, so the disk was not touched.
     Released,
+    /// The removal named the path and this owner did not hold it; no record
+    /// changed and the disk was not touched.
+    NotRecorded,
 }
 
 /// What a successful apply run did: one outcome per path, and the manifest as

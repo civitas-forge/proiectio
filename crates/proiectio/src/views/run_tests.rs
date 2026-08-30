@@ -3,7 +3,9 @@ use super::*;
 use std::collections::BTreeSet;
 
 use camino::Utf8PathBuf;
-use libproiectio::{BlockFault, Dropped, Origin, Refusal, RefusalKind};
+use libproiectio::{
+    ApplyOutcome, BlockFault, Dropped, Origin, OverwriteReason, Refusal, RefusalKind,
+};
 use serde::Serialize;
 use serde_json::json;
 
@@ -71,8 +73,11 @@ fn each_verdict_spells_one_style_and_one_verb() {
         (json!("Skipped"), "skipped", "skipped"),
         (json!("Remove"), "removed", "would remove"),
         (json!("Removed"), "removed", "removed"),
+        (json!("Forget"), "removed", "would forget"),
+        (json!("Forgot"), "removed", "forgot"),
         (json!("Release"), "removed", "would release"),
         (json!("Released"), "removed", "released"),
+        (json!("NotRecorded"), "skipped", "no record"),
         (
             json!({ "Refuse": { "refusal": "Drift" } }),
             "refused",
@@ -81,6 +86,76 @@ fn each_verdict_spells_one_style_and_one_verb() {
     ] {
         let row = only(planned(json!({ "one": file(verdict.clone()) })));
         assert_eq!((row.style, row.verb.as_str()), (style, verb), "{verdict}");
+    }
+}
+
+/// The verdicts above are spelled from string literals, which agree with the
+/// library only as long as nobody renames a variant. This drives the same
+/// mapping from the enums themselves: the `match` fails to compile when a
+/// verdict is added, and the assertion fails when one is renamed, since a
+/// name `spelling` does not know renders as itself.
+#[test]
+fn every_verdict_the_library_declares_reads_as_one_spelling() {
+    for verdict in [
+        PlannedAction::Write,
+        PlannedAction::Overwrite {
+            reason: OverwriteReason::ContentChanged,
+        },
+        PlannedAction::Skip,
+        PlannedAction::Remove,
+        PlannedAction::Forget,
+        PlannedAction::Release,
+        PlannedAction::NotRecorded,
+        PlannedAction::Refuse {
+            refusal: Refusal::Drift,
+        },
+    ] {
+        let spelled = match &verdict {
+            PlannedAction::Write => ("wrote", "would write"),
+            PlannedAction::Overwrite { .. } => ("overwrote", "would overwrite"),
+            PlannedAction::Skip => ("skipped", "would skip"),
+            PlannedAction::Remove => ("removed", "would remove"),
+            PlannedAction::Forget => ("removed", "would forget"),
+            PlannedAction::Release => ("removed", "would release"),
+            PlannedAction::NotRecorded => ("skipped", "no record"),
+            PlannedAction::Refuse { .. } => ("refused", "would refuse"),
+        };
+        let row = only(planned(json!({ "one": file(serialized(&verdict)) })));
+
+        assert_eq!((row.style, row.verb.as_str()), spelled, "{verdict:?}");
+    }
+    for verdict in [
+        ApplyOutcome::Written,
+        ApplyOutcome::Overwritten,
+        ApplyOutcome::Skipped,
+        ApplyOutcome::Removed,
+        ApplyOutcome::Forgot,
+        ApplyOutcome::Released,
+        ApplyOutcome::NotRecorded,
+    ] {
+        let spelled = match verdict {
+            ApplyOutcome::Written => ("wrote", "wrote"),
+            ApplyOutcome::Overwritten => ("overwrote", "overwrote"),
+            ApplyOutcome::Skipped => ("skipped", "skipped"),
+            ApplyOutcome::Removed => ("removed", "removed"),
+            ApplyOutcome::Forgot => ("removed", "forgot"),
+            ApplyOutcome::Released => ("removed", "released"),
+            ApplyOutcome::NotRecorded => ("skipped", "no record"),
+        };
+        let document = applied(json!({ "one": file(serialized(verdict)) }));
+        let row = only(RunLines {
+            rows: document.rows,
+            summary: None,
+        });
+
+        assert_eq!((row.style, row.verb.as_str()), spelled, "{verdict:?}");
+        // The second stringly mapping: a verdict `counted` does not know
+        // falls out of the tally, and a run of one row reads as idle.
+        assert_ne!(
+            document.summary.as_deref(),
+            Some("nothing to do"),
+            "{verdict:?} is counted"
+        );
     }
 }
 
@@ -437,6 +512,13 @@ fn a_real_run_counts_what_it_did_and_a_plan_counts_nothing() {
             vec!["Skipped", "Removed"],
             "0 written, 1 skipped, 1 removed",
         ),
+        (vec!["Removed", "Forgot"], "1 removed, 1 forgotten"),
+        (vec!["Forgot"], "1 forgotten"),
+        // A pass that did nothing at every path it was handed counts the
+        // paths rather than reading `nothing to do`, which is what an owner
+        // removing a path it never recorded would otherwise be told.
+        (vec!["NotRecorded"], "1 not recorded"),
+        (vec!["Removed", "NotRecorded"], "1 removed, 1 not recorded"),
         (vec![], "nothing to do"),
     ] {
         let rows: serde_json::Map<String, JsonValue> = verdicts

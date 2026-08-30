@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
+use crate::report::recorded_shape;
 use crate::{
     Dropped, Entry, EntryKind, Manifest, ManifestEntry, Origin, PathFacts, PathShape, Refusal,
     Refused, Report, Row,
@@ -135,29 +136,20 @@ fn facts_of(
         }
         Action::Remove {
             expected: Some(expected),
-        } => Some(match expected.kind {
-            EntryKind::File => PathShape::File {
-                executable: expected.executable,
-            },
-            EntryKind::Symlink => PathShape::Symlink { target: None },
-            EntryKind::Block { .. } => PathShape::Block,
-        }),
-        Action::Release => {
+        } => Some(recorded_shape(&expected.kind, expected.executable)),
+        // None of these three decides a node, so each row states what the
+        // manifest records at the path — the shape and the owners, including
+        // the owner a release drops and the other owner a path this one does
+        // not hold turns out to have. Apply's row for the same path draws on
+        // the same entry, so a dry run and a real run state alike.
+        Action::Release | Action::NotRecorded | Action::Remove { expected: None } => {
             let recorded = recorded?;
-            Some(match recorded.kind {
-                EntryKind::File => PathShape::File {
-                    executable: recorded.executable,
-                },
-                EntryKind::Symlink => PathShape::Symlink { target: None },
-                EntryKind::Block { .. } => PathShape::Block,
-            })
+            Some(recorded_shape(&recorded.kind, recorded.executable))
         }
-        // A refusal decides no node, so its row states the source that named
-        // the path, plus the owners already recorded there.
+        // A refusal decides no node either, but no apply row follows it: a
+        // plan holding one refuses whole. Its row states the source that
+        // named the path, plus the owners already recorded there.
         Action::Refuse { .. } => None,
-        Action::Remove { expected: None } => {
-            return None;
-        }
     };
     Some(PathFacts {
         shape,
@@ -173,8 +165,12 @@ fn verdict_of(action: &Action) -> PlannedAction {
         Action::Write { .. } => PlannedAction::Write,
         Action::Overwrite { reason, .. } => PlannedAction::Overwrite { reason: *reason },
         Action::Skip { .. } => PlannedAction::Skip,
-        Action::Remove { .. } => PlannedAction::Remove,
+        Action::Remove {
+            expected: Some(_), ..
+        } => PlannedAction::Remove,
+        Action::Remove { expected: None } => PlannedAction::Forget,
         Action::Release => PlannedAction::Release,
+        Action::NotRecorded => PlannedAction::NotRecorded,
         Action::Refuse { refusal } => PlannedAction::Refuse {
             refusal: refusal.clone(),
         },
@@ -215,12 +211,17 @@ pub enum Action {
     Remove {
         /// The node the disk must still hold at apply time. `None` for a path
         /// already gone at plan time, which apply drops from the manifest
-        /// alone and refuses if a node has appeared since.
+        /// without unlinking anything — pruning the directories the absent
+        /// path leaves empty — and refuses if a node has appeared since.
         expected: Option<NodeSignature>,
     },
     /// Drop this owner from the path's manifest entry and leave the disk
     /// alone: other owners still hold it. Apply re-checks nothing on disk.
     Release,
+    /// The removal named this path and the owner does not hold it — nothing
+    /// records it, or another owner alone does. Nothing is written and no
+    /// record changes; the row says the path was named and not held.
+    NotRecorded,
     /// The path is named and left untouched. Applying a plan containing
     /// refusals fails with [`Error::Refused`](crate::Error::Refused).
     Refuse {
@@ -239,11 +240,19 @@ pub enum OverwriteReason {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum PlannedAction {
     Write,
-    Overwrite { reason: OverwriteReason },
+    Overwrite {
+        reason: OverwriteReason,
+    },
     Skip,
     Remove,
+    /// Drop the record of a path nothing stands at; nothing is unlinked.
+    Forget,
     Release,
-    Refuse { refusal: Refusal },
+    /// The path was named by the removal and this owner does not hold it.
+    NotRecorded,
+    Refuse {
+        refusal: Refusal,
+    },
 }
 
 /// The on-disk node an action expects at apply time. Apply re-checks all

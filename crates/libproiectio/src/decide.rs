@@ -162,7 +162,8 @@ fn deepest_write(actions: &BTreeMap<Utf8PathBuf, Action>) -> Option<Utf8PathBuf>
 
 /// The plan that clears what `owner` holds, narrowed by `scope`: [`decide`]
 /// against an empty desired tree. A requested path the manifest does not
-/// record under `owner` yields no action.
+/// record under `owner` yields [`Action::NotRecorded`], which changes
+/// nothing and says so.
 pub(crate) fn decide_removal(
     owner: &str,
     scope: RemovalScope<'_>,
@@ -203,6 +204,11 @@ pub(crate) fn decide_removal(
         &judged,
     );
     actions.extend(refused);
+    if let Judged::Paths(admitted) = &judged {
+        for path in admitted {
+            actions.entry(path.clone()).or_insert(Action::NotRecorded);
+        }
+    }
     Plan {
         owner: owner.to_owned(),
         origins: BTreeMap::new(),
@@ -317,7 +323,7 @@ fn plan_actions(
         {
             continue;
         }
-        if overlaps_state(path, state_prefix) {
+        if overlaps_state(path, state_prefix) || !contained(path) {
             actions.insert(path.clone(), refuse(Refusal::Containment));
             continue;
         }
@@ -353,6 +359,14 @@ fn plan_actions(
     }
 
     actions
+}
+
+/// Whether a manifest key is one the projection may act at: the same
+/// containment contract a desired key passes, re-run against the recorded
+/// side so a forged manifest decides the verdict apply would reach rather
+/// than a removal apply then refuses.
+fn contained(path: &Utf8Path) -> bool {
+    contained_normalize(path).is_some_and(|normalized| normalized == *path)
 }
 
 /// Whether acting at `path` would touch the state subtree: symmetric, so a
