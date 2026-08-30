@@ -58,9 +58,9 @@ fn a_run_projects_a_tree_and_records_it() {
         projection
             .status()
             .expect("status")
-            .paths
+            .rows
             .values()
-            .any(|state| *state == PathState::Clean)
+            .any(|row| row.verdict == PathState::Clean)
     );
 }
 
@@ -174,9 +174,8 @@ fn beginning_creates_a_nested_in_dest_state_directory() {
         projection
             .status()
             .expect("status")
-            .paths
-            .into_iter()
-            .map(|(path, state)| (path.to_string(), state))
+            .iter()
+            .map(|(path, row)| (path.to_string(), row.verdict))
             .collect::<Vec<_>>(),
         vec![
             (".local".to_owned(), PathState::Foreign),
