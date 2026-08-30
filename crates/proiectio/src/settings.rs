@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Schema, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProiectioConfig {
     /// The manifest owner a run records its entries under.
+    /// Default for `--owner`; the flag always wins.
     #[clapfig(default = "default")]
     pub(crate) owner: String,
 }

@@ -417,3 +417,110 @@ fn a_bracket_leaves_the_markup_pass_as_the_bracket_it_was() {
     assert_eq!(verbatim("plain/path"), "plain/path");
     assert_eq!(verbatim(r"C:\dir"), r"C:\dir");
 }
+
+/// Every control character the C0 and C1 blocks carry, and the delete the
+/// first of them ends with, leaves as an escape the terminal only shows.
+#[test]
+fn a_control_character_leaves_as_an_escape_the_terminal_only_shows() {
+    assert_eq!(verbatim("\u{1b}[31mred"), r"\u{1b}\[31mred");
+    assert_eq!(verbatim("two\nlines"), r"two\nlines");
+    assert_eq!(verbatim("carriage\rreturn"), r"carriage\rreturn");
+    assert_eq!(
+        verbatim("bell\u{7}del\u{7f}csi\u{9b}"),
+        r"bell\u{7}del\u{7f}csi\u{9b}"
+    );
+
+    for code in (0..=0x1f_u32).chain(0x7f..=0x9f) {
+        let character = char::from_u32(code).expect("a control character");
+        let escaped = verbatim(&character.to_string());
+        assert!(
+            !escaped.chars().any(char::is_control),
+            "U+{code:04X} reached the terminal as itself: {escaped:?}"
+        );
+    }
+}
+
+/// A block clapfig rendered keeps the lines it spelled, and nothing else: the
+/// `config gen` template and a documented `config get` are both several lines.
+#[test]
+fn a_rendered_block_keeps_its_lines_and_escapes_the_rest() {
+    assert_eq!(
+        verbatim_block("# owner\nowner = default\n"),
+        "# owner\nowner = default\n"
+    );
+    assert_eq!(
+        verbatim_block("owner = \u{1b}[31mred"),
+        r"owner = \u{1b}\[31mred"
+    );
+}
+
+/// A filename is data the destination supplies, not a command for the
+/// terminal. One carrying an escape sequence or a newline renders as visible
+/// escapes on its own single row, and structured output keeps the bytes.
+#[test]
+#[serial]
+fn a_path_carrying_control_characters_renders_as_visible_escapes() {
+    const ESCAPE: &str = "\u{1b}[31mred";
+    const NEWLINE: &str = "two\nlines";
+    /// The five rows `classified` leaves, plus the two files below.
+    const ROWS: usize = 7;
+
+    let (dir, dest) = classified_dir();
+    std::fs::write(dest.join(ESCAPE), b"not ours\n").expect("a stray file");
+    std::fs::write(dest.join(NEWLINE), b"not ours\n").expect("a stray file");
+    let argv = ["proiectio", "status", "--dest", dest.as_str()];
+
+    let text = harness(&dir).run(&app(), cli::command(), argv);
+    text.assert_success();
+    text.assert_stdout_contains(r"foreign  \u{1b}[31mred");
+    text.assert_stdout_contains(r"foreign  two\nlines");
+    let stdout = text.stdout();
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "an escape sequence reached the terminal: {stdout:?}"
+    );
+    assert_eq!(stdout.lines().count(), ROWS, "{stdout:?}");
+
+    let term = harness(&dir)
+        .output_mode(OutputMode::Term)
+        .run(&app(), cli::command(), argv);
+    term.assert_success();
+    term.assert_stdout_contains(r"\u{1b}[31mred");
+    term.assert_stdout_contains(r"two\nlines");
+    assert_eq!(term.stdout().lines().count(), ROWS, "{:?}", term.stdout());
+
+    let json = harness(&dir)
+        .output_mode(OutputMode::Json)
+        .run(&app(), cli::command(), argv);
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    assert_eq!(value["rows"][ESCAPE]["verdict"], "Foreign");
+    assert_eq!(value["rows"][NEWLINE]["verdict"], "Foreign");
+}
+
+/// Configuration-derived text goes through the same filter, so a stored value
+/// cannot drive the terminal either.
+#[test]
+#[serial]
+fn a_config_value_carrying_an_escape_sequence_renders_as_itself() {
+    const SPELLED: &str = "\u{1b}[31mred";
+
+    let dir = TempDir::new().expect("a temporary directory");
+    let argv = ["proiectio", "conf", "set", "owner", SPELLED];
+
+    let text = harness(&dir).run(&app(), cli::command(), argv);
+    text.assert_success();
+    text.assert_stdout_contains(r"owner = \u{1b}[31mred");
+    assert!(
+        !text.stdout().contains('\u{1b}'),
+        "an escape sequence reached the terminal: {:?}",
+        text.stdout()
+    );
+
+    let json = harness(&dir)
+        .output_mode(OutputMode::Json)
+        .run(&app(), cli::command(), argv);
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    assert_eq!(value["value"], SPELLED);
+}

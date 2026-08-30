@@ -20,7 +20,8 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
-    /// Classifies every recorded path, writing nothing.
+    /// Classifies the manifest's paths and everything else under the
+    /// destination, writing nothing.
     Status,
 }
 

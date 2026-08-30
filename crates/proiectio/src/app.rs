@@ -10,24 +10,40 @@ pub(crate) fn templates() -> EmbeddedTemplates {
     embed_templates!("src/templates")
 }
 
-/// Spells `[` and `]` as the escapes Standout's markup pass reads back as
-/// literal brackets, so a value that reads like a style tag is not one.
+/// Spells the characters a terminal acts on rather than shows: every control
+/// character as its Rust escape, and `[` and `]` as the escapes Standout's
+/// markup pass reads back as literal brackets. A value cannot then forge a
+/// row, restyle the display, or reach the terminal as a command.
 pub(crate) fn verbatim(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
-        if character == '[' || character == ']' {
-            escaped.push('\\');
+        match character {
+            '[' | ']' => {
+                escaped.push('\\');
+                escaped.push(character);
+            }
+            control if control.is_control() => escaped.extend(control.escape_debug()),
+            other => escaped.push(other),
         }
-        escaped.push(character);
     }
     escaped
 }
 
+/// The same escaping over a block whose lines this CLI asked for: the line
+/// breaks are the layout, everything inside one is data.
+pub(crate) fn verbatim_block(value: &str) -> String {
+    value
+        .split('\n')
+        .map(verbatim)
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
 pub(crate) fn engine() -> MiniJinjaEngine {
     let mut engine = MiniJinjaEngine::new();
-    engine
-        .environment_mut()
-        .add_filter("verbatim", |value: String| verbatim(&value));
+    let environment = engine.environment_mut();
+    environment.add_filter("verbatim", |value: String| verbatim(&value));
+    environment.add_filter("verbatim_block", |value: String| verbatim_block(&value));
     engine
 }
 
