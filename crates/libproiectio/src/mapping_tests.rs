@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
-use crate::RefusalKind;
 use crate::test_support::{MissingName, origins_of};
+use crate::{Dropped, RefusalKind};
 
 // A fixed absolute location for table tests: entries that only carry
 // inline `contents` never read the filesystem, so the file need not exist.
@@ -377,6 +377,190 @@ fn archive_members_expand_under_their_prefix_as_ordinary_entries() {
             ("vendor/bin/run", file("#!/bin/sh\n", true), vendor.clone()),
             ("vendor/lib/tool.so", file("so\n", false), vendor),
         ])
+    );
+}
+
+// The archive stock macOS `tar` writes: an AppleDouble `._vendor-1.0` beside
+// the wrapper, which `strip = 1` leaves with no path. The mapping loads, and
+// the dropped member is named against the archive that carried it — not
+// against the prefix, which it never reaches.
+#[test]
+fn an_archive_member_strip_erases_is_dropped_and_named_by_its_archive() {
+    let text = r#"
+        version = 1
+        [archives."vendor/"]
+        source = "./assets/vendor.tar.gz"
+        strip = 1
+    "#;
+    let vendor = targz(&[
+        ("._vendor-1.0", "Mac OS X\n", false),
+        ("vendor-1.0/lib/tool.so", "so\n", false),
+    ]);
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .file("assets/vendor.tar.gz", vendor)
+        .materialize();
+
+    let origin = Origin::Archive {
+        path: fixture.path("assets/vendor.tar.gz"),
+        via: Some(fixture.path("deploy.toml")),
+    };
+    let loaded = load_mapping(&fixture.path("deploy.toml")).unwrap();
+    assert_eq!(
+        loaded.iter().collect::<Vec<_>>(),
+        sourced(&[("vendor/lib/tool.so", file("so\n", false), origin.clone())])
+            .iter()
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        loaded.dropped(),
+        &BTreeSet::from([Dropped {
+            member: Utf8PathBuf::from("._vendor-1.0"),
+            prefix: Utf8PathBuf::from("vendor"),
+            strip: 1,
+            origin,
+        }])
+    );
+}
+
+// A member name is unique only inside its own archive. Two archives in one
+// mapping both dropping `._pkg` are two drops, each named by the archive
+// that carried it — neither displaces the other.
+#[test]
+fn two_archives_dropping_the_same_member_name_are_both_recorded() {
+    let text = r#"
+        version = 1
+        [archives."vendor/"]
+        source = "./assets/vendor.tar.gz"
+        strip = 1
+        [archives."plugins/"]
+        source = "./assets/plugins.tar.gz"
+        strip = 1
+    "#;
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .file(
+            "assets/vendor.tar.gz",
+            targz(&[
+                ("._pkg", "Mac OS X\n", false),
+                ("pkg/lib/tool.so", "so\n", false),
+            ]),
+        )
+        .file(
+            "assets/plugins.tar.gz",
+            targz(&[
+                ("._pkg", "Mac OS X\n", false),
+                ("pkg/hello.lua", "print()\n", false),
+            ]),
+        )
+        .materialize();
+
+    let carried_by = |archive: &str, prefix: &str| Dropped {
+        member: Utf8PathBuf::from("._pkg"),
+        prefix: Utf8PathBuf::from(prefix),
+        strip: 1,
+        origin: Origin::Archive {
+            path: fixture.path(archive),
+            via: Some(fixture.path("deploy.toml")),
+        },
+    };
+    let loaded = load_mapping(&fixture.path("deploy.toml")).unwrap();
+    assert_eq!(
+        loaded.dropped(),
+        &BTreeSet::from([
+            carried_by("assets/plugins.tar.gz", "plugins"),
+            carried_by("assets/vendor.tar.gz", "vendor"),
+        ])
+    );
+}
+
+// One entry whose `strip` erases its whole archive fails the mapping, even
+// though another entry would have projected. Loading is all-or-nothing, so
+// the caller never reaches a plan — which matters because a plan built from
+// the surviving entry alone would remove whatever the failed entry used to
+// hold.
+#[test]
+fn an_entry_strip_erases_entirely_fails_the_whole_mapping() {
+    let text = r#"
+        version = 1
+        [archives."vendor/"]
+        source = "./assets/vendor.tar.gz"
+        strip = 1
+        [archives."junk/"]
+        source = "./assets/junk.tar.gz"
+        strip = 1
+    "#;
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .file(
+            "assets/vendor.tar.gz",
+            targz(&[("vendor-1.0/lib/tool.so", "so\n", false)]),
+        )
+        .file(
+            "assets/junk.tar.gz",
+            targz(&[
+                ("._pkg", "Mac OS X\n", false),
+                ("notes.txt", "notes\n", false),
+            ]),
+        )
+        .materialize();
+
+    let junk = fixture.path("assets/junk.tar.gz");
+    assert!(matches!(
+        load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
+        Error::ArchiveFullyStripped { path, strip, dropped }
+            if path == junk && strip == 1 && dropped == 2
+    ));
+}
+
+// One archive named twice is two expansions. Their drops share a member
+// name, an archive, and a mapping, so what tells them apart is the entry
+// that asked for each: its prefix and its strip count.
+#[test]
+fn one_archive_expanded_under_two_prefixes_drops_a_member_once_per_entry() {
+    let text = r#"
+        version = 1
+        [archives."vendor/"]
+        source = "./assets/vendor.tar.gz"
+        strip = 1
+        [archives."backup/"]
+        source = "./assets/vendor.tar.gz"
+        strip = 2
+    "#;
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .file(
+            "assets/vendor.tar.gz",
+            targz(&[
+                ("._pkg", "Mac OS X\n", false),
+                ("pkg/lib/tool.so", "so\n", false),
+            ]),
+        )
+        .materialize();
+
+    let asked_by = |prefix: &str, strip: u32| Dropped {
+        member: Utf8PathBuf::from("._pkg"),
+        prefix: Utf8PathBuf::from(prefix),
+        strip,
+        origin: Origin::Archive {
+            path: fixture.path("assets/vendor.tar.gz"),
+            via: Some(fixture.path("deploy.toml")),
+        },
+    };
+    let loaded = load_mapping(&fixture.path("deploy.toml")).unwrap();
+    assert_eq!(
+        loaded.dropped(),
+        &BTreeSet::from([asked_by("backup", 2), asked_by("vendor", 1)])
+    );
+    // `strip = 2` erases the wrapper *and* the directory under it, so the
+    // backup entry keeps `tool.so` at its own root while `vendor/` keeps the
+    // path below the wrapper.
+    assert_eq!(
+        loaded
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["backup/tool.so", "vendor/lib/tool.so"]
     );
 }
 

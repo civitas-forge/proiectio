@@ -74,13 +74,16 @@ pub(crate) const ARCHIVE_EXTENSIONS: &str = ".tar, .tar.gz, .tgz, .tar.zst, .zip
 pub fn load_archive(source: &Utf8Path, strip: u32) -> Result<Desired> {
     let source = crate::absolutize(source)?;
     let source = source.as_path();
-    Ok(Desired::from_source(
-        expand(source, strip, Utf8Path::new(""), None, &new_budget())?,
-        Origin::Archive {
-            path: source.to_owned(),
-            via: None,
-        },
-    ))
+    let origin = Origin::Archive {
+        path: source.to_owned(),
+        via: None,
+    };
+    let expanded = expand(source, strip, Utf8Path::new(""), None, &new_budget())?;
+    let mut desired = Desired::from_source(expanded.tree, origin);
+    for dropped in expanded.dropped {
+        desired.record_dropped(dropped);
+    }
+    Ok(desired)
 }
 
 /// The byte budget one load spends, shared by every archive expanded into a
@@ -98,7 +101,7 @@ pub(crate) fn expand(
     prefix: &Utf8Path,
     via: Option<&Utf8Path>,
     budget: &Rc<Budget>,
-) -> Result<BTreeMap<Utf8PathBuf, Entry>> {
+) -> Result<Expanded> {
     let format = ArchiveFormat::for_path(source).ok_or_else(|| Error::ArchiveFormatUnknown {
         path: source.to_owned(),
     })?;
@@ -115,6 +118,8 @@ pub(crate) fn expand(
         prefix,
         tree: BTreeMap::new(),
         refused: BTreeSet::new(),
+        dropped: BTreeSet::new(),
+        dropped_members: 0,
         members: 0,
         budget: Rc::clone(budget),
     };
@@ -154,7 +159,60 @@ pub(crate) fn expand(
         .expect("refused is not empty")
         .into());
     }
-    Ok(expansion.tree)
+    // A drop is tolerable among members that survive; one that leaves the
+    // expansion with nothing to project is a `strip` deeper than the archive.
+    // Letting it through would project an empty tree, and an empty desired
+    // tree plans a removal — so a mistyped `strip` would clear everything the
+    // owner holds. An archive that drops nothing never reaches this: one
+    // carrying only directories projects nothing on its own terms.
+    if expansion.tree.is_empty() && expansion.dropped_members > 0 {
+        return Err(Error::ArchiveFullyStripped {
+            path: source.to_owned(),
+            strip,
+            dropped: expansion.dropped_members,
+        });
+    }
+    Ok(Expanded {
+        tree: expansion.tree,
+        dropped: expansion
+            .dropped
+            .into_iter()
+            .map(|member| Dropped {
+                member,
+                prefix: prefix.to_owned(),
+                strip,
+                origin: Origin::Archive {
+                    path: source.to_owned(),
+                    via: via.map(Utf8Path::to_owned),
+                },
+            })
+            .collect(),
+    })
+}
+
+#[derive(Debug)]
+pub(crate) struct Expanded {
+    pub(crate) tree: BTreeMap<Utf8PathBuf, Entry>,
+    pub(crate) dropped: BTreeSet<Dropped>,
+}
+
+/// An archive member `strip` left with no path at all. One expansion is
+/// identified by all four fields: the same archive expanded under two
+/// `[archives]` prefixes, or at two `strip` counts, drops its members twice,
+/// and each drop names the expansion that erased it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct Dropped {
+    /// The member's path as its archive spells it, normalized.
+    pub member: Utf8PathBuf,
+    /// Where in the destination the expansion places the archive: a mapping's
+    /// `[archives]` key, and empty for an archive loaded on its own. The
+    /// dropped member never reaches it.
+    pub prefix: Utf8PathBuf,
+    /// The number of leading components the expansion asked `strip` to drop,
+    /// which is what left this member with no path.
+    pub strip: u32,
+    /// The archive that carried the member.
+    pub origin: Origin,
 }
 
 /// What is left of [`MAX_EXPANDED_BYTES`], and whether something ran it out.
@@ -222,6 +280,12 @@ struct Expansion<'a> {
     prefix: &'a Utf8Path,
     tree: BTreeMap<Utf8PathBuf, Entry>,
     refused: BTreeSet<Utf8PathBuf>,
+    /// One record per dropped name, which is what a report states: two
+    /// members of one archive carrying the same name are one fact.
+    dropped: BTreeSet<Utf8PathBuf>,
+    /// One count per dropped member, which is what a diagnostic states: a
+    /// name repeated across two members erased two of them.
+    dropped_members: usize,
     members: usize,
     budget: Rc<Budget>,
 }
@@ -374,14 +438,11 @@ impl Expansion<'_> {
         let components: Vec<&str> = normalized.as_str().split('/').collect();
         let kept = components.get(self.strip..).unwrap_or(&[]);
         if kept.is_empty() {
-            if is_dir {
-                return Ok(None);
+            if !is_dir {
+                self.dropped.insert(normalized);
+                self.dropped_members += 1;
             }
-            return Err(Error::ArchiveMemberStripped {
-                path: self.source.to_owned(),
-                member: normalized,
-                strip: self.strip as u32,
-            });
+            return Ok(None);
         }
         if kept.len() - 1 > MAX_MEMBER_DEPTH {
             return Err(Error::ArchiveMemberTooDeep {

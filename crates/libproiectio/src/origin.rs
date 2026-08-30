@@ -6,7 +6,7 @@ use serde::Serialize;
 /// Where a desired tree came from, carried on the [`Plan`](crate::Plan) so a
 /// refusal can name its source; [`Display`](std::fmt::Display) renders the
 /// phrase refusal messages carry, as in `from mapping /etc/skills.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Serialize)]
 pub enum Origin {
     /// A tree the caller computed itself, and every removal; renders as the
     /// empty string.

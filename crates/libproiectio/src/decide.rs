@@ -119,6 +119,7 @@ pub(crate) fn decide(
         origins: origins_of(desired, &actions),
         external_targets: options.external_targets,
         actions,
+        dropped: desired.dropped().clone(),
     })
 }
 
@@ -213,6 +214,7 @@ pub(crate) fn decide_removal(
         origins: BTreeMap::new(),
         external_targets: options.external_targets,
         actions,
+        dropped: BTreeSet::new(),
     }
 }
 

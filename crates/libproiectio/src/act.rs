@@ -91,6 +91,7 @@ pub(crate) fn apply(
             save_manifest(state, &manifest)?;
             Ok(ApplyReport {
                 report: Report { rows },
+                dropped: plan.dropped.clone(),
                 manifest,
             })
         }

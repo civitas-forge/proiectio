@@ -4,7 +4,9 @@
 //! The lines reach the template through Standout's context injection, which
 //! structured modes skip, so `--output json` stays the library's own report.
 
-use libproiectio::{ApplyReport, BlockFault, PlannedAction, Report};
+use std::collections::BTreeSet;
+
+use libproiectio::{ApplyReport, BlockFault, Dropped, PlannedAction, Report};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use standout::AmbiguousWidth;
@@ -17,8 +19,20 @@ use crate::app::verbatim;
 #[derive(Serialize)]
 #[serde(untagged)]
 pub(crate) enum RunView {
-    Planned(Report<PlannedAction>),
+    Planned(PlannedRun),
     Applied(Box<ApplyReport>),
+}
+
+/// What a dry run has to report: the plan's rows, and the archive members
+/// `strip` erased on the way to the desired tree. Apply pairs the same two on
+/// [`ApplyReport`]; a plan has no such struct to sit on, so the rows flatten
+/// into this one and both documents carry `dropped` at their top level.
+#[derive(Serialize)]
+pub(crate) struct PlannedRun {
+    #[serde(flatten)]
+    pub(crate) report: Report<PlannedAction>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) dropped: BTreeSet<Dropped>,
 }
 
 /// One printed line: the verb in its style, the path, and what qualifies it.
@@ -98,19 +112,28 @@ fn qualifying(fields: &JsonValue, facts: Option<&JsonValue>) -> Option<String> {
 /// spells it with; `None` where the caller named the path itself, or the row
 /// states no source.
 fn sourcing(facts: Option<&JsonValue>) -> Option<String> {
-    let (kind, payload) = named(facts?.get("origin"));
+    origin_phrase(facts?.get("origin"), None)
+}
+
+/// Which source named something, in the phrase `Origin`'s own message spells
+/// it with. `into` is the place in the destination an expansion puts an
+/// archive, which only a dropped member has to say.
+fn origin_phrase(origin: Option<&JsonValue>, into: Option<&str>) -> Option<String> {
+    let (kind, payload) = named(origin);
     let string = |field| payload?.get(field).and_then(JsonValue::as_str);
     let phrase = match kind {
         "Mapping" => format!("from mapping {}", verbatim(string("path")?)),
         "Tree" => format!("from tree {}", verbatim(string("path")?)),
-        "Archive" => match string("via") {
-            Some(mapping) => format!(
-                "from archive {}, named by mapping {}",
-                verbatim(string("path")?),
-                verbatim(mapping)
-            ),
-            None => format!("from archive {}", verbatim(string("path")?)),
-        },
+        "Archive" => {
+            let mut phrase = format!("from archive {}", verbatim(string("path")?));
+            if let Some(prefix) = into {
+                phrase.push_str(&format!(" into {}", verbatim(prefix)));
+            }
+            if let Some(mapping) = string("via") {
+                phrase.push_str(&format!(", named by mapping {}", verbatim(mapping)));
+            }
+            phrase
+        }
         "Files" => "from individually named files".to_owned(),
         _ => return None,
     };
@@ -287,13 +310,15 @@ impl Tally {
 const PLANNED_VERBS: usize = "would overwrite".len();
 const APPLIED_VERBS: usize = "overwrote".len();
 
+const DROPPED: &str = "dropped";
+
 /// The lines `run.jinja` prints for one write-pass document.
 pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
-    let (rows, planning) = match document.get("report") {
-        Some(applied) => (applied.get("rows"), false),
-        None => (document.get("rows"), true),
+    let (report, planning) = match document.get("report") {
+        Some(applied) => (applied, false),
+        None => (document, true),
     };
-    let Some(rows) = rows.and_then(JsonValue::as_object) else {
+    let Some(rows) = report.get("rows").and_then(JsonValue::as_object) else {
         return RunLines::default();
     };
 
@@ -301,9 +326,27 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
         .iter()
         .map(|(path, row)| (verbatim(path), row))
         .collect();
+    // A plan flattens its rows into the document that carries `dropped`, and
+    // an apply nests its rows under `report` beside it, so drops read from
+    // the top level in both tenses.
+    let dropped: Vec<(String, String)> = document
+        .get("dropped")
+        .and_then(JsonValue::as_array)
+        .map(|records| {
+            records
+                .iter()
+                .filter_map(|record| {
+                    let member = record.get("member").and_then(JsonValue::as_str)?;
+                    Some((verbatim(member), stripping(record)))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let column = paths
         .iter()
-        .map(|(path, _)| visible_width_with_policy(path, width))
+        .map(|(path, _)| path)
+        .chain(dropped.iter().map(|(member, _)| member))
+        .map(|cell| visible_width_with_policy(cell, width))
         .max()
         .unwrap_or_default();
     let verbs = if planning {
@@ -341,10 +384,38 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
             note,
         });
     }
+    for (member, note) in dropped {
+        lines.push(RowView {
+            style: "skipped",
+            verb_pad: pad(verbs, DROPPED, width),
+            verb: DROPPED.to_owned(),
+            path_pad: pad(column, &member, width),
+            path: member,
+            note: Some(note),
+        });
+    }
 
     RunLines {
         rows: lines,
         summary: (!planning).then(|| tally.summary()),
+    }
+}
+
+/// What one dropped member's row says: the `strip` count that left it with no
+/// path, and the archive that carried it — with the place that archive was
+/// bound for, which is what tells two entries expanding one archive apart.
+fn stripping(record: &JsonValue) -> String {
+    let reason = match record.get("strip").and_then(JsonValue::as_u64) {
+        Some(strip) => format!("(no path left after strip {strip})"),
+        None => "(no path left after strip)".to_owned(),
+    };
+    let prefix = record
+        .get("prefix")
+        .and_then(JsonValue::as_str)
+        .filter(|prefix| !prefix.is_empty());
+    match origin_phrase(record.get("origin"), prefix) {
+        Some(source) => format!("{reason} {source}"),
+        None => reason,
     }
 }
 

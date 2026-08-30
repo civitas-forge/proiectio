@@ -196,6 +196,7 @@ fn sourced_by_takes_the_keys_origin_or_else_the_acted_on_keys() {
         path: "/maps/deploy.toml".into(),
     };
     let plan = crate::Plan {
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::from([(path("a"), Origin::Files), (path("d/f"), mapping.clone())]),
         external_targets: Default::default(),

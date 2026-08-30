@@ -201,16 +201,24 @@ pub enum Error {
         /// The projected path both members claim, relative to any prefix.
         member: Utf8PathBuf,
     },
-    /// A file or symlink member of an archive has no path left after `strip`
-    /// dropped its leading components. Not a refusal.
-    #[error("archive {path}: member {member} has nothing left after strip {strip}")]
-    ArchiveMemberStripped {
+    /// An expansion projected nothing while `strip` erased members that
+    /// would have projected. A member dropped among surviving ones is
+    /// tolerated — that is what skipping an AppleDouble sibling is for — but
+    /// an expansion left with nothing to project is a `strip` deeper than the
+    /// archive, not a desired empty tree. An archive that drops nothing is
+    /// outside this rule, so one carrying only directories still projects
+    /// nothing as it always has. Not a refusal.
+    #[error("archive {path}: strip {strip} left nothing to project ({dropped} members dropped)")]
+    ArchiveFullyStripped {
         /// The archive's location.
         path: Utf8PathBuf,
-        /// The member's path as the archive spells it, normalized.
-        member: Utf8PathBuf,
-        /// The number of leading components dropped.
+        /// The number of leading components the expansion asked `strip` to
+        /// drop.
         strip: u32,
+        /// How many members `strip` left with no path, counted per member:
+        /// two members of one archive may carry the same name, and both are
+        /// counted. Directory members are not, having no entry to lose.
+        dropped: usize,
     },
     /// An archive member nests deeper than an expansion places. Not a
     /// refusal.

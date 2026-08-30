@@ -17,8 +17,8 @@ use tempfile::TempDir;
 use crate::cli;
 use crate::exit;
 use crate::testing::{
-    assert_styles_resolved, assert_tags_declared, classified, dot_tarball, harness, manifest_of,
-    modified, skeleton, tarball, tour, utf8,
+    appledouble_tarball, assert_styles_resolved, assert_tags_declared, classified, dot_tarball,
+    flat_tarball, harness, manifest_of, modified, skeleton, tarball, tour, utf8,
 };
 
 fn app() -> App {
@@ -700,6 +700,113 @@ fn write_projects_an_archive_under_strip() {
         std::fs::read(dest.join("nested/leaf.txt")).expect("the projected member"),
         b"leaf\n"
     );
+}
+
+/// A tarball from stock macOS `tar` carries an AppleDouble `._*` sibling at
+/// depth 1, which `--strip 1` leaves with no path. The rest of the archive
+/// projects, and the run says which member was dropped and where it came
+/// from.
+#[test]
+#[serial]
+fn write_drops_the_members_strip_erases_and_projects_the_rest() {
+    let (dir, dest, _) = tour();
+    let archive = appledouble_tarball(&utf8(&dir));
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&["--tree", archive.as_str(), "--strip", "1"], &dest),
+    );
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        format!(
+            "wrote      top\n\
+             dropped    ._skeleton-1.2  (no path left after strip 1) (from archive {archive})\n\
+             1 written, 0 skipped\n"
+        )
+    );
+    assert_eq!(
+        std::fs::read(dest.join("top")).expect("the projected member"),
+        b"top\n"
+    );
+    assert!(!dest.join("._skeleton-1.2").exists());
+}
+
+/// A `--strip` deeper than the archive erases every member, and that fails
+/// the run rather than projecting an empty tree. An empty desired tree plans
+/// a removal, so letting it through would clear everything the owner holds
+/// on a mistyped number: the paths already written stay put, and the run
+/// says how many members the strip consumed.
+#[test]
+#[serial]
+fn a_strip_that_erases_every_member_fails_and_removes_nothing() {
+    let (dir, dest, _) = tour();
+    let archive = flat_tarball(&utf8(&dir));
+    let held = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&["--tree", tarball(&utf8(&dir)).as_str()], &dest),
+    );
+    held.assert_success();
+    let before = manifest_of(&dest);
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&["--tree", archive.as_str(), "--strip", "1"], &dest),
+    );
+
+    assert_eq!(exit::status(result.outcome()), exit::FAILURE);
+    assert_eq!(manifest_of(&dest), before);
+    assert!(dest.join("skeleton-1.2/top").exists());
+}
+
+/// The same drop under structured output, in both tenses: it rides the
+/// library's own report, beside the rows rather than among them, since a
+/// dropped member is spelled as the archive spells it and not as a path in
+/// the destination. A plan flattens its rows beside `dropped` and an apply
+/// nests them under `report`, so `dropped` sits at the top level either way.
+#[test]
+#[serial]
+fn a_dropped_member_rides_the_librarys_own_report() {
+    let (dir, dest, _) = tour();
+    let archive = appledouble_tarball(&utf8(&dir));
+    let record = serde_json::json!([{
+        "member": "._skeleton-1.2",
+        "prefix": "",
+        "strip": 1,
+        "origin": { "Archive": { "path": archive.as_str(), "via": null } },
+    }]);
+
+    let planned = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        write_argv(
+            &["--tree", archive.as_str(), "--strip", "1", "--dry-run"],
+            &dest,
+        ),
+    );
+
+    planned.assert_success();
+    let value: JsonValue = serde_json::from_str(planned.stdout()).expect("a JSON document");
+    assert_eq!(value["rows"]["top"]["verdict"], "Write");
+    assert!(value["rows"].get("._skeleton-1.2").is_none());
+    assert_eq!(value["dropped"], record);
+
+    let applied = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        write_argv(&["--tree", archive.as_str(), "--strip", "1"], &dest),
+    );
+
+    applied.assert_success();
+    let value: JsonValue = serde_json::from_str(applied.stdout()).expect("a JSON document");
+    assert_eq!(value["report"]["rows"]["top"]["verdict"], "Written");
+    assert!(value["report"]["rows"].get("._skeleton-1.2").is_none());
+    assert!(value["report"].get("dropped").is_none());
+    assert_eq!(value["dropped"], record);
 }
 
 /// Without `--strip` the wrapper is part of the tree, which is the same rule

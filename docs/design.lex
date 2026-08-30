@@ -164,10 +164,15 @@ Proiectio Design
 
     :: rust ::
 
-    Desired is BTreeMap<Utf8PathBuf, Entry>, the tree the caller
-    computes or loads with load_mapping, load_tree or load_archive.
+    Desired is the tree the caller computes or loads with
+    load_mapping, load_tree or load_archive: a
+    BTreeMap<Utf8PathBuf, Entry>, beside the Dropped records for
+    archive members a strip consumed (an expansion the strip would
+    consume whole fails the load instead). The records ride the Plan
+    and the ApplyReport so a run's caller sees what its archives shed.
     Everything else the crate exports is data: Plan, Status, Manifest,
-    ApplyReport, Entry, Error. The three stages are crate-internal.
+    ApplyReport, Dropped, Entry, Error. The three stages are
+    crate-internal.
 
     Reads take no lock. The Plan they return says what applying would
     do; it is not a reservation, which is why nothing applies one.

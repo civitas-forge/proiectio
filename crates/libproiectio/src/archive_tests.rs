@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufWriter, Write};
 
@@ -8,7 +8,7 @@ use cap_std::fs_utf8::Dir as Utf8Dir;
 use super::*;
 use crate::test_support::{Fixture, MissingName, Tree, assert_tree, origins_of};
 use crate::{
-    Manifest, Origin, PlanOptions, Refusal, RefusalKind, apply, block_markers, decide,
+    Dropped, Manifest, Origin, PlanOptions, Refusal, RefusalKind, apply, block_markers, decide,
     load_manifest, observe,
 };
 
@@ -262,6 +262,14 @@ fn expand_at(name: &str, bytes: &[u8], strip: u32) -> (Fixture, Result<Desired>)
 
 fn expand_bytes(name: &str, bytes: &[u8], strip: u32) -> Result<Desired> {
     expand_at(name, bytes, strip).1
+}
+
+fn dropped_members(desired: &Desired) -> Vec<&str> {
+    desired
+        .dropped()
+        .iter()
+        .map(|dropped| dropped.member.as_str())
+        .collect()
 }
 
 fn from_archive(fixture: &Fixture, name: &str, entries: BTreeMap<Utf8PathBuf, Entry>) -> Desired {
@@ -540,16 +548,217 @@ fn strip_drops_a_zips_wrapper_directory_too() {
     );
 }
 
-// `strip` erasing a *file* is content dropped silently, which the load
-// refuses to do — while the wrapper directory it erases carried no entry to
-// lose.
+// `strip` erasing a *file* drops that member and keeps the archive, the way
+// GNU tar's `--strip-components` does — stock macOS `tar` writes an
+// AppleDouble `._pkg` beside every `pkg`, and one of those must not cost the
+// whole load. The drop is named rather than silent.
 #[test]
-fn a_file_member_strip_erases_fails_the_load() {
-    let members = vec![Member::dir("pkg/"), Member::file("README", "read me\n")];
+fn a_file_member_strip_erases_is_dropped_and_the_rest_loads() {
+    let members = vec![
+        Member::file("._pkg", "AppleDouble\n"),
+        Member::dir("pkg/"),
+        Member::file("pkg/README", "read me\n"),
+    ];
+    let (fixture, expanded) = expand_at("pkg.tar", &tar(&members), 1);
+    let expanded = expanded.unwrap();
+    assert_eq!(
+        expanded.iter().collect::<BTreeMap<_, _>>(),
+        Tree::new()
+            .file("README", "read me\n")
+            .entries()
+            .iter()
+            .collect::<BTreeMap<_, _>>()
+    );
+    assert_eq!(
+        expanded.dropped(),
+        &BTreeSet::from([Dropped {
+            member: Utf8PathBuf::from("._pkg"),
+            prefix: Utf8PathBuf::new(),
+            strip: 1,
+            origin: Origin::Archive {
+                path: fixture.path("pkg.tar"),
+                via: None,
+            },
+        }])
+    );
+}
+
+// The boundary: `strip` that leaves exactly one component leaves a member
+// whole, and nothing is dropped.
+#[test]
+fn strip_leaving_one_component_drops_nothing() {
+    let members = vec![Member::dir("pkg/"), Member::file("pkg/README", "read me\n")];
+    let (fixture, expanded) = expand_at("pkg.tar", &tar(&members), 1);
+    assert_eq!(
+        expanded.unwrap(),
+        from_archive(
+            &fixture,
+            "pkg.tar",
+            Tree::new().file("README", "read me\n").entries()
+        )
+    );
+}
+
+// A symlink `strip` erases is dropped on the same terms as a file.
+#[test]
+fn a_symlink_member_strip_erases_is_dropped() {
+    let members = vec![
+        Member::symlink("current", "pkg/README"),
+        Member::file("pkg/README", "read me\n"),
+    ];
+    let expanded = expand_bytes("pkg.tar", &tar(&members), 1).unwrap();
+    assert_eq!(dropped_members(&expanded), vec!["current"]);
+}
+
+// A zip goes through the same admission, so its members drop on the same
+// terms.
+#[test]
+fn a_zip_member_strip_erases_is_dropped_and_the_rest_loads() {
+    let members = vec![
+        zip_file("._pkg", "AppleDouble\n"),
+        ZipMember::Dir("pkg/".to_owned()),
+        zip_file("pkg/README", "read me\n"),
+    ];
+    let (fixture, expanded) = expand_at("pkg.zip", &zip(&members), 1);
+    let expanded = expanded.unwrap();
+    assert_eq!(
+        expanded.iter().collect::<BTreeMap<_, _>>(),
+        Tree::new()
+            .file("README", "read me\n")
+            .entries()
+            .iter()
+            .collect::<BTreeMap<_, _>>()
+    );
+    assert_eq!(dropped_members(&expanded), vec!["._pkg"]);
+    let _ = fixture;
+}
+
+// Dropping a member among survivors is the point; dropping every one of
+// them means `strip` is deeper than the archive. That has to fail rather
+// than expand to nothing: an empty desired tree plans a removal, so a
+// mistyped `strip` would clear whatever the owner holds.
+#[test]
+fn an_archive_strip_erases_entirely_fails_the_load() {
+    let members = vec![
+        Member::file("._pkg", "AppleDouble\n"),
+        Member::file("notes.txt", "notes\n"),
+    ];
     assert!(matches!(
         expand_bytes("pkg.tar", &tar(&members), 1).unwrap_err(),
-        Error::ArchiveMemberStripped { member, strip, .. }
-            if member == "README" && strip == 1
+        Error::ArchiveFullyStripped { strip, dropped, .. } if strip == 1 && dropped == 2
+    ));
+}
+
+// Two members of one archive may carry the same name — tar imposes no rule
+// against it, and two raw names can normalize onto one path. Both are erased,
+// and the two halves of the drop disagree on purpose: the report states one
+// record, because "._pkg had no path left" is one fact however many members
+// spelled it, while the diagnostic counts two, because two members are what
+// the strip actually consumed. A survivor keeps the load alive, so the count
+// is observed through a later drop rather than through the error.
+#[test]
+fn one_name_on_two_dropped_members_is_one_record_and_two_drops() {
+    let members = vec![
+        Member::file("._pkg", "first\n"),
+        Member::file("._pkg", "second\n"),
+        Member::file("pkg/README", "read me\n"),
+    ];
+    let expanded = expand_bytes("pkg.tar", &tar(&members), 1).unwrap();
+
+    assert_eq!(dropped_members(&expanded), vec!["._pkg"]);
+
+    // The same pair with no survivor: the error counts members, not names,
+    // so it says two rather than the one the record set holds.
+    let members = vec![
+        Member::file("._pkg", "first\n"),
+        Member::file("._pkg", "second\n"),
+    ];
+    assert!(matches!(
+        expand_bytes("pkg.tar", &tar(&members), 1).unwrap_err(),
+        Error::ArchiveFullyStripped { dropped, .. } if dropped == 2
+    ));
+}
+
+// Two members that survive and claim one projected path are refused, so a
+// repeated name only ever reaches the drop set — never the tree.
+#[test]
+fn one_name_on_two_surviving_members_is_refused_rather_than_recorded_once() {
+    let members = vec![
+        Member::file("pkg/README", "first\n"),
+        Member::file("pkg/README", "second\n"),
+    ];
+    assert!(matches!(
+        expand_bytes("pkg.tar", &tar(&members), 1).unwrap_err(),
+        Error::ArchiveMemberDuplicate { member, .. } if member == "README"
+    ));
+}
+
+// The rule reads the drops, not the emptiness: an archive that carried
+// nothing to begin with expands to an empty tree as it always has, and only
+// an archive `strip` emptied is refused.
+#[test]
+fn an_archive_that_was_always_empty_still_expands_to_nothing() {
+    let expanded = expand_bytes("empty.tar", &tar(&[]), 1).unwrap();
+
+    assert!(expanded.is_empty());
+    assert!(expanded.dropped().is_empty());
+}
+
+// Directories carry no entry, so an archive of nothing but directories
+// projects nothing whatever `strip` does to it — the tour says so — and it
+// drops nothing either, which is what keeps it outside the rule.
+#[test]
+fn an_archive_of_directories_alone_projects_nothing_without_failing() {
+    let members = vec![Member::dir("pkg/"), Member::dir("pkg/sub/")];
+    let expanded = expand_bytes("pkg.tar", &tar(&members), 1).unwrap();
+
+    assert!(expanded.is_empty());
+    assert!(expanded.dropped().is_empty());
+}
+
+// A directory surviving the strip is not something projected: it carries no
+// entry, so the expansion still has nothing to show for itself while a real
+// file was erased. That is the wrong-strip case the rule is for, and it
+// refuses — the surviving directory does not excuse the dropped file.
+#[test]
+fn a_surviving_directory_does_not_save_an_expansion_that_projects_nothing() {
+    let members = vec![
+        Member::file("._pkg", "AppleDouble\n"),
+        Member::dir("pkg/sub/"),
+    ];
+    assert!(matches!(
+        expand_bytes("pkg.tar", &tar(&members), 1).unwrap_err(),
+        Error::ArchiveFullyStripped { strip, dropped, .. } if strip == 1 && dropped == 1
+    ));
+}
+
+// A dropped member is still a member: it costs a place against the cap on
+// how many one archive may carry, so an archive cannot buy headroom by
+// filling itself with members `strip` erases.
+#[test]
+fn members_strip_erases_still_count_against_the_member_cap() {
+    let fixture = Tree::new().materialize();
+    let path = fixture.path("many.tar.gz");
+    {
+        let file = fs::File::create(&path).expect("create the archive");
+        let mut encoder =
+            flate2::write::GzEncoder::new(BufWriter::new(file), flate2::Compression::fast());
+        for index in 0..=MAX_MEMBERS {
+            write_header(
+                &mut encoder,
+                format!("._m{index}").as_bytes(),
+                REGULAR,
+                0o644,
+                "",
+                0,
+            );
+        }
+        write_end(&mut encoder);
+        encoder.finish().expect("finish the archive");
+    }
+    assert!(matches!(
+        load_archive(&path, 1).unwrap_err(),
+        Error::ArchiveTooManyMembers { limit, .. } if limit == MAX_MEMBERS
     ));
 }
 
@@ -1173,7 +1382,8 @@ fn a_prefix_places_every_member_beneath_it() {
         None,
         &new_budget(),
     )
-    .unwrap();
+    .unwrap()
+    .tree;
     assert_eq!(
         tree.keys().map(|path| path.as_str()).collect::<Vec<_>>(),
         vec![
@@ -1229,7 +1439,8 @@ fn a_prefix_leaves_a_symlink_target_verbatim() {
         None,
         &new_budget(),
     )
-    .unwrap();
+    .unwrap()
+    .tree;
     assert_eq!(
         tree.get(Utf8Path::new("vendor/current")),
         Some(&Entry::Symlink {
