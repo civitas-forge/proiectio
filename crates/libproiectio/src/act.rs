@@ -19,6 +19,7 @@ use crate::containment::{
     Hop, contained_normalize, contained_target, contained_target_chain, is_pathname,
 };
 use crate::observe::{Container, io_error, read_container, sha256_hex_of_reader};
+use crate::report::recorded_shape;
 use crate::{
     Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error, ExternalTargetPolicy,
     MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature,
@@ -435,14 +436,6 @@ fn entry_row(
             origin: Some(plan.origin_of(path)),
         }),
         verdict,
-    }
-}
-
-fn recorded_shape(kind: &EntryKind, executable: bool) -> PathShape {
-    match kind {
-        EntryKind::File => PathShape::File { executable },
-        EntryKind::Symlink => PathShape::Symlink { target: None },
-        EntryKind::Block { .. } => PathShape::Block,
     }
 }
 

@@ -141,6 +141,16 @@ fn verdicts(report: &ApplyReport) -> BTreeMap<Utf8PathBuf, ApplyOutcome> {
         .collect()
 }
 
+// The facts every row of a report carries, whatever its verdict type: what
+// a plan's rows and an apply's rows are compared on.
+fn stated_facts<V>(
+    rows: &BTreeMap<Utf8PathBuf, Row<V>>,
+) -> BTreeMap<Utf8PathBuf, Option<PathFacts>> {
+    rows.iter()
+        .map(|(path, row)| (path.clone(), row.facts.clone()))
+        .collect()
+}
+
 // The facts a report carries for one path.
 fn facts_at<'a>(report: &'a ApplyReport, path: &str) -> &'a PathFacts {
     report.report.rows[Utf8Path::new(path)]
@@ -405,16 +415,26 @@ fn removal_pipeline(
     scope: RemovalScope<'_>,
     policy: DriftPolicy,
 ) -> Result<ApplyReport> {
-    let (manifest, plan) = {
-        let dest = dir_at(dest.root());
-        let state = dir_at(state.root());
-        let manifest = load_manifest(&state).expect("load manifest");
-        let observations =
-            observe(&dest, &manifest, &BlockMarkers::new()).expect("observe destination");
-        let plan = decide_removal(owner, scope, &manifest, &observations, None, policy);
-        (manifest, plan)
-    };
+    let (manifest, plan) = removal_plan_for(dest, state, owner, scope, policy);
     apply_at(dest, state, &manifest, &plan)
+}
+
+// The observe → decide half of a removal, split out so tests can read the
+// plan a dry run would print before applying the same plan.
+fn removal_plan_for(
+    dest: &Fixture,
+    state: &Fixture,
+    owner: &str,
+    scope: RemovalScope<'_>,
+    policy: DriftPolicy,
+) -> (Manifest, Plan) {
+    let dest = dir_at(dest.root());
+    let state = dir_at(state.root());
+    let manifest = load_manifest(&state).expect("load manifest");
+    let observations =
+        observe(&dest, &manifest, &BlockMarkers::new()).expect("observe destination");
+    let plan = decide_removal(owner, scope, &manifest, &observations, None, policy);
+    (manifest, plan)
 }
 
 fn requested(paths: &[&str]) -> BTreeSet<Utf8PathBuf> {
@@ -574,6 +594,68 @@ fn a_named_path_the_owner_does_not_hold_is_reported_and_nothing_else() {
     // manifest never recorded is still there, byte for byte.
     assert_tree(dest.root(), &Tree::new().file("foreign.txt", "theirs"));
     assert!(persisted(&state).entries.is_empty());
+}
+
+#[test]
+fn a_removal_states_the_same_facts_whether_it_is_planned_or_applied() {
+    let (dest, state) = fixtures();
+    let mine = Tree::new()
+        .file("gone.txt", "projected")
+        .file("mine.txt", "projected");
+    pipeline(&dest, &state, "own", &mine.entries(), DriftPolicy::Refuse).expect("project");
+    let theirs = Tree::new().file("theirs.txt", "projected");
+    pipeline(
+        &dest,
+        &state,
+        "other",
+        &theirs.entries(),
+        DriftPolicy::Refuse,
+    )
+    .expect("project under a second owner");
+    fs::remove_file(dest.path("gone.txt")).expect("delete one recorded file by hand");
+
+    let (manifest, plan) = removal_plan_for(
+        &dest,
+        &state,
+        "own",
+        RemovalScope::Paths(&requested(&[
+            "gone.txt",
+            "mine.txt",
+            "theirs.txt",
+            "typo.txt",
+        ])),
+        DriftPolicy::Refuse,
+    );
+    let planned = plan.report(&manifest);
+    let applied = apply_at(&dest, &state, &manifest, &plan).expect("removal");
+
+    assert_eq!(
+        verdicts(&applied),
+        BTreeMap::from([
+            ("gone.txt".into(), ApplyOutcome::Forgot),
+            ("mine.txt".into(), ApplyOutcome::Removed),
+            ("theirs.txt".into(), ApplyOutcome::NotRecorded),
+            ("typo.txt".into(), ApplyOutcome::NotRecorded),
+        ])
+    );
+    // The rows a dry run prints state what the rows of the run itself state,
+    // path for path: a caller diffing one report against the other sees the
+    // verdicts change and nothing else. A row saying the owner does not hold
+    // the path still names whoever does, and one saying the record was
+    // dropped still names the shape it recorded.
+    assert_eq!(
+        stated_facts(&planned.rows),
+        stated_facts(&applied.report.rows)
+    );
+    assert_eq!(
+        facts_at(&applied, "theirs.txt").owners,
+        BTreeSet::from(["other".to_owned()])
+    );
+    assert_eq!(
+        facts_at(&applied, "gone.txt").shape,
+        Some(PathShape::File { executable: false })
+    );
+    assert_eq!(applied.report.rows[Utf8Path::new("typo.txt")].facts, None);
 }
 
 #[test]

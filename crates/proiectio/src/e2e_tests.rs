@@ -500,6 +500,68 @@ fn rm_of_a_path_the_owner_never_recorded_says_so_and_still_succeeds() {
     );
 }
 
+/// A path another owner holds alone is one this owner does not hold, so the
+/// removal reports it and leaves it where it stands. The row's facts name the
+/// owner that does hold it, which is what tells the two states apart.
+#[test]
+#[serial]
+fn rm_of_a_path_another_owner_holds_reports_it_and_leaves_it_alone() {
+    let (dir, dest, deploy) = tour();
+    run(
+        &dir,
+        &[
+            "write",
+            deploy.as_str(),
+            "--dest",
+            dest.as_str(),
+            "--owner",
+            "them",
+        ],
+    )
+    .assert_success();
+
+    let result = run(
+        &dir,
+        &[
+            "rm",
+            "config/settings.toml",
+            "--dest",
+            dest.as_str(),
+            "--owner",
+            "me",
+        ],
+    );
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        "no record  config/settings.toml\n1 not recorded\n"
+    );
+    assert!(dest.join("config/settings.toml").exists());
+    assert_eq!(
+        manifest_of(&dest).entries[Utf8Path::new("config/settings.toml")].owners,
+        std::collections::BTreeSet::from(["them".to_owned()])
+    );
+
+    let json = run_as(
+        &dir,
+        OutputMode::Json,
+        &[
+            "rm",
+            "config/settings.toml",
+            "--dest",
+            dest.as_str(),
+            "--owner",
+            "me",
+        ],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let row = &value["report"]["rows"]["config/settings.toml"];
+    assert_eq!(row["verdict"], "NotRecorded");
+    assert_eq!(row["facts"]["owners"], serde_json::json!(["them"]));
+}
+
 /// A refused dry run of `rm` renders the whole plan too: the rows it would
 /// remove beside the row it refuses, on stdout and with the refusal status,
 /// and structured output is the library's own plan document.

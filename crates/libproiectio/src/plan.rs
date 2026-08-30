@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
+use crate::report::recorded_shape;
 use crate::{
     Entry, EntryKind, Manifest, ManifestEntry, Origin, PathFacts, PathShape, Refusal, Refused,
     Report, Row,
@@ -131,31 +132,20 @@ fn facts_of(
         }
         Action::Remove {
             expected: Some(expected),
-        } => Some(match expected.kind {
-            EntryKind::File => PathShape::File {
-                executable: expected.executable,
-            },
-            EntryKind::Symlink => PathShape::Symlink { target: None },
-            EntryKind::Block { .. } => PathShape::Block,
-        }),
-        Action::Release => {
+        } => Some(recorded_shape(&expected.kind, expected.executable)),
+        // None of these three decides a node, so each row states what the
+        // manifest records at the path — the shape and the owners, including
+        // the owner a release drops and the other owner a path this one does
+        // not hold turns out to have. Apply's row for the same path draws on
+        // the same entry, so a dry run and a real run state alike.
+        Action::Release | Action::NotRecorded | Action::Remove { expected: None } => {
             let recorded = recorded?;
-            Some(match recorded.kind {
-                EntryKind::File => PathShape::File {
-                    executable: recorded.executable,
-                },
-                EntryKind::Symlink => PathShape::Symlink { target: None },
-                EntryKind::Block { .. } => PathShape::Block,
-            })
+            Some(recorded_shape(&recorded.kind, recorded.executable))
         }
-        // A refusal decides no node, so its row states the source that named
-        // the path, plus the owners already recorded there. A path the owner
-        // does not hold decides no node either, and its row states whoever
-        // does hold it.
-        Action::Refuse { .. } | Action::NotRecorded => None,
-        Action::Remove { expected: None } => {
-            return None;
-        }
+        // A refusal decides no node either, but no apply row follows it: a
+        // plan holding one refuses whole. Its row states the source that
+        // named the path, plus the owners already recorded there.
+        Action::Refuse { .. } => None,
     };
     Some(PathFacts {
         shape,
