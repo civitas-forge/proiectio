@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
 use crate::test_support::{Tree, assert_tree};
-use crate::{Desired, Entry, PlanOptions, Projection};
+use crate::{Desired, Entry, PathFacts, PathShape, PlanOptions, Projection};
 
 fn projection(dest: &Utf8Path, state: &Utf8Path) -> Projection {
     Projection::new(dest.to_owned(), state.to_owned())
@@ -26,10 +26,13 @@ fn project(projection: &Projection, owner: &str, desired: BTreeMap<Utf8PathBuf, 
 
 fn states(status: &Status) -> Vec<(&str, PathState)> {
     status
-        .paths
         .iter()
-        .map(|(path, state)| (path.as_str(), *state))
+        .map(|(path, row)| (path.as_str(), row.verdict))
         .collect()
+}
+
+fn facts<'status>(status: &'status Status, path: &str) -> &'status Option<PathFacts> {
+    &status.rows[Utf8Path::new(path)].facts
 }
 
 #[test]
@@ -99,6 +102,84 @@ fn reports_one_state_per_path_of_the_union() {
             ("gone.txt", PathState::Missing),
             ("theirs.txt", PathState::Foreign),
         ]
+    );
+}
+
+#[test]
+fn a_recorded_row_carries_the_manifest_entry_and_a_foreign_one_carries_nothing() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(dest.root(), state.root());
+    let tree = Tree::new()
+        .executable("bin/tool", "#!/bin/sh\n")
+        .symlink("current", "bin/tool");
+    project(&projection, "site", tree.entries());
+    project(&projection, "harness", tree.entries());
+    fs::write(dest.path("theirs.txt"), "never ours").expect("plant a foreign file");
+
+    let report = projection.status().expect("status");
+
+    assert_eq!(
+        facts(&report, "bin/tool"),
+        &Some(PathFacts {
+            shape: PathShape::File { executable: true },
+            owners: BTreeSet::from(["harness".to_owned(), "site".to_owned()]),
+            origin: None,
+        })
+    );
+    // The manifest records a link's target only as a hash, so no status row
+    // carries one back.
+    assert_eq!(
+        facts(&report, "current"),
+        &Some(PathFacts {
+            shape: PathShape::Symlink { target: None },
+            owners: BTreeSet::from(["harness".to_owned(), "site".to_owned()]),
+            origin: None,
+        })
+    );
+    assert_eq!(facts(&report, "theirs.txt"), &None);
+}
+
+#[test]
+fn a_status_serializes_one_row_per_path() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(dest.root(), state.root());
+    let tree = Tree::new()
+        .file("clean.txt", "as written")
+        .file("gone.txt", "as written");
+    project(&projection, "site", tree.entries());
+    fs::remove_file(dest.path("gone.txt")).expect("delete");
+    fs::write(dest.path("theirs.txt"), "never ours").expect("plant a foreign file");
+
+    let json = serde_json::to_value(projection.status().expect("status")).expect("serialize");
+
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "rows": {
+                "clean.txt": {
+                    "facts": {
+                        "shape": { "File": { "executable": false } },
+                        "owners": ["site"],
+                        "origin": null,
+                    },
+                    "verdict": "Clean",
+                },
+                "gone.txt": {
+                    "facts": {
+                        "shape": { "File": { "executable": false } },
+                        "owners": ["site"],
+                        "origin": null,
+                    },
+                    "verdict": "Missing",
+                },
+                "theirs.txt": {
+                    "facts": null,
+                    "verdict": "Foreign",
+                },
+            }
+        })
     );
 }
 

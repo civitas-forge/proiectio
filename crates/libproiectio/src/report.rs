@@ -30,6 +30,14 @@ pub struct Report<V> {
     pub rows: BTreeMap<Utf8PathBuf, Row<V>>,
 }
 
+impl<V> Default for Report<V> {
+    fn default() -> Self {
+        Self {
+            rows: BTreeMap::new(),
+        }
+    }
+}
+
 impl<V: Ord + Clone> Report<V> {
     pub fn summary(&self) -> BTreeMap<V, usize> {
         let mut counts = BTreeMap::new();
