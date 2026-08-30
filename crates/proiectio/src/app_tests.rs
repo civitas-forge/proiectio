@@ -17,8 +17,8 @@ use tempfile::TempDir;
 use crate::cli;
 use crate::exit;
 use crate::testing::{
-    assert_styles_resolved, assert_tags_declared, classified, harness, manifest_of, modified,
-    skeleton, tarball, tour, utf8,
+    assert_styles_resolved, assert_tags_declared, classified, dot_tarball, harness, manifest_of,
+    modified, skeleton, tarball, tour, utf8,
 };
 
 fn app() -> App {
@@ -706,6 +706,32 @@ fn an_archive_without_strip_keeps_its_leading_component() {
 
     result.assert_success();
     result.assert_stdout_contains("skeleton-1.2/top");
+}
+
+/// An archive packaged as `tar czf dot.tgz -C skel .` names every member
+/// with a leading `./`, which is no part of the path it projects to.
+#[test]
+#[serial]
+fn write_projects_an_archive_whose_members_carry_a_leading_dot() {
+    let (dir, dest, _) = tour();
+    let archive = dot_tarball(&utf8(&dir));
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&["--tree", archive.as_str()], &dest),
+    );
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        "wrote      x/a.txt\n\
+         1 written, 0 skipped\n"
+    );
+    assert_eq!(
+        std::fs::read(dest.join("x/a.txt")).expect("the projected member"),
+        b"a\n"
+    );
 }
 
 /// Loose files are a one-entry-per-basename tree.
