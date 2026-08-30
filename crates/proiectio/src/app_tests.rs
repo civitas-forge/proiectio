@@ -811,6 +811,32 @@ fn a_dry_run_reports_the_plan_and_writes_nothing() {
          would link       current               -> releases/1.2.3\n"
     );
     assert!(!dest.join("bin/tool").exists());
+    assert!(
+        !dest.join(".proiectio").exists(),
+        "a dry run created the state directory"
+    );
+}
+
+/// A dry run reads outside the single-writer guard, so it reports the plan
+/// while another writer holds the state directory's lock.
+#[test]
+#[serial]
+fn a_dry_run_reports_the_plan_while_another_writer_holds_the_lock() {
+    let (dir, dest, deploy) = tour();
+    let held = Projection::new(&dest, None)
+        .expect("a projection")
+        .begin()
+        .expect("a run holding the lock");
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--dry-run"], &dest),
+    );
+
+    result.assert_success();
+    result.assert_stdout_contains("would write      config/settings.toml");
+    drop(held);
 }
 
 /// A plan that overwrites says so, and why.
@@ -911,6 +937,54 @@ fn force_overwrites_a_drifted_path() {
     );
 }
 
+/// A path two owners hold, dropped by one of them: the row reads released,
+/// the file stays on disk, and the summary counts it apart from a removal.
+#[test]
+#[serial]
+fn dropping_a_path_another_owner_holds_releases_it_rather_than_removing_it() {
+    let (dir, dest, _) = tour();
+    let root = utf8(&dir);
+    let shared = root.join("shared.toml");
+    std::fs::write(
+        shared.as_std_path(),
+        b"version = 1\n\n[files.\"conf\"]\ncontents = \"shared\\n\"\n",
+    )
+    .expect("a mapping two owners project");
+    let apart = root.join("apart.toml");
+    std::fs::write(
+        apart.as_std_path(),
+        b"version = 1\n\n[files.\"apart\"]\ncontents = \"apart\\n\"\n",
+    )
+    .expect("a mapping naming another path");
+    for owner in ["one", "two"] {
+        harness(&dir)
+            .run(
+                &app(),
+                cli::command(),
+                write_argv(&[shared.as_str(), "--owner", owner], &dest),
+            )
+            .assert_success();
+    }
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[apart.as_str(), "--owner", "one"], &dest),
+    );
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        "wrote      apart\n\
+         released   conf\n\
+         1 written, 0 skipped, 1 released\n"
+    );
+    assert_eq!(
+        std::fs::read(dest.join("conf")).expect("the path the other owner still holds"),
+        b"shared\n"
+    );
+}
+
 /// A symlink out of the destination refuses until the invocation permits it.
 #[test]
 #[serial]
@@ -956,13 +1030,10 @@ fn a_dry_run_is_the_librarys_own_plan_report() {
 
     result.assert_success();
     let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
-    let mut run = Projection::new(&dest, None)
-        .expect("a projection")
-        .begin()
-        .expect("a run");
+    let projection = Projection::new(&dest, None).expect("a projection");
     let desired = libproiectio::load_mapping(&deploy).expect("a desired tree");
-    let manifest = run.manifest().clone();
-    let plan = run
+    let manifest = projection.manifest().expect("a manifest");
+    let plan = projection
         .plan(
             crate::testing::OWNER,
             &desired,

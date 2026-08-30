@@ -11,6 +11,7 @@
 .overwrote { color: yellow; }
 .skipped { color: blue; }
 .removed { color: red; }
+.unknown { color: magenta; }
 
 .key { color: yellow; }
 .ok {
@@ -28,6 +29,7 @@
     .overwrote { color: #915c00; }
     .skipped { color: #005f87; }
     .removed { color: #aa0000; }
+    .unknown { color: #7b2d8b; }
     .key { color: #915c00; }
     .ok { color: #006400; }
 }
@@ -42,6 +44,7 @@
     .overwrote { color: #ffd75f; }
     .skipped { color: #5fafd7; }
     .removed { color: #ff5f5f; }
+    .unknown { color: #d787ff; }
     .key { color: #ffd75f; }
     .ok { color: #5fd75f; }
 }

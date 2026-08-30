@@ -5,8 +5,8 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use clapfig::ConfigAction;
 use libproiectio::{
-    Desired, DriftPolicy, Error, ExternalTargetPolicy, PlanOptions, Projection, Status, load_files,
-    load_mapping, load_source,
+    Desired, DriftPolicy, Error, ExternalTargetPolicy, Plan, PlanOptions, Projection, Status,
+    load_files, load_mapping, load_source,
 };
 use standout::cli::Output;
 use standout::handler;
@@ -54,18 +54,29 @@ pub(crate) fn write(
         state_dir.as_deref().map(Utf8Path::new),
     )
     .map_err(exit::failure)?;
-    let mut run = projection.begin().map_err(exit::failure)?;
-    let manifest = run.manifest().clone();
-    let plan = run.plan(&owner, &desired, options).map_err(exit::failure)?;
-    if let Some(refused) = plan.refused() {
-        return Err(exit::failure(Error::Refused(refused)));
-    }
     if dry_run {
+        let manifest = projection.manifest().map_err(exit::failure)?;
+        let plan = projection
+            .plan(&owner, &desired, options)
+            .map_err(exit::failure)?;
+        refusals(&plan)?;
         return Ok(Output::Render(WriteView::Planned(plan.report(&manifest))));
     }
+    let mut run = projection.begin().map_err(exit::failure)?;
+    let plan = run.plan(&owner, &desired, options).map_err(exit::failure)?;
+    refusals(plan)?;
     run.apply()
         .map(|applied| Output::Render(WriteView::Applied(Box::new(applied))))
         .map_err(exit::failure)
+}
+
+/// A plan carrying refusals reaches the shell as `Error::Refused`, which
+/// spends the refusal status; one carrying none passes.
+fn refusals(plan: &Plan) -> Result<(), anyhow::Error> {
+    match plan.refused() {
+        Some(refused) => Err(exit::failure(Error::Refused(refused))),
+        None => Ok(()),
+    }
 }
 
 /// `--tree` names the tree, one positional a mapping file, two or more the

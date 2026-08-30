@@ -6,7 +6,7 @@
 {%- set shown = (entry[0]|verbatim)|length -%}
 {%- if shown > column.path %}{% set column.path = shown %}{% endif -%}
 {%- endfor -%}
-{%- set tally = namespace(wrote=0, skipped=0, removed=0) -%}
+{%- set tally = namespace(wrote=0, skipped=0, removed=0, released=0) -%}
 {%- for path, row in entries -%}
 {%- set shape = row.facts.shape if row.facts else none -%}
 {%- set target = shape.Symlink.target if shape and shape.Symlink is defined else none -%}
@@ -51,10 +51,13 @@
 {%- elif verdict == "Release" -%}
 {%- set style = "removed" -%}
 {%- set verb = "would release" -%}
-{%- else -%}
+{%- elif verdict == "Released" -%}
 {%- set style = "removed" -%}
 {%- set verb = "released" -%}
-{%- set tally.removed = tally.removed + 1 -%}
+{%- set tally.released = tally.released + 1 -%}
+{%- else -%}
+{%- set style = "unknown" -%}
+{%- set verb = (verdict|string)|verbatim -%}
 {%- endif -%}
 {%- if target -%}
 {%- set style = "linked" -%}
@@ -66,12 +69,15 @@
 {{ verb|pad_right(15 if planning else 9) }}  {% if note %}{{ (path|verbatim)|pad_right(column.path) }}  {{ note }}{% else %}{{ path|verbatim }}{% endif %}
 {% endfor -%}
 {%- if not planning -%}
-{%- if tally.wrote == 0 and tally.removed == 0 and tally.skipped > 0 -%}
+{%- if tally.wrote == 0 and tally.removed == 0 and tally.released == 0 and tally.skipped > 0 -%}
 {%- set summary = tally.skipped ~ " unchanged" -%}
 {%- else -%}
 {%- set summary = tally.wrote ~ " written, " ~ tally.skipped ~ " skipped" -%}
 {%- if tally.removed -%}
 {%- set summary = summary ~ ", " ~ tally.removed ~ " removed" -%}
+{%- endif -%}
+{%- if tally.released -%}
+{%- set summary = summary ~ ", " ~ tally.released ~ " released" -%}
 {%- endif -%}
 {%- endif -%}
 {{ summary }}
