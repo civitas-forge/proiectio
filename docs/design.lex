@@ -43,10 +43,11 @@ Proiectio Design
 2. Classification and Apply
 
     Each path in the union of the manifest and the directory gets one
-    state; status reports them all except the unrecorded directories. The
-    desired tree enters only when plan compares this classification
+    state; status reports them all except the unrecorded directories.
+    The desired tree enters only when plan compares this classification
     against it to choose actions. A non-UTF-8 entry on disk can never
-    match a desired or a recorded path, so it stays outside the table — never overwritten, never removed, and a
+    match a desired or a recorded path, so it stays outside the table —
+    never overwritten, never removed, and a
     directory holding one is never pruned:
 
     | State   | Meaning                                            |
