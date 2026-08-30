@@ -200,9 +200,9 @@ fn csv_writes_one_row_per_path_under_the_same_header() {
     assert_eq!(
         recorded.stdout(),
         "path,verdict,shape,executable,owners\n\
-         bin/tool,Drifted,file,false,default\n\
-         config/settings.toml,Clean,file,false,default\n\
-         current,Missing,file,false,default\n"
+         bin/tool,Drifted,file,false,\"[\"\"default\"\"]\"\n\
+         config/settings.toml,Clean,file,false,\"[\"\"default\"\"]\"\n\
+         current,Missing,file,false,\"[\"\"default\"\"]\"\n"
     );
 }
 

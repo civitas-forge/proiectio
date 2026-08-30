@@ -307,7 +307,8 @@ impl Tally {
 }
 
 /// The verb column: the widest verb a plan spells, and the widest a real run
-/// spells.
+/// spells. The tests drive every verdict the library declares through
+/// `spelling` and check the verb still fits its tense's column.
 const PLANNED_VERBS: usize = "would overwrite".len();
 const APPLIED_VERBS: usize = "overwrote".len();
 

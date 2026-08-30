@@ -33,7 +33,9 @@ pub(crate) struct StatusLines {
     pub(crate) rows: Vec<StateView>,
 }
 
-/// The classification column: the widest word a state reads as.
+/// The classification column: the widest word a state reads as. The tests
+/// drive every state the library declares through `spelling` and check the
+/// word still fits here.
 const STATES: usize = "drifted".len();
 
 /// The style and the word one classification reads as; a verdict this CLI does
@@ -48,6 +50,18 @@ fn spelling(verdict: &str) -> (&'static str, String) {
     }
 }
 
+/// A verdict is a name, or a name carrying fields; a row reads both, the way
+/// `run.rs` reads its own verdicts, so a verdict that ever grows a payload
+/// keeps its line instead of dropping out of the listing. A row stating no
+/// verdict is a row all the same, and reads as the empty name — unknown.
+fn verdict_name(verdict: Option<&JsonValue>) -> &str {
+    match verdict {
+        Some(JsonValue::String(name)) => name,
+        Some(JsonValue::Object(fields)) => fields.keys().next().map_or("", String::as_str),
+        _ => "",
+    }
+}
+
 /// The lines `status.jinja` prints for one status document.
 pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> StatusLines {
     let Some(rows) = document.get("rows").and_then(JsonValue::as_array) else {
@@ -58,8 +72,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> StatusLines 
         .iter()
         .filter_map(|row| {
             let path = row.get("path")?.as_str()?;
-            let verdict = row.get("verdict").and_then(JsonValue::as_str)?;
-            let (style, state) = spelling(verdict);
+            let (style, state) = spelling(verdict_name(row.get("verdict")));
             Some(StateView {
                 state_pad: pad(STATES, &state, width),
                 style,
@@ -101,7 +114,10 @@ fn cell(value: Option<String>) -> JsonValue {
     JsonValue::String(value.unwrap_or_default())
 }
 
-/// The shape the manifest records for the path, in one word.
+/// The shape the manifest records for the path, in one word. A recorded link
+/// states no target beside it, and no column here can: the manifest records a
+/// link by the hash of its target, so every status row spells a link's shape
+/// as `Symlink { target: null }`.
 fn shape(row: &JsonValue) -> Option<String> {
     let shape = row.get("facts")?.get("shape")?;
     let named = match shape {
@@ -124,16 +140,16 @@ fn executable(row: &JsonValue) -> Option<String> {
     Some(executable.to_string())
 }
 
-/// The owners holding the path, joined the way the library joins them.
+/// The owners holding the path, as the JSON array the row states them in. An
+/// owner name is an opaque string, so any character this cell joined names
+/// with could also sit inside one, and `["a+b", "c"]` and `["a", "b+c"]` would
+/// reach a reader as the same cell; the array says which is which.
 fn owners(row: &JsonValue) -> Option<String> {
-    let owners: Vec<&str> = row
-        .get("facts")?
-        .get("owners")?
-        .as_array()?
-        .iter()
-        .filter_map(JsonValue::as_str)
-        .collect();
-    (!owners.is_empty()).then(|| owners.join("+"))
+    let owners = row.get("facts")?.get("owners")?.as_array()?;
+    if owners.is_empty() {
+        return None;
+    }
+    serde_json::to_string(owners).ok()
 }
 
 #[cfg(test)]

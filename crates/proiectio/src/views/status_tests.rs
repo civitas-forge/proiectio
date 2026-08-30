@@ -40,7 +40,35 @@ fn each_state_spells_one_style_and_one_word() {
         ));
 
         assert_eq!((row.style, row.state.as_str()), (style, word), "{state:?}");
+        // The column is a constant, and the words it has to hold come from the
+        // library; a state spelled wider than `STATES` would leave no pad and
+        // push its path out of line.
+        assert_eq!(
+            row.state.len() + row.state_pad.len(),
+            STATES,
+            "{state:?} fits the state column"
+        );
     }
+}
+
+/// A verdict that carries fields is still a verdict: the row reads its name
+/// and stays in the listing, rather than dropping out of it.
+#[test]
+fn a_verdict_carrying_fields_reads_as_its_name() {
+    let row = only(status(
+        json!({ "one": { "verdict": { "Drifted": { "reason": "ContentChanged" } }, "facts": null } }),
+    ));
+
+    assert_eq!((row.style, row.state.as_str()), ("drifted", "drifted"));
+}
+
+/// A row stating no verdict keeps its line too: the path is what the listing
+/// is about, and a row is not the place to lose one.
+#[test]
+fn a_row_stating_no_verdict_keeps_its_path() {
+    let row = only(status(json!({ "one": { "facts": null } })));
+
+    assert_eq!((row.style, row.path.as_str()), ("unknown", "one"));
 }
 
 /// A verdict this CLI has no word for reads as its own name rather than
@@ -122,8 +150,35 @@ fn csv_writes_one_row_per_path_under_a_fixed_header() {
     assert_eq!(
         csv,
         "path,verdict,shape,executable,owners\n\
-         bin/tool,Clean,file,true,harness+site\n\
+         bin/tool,Clean,file,true,\"[\"\"harness\"\",\"\"site\"\"]\"\n\
          bin_tool,Foreign,,,\n"
+    );
+}
+
+/// The owners cell is the JSON array, so two owner sets that a joined cell
+/// would spell alike stay two cells. An owner name is opaque: nothing stops
+/// one from carrying whatever character a join would use.
+#[test]
+fn owner_names_carrying_a_separator_stay_the_owners_they_are() {
+    let cells = |owners| {
+        let document = json!({
+            "rows": [{
+                "path": "one",
+                "verdict": "Clean",
+                "facts": { "shape": null, "owners": owners, "origin": null },
+            }]
+        });
+        csv()
+            .csv_projection()
+            .render(&document)
+            .expect("a CSV projection")
+    };
+
+    assert_ne!(cells(json!(["a+b", "c"])), cells(json!(["a", "b+c"])));
+    assert_eq!(
+        cells(json!(["a+b", "c"])),
+        "path,verdict,shape,executable,owners\n\
+         one,Clean,,,\"[\"\"a+b\"\",\"\"c\"\"]\"\n"
     );
 }
 
@@ -150,6 +205,7 @@ fn a_link_row_states_its_shape_and_no_executable_bit() {
 
     assert_eq!(
         csv,
-        "path,verdict,shape,executable,owners\ncurrent,Missing,symlink,,site\n"
+        "path,verdict,shape,executable,owners\n\
+         current,Missing,symlink,,\"[\"\"site\"\"]\"\n"
     );
 }

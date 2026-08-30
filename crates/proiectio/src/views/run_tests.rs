@@ -139,6 +139,14 @@ fn every_verdict_the_library_declares_reads_as_one_spelling() {
         let row = only(planned(json!({ "one": file(serialized(&verdict)) })));
 
         assert_eq!((row.style, row.verb.as_str()), spelled, "{verdict:?}");
+        // The verb column is a constant, and the verbs it has to hold come
+        // from these enums; one spelled wider than the constant would leave no
+        // pad and push its path out of line.
+        assert_eq!(
+            row.verb.len() + row.verb_pad.len(),
+            PLANNED_VERBS,
+            "{verdict:?} fits the verb column"
+        );
     }
     for verdict in [
         ApplyOutcome::Written,
@@ -165,6 +173,11 @@ fn every_verdict_the_library_declares_reads_as_one_spelling() {
         });
 
         assert_eq!((row.style, row.verb.as_str()), spelled, "{verdict:?}");
+        assert_eq!(
+            row.verb.len() + row.verb_pad.len(),
+            APPLIED_VERBS,
+            "{verdict:?} fits the verb column"
+        );
         // The second stringly mapping: a verdict `counted` does not know
         // falls out of the tally, and a run of one row reads as idle.
         assert_ne!(
