@@ -25,6 +25,7 @@ compile_error!(
 );
 
 mod act;
+mod apply_report;
 mod archive;
 mod block;
 mod containment;
@@ -48,6 +49,7 @@ mod test_support;
 mod tree;
 
 pub(crate) use act::*;
+pub use apply_report::*;
 pub use archive::*;
 pub use containment::*;
 pub use decide::*;
