@@ -157,28 +157,31 @@ fn a_status_serializes_one_row_per_path() {
     assert_eq!(
         json,
         serde_json::json!({
-            "rows": {
-                "clean.txt": {
-                    "facts": {
-                        "shape": { "File": { "executable": false } },
-                        "owners": ["site"],
-                        "origin": null,
-                    },
+            "rows": [
+                {
+                    "path": "clean.txt",
                     "verdict": "Clean",
-                },
-                "gone.txt": {
                     "facts": {
                         "shape": { "File": { "executable": false } },
                         "owners": ["site"],
                         "origin": null,
                     },
+                },
+                {
+                    "path": "gone.txt",
                     "verdict": "Missing",
+                    "facts": {
+                        "shape": { "File": { "executable": false } },
+                        "owners": ["site"],
+                        "origin": null,
+                    },
                 },
-                "theirs.txt": {
-                    "facts": null,
+                {
+                    "path": "theirs.txt",
                     "verdict": "Foreign",
+                    "facts": null,
                 },
-            }
+            ]
         })
     );
 }

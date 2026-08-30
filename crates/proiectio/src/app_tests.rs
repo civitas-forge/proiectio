@@ -18,7 +18,7 @@ use crate::cli;
 use crate::exit;
 use crate::testing::{
     appledouble_tarball, assert_styles_resolved, assert_tags_declared, classified, dot_tarball,
-    flat_tarball, harness, manifest_of, modified, skeleton, tarball, tour, utf8,
+    flat_tarball, harness, manifest_of, modified, row, skeleton, stated, tarball, tour, utf8,
 };
 
 fn app() -> App {
@@ -127,9 +127,83 @@ fn status_is_the_librarys_own_status_document() {
     result.assert_success();
     let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
     assert_eq!(value, expected);
-    assert_eq!(value["rows"]["bin/tool"]["verdict"], "Drifted");
-    assert_eq!(value["rows"]["config/settings.toml"]["verdict"], "Clean");
-    assert_eq!(value["rows"]["current"]["verdict"], "Missing");
+    let rows = &value["rows"];
+    assert_eq!(stated(rows, "bin/tool")["verdict"], "Drifted");
+    assert_eq!(stated(rows, "config/settings.toml")["verdict"], "Clean");
+    assert_eq!(stated(rows, "current")["verdict"], "Missing");
+}
+
+/// A destination holding the two paths one XML element name cannot tell
+/// apart: `a/b` and `a_b`. The name XML would give the first is the second's
+/// own name, so a document spelling paths as names reports one row for the
+/// two; a row stating its own path reports both.
+fn colliding_dir() -> (TempDir, Utf8PathBuf) {
+    let dir = TempDir::new().expect("a temporary directory");
+    let dest = utf8(&dir);
+    std::fs::create_dir(dest.join("a")).expect("a directory");
+    std::fs::write(dest.join("a").join("b"), b"nested\n").expect("a nested file");
+    std::fs::write(dest.join("a_b"), b"flat\n").expect("a flat file");
+    (dir, dest)
+}
+
+/// XML carries every path as a value, so every row a destination classifies
+/// reaches a consumer whatever its paths are named.
+#[test]
+#[serial]
+fn xml_carries_paths_as_values_and_keeps_every_row() {
+    let (dir, dest) = colliding_dir();
+
+    let result = harness(&dir).output_mode(OutputMode::Xml).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "status", "--dest", dest.as_str()],
+    );
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout().trim(),
+        "<data>\
+         <rows><path>a/b</path><verdict>Foreign</verdict><facts/></rows>\
+         <rows><path>a_b</path><verdict>Foreign</verdict><facts/></rows>\
+         </data>"
+    );
+}
+
+/// CSV writes one record per classified path under a header that names the
+/// columns rather than the destination's paths, so the same reader reads
+/// every destination.
+#[test]
+#[serial]
+fn csv_writes_one_row_per_path_under_the_same_header() {
+    let (colliding, colliding_dest) = colliding_dir();
+    let (classified, classified_dest) = classified_dir();
+
+    let foreign = harness(&colliding).output_mode(OutputMode::Csv).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "status", "--dest", colliding_dest.as_str()],
+    );
+    let recorded = harness(&classified).output_mode(OutputMode::Csv).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "status", "--dest", classified_dest.as_str()],
+    );
+
+    foreign.assert_success();
+    recorded.assert_success();
+    assert_eq!(
+        foreign.stdout(),
+        "path,verdict,shape,executable,owners\n\
+         a/b,Foreign,,,\n\
+         a_b,Foreign,,,\n"
+    );
+    assert_eq!(
+        recorded.stdout(),
+        "path,verdict,shape,executable,owners\n\
+         bin/tool,Drifted,file,false,\"[\"\"default\"\"]\"\n\
+         config/settings.toml,Clean,file,false,\"[\"\"default\"\"]\"\n\
+         current,Missing,file,false,\"[\"\"default\"\"]\"\n"
+    );
 }
 
 /// A destination with no manifest and nothing on disk classifies nothing, and
@@ -317,8 +391,8 @@ fn a_path_spelled_like_a_style_tag_renders_as_itself() {
         .run(&app(), cli::command(), argv);
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
-    assert_eq!(value["rows"][DIRECTORY], JsonValue::Null);
-    assert_eq!(value["rows"][FILE]["verdict"], "Foreign");
+    assert!(row(&value["rows"], DIRECTORY).is_none());
+    assert_eq!(stated(&value["rows"], FILE)["verdict"], "Foreign");
 }
 
 /// An unknown tag spelling reaches the terminal whole rather than as the `?`
@@ -834,8 +908,8 @@ fn a_path_carrying_control_characters_renders_as_visible_escapes() {
         .run(&app(), cli::command(), argv);
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
-    assert_eq!(value["rows"][ESCAPE]["verdict"], "Foreign");
-    assert_eq!(value["rows"][NEWLINE]["verdict"], "Foreign");
+    assert_eq!(stated(&value["rows"], ESCAPE)["verdict"], "Foreign");
+    assert_eq!(stated(&value["rows"], NEWLINE)["verdict"], "Foreign");
 }
 
 /// Configuration-derived text goes through the same filter, so a stored value
@@ -1120,8 +1194,8 @@ fn a_dropped_member_rides_the_librarys_own_report() {
 
     planned.assert_success();
     let value: JsonValue = serde_json::from_str(planned.stdout()).expect("a JSON document");
-    assert_eq!(value["rows"]["top"]["verdict"], "Write");
-    assert!(value["rows"].get("._skeleton-1.2").is_none());
+    assert_eq!(stated(&value["rows"], "top")["verdict"], "Write");
+    assert!(row(&value["rows"], "._skeleton-1.2").is_none());
     assert_eq!(value["dropped"], record);
 
     let applied = harness(&dir).output_mode(OutputMode::Json).run(
@@ -1132,8 +1206,11 @@ fn a_dropped_member_rides_the_librarys_own_report() {
 
     applied.assert_success();
     let value: JsonValue = serde_json::from_str(applied.stdout()).expect("a JSON document");
-    assert_eq!(value["report"]["rows"]["top"]["verdict"], "Written");
-    assert!(value["report"]["rows"].get("._skeleton-1.2").is_none());
+    assert_eq!(
+        stated(&value["report"]["rows"], "top")["verdict"],
+        "Written"
+    );
+    assert!(row(&value["report"]["rows"], "._skeleton-1.2").is_none());
     assert!(value["report"].get("dropped").is_none());
     assert_eq!(value["dropped"], record);
 }
@@ -1405,14 +1482,9 @@ fn a_refused_dry_run_is_the_librarys_own_plan_document() {
         value,
         serde_json::to_value(planned.report()).expect("a serialized report")
     );
-    assert_eq!(
-        value["rows"]["bin/tool"]["verdict"]["Refuse"]["refusal"],
-        "Drift"
-    );
-    assert_eq!(
-        value["rows"]["bin/tool"]["facts"]["origin"]["Mapping"]["path"],
-        deploy.as_str()
-    );
+    let tool = stated(&value["rows"], "bin/tool");
+    assert_eq!(tool["verdict"]["Refuse"]["refusal"], "Drift");
+    assert_eq!(tool["facts"]["origin"]["Mapping"]["path"], deploy.as_str());
 }
 
 /// A refused real run performed nothing, so it keeps the error channel and
@@ -1635,16 +1707,15 @@ fn a_dry_run_release_row_carries_the_owners_the_real_run_reports() {
     applied.assert_success();
     let planned: JsonValue = serde_json::from_str(dry.stdout()).expect("a JSON document");
     let real: JsonValue = serde_json::from_str(applied.stdout()).expect("a JSON document");
-    assert_eq!(planned["rows"]["conf"]["verdict"], "Release");
-    assert_eq!(real["report"]["rows"]["conf"]["verdict"], "Released");
+    let planned_conf = stated(&planned["rows"], "conf");
+    let real_conf = stated(&real["report"]["rows"], "conf");
+    assert_eq!(planned_conf["verdict"], "Release");
+    assert_eq!(real_conf["verdict"], "Released");
     assert_eq!(
-        planned["rows"]["conf"]["facts"]["owners"],
+        planned_conf["facts"]["owners"],
         serde_json::json!(["one", "two"])
     );
-    assert_eq!(
-        planned["rows"]["conf"]["facts"],
-        real["report"]["rows"]["conf"]["facts"]
-    );
+    assert_eq!(planned_conf["facts"], real_conf["facts"]);
 }
 
 /// A symlink out of the destination refuses until the invocation permits it.
@@ -1730,7 +1801,10 @@ fn a_real_run_is_the_librarys_own_apply_report() {
             .collect::<Vec<_>>(),
         vec!["report", "manifest"]
     );
-    assert_eq!(value["report"]["rows"]["bin/tool"]["verdict"], "Written");
+    assert_eq!(
+        stated(&value["report"]["rows"], "bin/tool")["verdict"],
+        "Written"
+    );
     assert_eq!(
         serde_json::from_value::<Manifest>(value["manifest"].clone()).expect("a manifest"),
         manifest_of(&dest)

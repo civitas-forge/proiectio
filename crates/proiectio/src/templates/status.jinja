@@ -1,5 +1,4 @@
-{#- One line per classified path: the state, padded, then the path. -#}
-{%- for path, row in rows|items -%}
-{%- set state = row.verdict|lower -%}
-{{ ("[" ~ state ~ "]" ~ state ~ "[/" ~ state ~ "]")|pad_right(7) }}  {{ path|verbatim }}
+{#- One line per classified path: the state in its style, padded, then the path. -#}
+{%- for row in status.rows -%}
+{{ row.state|style_as(row.style) }}{{ row.state_pad }}  {{ row.path }}
 {% endfor -%}
