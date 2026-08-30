@@ -141,6 +141,16 @@ fn verdicts(report: &ApplyReport) -> BTreeMap<Utf8PathBuf, ApplyOutcome> {
         .collect()
 }
 
+// The facts every row of a report carries, whatever its verdict type: what
+// a plan's rows and an apply's rows are compared on.
+fn stated_facts<V>(
+    rows: &BTreeMap<Utf8PathBuf, Row<V>>,
+) -> BTreeMap<Utf8PathBuf, Option<PathFacts>> {
+    rows.iter()
+        .map(|(path, row)| (path.clone(), row.facts.clone()))
+        .collect()
+}
+
 // The facts a report carries for one path.
 fn facts_at<'a>(report: &'a ApplyReport, path: &str) -> &'a PathFacts {
     report.report.rows[Utf8Path::new(path)]
@@ -405,16 +415,26 @@ fn removal_pipeline(
     scope: RemovalScope<'_>,
     policy: DriftPolicy,
 ) -> Result<ApplyReport> {
-    let (manifest, plan) = {
-        let dest = dir_at(dest.root());
-        let state = dir_at(state.root());
-        let manifest = load_manifest(&state).expect("load manifest");
-        let observations =
-            observe(&dest, &manifest, &BlockMarkers::new()).expect("observe destination");
-        let plan = decide_removal(owner, scope, &manifest, &observations, None, policy);
-        (manifest, plan)
-    };
+    let (manifest, plan) = removal_plan_for(dest, state, owner, scope, policy);
     apply_at(dest, state, &manifest, &plan)
+}
+
+// The observe → decide half of a removal, split out so tests can read the
+// plan a dry run would print before applying the same plan.
+fn removal_plan_for(
+    dest: &Fixture,
+    state: &Fixture,
+    owner: &str,
+    scope: RemovalScope<'_>,
+    policy: DriftPolicy,
+) -> (Manifest, Plan) {
+    let dest = dir_at(dest.root());
+    let state = dir_at(state.root());
+    let manifest = load_manifest(&state).expect("load manifest");
+    let observations =
+        observe(&dest, &manifest, &BlockMarkers::new()).expect("observe destination");
+    let plan = decide_removal(owner, scope, &manifest, &observations, None, policy);
+    (manifest, plan)
 }
 
 fn requested(paths: &[&str]) -> BTreeSet<Utf8PathBuf> {
@@ -491,6 +511,211 @@ fn removal_prunes_emptied_dirs_and_keeps_one_holding_a_foreign_file() {
 }
 
 #[test]
+fn removal_prunes_the_dirs_a_hand_deleted_path_left_empty() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new().file("only/deep/file.txt", "projected");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    fs::remove_file(dest.path("only/deep/file.txt")).expect("delete the file by hand");
+
+    let report = removal_pipeline(
+        &dest,
+        &state,
+        "own",
+        RemovalScope::Everything,
+        DriftPolicy::Refuse,
+    )
+    .expect("removal");
+
+    // The record is dropped and nothing was unlinked, so the row says
+    // `Forgot` rather than claiming a removal; the directories the path
+    // held open go all the same, leaving the destination as the write
+    // found it.
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([("only/deep/file.txt".into(), ApplyOutcome::Forgot)])
+    );
+    assert_tree(dest.root(), &Tree::new());
+    assert!(persisted(&state).entries.is_empty());
+}
+
+#[test]
+fn removal_prunes_the_dirs_left_standing_above_a_hand_deleted_one() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new().file("only/deep/file.txt", "projected");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    fs::remove_dir_all(dest.path("only/deep")).expect("delete the directory by hand");
+
+    let report = removal_pipeline(
+        &dest,
+        &state,
+        "own",
+        RemovalScope::Everything,
+        DriftPolicy::Refuse,
+    )
+    .expect("removal");
+
+    // The hand deletion took the walk's own ancestry with it, so the
+    // removal has no resolved location to prune upwards from. `only/` is
+    // empty all the same, and the destination the write found had no such
+    // directory.
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([("only/deep/file.txt".into(), ApplyOutcome::Forgot)])
+    );
+    assert_tree(dest.root(), &Tree::new());
+    assert!(persisted(&state).entries.is_empty());
+}
+
+#[test]
+fn a_named_path_the_owner_does_not_hold_is_reported_and_nothing_else() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new().file("mine.txt", "projected");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    fs::write(dest.path("foreign.txt"), "theirs").expect("plant a foreign file");
+
+    let report = removal_pipeline(
+        &dest,
+        &state,
+        "own",
+        RemovalScope::Paths(&requested(&["typo.txt", "foreign.txt", "mine.txt"])),
+        DriftPolicy::Refuse,
+    )
+    .expect("removal");
+
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([
+            ("foreign.txt".into(), ApplyOutcome::NotRecorded),
+            ("mine.txt".into(), ApplyOutcome::Removed),
+            ("typo.txt".into(), ApplyOutcome::NotRecorded),
+        ])
+    );
+    // Naming a path is not a licence to touch it: the foreign file the
+    // manifest never recorded is still there, byte for byte.
+    assert_tree(dest.root(), &Tree::new().file("foreign.txt", "theirs"));
+    assert!(persisted(&state).entries.is_empty());
+}
+
+// The no-alias rule is what lets a removal prune from its action key when
+// the walk dies on missing ancestry: no manifest this library writes holds a
+// recorded link above a recorded key, so the ancestry above a removal is
+// physical and the key names it. Both orders that would build that shape
+// refuse instead.
+#[test]
+fn no_write_records_a_key_beneath_an_owned_link() {
+    let linked = Tree::new().symlink("logs", "real/missing");
+    let beneath = Tree::new().file("logs/deep/file.txt", "projected");
+
+    let (dest, state) = fixtures();
+    pipeline(&dest, &state, "own", &linked.entries(), DriftPolicy::Refuse).expect("project a link");
+    let error = pipeline(
+        &dest,
+        &state,
+        "second",
+        &beneath.entries(),
+        DriftPolicy::Refuse,
+    )
+    .expect_err("a key behind the link refuses");
+    assert!(
+        matches!(
+            &error,
+            Error::Refused(refused)
+                if refused.kind() == RefusalKind::Containment
+                    && paths_of(refused)
+                        == BTreeSet::from([Utf8PathBuf::from("logs/deep/file.txt")])
+        ),
+        "{error}"
+    );
+
+    // The other order, where the link would have to go down over the
+    // directory a recorded key stands in. Forcing lifts the drift policy,
+    // not this.
+    let (dest, state) = fixtures();
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &beneath.entries(),
+        DriftPolicy::Refuse,
+    )
+    .expect("project");
+    for policy in [DriftPolicy::Refuse, DriftPolicy::Overwrite] {
+        let error = pipeline(&dest, &state, "second", &linked.entries(), policy)
+            .expect_err("a link over the recorded ancestry refuses");
+        assert!(
+            matches!(
+                &error,
+                Error::Refused(refused) if refused.kind() == RefusalKind::Foreign
+            ),
+            "{error}"
+        );
+    }
+    assert_tree(dest.root(), &beneath);
+}
+
+#[test]
+fn a_removal_states_the_same_facts_whether_it_is_planned_or_applied() {
+    let (dest, state) = fixtures();
+    let mine = Tree::new()
+        .file("gone.txt", "projected")
+        .file("mine.txt", "projected");
+    pipeline(&dest, &state, "own", &mine.entries(), DriftPolicy::Refuse).expect("project");
+    let theirs = Tree::new().file("theirs.txt", "projected");
+    pipeline(
+        &dest,
+        &state,
+        "other",
+        &theirs.entries(),
+        DriftPolicy::Refuse,
+    )
+    .expect("project under a second owner");
+    fs::remove_file(dest.path("gone.txt")).expect("delete one recorded file by hand");
+
+    let (manifest, plan) = removal_plan_for(
+        &dest,
+        &state,
+        "own",
+        RemovalScope::Paths(&requested(&[
+            "gone.txt",
+            "mine.txt",
+            "theirs.txt",
+            "typo.txt",
+        ])),
+        DriftPolicy::Refuse,
+    );
+    let planned = plan.report(&manifest);
+    let applied = apply_at(&dest, &state, &manifest, &plan).expect("removal");
+
+    assert_eq!(
+        verdicts(&applied),
+        BTreeMap::from([
+            ("gone.txt".into(), ApplyOutcome::Forgot),
+            ("mine.txt".into(), ApplyOutcome::Removed),
+            ("theirs.txt".into(), ApplyOutcome::NotRecorded),
+            ("typo.txt".into(), ApplyOutcome::NotRecorded),
+        ])
+    );
+    // The rows a dry run prints state what the rows of the run itself state,
+    // path for path: a caller diffing one report against the other sees the
+    // verdicts change and nothing else. A row saying the owner does not hold
+    // the path still names whoever does, and one saying the record was
+    // dropped still names the shape it recorded.
+    assert_eq!(
+        stated_facts(&planned.rows),
+        stated_facts(&applied.report.rows)
+    );
+    assert_eq!(
+        facts_at(&applied, "theirs.txt").owners,
+        BTreeSet::from(["other".to_owned()])
+    );
+    assert_eq!(
+        facts_at(&applied, "gone.txt").shape,
+        Some(PathShape::File { executable: false })
+    );
+    assert_eq!(applied.report.rows[Utf8Path::new("typo.txt")].facts, None);
+}
+
+#[test]
 fn a_subset_removal_clears_the_named_paths_and_leaves_the_rest() {
     let (dest, state) = fixtures();
     let tree = Tree::new()
@@ -549,7 +774,7 @@ fn a_subset_removal_refuses_a_path_that_violates_containment() {
 }
 
 #[test]
-fn removing_a_missing_path_drops_the_manifest_entry_alone() {
+fn removing_a_missing_path_forgets_it_rather_than_claiming_a_removal() {
     let (dest, state) = fixtures();
     let mut manifest = Manifest::new();
     manifest.entries.insert(
@@ -563,7 +788,7 @@ fn removing_a_missing_path_drops_the_manifest_entry_alone() {
 
     assert_eq!(
         verdicts(&report),
-        BTreeMap::from([("gone.txt".into(), ApplyOutcome::Removed)])
+        BTreeMap::from([("gone.txt".into(), ApplyOutcome::Forgot)])
     );
     assert!(persisted(&state).entries.is_empty());
 }
