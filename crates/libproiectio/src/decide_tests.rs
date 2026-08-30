@@ -167,7 +167,10 @@ fn clean_when_disk_matches_the_recorded_entry() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("a.txt")], PathState::Clean);
+    assert_eq!(
+        status.rows[Utf8Path::new("a.txt")].verdict,
+        PathState::Clean
+    );
 }
 
 #[test]
@@ -177,7 +180,10 @@ fn drifted_when_bytes_differ() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("a.txt")], PathState::Drifted);
+    assert_eq!(
+        status.rows[Utf8Path::new("a.txt")].verdict,
+        PathState::Drifted
+    );
 }
 
 #[test]
@@ -187,7 +193,10 @@ fn drifted_when_the_executable_bit_differs() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("run.sh")], PathState::Drifted);
+    assert_eq!(
+        status.rows[Utf8Path::new("run.sh")].verdict,
+        PathState::Drifted
+    );
 }
 
 #[test]
@@ -197,7 +206,7 @@ fn drifted_when_the_kind_differs() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("a")], PathState::Drifted);
+    assert_eq!(status.rows[Utf8Path::new("a")].verdict, PathState::Drifted);
 }
 
 #[test]
@@ -207,7 +216,7 @@ fn drifted_when_a_recorded_path_is_now_a_directory() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("a")], PathState::Drifted);
+    assert_eq!(status.rows[Utf8Path::new("a")].verdict, PathState::Drifted);
 }
 
 #[test]
@@ -217,7 +226,10 @@ fn missing_when_a_recorded_path_is_gone() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("a.txt")], PathState::Missing);
+    assert_eq!(
+        status.rows[Utf8Path::new("a.txt")].verdict,
+        PathState::Missing
+    );
 }
 
 #[test]
@@ -229,7 +241,10 @@ fn missing_when_the_snapshot_lacks_a_recorded_path() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("a.txt")], PathState::Missing);
+    assert_eq!(
+        status.rows[Utf8Path::new("a.txt")].verdict,
+        PathState::Missing
+    );
 }
 
 #[test]
@@ -239,7 +254,10 @@ fn foreign_when_on_disk_and_unrecorded() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("notes.txt")], PathState::Foreign);
+    assert_eq!(
+        status.rows[Utf8Path::new("notes.txt")].verdict,
+        PathState::Foreign
+    );
 }
 
 #[test]
@@ -253,7 +271,10 @@ fn an_unrecorded_directory_classifies_foreign() {
         None,
     );
 
-    assert_eq!(status.paths[Utf8Path::new("existing")], PathState::Foreign);
+    assert_eq!(
+        status.rows[Utf8Path::new("existing")].verdict,
+        PathState::Foreign
+    );
 }
 
 #[test]
@@ -264,7 +285,10 @@ fn an_unrecorded_node_of_another_kind_classifies_foreign() {
         None,
     );
 
-    assert_eq!(status.paths[Utf8Path::new("pipe")], PathState::Foreign);
+    assert_eq!(
+        status.rows[Utf8Path::new("pipe")].verdict,
+        PathState::Foreign
+    );
 }
 
 #[test]
@@ -281,8 +305,11 @@ fn a_link_with_a_matching_target_classifies_clean_and_a_changed_one_drifted() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("kept")], PathState::Clean);
-    assert_eq!(status.paths[Utf8Path::new("moved")], PathState::Drifted);
+    assert_eq!(status.rows[Utf8Path::new("kept")].verdict, PathState::Clean);
+    assert_eq!(
+        status.rows[Utf8Path::new("moved")].verdict,
+        PathState::Drifted
+    );
 }
 
 #[test]
@@ -301,7 +328,7 @@ fn a_link_target_edited_to_non_utf8_classifies_drifted() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("l")], PathState::Drifted);
+    assert_eq!(status.rows[Utf8Path::new("l")].verdict, PathState::Drifted);
 }
 
 #[test]
@@ -322,7 +349,7 @@ fn a_recorded_block_classifies_over_its_region() {
     for (observation, want) in cases {
         let status = classify(&manifest, &observed(&[("conf", observation.clone())]), None);
         assert_eq!(
-            status.paths[Utf8Path::new("conf")],
+            status.rows[Utf8Path::new("conf")].verdict,
             *want,
             "{observation:?}"
         );
@@ -335,7 +362,7 @@ fn a_recorded_block_classifies_over_its_region() {
     for observation in [no_region(true), on_disk(&entry)] {
         let status = classify(&whole, &observed(&[("conf", observation.clone())]), None);
         assert_eq!(
-            status.paths[Utf8Path::new("conf")],
+            status.rows[Utf8Path::new("conf")].verdict,
             PathState::Drifted,
             "{observation:?}"
         );
@@ -357,7 +384,7 @@ fn the_state_subtree_never_classifies() {
     let status = classify(&manifest, &observations, Some(Utf8Path::new(".proiectio")));
 
     assert_eq!(
-        status.paths.keys().collect::<Vec<_>>(),
+        status.rows.keys().collect::<Vec<_>>(),
         [Utf8Path::new("a.txt")]
     );
 }
@@ -1214,7 +1241,10 @@ fn a_path_the_state_dir_sits_beneath_still_classifies() {
     let status = classify(&manifest, &observations, Some(Utf8Path::new(NESTED_STATE)));
 
     assert_eq!(
-        status.paths,
+        status
+            .iter()
+            .map(|(path, row)| (Utf8PathBuf::from(path), row.verdict))
+            .collect::<BTreeMap<_, _>>(),
         BTreeMap::from([
             // Recorded as a file, a directory on disk: drift of kind.
             (".local".into(), PathState::Drifted),
@@ -2386,7 +2416,7 @@ fn a_second_marker_line_costs_the_region_its_identity_and_every_action_refuses()
         }
         // And it is drift that says so, at the classification.
         assert_eq!(
-            classify(&manifest, &observations, None).paths[Utf8Path::new("conf")],
+            classify(&manifest, &observations, None).rows[Utf8Path::new("conf")].verdict,
             PathState::Drifted,
             "{observation:?}"
         );
