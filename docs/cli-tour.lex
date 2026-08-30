@@ -107,8 +107,8 @@ The CLI
     nothing:
 
         $ proiectio status --dest ~/apps/site
-        clean    config/settings.toml
         drifted  bin/tool
+        clean    config/settings.toml
         missing  current
 
     :: shell ::
@@ -120,7 +120,14 @@ The CLI
     directories emptied by removal are pruned.
 
         $ proiectio rm --dest ~/apps/site --owner site
+        removed    bin/tool              (exec)
+        removed    config/settings.toml
+        removed    current
+        3 removed
+
         $ proiectio rm config/settings.toml
+        removed    config/settings.toml
+        1 removed
 
     :: shell ::
 
@@ -132,6 +139,8 @@ The CLI
     against the mapping file's own directory, so a mapping and its
     assets travel together. Metadata is the executable bit — from the source file,
     or platform default for inline contents, overridable per entry.
+
+    A mapping:
 
     version = 1
 
@@ -156,7 +165,7 @@ The CLI
 
     # extracted under the key prefix at plan time; each member
     # becomes an ordinary manifest entry
-    \[archives."vendor/"]
+    [archives."vendor/"]
     source = "./assets/vendor.tar.gz"
     strip = 1
 
@@ -179,11 +188,13 @@ The CLI
 6. Options
 
     | --dest <dir>             | target directory; default cwd       |
-    | --owner <name>           | manifest owner; default "default"   |
+    | --owner <name>           | manifest owner; default from the    |
+    |                          | configuration                       |
     | --state-dir <dir>        | manifest location; default          |
     |                          | <dest>/.proiectio                   |
     | --dry-run                | plan and report, write nothing      |
-    | --force                  | overwrite drifted files             |
+    | --force                  | overwrite drifted files; remove     |
+    |                          | them under rm                       |
     | --allow-external-targets | permit symlink targets outside dest |
     | --tree <path>            | project a directory or archive      |
     | --strip <n>              | drop n leading components           |
