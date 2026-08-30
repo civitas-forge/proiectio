@@ -1,5 +1,10 @@
 use super::*;
 
+use std::collections::BTreeSet;
+
+use camino::Utf8PathBuf;
+use libproiectio::{BlockFault, Refusal, RefusalKind};
+use serde::Serialize;
 use serde_json::json;
 
 fn planned(rows: JsonValue) -> RunLines {
@@ -19,6 +24,18 @@ fn file(verdict: JsonValue) -> JsonValue {
 
 fn link(verdict: JsonValue, target: &str) -> JsonValue {
     json!({ "facts": { "shape": { "Symlink": { "target": target } } }, "verdict": verdict })
+}
+
+/// The one row a plan refusing a single path prints.
+fn refused(refusal: &JsonValue) -> RunLines {
+    planned(json!({
+        "one": { "facts": null, "verdict": { "Refuse": { "refusal": refusal } } },
+    }))
+}
+
+/// A library value as the context provider hands it over.
+fn serialized(value: impl Serialize) -> JsonValue {
+    serde_json::to_value(value).expect("a serializable library value")
 }
 
 fn only(document: RunLines) -> RowView {
@@ -89,30 +106,92 @@ fn a_refused_row_names_the_refusal() {
         (json!("Drift"), "(drifted)"),
         (json!("Foreign"), "(foreign)"),
         (json!("Containment"), "(containment)"),
-        (
-            json!({ "TreeConflict": { "paths": ["other"] } }),
-            "(tree conflict)",
-        ),
-        (
-            json!({ "OwnerConflict": { "owners": ["site"] } }),
-            "(owner conflict)",
-        ),
-        (
-            json!({ "ExternalTarget": { "target": "/opt/x" } }),
-            "(external target)",
-        ),
-        (
-            json!({ "InvalidTarget": { "target": "" } }),
-            "(invalid target)",
-        ),
-        (json!({ "Block": { "fault": "MarkerEmpty" } }), "(block)"),
         (json!("[wrote]"), "(\\[wrote\\])"),
     ] {
-        let row = only(planned(json!({
-            "one": { "facts": null, "verdict": { "Refuse": { "refusal": refusal.clone() } } },
-        })));
+        let row = only(refused(&refusal));
 
         assert_eq!(row.note.as_deref(), Some(note), "{refusal}");
+    }
+}
+
+/// Every kind the library declares reads as one spelling: the arms are matched
+/// over `RefusalKind` itself, so a kind added there stops this compiling until
+/// the view spells it, and each kind is fed in as the library serializes it, so
+/// a renamed one fails here rather than falling through to the unknown arm.
+#[test]
+fn every_refusal_kind_the_library_declares_reads_as_one_spelling() {
+    for kind in [
+        RefusalKind::Containment,
+        RefusalKind::TreeConflict,
+        RefusalKind::Foreign,
+        RefusalKind::Drift,
+        RefusalKind::OwnerConflict,
+        RefusalKind::ExternalTarget,
+        RefusalKind::InvalidTarget,
+        RefusalKind::Block,
+    ] {
+        let spelled = match kind {
+            RefusalKind::Containment => "containment",
+            RefusalKind::TreeConflict => "tree conflict",
+            RefusalKind::Foreign => "foreign",
+            RefusalKind::Drift => "drifted",
+            RefusalKind::OwnerConflict => "owner conflict",
+            RefusalKind::ExternalTarget => "external target",
+            RefusalKind::InvalidTarget => "invalid target",
+            RefusalKind::Block => "block",
+        };
+        let row = only(refused(&serialized(kind)));
+
+        assert_eq!(row.note.as_deref(), Some(format!("({spelled})").as_str()));
+    }
+}
+
+/// A refusal carrying a payload renders it, in the words the library's own
+/// message renders it with, every payload string escaped like any other value
+/// a run did not write.
+#[test]
+fn a_refused_row_renders_the_payload_its_refusal_carries() {
+    for (refusal, note) in [
+        (
+            Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("other"), Utf8PathBuf::from("third")]),
+            },
+            "(tree conflict) (with other, third)",
+        ),
+        (
+            Refusal::OwnerConflict {
+                owners: BTreeSet::from(["base".to_owned(), "site".to_owned()]),
+            },
+            "(owner conflict) (held by base+site)",
+        ),
+        (
+            Refusal::ExternalTarget {
+                target: "/opt/x".to_owned(),
+            },
+            "(external target) -> /opt/x",
+        ),
+        (
+            Refusal::ExternalTarget {
+                target: "[x]".to_owned(),
+            },
+            "(external target) -> \\[x\\]",
+        ),
+        (
+            Refusal::InvalidTarget {
+                target: String::new(),
+            },
+            "(invalid target) -> \"\"",
+        ),
+        (
+            Refusal::Block {
+                fault: BlockFault::MarkerEmpty,
+            },
+            "(block) (MarkerEmpty)",
+        ),
+    ] {
+        let row = only(refused(&serialized(&refusal)));
+
+        assert_eq!(row.note.as_deref(), Some(note), "{refusal:?}");
     }
 }
 

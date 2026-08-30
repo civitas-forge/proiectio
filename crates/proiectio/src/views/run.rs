@@ -93,9 +93,10 @@ fn overwriting(reason: &str) -> &'static str {
 }
 
 /// Why a plan refuses a path: the refusal's own name, in the vocabulary the
-/// exit table names the refusal kinds with.
+/// exit table names the refusal kinds with, and what the refusal carries after
+/// it, in the words `Refusal`'s own message spells the payload with.
 fn refusing(refusal: &JsonValue) -> String {
-    let (kind, _) = named(Some(refusal));
+    let (kind, payload) = named(Some(refusal));
     let spelled = match kind {
         "Containment" => "containment",
         "TreeConflict" => "tree conflict",
@@ -107,7 +108,45 @@ fn refusing(refusal: &JsonValue) -> String {
         "Block" => "block",
         unknown => return format!("({})", verbatim(unknown)),
     };
-    format!("({spelled})")
+    match payload.and_then(|payload| detailing(kind, payload)) {
+        Some(detail) => format!("({spelled}) {detail}"),
+        None => format!("({spelled})"),
+    }
+}
+
+/// What a refusal's payload says beyond its name: the keys claiming the same
+/// location, the owners holding the path, the offending target — quoted, as
+/// the library quotes it, where it is not a path — or the rule a block entry
+/// broke. `None` where the kind carries nothing, or where the payload is not
+/// the shape the library serializes.
+fn detailing(kind: &str, payload: &JsonValue) -> Option<String> {
+    let string = |field| payload.get(field).and_then(JsonValue::as_str);
+    match kind {
+        "TreeConflict" => Some(format!("(with {})", listed(payload.get("paths")?, ", ")?)),
+        "OwnerConflict" => Some(format!(
+            "(held by {})",
+            listed(payload.get("owners")?, "+")?
+        )),
+        "ExternalTarget" => Some(format!("-> {}", verbatim(string("target")?))),
+        "InvalidTarget" => Some(format!(
+            "-> {}",
+            verbatim(&format!("{:?}", string("target")?))
+        )),
+        "Block" => Some(format!("({})", verbatim(string("fault")?))),
+        _ => None,
+    }
+}
+
+/// One payload's list of strings, each escaped, joined the way the library
+/// joins that field. `None` where the field holds no strings.
+fn listed(values: &JsonValue, separator: &str) -> Option<String> {
+    let items: Vec<String> = values
+        .as_array()?
+        .iter()
+        .filter_map(JsonValue::as_str)
+        .map(verbatim)
+        .collect();
+    (!items.is_empty()).then(|| items.join(separator))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
