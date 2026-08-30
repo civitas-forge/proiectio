@@ -94,22 +94,22 @@ impl ConfigView {
                 value,
                 doc,
             },
-            ConfigResult::ValueSet { key, value, .. } => {
-                let edit = edit()?;
-                Self::ValueSet {
-                    rendered: assignment(&key, &value),
-                    key,
-                    value,
-                    path: edit.path,
-                    wrote: edit.wrote,
-                }
-            }
+            // Clapfig's set creates the file it persists to, so a `ValueSet`
+            // in hand is the write itself; only an unset can come back from a
+            // file that was never there, and that is read off the path.
+            ConfigResult::ValueSet { key, value, .. } => Self::ValueSet {
+                rendered: assignment(&key, &value),
+                key,
+                value,
+                path: edit()?.path,
+                wrote: true,
+            },
             ConfigResult::ValueUnset { key } => {
                 let edit = edit()?;
                 Self::ValueUnset {
                     key,
                     path: edit.path,
-                    wrote: edit.wrote,
+                    wrote: edit.present,
                 }
             }
             ConfigResult::Template(body) => Self::Template { body },
@@ -132,11 +132,31 @@ fn documented(key: &str, value: &str, doc: &[String]) -> String {
 /// spells both halves for a human to read, which leaves a string value that
 /// needs quotes bare, and a key a bare TOML key cannot carry unquoted.
 fn assignment(key: &str, value: &str) -> String {
-    let spelled = match settings::leaf_type(key) {
-        Some(LeafType::String) => toml::Value::from(value).to_string(),
-        _ => value.to_owned(),
-    };
-    format!("{} = {spelled}", dotted(key))
+    format!("{} = {}", dotted(key), spelled(key, value))
+}
+
+/// The value as a document spells it. The schema names the type for a key it
+/// declares. A scoped listing reads the file rather than the schema, so it
+/// also carries keys the schema does not declare, and clapfig has already
+/// stringified those: what is left to ask is whether the spelling stands as a
+/// value at all. One that parses keeps its spelling; one that does not is the
+/// string it can only have been.
+///
+/// A string that reads as another type — `"true"`, `"12"` — is the one thing
+/// this cannot recover for an undeclared key, because clapfig stringified it
+/// before the view saw it.
+fn spelled(key: &str, value: &str) -> String {
+    let quoted = || toml::Value::from(value).to_string();
+    match settings::leaf_type(key) {
+        Some(LeafType::String) => quoted(),
+        Some(_) => value.to_owned(),
+        None if parses_as_value(value) => value.to_owned(),
+        None => quoted(),
+    }
+}
+
+fn parses_as_value(value: &str) -> bool {
+    format!("v = {value}").parse::<toml::Table>().is_ok()
 }
 
 /// The key as a document spells it: one segment per dot, each quoted where a

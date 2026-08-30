@@ -19,11 +19,14 @@ pub(crate) struct ProiectioConfig {
 const APP: &str = "proiectio";
 const FILE: &str = "proiectio.toml";
 const COMMENT_KEY_PREFIX: &str = "//";
+/// The one scope [`builder`] registers, and so the only name a `--scope` can
+/// carry: clapfig refuses every other by name, naming the scopes it has.
+const USER_SCOPE: &str = "user";
 
 pub(crate) fn builder() -> TypedBuilder<ProiectioConfig> {
     Clapfig::typed::<ProiectioConfig>()
         .app_name(APP)
-        .persist_scope("user", SearchPath::Platform)
+        .persist_scope(USER_SCOPE, SearchPath::Platform)
         .on_unknown_key(|key| {
             if key.leaf.starts_with(COMMENT_KEY_PREFIX) {
                 UnknownKeyDecision::Accept
@@ -33,11 +36,11 @@ pub(crate) fn builder() -> TypedBuilder<ProiectioConfig> {
         })
 }
 
-/// The file an edit through the `user` scope lands in, and whether the edit
-/// wrote it.
+/// The file an edit through the `user` scope lands in, and whether a file is
+/// there once the edit has run.
 pub(crate) struct Edit {
     pub(crate) path: Utf8PathBuf,
-    pub(crate) wrote: bool,
+    pub(crate) present: bool,
 }
 
 /// Resolves the file a `set` or `unset` is about to edit, so that a platform
@@ -45,22 +48,40 @@ pub(crate) struct Edit {
 /// than after. Clapfig persists through a `PathBuf`, which carries paths the
 /// report cannot; reading one back afterwards would fail a run whose edit had
 /// already reached the disk.
+///
+/// A `--scope` naming anything else reaches clapfig unexamined, which refuses
+/// it by name — resolving the user scope's path first would answer a wrong
+/// scope with a complaint about a file it never meant.
 pub(crate) fn check_edit_path(action: &ConfigAction) -> Result<(), Error> {
-    match action {
-        ConfigAction::Set { .. } | ConfigAction::Unset { .. } => user_config_path().map(drop),
-        _ => Ok(()),
+    if edits_the_user_scope(action) {
+        user_config_path().map(drop)
+    } else {
+        Ok(())
     }
 }
 
-/// What a `set` or `unset` through the `user` scope just did, read after
-/// clapfig persisted it: a set always leaves the file behind, and an unset
-/// with no file to remove the key from writes nothing. Clapfig rewrites a file
-/// that is there whether or not it held the key, so `wrote` reports the write
-/// itself and not a change in the file's contents.
+/// Whether `action` is an edit landing in the file this CLI resolves: one of
+/// the two editing actions, naming the one registered scope or no scope at
+/// all. Every other action either edits nothing or names a scope clapfig
+/// refuses.
+fn edits_the_user_scope(action: &ConfigAction) -> bool {
+    let scope = match action {
+        ConfigAction::Set { scope, .. } | ConfigAction::Unset { scope, .. } => scope,
+        _ => return false,
+    };
+    scope.as_deref().is_none_or(|name| name == USER_SCOPE)
+}
+
+/// The file a `set` or `unset` through the `user` scope persisted to, and
+/// whether one is there now. Clapfig reports neither: `ConfigResult::ValueSet`
+/// and `ValueUnset` carry no path, and `unset_value` returns the same
+/// `ValueUnset` whether it rewrote a file or found none to read. So the file a
+/// set wrote is known from the set having succeeded, and the one an unset
+/// wrote is read back here.
 pub(crate) fn persisted_edit() -> Result<Edit, Error> {
     let path = user_config_path()?;
     Ok(Edit {
-        wrote: path.is_file(),
+        present: path.is_file(),
         path,
     })
 }

@@ -88,6 +88,34 @@ fn an_undeclared_key_is_refused_with_the_nearest_one() {
     }
 }
 
+/// The preflight resolves a file only for an edit that lands in the scope this
+/// CLI resolves. A `--scope` naming anything else is clapfig's to refuse by
+/// name, and a read edits nothing — resolving for either would answer with a
+/// complaint about a file neither one meant.
+#[test]
+fn only_an_edit_through_the_registered_scope_resolves_a_file_first() {
+    let unset = |scope: Option<&str>| ConfigAction::Unset {
+        key: "owner".into(),
+        scope: scope.map(str::to_owned),
+    };
+    let set = |scope: Option<&str>| ConfigAction::Set {
+        key: "owner".into(),
+        value: "site".into(),
+        scope: scope.map(str::to_owned),
+    };
+
+    assert!(edits_the_user_scope(&unset(None)));
+    assert!(edits_the_user_scope(&set(None)));
+    assert!(edits_the_user_scope(&unset(Some(USER_SCOPE))));
+    assert!(!edits_the_user_scope(&unset(Some("local"))));
+    assert!(!edits_the_user_scope(&set(Some("local"))));
+    assert!(!edits_the_user_scope(&ConfigAction::List { scope: None }));
+    assert!(!edits_the_user_scope(&ConfigAction::Get {
+        key: "owner".into(),
+        scope: None,
+    }));
+}
+
 #[test]
 fn a_comment_key_is_one_wherever_the_schema_allowlists_it() {
     assert!(is_comment_key("//"));

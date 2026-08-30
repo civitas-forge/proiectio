@@ -2,15 +2,15 @@ use super::*;
 
 const SCOPE: &str = "/home/u/.config/proiectio/proiectio.toml";
 
-/// A view of a result whose edit reached the file it names.
+/// A view of a result whose edit left a file at the path it names.
 fn view(result: ConfigResult) -> ConfigView {
-    ConfigView::of(result, || Ok(wrote(true))).expect("a view")
+    ConfigView::of(result, || Ok(edit(true))).expect("a view")
 }
 
-fn wrote(wrote: bool) -> Edit {
+fn edit(present: bool) -> Edit {
     Edit {
         path: Utf8PathBuf::from(SCOPE),
-        wrote,
+        present,
     }
 }
 
@@ -73,7 +73,7 @@ fn an_unset_that_wrote_no_file_says_so() {
         ConfigResult::ValueUnset {
             key: "owner".into(),
         },
-        || Ok(wrote(false)),
+        || Ok(edit(false)),
     )
     .expect("a view");
 
@@ -120,6 +120,54 @@ fn a_rendered_value_parses_as_the_toml_it_looks_like() {
     };
     let parsed: toml::Table = rendered.parse().expect("a config file line");
     assert_eq!(parsed["owner"].as_str(), Some(awkward));
+}
+
+/// A scoped listing reads the file rather than the schema, so it carries keys
+/// the schema does not name and clapfig has already stringified their values.
+/// Whether the spelling stands as a value is what is left to ask, so every
+/// line parses whatever the writer put there.
+#[test]
+fn a_line_for_a_key_the_schema_does_not_name_still_parses() {
+    let listing = view(ConfigResult::Listing {
+        entries: vec![
+            ("a b".into(), "hello".into()),
+            ("count".into(), "12".into()),
+            ("flag".into(), "true".into()),
+            ("empty".into(), String::new()),
+        ],
+        rendered: String::new(),
+    });
+
+    let ConfigView::Listing { rendered, .. } = &listing else {
+        panic!("a listing");
+    };
+    let parsed: toml::Table = rendered
+        .parse()
+        .unwrap_or_else(|error| panic!("the listing printed {rendered:?}: {error}"));
+    assert_eq!(parsed["a b"].as_str(), Some("hello"));
+    assert_eq!(parsed["empty"].as_str(), Some(""));
+    assert_eq!(parsed["count"].as_integer(), Some(12));
+    assert_eq!(parsed["flag"].as_bool(), Some(true));
+}
+
+/// A set that came back is a file clapfig created, so the view reads the write
+/// off the result rather than off a later look at the path.
+#[test]
+fn a_set_reports_the_write_its_result_already_stands_for() {
+    let set = ConfigView::of(
+        ConfigResult::ValueSet {
+            key: "owner".into(),
+            value: "site".into(),
+            rendered: "owner = site".into(),
+        },
+        || Ok(edit(false)),
+    )
+    .expect("a view");
+
+    assert_eq!(
+        serde_json::to_value(&set).expect("a serialized view")["wrote"],
+        true
+    );
 }
 
 /// A comment key is a note, not a setting: the loader accepts one, and a
@@ -183,7 +231,7 @@ fn a_written_path_that_is_not_utf8_is_reported_rather_than_rendered() {
 
     let path = PathBuf::from(OsString::from_vec(vec![0x2f, 0xff]));
 
-    let error = ConfigView::of(ConfigResult::SchemaWritten { path }, || Ok(wrote(true)))
+    let error = ConfigView::of(ConfigResult::SchemaWritten { path }, || Ok(edit(true)))
         .expect_err("a path that is not UTF-8");
 
     assert!(matches!(error, Error::PathNotUtf8 { .. }), "{error}");
