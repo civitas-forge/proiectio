@@ -114,6 +114,11 @@ fn every_variant() -> Vec<Error> {
             path: Utf8PathBuf::from("/assets/vendor.zip"),
             member: Utf8PathBuf::from("lib/tool"),
         },
+        Error::ArchiveFullyStripped {
+            path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+            strip: 3,
+            members: 4,
+        },
         Error::ArchiveMemberTooDeep {
             path: Utf8PathBuf::from("/assets/vendor.tar"),
             member: Utf8PathBuf::from("a/b/c"),
@@ -176,7 +181,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    let (refusals, failures) = (8, 29);
+    let (refusals, failures) = (8, 30);
     assert_eq!(codes.len(), refusals + failures);
     assert!(codes[..refusals].iter().all(|&code| code == 2));
     assert!(codes[refusals..].iter().all(|&code| code == 1));
@@ -302,6 +307,20 @@ fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
         large.to_string(),
         "archive /assets/vendor.tar.gz expands past the 67108864 bytes an \
          archive may allocate"
+    );
+
+    // The count is what tells the operator the number is wrong rather than
+    // the archive being empty, so the message carries both it and the strip.
+    let stripped = Error::ArchiveFullyStripped {
+        path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+        strip: 3,
+        members: 4,
+    };
+    assert!(!stripped.is_refusal());
+    assert_eq!(
+        stripped.to_string(),
+        "archive /assets/vendor.tar.gz: strip 3 consumed all 4 of its \
+         members, leaving nothing to project"
     );
 }
 
@@ -473,7 +492,7 @@ fn every_variant_serializes_under_a_kind_of_its_own() {
         })
         .collect();
 
-    let (refusals, failures) = (8, 29);
+    let (refusals, failures) = (8, 30);
     assert_eq!(kinds.len(), refusals + failures);
     assert!(kinds[..refusals].iter().all(|kind| kind == "refused"));
     assert_eq!(

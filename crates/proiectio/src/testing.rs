@@ -187,6 +187,25 @@ pub(crate) fn appledouble_tarball(dir: &Utf8Path) -> Utf8PathBuf {
     path
 }
 
+/// An archive of nothing but depth-1 files, which `--strip 1` erases whole:
+/// the expansion keeps no member at all.
+pub(crate) fn flat_tarball(dir: &Utf8Path) -> Utf8PathBuf {
+    use std::io::Write;
+
+    let path = dir.join("flat.tgz");
+    let mut bytes = Vec::new();
+    ustar_member(&mut bytes, "._pkg", REGULAR, 0o644, b"Mac OS X\0\0\0");
+    ustar_member(&mut bytes, "notes.txt", REGULAR, 0o644, b"notes\n");
+    bytes.extend_from_slice(&[0u8; 1024]);
+    let mut encoder = flate2::write::GzEncoder::new(
+        std::fs::File::create(&path).expect("an archive"),
+        flate2::Compression::default(),
+    );
+    encoder.write_all(&bytes).expect("a written archive");
+    encoder.finish().expect("a flushed archive");
+    path
+}
+
 const REGULAR: u8 = b'0';
 const DIRECTORY: u8 = b'5';
 

@@ -633,6 +633,33 @@ fn a_zip_member_strip_erases_is_dropped_and_the_rest_loads() {
     let _ = fixture;
 }
 
+// Dropping a member among survivors is the point; dropping every one of
+// them means `strip` is deeper than the archive. That has to fail rather
+// than expand to nothing: an empty desired tree plans a removal, so a
+// mistyped `strip` would clear whatever the owner holds.
+#[test]
+fn an_archive_strip_erases_entirely_fails_the_load() {
+    let members = vec![
+        Member::file("._pkg", "AppleDouble\n"),
+        Member::file("notes.txt", "notes\n"),
+    ];
+    assert!(matches!(
+        expand_bytes("pkg.tar", &tar(&members), 1).unwrap_err(),
+        Error::ArchiveFullyStripped { strip, members, .. } if strip == 1 && members == 2
+    ));
+}
+
+// The rule reads the drops, not the emptiness: an archive that carried
+// nothing to begin with expands to an empty tree as it always has, and only
+// an archive `strip` emptied is refused.
+#[test]
+fn an_archive_that_was_always_empty_still_expands_to_nothing() {
+    let expanded = expand_bytes("empty.tar", &tar(&[]), 1).unwrap();
+
+    assert!(expanded.is_empty());
+    assert!(expanded.dropped().is_empty());
+}
+
 // A dropped member is still a member: it costs a place against the cap on
 // how many one archive may carry, so an archive cannot buy headroom by
 // filling itself with members `strip` erases.

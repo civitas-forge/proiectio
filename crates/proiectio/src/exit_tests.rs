@@ -87,6 +87,11 @@ fn operational_failures() -> Vec<Error> {
             path: path(),
             member: Utf8PathBuf::from("bin/tool"),
         },
+        Error::ArchiveFullyStripped {
+            path: path(),
+            strip: 3,
+            members: 4,
+        },
         Error::ArchiveMemberTooDeep {
             path: path(),
             member: Utf8PathBuf::from("a/b"),

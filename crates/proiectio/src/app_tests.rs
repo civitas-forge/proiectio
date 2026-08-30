@@ -18,7 +18,7 @@ use crate::cli;
 use crate::exit;
 use crate::testing::{
     appledouble_tarball, assert_styles_resolved, assert_tags_declared, classified, dot_tarball,
-    harness, manifest_of, modified, skeleton, tarball, tour, utf8,
+    flat_tarball, harness, manifest_of, modified, skeleton, tarball, tour, utf8,
 };
 
 fn app() -> App {
@@ -732,6 +732,35 @@ fn write_drops_the_members_strip_erases_and_projects_the_rest() {
         b"top\n"
     );
     assert!(!dest.join("._skeleton-1.2").exists());
+}
+
+/// A `--strip` deeper than the archive erases every member, and that fails
+/// the run rather than projecting an empty tree. An empty desired tree plans
+/// a removal, so letting it through would clear everything the owner holds
+/// on a mistyped number: the paths already written stay put, and the run
+/// says how many members the strip consumed.
+#[test]
+#[serial]
+fn a_strip_that_erases_every_member_fails_and_removes_nothing() {
+    let (dir, dest, _) = tour();
+    let archive = flat_tarball(&utf8(&dir));
+    let held = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&["--tree", tarball(&utf8(&dir)).as_str()], &dest),
+    );
+    held.assert_success();
+    let before = manifest_of(&dest);
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&["--tree", archive.as_str(), "--strip", "1"], &dest),
+    );
+
+    assert_eq!(exit::status(result.outcome()), exit::FAILURE);
+    assert_eq!(manifest_of(&dest), before);
+    assert!(dest.join("skeleton-1.2/top").exists());
 }
 
 /// The same drop under structured output, in both tenses: it rides the

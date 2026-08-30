@@ -474,6 +474,45 @@ fn two_archives_dropping_the_same_member_name_are_both_recorded() {
     );
 }
 
+// One entry whose `strip` erases its whole archive fails the mapping, even
+// though another entry would have projected. Loading is all-or-nothing, so
+// the caller never reaches a plan — which matters because a plan built from
+// the surviving entry alone would remove whatever the failed entry used to
+// hold.
+#[test]
+fn an_entry_strip_erases_entirely_fails_the_whole_mapping() {
+    let text = r#"
+        version = 1
+        [archives."vendor/"]
+        source = "./assets/vendor.tar.gz"
+        strip = 1
+        [archives."junk/"]
+        source = "./assets/junk.tar.gz"
+        strip = 1
+    "#;
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .file(
+            "assets/vendor.tar.gz",
+            targz(&[("vendor-1.0/lib/tool.so", "so\n", false)]),
+        )
+        .file(
+            "assets/junk.tar.gz",
+            targz(&[
+                ("._pkg", "Mac OS X\n", false),
+                ("notes.txt", "notes\n", false),
+            ]),
+        )
+        .materialize();
+
+    let junk = fixture.path("assets/junk.tar.gz");
+    assert!(matches!(
+        load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
+        Error::ArchiveFullyStripped { path, strip, members }
+            if path == junk && strip == 1 && members == 2
+    ));
+}
+
 // One archive named twice is two expansions. Their drops share a member
 // name, an archive, and a mapping, so what tells them apart is the entry
 // that asked for each: its prefix and its strip count.

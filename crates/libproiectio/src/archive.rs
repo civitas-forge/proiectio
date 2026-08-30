@@ -158,6 +158,17 @@ pub(crate) fn expand(
         .expect("refused is not empty")
         .into());
     }
+    // A drop is tolerable among members that survive; one that leaves the
+    // expansion with nothing is a `strip` deeper than the archive. Letting it
+    // through would project an empty tree, and an empty desired tree plans a
+    // removal — so a mistyped `strip` would clear everything the owner holds.
+    if expansion.tree.is_empty() && !expansion.dropped.is_empty() {
+        return Err(Error::ArchiveFullyStripped {
+            path: source.to_owned(),
+            strip,
+            members: expansion.dropped.len(),
+        });
+    }
     Ok(Expanded {
         tree: expansion.tree,
         dropped: expansion
