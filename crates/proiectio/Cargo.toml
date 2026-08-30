@@ -1,0 +1,30 @@
+[package]
+name = "proiectio"
+description = "File-projection CLI over libproiectio"
+categories = ["command-line-utilities", "filesystem"]
+edition.workspace = true
+keywords = ["cli", "files", "manifest", "projection"]
+license.workspace = true
+repository.workspace = true
+# Above the workspace's: standout and clapfig both require 1.96, and the
+# library alone holds the workspace floor.
+rust-version = "1.96"
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+camino.workspace = true
+clap.workspace = true
+clapfig.workspace = true
+libproiectio = { path = "../libproiectio", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+standout.workspace = true
+# The #[handler] macro expands to code that names this crate directly.
+standout-dispatch.workspace = true
+
+[dev-dependencies]
+serial_test.workspace = true
+standout-test.workspace = true
+tempfile.workspace = true
+toml.workspace = true

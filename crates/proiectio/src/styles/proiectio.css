@@ -1,0 +1,33 @@
+/* Two families: how a recorded path classifies, and how a config line reads. */
+
+.clean { color: green; }
+.drifted { color: yellow; }
+.missing { color: red; }
+.foreign { color: magenta; }
+
+.key { color: yellow; }
+.muted { color: gray; }
+.ok {
+    color: green;
+    font-weight: bold;
+}
+
+@media (prefers-color-scheme: light) {
+    .clean { color: #006400; }
+    .drifted { color: #915c00; }
+    .missing { color: #aa0000; }
+    .foreign { color: #7b2d8b; }
+    .key { color: #915c00; }
+    .muted { color: #555555; }
+    .ok { color: #006400; }
+}
+
+@media (prefers-color-scheme: dark) {
+    .clean { color: #5fd75f; }
+    .drifted { color: #ffd75f; }
+    .missing { color: #ff5f5f; }
+    .foreign { color: #d787ff; }
+    .key { color: #ffd75f; }
+    .muted { color: #999999; }
+    .ok { color: #5fd75f; }
+}

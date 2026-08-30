@@ -1,0 +1,23 @@
+{#- One template for the whole config group: branches on the ConfigView tag. -#}
+{% if kind == "listing" -%}
+{% for entry in entries -%}
+[key]{{ entry.key }}[/key] = {{ entry.value }}
+{% endfor -%}
+{% elif kind == "key_value" -%}
+{% for line in doc -%}
+[muted]# {{ line }}[/muted]
+{% endfor -%}
+[key]{{ key }}[/key] = {{ value }}
+{% elif kind == "value_set" -%}
+[ok]set[/ok] [key]{{ key }}[/key] = {{ value }}
+{% elif kind == "value_unset" -%}
+[ok]unset[/ok] [key]{{ key }}[/key]
+{% elif kind == "template" -%}
+{{ body }}
+{% elif kind == "template_written" -%}
+[ok]wrote[/ok] {{ path }}
+{% elif kind == "schema" -%}
+{{ body }}
+{% elif kind == "schema_written" -%}
+[ok]wrote[/ok] {{ path }}
+{% endif -%}
