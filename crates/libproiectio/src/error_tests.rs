@@ -70,7 +70,7 @@ fn every_variant() -> Vec<Error> {
         },
         Error::MappingFormat {
             path: Utf8PathBuf::from("deploy.toml"),
-            source: toml::from_str::<crate::Manifest>("not toml").expect_err("parse failure"),
+            source: toml::from_str::<toml::Table>("not toml").expect_err("parse failure"),
         },
         Error::MappingVersion {
             path: Utf8PathBuf::from("deploy.toml"),
@@ -425,7 +425,7 @@ fn each_variant_family_serializes_as_a_map_tagged_by_its_kind() {
 
     let mapping = value(Error::MappingFormat {
         path: Utf8PathBuf::from("deploy.toml"),
-        source: toml::from_str::<crate::Manifest>("not toml").expect_err("parse failure"),
+        source: toml::from_str::<toml::Table>("not toml").expect_err("parse failure"),
     });
     assert_eq!(mapping["kind"], "mapping_format");
     assert_eq!(mapping["path"], "deploy.toml");

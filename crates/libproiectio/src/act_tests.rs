@@ -8,8 +8,8 @@ use cap_std::fs_utf8::Dir;
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree, paths_of, refusals_of, sourced_of};
 use crate::{
-    BlockMarkers, Desired, DriftPolicy, EntryKind, ExternalTargetPolicy, Origin, PlanOptions,
-    RefusalKind, RemovalScope, block_markers, decide, decide_removal, observe,
+    BlockMarkers, Desired, DriftPolicy, EntryKind, ExternalTargetPolicy, Origin, OverwriteReason,
+    PlanOptions, RefusalKind, RemovalScope, block_markers, decide, decide_removal, observe,
 };
 
 // Opens a capability handle at a fixture root. Ambient authority is the
@@ -950,6 +950,10 @@ fn a_forged_skip_of_an_unrecorded_path_refuses_instead_of_adopting() {
         actions: BTreeMap::from([(
             "theirs.txt".into(),
             Action::Skip {
+                entry: Entry::File {
+                    contents: b"same bytes".to_vec(),
+                    executable: false,
+                },
                 expected: NodeSignature {
                     kind: EntryKind::File,
                     hash: sha256_hex(b"same bytes"),
@@ -1019,6 +1023,7 @@ fn a_hand_built_plan_replacing_a_region_with_a_whole_file_fails_up_front() {
                         hash: sha256_hex(b"body\n"),
                         executable: false,
                     },
+                    reason: OverwriteReason::ContentChanged,
                 },
             ),
         ]),

@@ -167,7 +167,10 @@ fn clean_when_disk_matches_the_recorded_entry() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("a.txt")], PathState::Clean);
+    assert_eq!(
+        status.rows[Utf8Path::new("a.txt")].verdict,
+        PathState::Clean
+    );
 }
 
 #[test]
@@ -177,7 +180,10 @@ fn drifted_when_bytes_differ() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("a.txt")], PathState::Drifted);
+    assert_eq!(
+        status.rows[Utf8Path::new("a.txt")].verdict,
+        PathState::Drifted
+    );
 }
 
 #[test]
@@ -187,7 +193,10 @@ fn drifted_when_the_executable_bit_differs() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("run.sh")], PathState::Drifted);
+    assert_eq!(
+        status.rows[Utf8Path::new("run.sh")].verdict,
+        PathState::Drifted
+    );
 }
 
 #[test]
@@ -197,7 +206,7 @@ fn drifted_when_the_kind_differs() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("a")], PathState::Drifted);
+    assert_eq!(status.rows[Utf8Path::new("a")].verdict, PathState::Drifted);
 }
 
 #[test]
@@ -207,7 +216,7 @@ fn drifted_when_a_recorded_path_is_now_a_directory() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("a")], PathState::Drifted);
+    assert_eq!(status.rows[Utf8Path::new("a")].verdict, PathState::Drifted);
 }
 
 #[test]
@@ -217,7 +226,10 @@ fn missing_when_a_recorded_path_is_gone() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("a.txt")], PathState::Missing);
+    assert_eq!(
+        status.rows[Utf8Path::new("a.txt")].verdict,
+        PathState::Missing
+    );
 }
 
 #[test]
@@ -229,7 +241,10 @@ fn missing_when_the_snapshot_lacks_a_recorded_path() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("a.txt")], PathState::Missing);
+    assert_eq!(
+        status.rows[Utf8Path::new("a.txt")].verdict,
+        PathState::Missing
+    );
 }
 
 #[test]
@@ -239,7 +254,10 @@ fn foreign_when_on_disk_and_unrecorded() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("notes.txt")], PathState::Foreign);
+    assert_eq!(
+        status.rows[Utf8Path::new("notes.txt")].verdict,
+        PathState::Foreign
+    );
 }
 
 #[test]
@@ -253,7 +271,10 @@ fn an_unrecorded_directory_classifies_foreign() {
         None,
     );
 
-    assert_eq!(status.paths[Utf8Path::new("existing")], PathState::Foreign);
+    assert_eq!(
+        status.rows[Utf8Path::new("existing")].verdict,
+        PathState::Foreign
+    );
 }
 
 #[test]
@@ -264,7 +285,10 @@ fn an_unrecorded_node_of_another_kind_classifies_foreign() {
         None,
     );
 
-    assert_eq!(status.paths[Utf8Path::new("pipe")], PathState::Foreign);
+    assert_eq!(
+        status.rows[Utf8Path::new("pipe")].verdict,
+        PathState::Foreign
+    );
 }
 
 #[test]
@@ -281,8 +305,11 @@ fn a_link_with_a_matching_target_classifies_clean_and_a_changed_one_drifted() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("kept")], PathState::Clean);
-    assert_eq!(status.paths[Utf8Path::new("moved")], PathState::Drifted);
+    assert_eq!(status.rows[Utf8Path::new("kept")].verdict, PathState::Clean);
+    assert_eq!(
+        status.rows[Utf8Path::new("moved")].verdict,
+        PathState::Drifted
+    );
 }
 
 #[test]
@@ -301,7 +328,7 @@ fn a_link_target_edited_to_non_utf8_classifies_drifted() {
 
     let status = classify(&manifest, &observations, None);
 
-    assert_eq!(status.paths[Utf8Path::new("l")], PathState::Drifted);
+    assert_eq!(status.rows[Utf8Path::new("l")].verdict, PathState::Drifted);
 }
 
 #[test]
@@ -322,7 +349,7 @@ fn a_recorded_block_classifies_over_its_region() {
     for (observation, want) in cases {
         let status = classify(&manifest, &observed(&[("conf", observation.clone())]), None);
         assert_eq!(
-            status.paths[Utf8Path::new("conf")],
+            status.rows[Utf8Path::new("conf")].verdict,
             *want,
             "{observation:?}"
         );
@@ -335,7 +362,7 @@ fn a_recorded_block_classifies_over_its_region() {
     for observation in [no_region(true), on_disk(&entry)] {
         let status = classify(&whole, &observed(&[("conf", observation.clone())]), None);
         assert_eq!(
-            status.paths[Utf8Path::new("conf")],
+            status.rows[Utf8Path::new("conf")].verdict,
             PathState::Drifted,
             "{observation:?}"
         );
@@ -357,7 +384,7 @@ fn the_state_subtree_never_classifies() {
     let status = classify(&manifest, &observations, Some(Utf8Path::new(".proiectio")));
 
     assert_eq!(
-        status.paths.keys().collect::<Vec<_>>(),
+        status.rows.keys().collect::<Vec<_>>(),
         [Utf8Path::new("a.txt")]
     );
 }
@@ -382,6 +409,7 @@ fn disk_already_equal_to_desired_skips() {
     assert_eq!(
         action(&plan, "a.txt"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -409,6 +437,7 @@ fn clean_disk_with_changed_desired_overwrites() {
         &Action::Overwrite {
             entry: new,
             expected: signature(&old),
+            reason: OverwriteReason::ContentChanged,
         }
     );
 }
@@ -456,6 +485,7 @@ fn drift_policy_overwrite_lifts_the_drift_refusal() {
         &Action::Overwrite {
             entry: new,
             expected: signature(&drifted),
+            reason: OverwriteReason::ForcedDrift,
         }
     );
 }
@@ -478,6 +508,7 @@ fn a_path_edited_into_agreement_with_desired_skips() {
     assert_eq!(
         action(&plan, "a.txt"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -503,6 +534,7 @@ fn an_agreement_skip_carries_the_desired_signature() {
     assert_eq!(
         action(&plan, "bin/tool"),
         &Action::Skip {
+            entry: agreed.clone(),
             expected: NodeSignature {
                 kind: EntryKind::File,
                 hash: desired_hash(&agreed),
@@ -701,6 +733,31 @@ fn an_executable_bit_change_alone_overwrites() {
         &Action::Overwrite {
             entry: new,
             expected: signature(&old),
+            reason: OverwriteReason::ExecutableChanged,
+        }
+    );
+}
+
+#[test]
+fn a_content_and_executable_bit_change_together_reads_as_content_changed() {
+    let old = file("#!/bin/sh\n", false);
+    let new = file("#!/bin/bash\n", true);
+    let manifest = manifest_of(&[("run.sh", recorded(&old, &[OWNER]))]);
+    let observations = observed(&[("run.sh", on_disk(&old))]);
+
+    let plan = plan(
+        &tree(&[("run.sh", &new)]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "run.sh"),
+        &Action::Overwrite {
+            entry: new,
+            expected: signature(&old),
+            reason: OverwriteReason::ContentChanged,
         }
     );
 }
@@ -723,6 +780,7 @@ fn skip_lets_an_owner_join_a_path_another_owner_holds_identically() {
     assert_eq!(
         action(&plan, ".zshrc"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -859,6 +917,7 @@ fn a_denormalized_desired_key_unifies_with_its_recorded_path() {
     assert_eq!(
         action(&plan, "b"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -1182,7 +1241,10 @@ fn a_path_the_state_dir_sits_beneath_still_classifies() {
     let status = classify(&manifest, &observations, Some(Utf8Path::new(NESTED_STATE)));
 
     assert_eq!(
-        status.paths,
+        status
+            .iter()
+            .map(|(path, row)| (Utf8PathBuf::from(path), row.verdict))
+            .collect::<BTreeMap<_, _>>(),
         BTreeMap::from([
             // Recorded as a file, a directory on disk: drift of kind.
             (".local".into(), PathState::Drifted),
@@ -1395,6 +1457,7 @@ fn an_external_target_refuses_even_where_the_link_is_already_recorded_and_clean(
     assert_eq!(
         action(&allowing, "toolchain"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -1724,6 +1787,7 @@ fn a_pivot_this_run_replaces_is_graded_as_the_link_it_becomes() {
         &Action::Overwrite {
             entry: landing.clone(),
             expected: signature(&escaping),
+            reason: OverwriteReason::ContentChanged,
         }
     );
     assert_eq!(
@@ -1942,6 +2006,7 @@ fn a_desired_link_matching_the_disk_target_skips() {
     assert_eq!(
         action(&plan, "rc"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -1966,6 +2031,7 @@ fn a_changed_desired_link_target_overwrites_a_clean_link() {
         &Action::Overwrite {
             entry: new,
             expected: signature(&old),
+            reason: OverwriteReason::ContentChanged,
         }
     );
 }
@@ -2234,6 +2300,7 @@ fn a_changed_marker_overwrites_the_recorded_region() {
         &Action::Overwrite {
             entry: now,
             expected: signature(&was),
+            reason: OverwriteReason::ContentChanged,
         }
     );
 }
@@ -2253,6 +2320,7 @@ fn a_region_matching_desired_skips() {
     assert_eq!(
         action(&plan, "conf"),
         &Action::Skip {
+            entry: entry.clone(),
             expected: signature(&entry),
         }
     );
@@ -2296,6 +2364,7 @@ fn a_drifted_region_lifts_under_force_and_a_lost_container_does_not() {
                 hash: sha256_hex(b"edited\n"),
                 executable: false,
             },
+            reason: OverwriteReason::ForcedDrift,
         }
     );
     assert_eq!(
@@ -2347,7 +2416,7 @@ fn a_second_marker_line_costs_the_region_its_identity_and_every_action_refuses()
         }
         // And it is drift that says so, at the classification.
         assert_eq!(
-            classify(&manifest, &observations, None).paths[Utf8Path::new("conf")],
+            classify(&manifest, &observations, None).rows[Utf8Path::new("conf")].verdict,
             PathState::Drifted,
             "{observation:?}"
         );
@@ -2739,9 +2808,7 @@ fn plans_are_byte_identical_for_identical_inputs() {
     let first = plan(&desired, &manifest, &observations, DriftPolicy::Overwrite);
     let second = plan(&desired, &manifest, &observations, DriftPolicy::Overwrite);
 
-    let first = serde_json::to_vec(&first).expect("serialize");
-    let second = serde_json::to_vec(&second).expect("serialize");
-    assert_eq!(first, second);
+    assert_eq!(format!("{first:?}"), format!("{second:?}"));
 }
 
 #[test]
