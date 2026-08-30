@@ -207,7 +207,14 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                     block(BlockFault::KindChange);
                 }
             }
-            Action::Remove { expected: None } | Action::RemoveDirectory | Action::Release => {}
+            // A directory is a whole node and a block record never stands for
+            // one, so a plan aiming this at a block is one no deciding built.
+            Action::RemoveDirectory => {
+                if record_is_block {
+                    block(BlockFault::KindChange);
+                }
+            }
+            Action::Remove { expected: None } | Action::Release => {}
             Action::Refuse { .. } | Action::NotRecorded => unreachable!("matched above"),
         }
     }
@@ -262,7 +269,21 @@ fn run(
         // writes: the write at the same path needs the location free, and
         // removals run before pruning and the writes both.
         if matches!(action, Action::OverwriteDirectory { .. }) {
+            let recorded = manifest.entries.get(path).cloned();
             acting_on(plan, path, || remove_directory(dest, manifest, path))?;
+            // The write that replaces the directory is a whole pass away, and
+            // anything failing in between ends the run with the directory
+            // gone. So the removal is recorded where it lands, and the write
+            // below records the entry it publishes over it. Nothing prunes
+            // above this location: it is one the run writes to.
+            manifest.entries.remove(path);
+            rows.insert(
+                path.clone(),
+                Row {
+                    facts: recorded_facts(recorded.as_ref(), plan.origin_of(path)),
+                    verdict: ApplyOutcome::Removed,
+                },
+            );
         }
         if matches!(action, Action::RemoveDirectory) {
             let recorded = manifest.entries.get(path).cloned();

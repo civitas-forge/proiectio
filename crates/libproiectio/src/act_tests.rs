@@ -808,6 +808,64 @@ fn a_recorded_path_drifted_to_an_empty_directory_is_forced_over() {
     assert_tree(dest.root(), &tree);
 }
 
+// The `rmdir` half of an `OverwriteDirectory` lands in the removal pass and
+// the write half in the write pass, so an action failing between them ends a
+// run with the directory gone. What the run then states about that path is
+// what the next run has to work from, so the removal is recorded where it
+// lands rather than at the end.
+#[test]
+fn a_directory_overwrite_interrupted_before_its_write_states_the_removal() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new().file("b.txt", "projected\n").file("z", "one\n");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    // `z` drifts into an empty directory and `b.txt` is edited, so forcing
+    // plans `OverwriteDirectory` at `z` and `Overwrite` at `b.txt`.
+    fs::remove_file(dest.path("z")).expect("remove the file");
+    fs::create_dir(dest.path("z")).expect("put a directory there");
+    fs::write(dest.path("b.txt"), "edited\n").expect("edit in place");
+
+    let next = Tree::new().file("b.txt", "wanted\n").file("z", "two\n");
+    let (manifest, plan) = plan_for(
+        &dest,
+        &state,
+        "own",
+        &next.entries(),
+        DriftPolicy::Overwrite,
+    );
+    // The gap: `b.txt` changes again, so its re-check fails. `b.txt` sorts
+    // before `z`, so the write pass gives up before `z`'s write — after the
+    // removal pass already took `z`'s directory.
+    fs::write(dest.path("b.txt"), "tampered\n").expect("tamper in the gap");
+
+    let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the re-check refuses");
+    assert!(
+        matches!(&error, Error::Refused(refused) if refused.kind() == RefusalKind::Drift),
+        "{error}"
+    );
+
+    // The directory is gone whatever the run says, so the run must say so:
+    // the record that stood for it is dropped, which is what the removal did.
+    assert!(!dest.path("z").exists(), "the directory was removed");
+    assert_eq!(
+        persisted(&state).entries.keys().collect::<Vec<_>>(),
+        [Utf8Path::new("b.txt")]
+    );
+
+    // And the state it left reconciles: nothing records `z`, nothing stands
+    // there, so the next run writes it as the fresh path it now is.
+    fs::write(dest.path("b.txt"), "wanted\n").expect("settle the drift by hand");
+    let report = pipeline(&dest, &state, "own", &next.entries(), DriftPolicy::Refuse)
+        .expect("the next run reconciles");
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([
+            ("b.txt".into(), ApplyOutcome::Skipped),
+            ("z".into(), ApplyOutcome::Written),
+        ])
+    );
+    assert_tree(dest.root(), &next);
+}
+
 #[test]
 fn a_removal_clears_a_path_drifted_to_an_empty_directory_under_force() {
     let (dest, state) = fixtures();
@@ -1639,6 +1697,51 @@ fn a_hand_built_plan_replacing_a_region_with_a_whole_file_fails_up_front() {
             .file("a.txt", "old")
             .file("conf", "author\n# proiectio\nbody\n"),
     );
+}
+
+// A block record stands for a region inside a container, never for a whole
+// node, so nothing deciding builds points a directory removal at one. The
+// check is here because forged plans are what `validate` is for: without it
+// the action would reach `rmdir` and fail as drift, naming the wrong thing.
+#[test]
+fn a_hand_built_directory_removal_of_a_block_record_fails_up_front() {
+    let (dest, state) = fixtures();
+    let container = "author\n# proiectio\nbody\n";
+    Tree::new().file("conf", container).write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "conf".into(),
+        recorded(
+            block_kind(Placement::Append),
+            sha256_hex(b"body\n"),
+            &["own"],
+        ),
+    );
+    let plan = Plan {
+        dropped: BTreeSet::new(),
+        owner: "own".to_owned(),
+        origins: BTreeMap::new(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([("conf".into(), Action::RemoveDirectory)]),
+    };
+
+    let error = apply_at(&dest, &state, &manifest, &plan)
+        .expect_err("a block record never stands for a directory");
+
+    match error {
+        Error::Refused(refused) => assert_eq!(
+            refusals_of(&refused),
+            BTreeMap::from([(
+                "conf".into(),
+                Refusal::Block {
+                    fault: BlockFault::KindChange
+                }
+            )])
+        ),
+        other => panic!("expected Block, got {other:?}"),
+    }
+    assert_tree(dest.root(), &Tree::new().file("conf", container));
+    assert_eq!(persisted(&state), Manifest::new());
 }
 
 #[test]
