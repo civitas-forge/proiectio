@@ -383,3 +383,43 @@ fn only_the_two_strings_that_are_not_pathnames_fail_the_pathname_check() {
         assert!(is_pathname(target), "{target:?}");
     }
 }
+
+#[test]
+fn absolutize_from_resolves_against_the_given_directory_and_collapses_lexically() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("/srv/site", "docs", "/srv/site/docs"),
+        ("/srv/site", "./docs/./api", "/srv/site/docs/api"),
+        ("/srv/site", "../www", "/srv/www"),
+        ("/srv/site", "", "/srv/site"),
+        ("/srv/site", ".", "/srv/site"),
+        ("/srv/site", "cache/..", "/srv/site"),
+        ("/srv/site", "/etc/hosts", "/etc/hosts"),
+        ("/srv/site", "/etc/../var//log/", "/var/log"),
+        // A `..` climbing past the root clamps there rather than escaping.
+        ("/srv/site", "../../../../..", "/"),
+        ("/", "..", "/"),
+    ];
+
+    for (cwd, path, expected) in cases {
+        assert_eq!(
+            absolutize_from(Utf8Path::new(cwd), Utf8Path::new(path)),
+            Utf8Path::new(expected),
+            "{cwd:?} + {path:?}"
+        );
+    }
+}
+
+#[test]
+fn absolutize_resolves_a_relative_path_against_the_current_directory() {
+    let cwd = absolutize(Utf8Path::new(".")).expect("a current directory");
+
+    assert!(cwd.is_absolute());
+    assert_eq!(
+        absolutize(Utf8Path::new("deploy.toml")).expect("absolutized"),
+        cwd.join("deploy.toml")
+    );
+    assert_eq!(
+        absolutize(Utf8Path::new("/srv/site/../www")).expect("absolutized"),
+        Utf8Path::new("/srv/www")
+    );
+}

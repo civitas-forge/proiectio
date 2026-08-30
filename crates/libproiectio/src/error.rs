@@ -75,6 +75,18 @@ pub enum Error {
         /// The lock file's path, relative to the state directory.
         path: Utf8PathBuf,
     },
+    #[error("the current directory cannot be read: {source}")]
+    CurrentDirectory {
+        #[serde(serialize_with = "display_string")]
+        source: std::io::Error,
+    },
+    #[error("path is not UTF-8: {path:?}")]
+    PathNotUtf8 { path: String },
+    #[error(
+        "state directory {path} is the target directory: the projection's own \
+         state files would classify as foreign"
+    )]
+    StateDirIsTarget { path: Utf8PathBuf },
     /// The mapping file does not parse as mapping TOML — a syntax error, a
     /// missing required field, or an unknown key. Not a refusal.
     #[error("mapping {path} is not valid: {source}")]
@@ -279,6 +291,27 @@ pub enum Error {
     TreeNodeKind {
         /// The node's absolute path.
         path: Utf8PathBuf,
+    },
+    /// A path handed to [`load_files`](crate::load_files) is neither a regular
+    /// file nor a symlink, or carries no file name to project under. Not a
+    /// refusal.
+    #[error("{path}: named files must be regular files or symlinks")]
+    FilesNodeKind {
+        /// The path's absolute spelling.
+        path: Utf8PathBuf,
+    },
+    /// More than one path handed to [`load_files`](crate::load_files) carries
+    /// the same file name, which is the key each would project under. Not a
+    /// refusal.
+    #[error(
+        "more than one named path projects as {}: {first}, {second}",
+        first.file_name().unwrap_or_default()
+    )]
+    FilesDuplicate {
+        /// The first path carrying the shared file name.
+        first: Utf8PathBuf,
+        /// The next path carrying it.
+        second: Utf8PathBuf,
     },
 }
 
