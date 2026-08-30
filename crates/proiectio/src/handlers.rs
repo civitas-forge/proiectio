@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use camino::{Utf8Path, Utf8PathBuf};
 use clapfig::ConfigAction;
 use libproiectio::{
-    Desired, DriftPolicy, Error, ExternalTargetPolicy, Plan, PlanOptions, PlannedAction,
+    Desired, DriftPolicy, Error, ExternalTargetPolicy, Limits, Plan, PlanOptions, PlannedAction,
     Projection, RemovalScope, Report, Status, load_files, load_mapping, load_source,
 };
 use standout::cli::{CommandContext, Output};
@@ -29,13 +29,14 @@ pub(crate) fn write(
     #[arg] tree: Option<Utf8PathBuf>,
     #[arg] strip: Option<u32>,
     #[arg] owner: Option<String>,
+    #[arg(name = "max-source-size")] max_source_size: Option<u64>,
     #[flag(name = "dry-run")] dry_run: bool,
     #[flag] force: bool,
     #[flag(name = "allow-external-targets")] allow_external_targets: bool,
     #[ctx] ctx: &CommandContext,
 ) -> Result<Output<RunView>, anyhow::Error> {
-    let desired = desired(&paths, tree.as_deref(), strip).map_err(exit::failure)?;
-    let owner = owner_or_configured(owner)?;
+    let (owner, limits) = write_settings(owner, max_source_size)?;
+    let desired = desired(&paths, tree.as_deref(), strip, limits).map_err(exit::failure)?;
     let options = PlanOptions {
         drift: drift(force),
         external_targets: if allow_external_targets {
@@ -104,6 +105,29 @@ fn owner_or_configured(owner: Option<String>) -> Result<String, anyhow::Error> {
     }
 }
 
+/// The two settings a write layers a flag over: `--owner` above `owner`, and
+/// `--max-source-size` above `max_source_size`. One load answers both, and a
+/// run whose flags name both never reads the configuration at all.
+fn write_settings(
+    owner: Option<String>,
+    max_source_size: Option<u64>,
+) -> Result<(String, Limits), anyhow::Error> {
+    let (owner, max_source_bytes) = match (owner, max_source_size) {
+        (Some(owner), Some(bytes)) => (owner, bytes),
+        (owner, max_source_size) => {
+            let configured = settings::builder().load()?;
+            (
+                owner.unwrap_or(configured.owner),
+                max_source_size.unwrap_or(configured.max_source_size),
+            )
+        }
+    };
+    Ok((
+        owner,
+        Limits::default().with_max_source_bytes(max_source_bytes),
+    ))
+}
+
 fn drift(force: bool) -> DriftPolicy {
     if force {
         DriftPolicy::Overwrite
@@ -151,11 +175,12 @@ fn desired(
     paths: &[Utf8PathBuf],
     tree: Option<&Utf8Path>,
     strip: Option<u32>,
+    limits: Limits,
 ) -> libproiectio::Result<Desired> {
     match (tree, paths) {
-        (Some(tree), _) => load_source(tree, strip),
-        (None, [mapping]) => load_mapping(mapping),
-        (None, files) => load_files(files),
+        (Some(tree), _) => load_source(tree, strip, limits),
+        (None, [mapping]) => load_mapping(mapping, limits),
+        (None, files) => load_files(files, limits),
     }
 }
 

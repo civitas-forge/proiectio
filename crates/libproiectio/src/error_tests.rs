@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use camino::Utf8PathBuf;
 
 use super::*;
-use crate::{BlockFault, Manifest, Origin, Refusal, RefusalKind, Refused};
+use crate::{BlockFault, Limits, Manifest, Origin, Refusal, RefusalKind, Refused};
 
 fn every_variant() -> Vec<Error> {
     let refusal = |kind: RefusalKind| -> Error {
@@ -128,6 +128,16 @@ fn every_variant() -> Vec<Error> {
             path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
             limit: 67_108_864,
         },
+        Error::ArchiveFileTooLarge {
+            path: Utf8PathBuf::from("/assets/vendor.zip"),
+            size: 70_000_000,
+            remaining: 67_108_864,
+            limit: 67_108_864,
+        },
+        Error::SourceTooLarge {
+            path: Utf8PathBuf::from("/assets/blob.bin"),
+            limit: 67_108_864,
+        },
         Error::ArchiveTooManyMembers {
             path: Utf8PathBuf::from("/assets/vendor.zip"),
             limit: 50_000,
@@ -165,6 +175,92 @@ fn every_variant() -> Vec<Error> {
     every
 }
 
+// Every kind tag [`Error`] can serialize under, which is what the tests
+// below hold `every_variant` to. It is spelled out rather than counted off
+// the list, because a count taken from the list can only ever agree with
+// itself: `SourceTooLarge` sat in the enum unlisted through two rounds of
+// this pull request while both count assertions passed.
+//
+// The eight refusals all serialize as `refused`, so this is one tag shorter
+// than the list is long.
+const EVERY_KIND: [&str; 33] = [
+    "refused",
+    "io",
+    "manifest_format",
+    "manifest_version",
+    "lock_held",
+    "current_directory",
+    "path_not_utf8",
+    "state_dir_is_target",
+    "mapping_format",
+    "mapping_version",
+    "mapping_contents_xor_source",
+    "mapping_duplicate",
+    "archive_format_unknown",
+    "archive_decode",
+    "archive_member_name_not_utf8",
+    "archive_member_target_not_utf8",
+    "archive_member_kind",
+    "archive_member_kind_disagrees",
+    "archive_member_duplicate",
+    "archive_fully_stripped",
+    "archive_member_too_deep",
+    "archive_too_large",
+    "archive_file_too_large",
+    "source_too_large",
+    "archive_too_many_members",
+    "tree_name_not_utf8",
+    "tree_target_not_utf8",
+    "tree_node_kind",
+    "tree_too_deep",
+    "destination_too_deep",
+    "files_node_kind",
+    "files_duplicate",
+    "strip_on_directory",
+];
+
+// What keeps `EVERY_KIND` honest in the other direction: this match names
+// every variant, so a variant added to `Error` stops these tests compiling
+// until whoever added it comes here — where the list above and
+// `every_variant` are both in view.
+fn is_named_above(error: &Error) -> bool {
+    match error {
+        Error::Refused(_)
+        | Error::Io { .. }
+        | Error::ManifestFormat { .. }
+        | Error::ManifestVersion { .. }
+        | Error::LockHeld { .. }
+        | Error::CurrentDirectory { .. }
+        | Error::PathNotUtf8 { .. }
+        | Error::StateDirIsTarget { .. }
+        | Error::MappingFormat { .. }
+        | Error::MappingVersion { .. }
+        | Error::MappingContentsXorSource { .. }
+        | Error::MappingDuplicate { .. }
+        | Error::ArchiveFormatUnknown { .. }
+        | Error::ArchiveDecode { .. }
+        | Error::ArchiveMemberNameNotUtf8 { .. }
+        | Error::ArchiveMemberTargetNotUtf8 { .. }
+        | Error::ArchiveMemberKind { .. }
+        | Error::ArchiveMemberKindDisagrees { .. }
+        | Error::ArchiveMemberDuplicate { .. }
+        | Error::ArchiveFullyStripped { .. }
+        | Error::ArchiveMemberTooDeep { .. }
+        | Error::ArchiveTooLarge { .. }
+        | Error::ArchiveFileTooLarge { .. }
+        | Error::SourceTooLarge { .. }
+        | Error::ArchiveTooManyMembers { .. }
+        | Error::TreeNameNotUtf8 { .. }
+        | Error::TreeTargetNotUtf8 { .. }
+        | Error::TreeNodeKind { .. }
+        | Error::TreeTooDeep { .. }
+        | Error::DestinationTooDeep { .. }
+        | Error::FilesNodeKind { .. }
+        | Error::FilesDuplicate { .. }
+        | Error::StripOnDirectory { .. } => true,
+    }
+}
+
 // The CLI's 0/1/2 exit contract, as one match over `is_refusal`.
 fn exit_code(result: Result<()>) -> i32 {
     match result {
@@ -181,7 +277,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    let (refusals, failures) = (8, 30);
+    let (refusals, failures) = (8, EVERY_KIND.len() - 1);
     assert_eq!(codes.len(), refusals + failures);
     assert!(codes[..refusals].iter().all(|&code| code == 2));
     assert!(codes[refusals..].iter().all(|&code| code == 1));
@@ -305,8 +401,38 @@ fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
     assert!(!large.is_refusal());
     assert_eq!(
         large.to_string(),
-        "archive /assets/vendor.tar.gz expands past the 67108864 bytes an \
-         archive may allocate"
+        "archive /assets/vendor.tar.gz expands past the 67108864 bytes one \
+         load may hold in memory"
+    );
+
+    // The zip exception reads differently on purpose: it weighs the file
+    // rather than the expansion, so it says which file, how big it is, and
+    // what bound it is being held to.
+    let on_disk = Error::ArchiveFileTooLarge {
+        path: Utf8PathBuf::from("/assets/vendor.zip"),
+        size: 70_000_000,
+        remaining: 67_108_864,
+        limit: 67_108_864,
+    };
+    assert!(!on_disk.is_refusal());
+    assert_eq!(
+        on_disk.to_string(),
+        "archive /assets/vendor.zip is 70000000 bytes on disk, and a zip's index \
+         is read whole before any member, so the file itself has to fit: 67108864 \
+         bytes are left of the 67108864 bytes one load may hold in memory"
+    );
+
+    // The same bound over a file read outside an archive: the message names
+    // the file the load was reading, and the bound the whole load shares.
+    let source = Error::SourceTooLarge {
+        path: Utf8PathBuf::from("/assets/blob.bin"),
+        limit: Limits::DEFAULT_MAX_SOURCE_BYTES,
+    };
+    assert!(!source.is_refusal());
+    assert_eq!(
+        source.to_string(),
+        "source /assets/blob.bin reads past the 524288000 bytes one load may \
+         hold in memory"
     );
 
     // The count is what tells the operator the strip is wrong rather than the
@@ -494,11 +620,31 @@ fn every_variant_serializes_under_a_kind_of_its_own() {
         })
         .collect();
 
-    let (refusals, failures) = (8, 30);
-    assert_eq!(kinds.len(), refusals + failures);
+    let refusals = 8;
     assert!(kinds[..refusals].iter().all(|kind| kind == "refused"));
+
+    // Not a count of the list against itself: the kinds the list produces
+    // have to be exactly the kinds the enum declares, so a variant nobody
+    // listed is named here rather than passing unnoticed.
+    let found: BTreeSet<&str> = kinds.iter().map(String::as_str).collect();
+    let declared: BTreeSet<&str> = EVERY_KIND.into_iter().collect();
     assert_eq!(
-        kinds.into_iter().collect::<BTreeSet<String>>().len(),
-        1 + failures
+        declared.difference(&found).collect::<Vec<_>>(),
+        Vec::<&&str>::new(),
+        "every_variant is missing a variant of Error"
     );
+    assert_eq!(
+        found.difference(&declared).collect::<Vec<_>>(),
+        Vec::<&&str>::new(),
+        "EVERY_KIND names a kind Error does not serialize under"
+    );
+    // One entry per variant, so nothing is listed twice either.
+    assert_eq!(kinds.len(), refusals + EVERY_KIND.len() - 1);
+}
+
+// The list is exhaustive by construction: this match refuses to compile
+// until every variant of `Error` is named beside it.
+#[test]
+fn every_variant_of_the_enum_is_one_the_tests_name() {
+    assert!(every_variant().iter().all(is_named_above));
 }

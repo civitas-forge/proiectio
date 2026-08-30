@@ -599,7 +599,17 @@ fn a_comment_key_the_schema_allowlists_loads_and_is_not_a_setting() {
     let listing = harness(&dir).run(&app(), cli::command(), ["proiectio", "conf", "list"]);
 
     listing.assert_success();
-    assert_eq!(listing.stdout(), "owner = \"site\"\n");
+    assert_eq!(listing.stdout(), configured_listing());
+}
+
+/// The merged listing every `config list` without a scope renders here: the
+/// two declared keys, `owner` set to `site` and the size bound left at its
+/// compiled default.
+fn configured_listing() -> String {
+    format!(
+        "max_source_size = {}\nowner = \"site\"\n",
+        libproiectio::Limits::DEFAULT_MAX_SOURCE_BYTES
+    )
 }
 
 /// The allowlist the loader honours is the one `config schema` publishes, read
@@ -647,14 +657,19 @@ fn a_comment_table_is_left_out_of_the_scope_that_reads_the_file_itself() {
     )
     .expect("a config file carrying a noted table");
 
-    for argv in [
-        vec!["proiectio", "conf", "list"],
-        vec!["proiectio", "conf", "list", "--scope", "user"],
+    // The scoped listing reads the file, which carries only `owner`; the
+    // merged one also carries the size bound's compiled default.
+    for (argv, expected) in [
+        (vec!["proiectio", "conf", "list"], configured_listing()),
+        (
+            vec!["proiectio", "conf", "list", "--scope", "user"],
+            "owner = \"site\"\n".to_owned(),
+        ),
     ] {
         let listing = harness(&dir).run(&app(), cli::command(), argv.clone());
 
         listing.assert_success();
-        assert_eq!(listing.stdout(), "owner = \"site\"\n", "{argv:?}");
+        assert_eq!(listing.stdout(), expected, "{argv:?}");
     }
 }
 
@@ -1474,7 +1489,8 @@ fn a_refused_dry_run_is_the_librarys_own_plan_document() {
         .expect("a projection")
         .plan(
             crate::testing::OWNER,
-            &libproiectio::load_mapping(&deploy).expect("a desired tree"),
+            &libproiectio::load_mapping(&deploy, libproiectio::Limits::default())
+                .expect("a desired tree"),
             libproiectio::PlanOptions::default(),
         )
         .expect("a plan");
@@ -1764,7 +1780,8 @@ fn a_dry_run_is_the_librarys_own_plan_report() {
     result.assert_success();
     let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
     let projection = Projection::new(&dest, None).expect("a projection");
-    let desired = libproiectio::load_mapping(&deploy).expect("a desired tree");
+    let desired = libproiectio::load_mapping(&deploy, libproiectio::Limits::default())
+        .expect("a desired tree");
     let planned = projection
         .plan(
             crate::testing::OWNER,
@@ -1968,4 +1985,139 @@ fn a_path_and_a_target_spelled_like_style_tags_render_as_themselves() {
     );
     term.assert_success();
     assert_styles_resolved("a write spelled like a tag", term.stdout());
+}
+
+// ---------------------------------------------------------------------------
+// The size bound on untrusted input
+// ---------------------------------------------------------------------------
+
+/// A bound small enough that the tour's own mapping runs past it, so a test
+/// need not build a large source to reach the error.
+const TIGHT: &str = "64";
+
+/// The bound is the run's, not the archive loader's alone: a mapping whose
+/// text and source files outweigh it fails the run, and the diagnostic names
+/// both the file being read and the number the run was held to.
+#[test]
+#[serial]
+fn a_write_past_the_size_bound_fails_naming_the_limit() {
+    let (dir, dest, deploy) = tour();
+    let verdict = exit::Verdict::default();
+
+    let result = harness(&dir).run(
+        &over(&verdict),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--max-source-size", TIGHT], &dest),
+    );
+
+    assert_eq!(leaving(&result, &verdict), exit::FAILURE);
+    assert_eq!(result.stdout(), "");
+    let error = result.error().unwrap_or_default();
+    assert!(
+        error.contains(deploy.as_str())
+            && error.contains("reads past the 64 bytes one load may hold in memory"),
+        "{error}"
+    );
+}
+
+/// The same bound written to the configuration rather than named on the
+/// command line, which is the layer under the flag.
+#[test]
+#[serial]
+fn the_configured_size_bound_holds_a_write_with_no_flag() {
+    let (dir, dest, deploy) = tour();
+    set_size_bound(&dir, TIGHT);
+    let verdict = exit::Verdict::default();
+
+    let result = harness(&dir).run(
+        &over(&verdict),
+        cli::command(),
+        write_argv(&[deploy.as_str()], &dest),
+    );
+
+    assert_eq!(leaving(&result, &verdict), exit::FAILURE);
+    assert!(
+        result
+            .error()
+            .unwrap_or_default()
+            .contains("one load may hold in memory"),
+        "{}",
+        result.error().unwrap_or_default()
+    );
+}
+
+/// The three layers in order: the flag wins over the configured key, which
+/// wins over the compiled default. The configured bound here would refuse the
+/// run, and the flag naming a wider one lets it through.
+#[test]
+#[serial]
+fn the_flag_wins_over_the_configured_size_bound() {
+    let (dir, dest, deploy) = tour();
+    set_size_bound(&dir, TIGHT);
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--max-source-size", "1048576"], &dest),
+    );
+
+    result.assert_success();
+    assert!(dest.join("config/settings.toml").is_file());
+}
+
+/// With nothing configured and no flag, the compiled default applies, which
+/// is wide enough for a mapping a tight bound refuses.
+#[test]
+#[serial]
+fn the_compiled_default_applies_when_nothing_names_a_bound() {
+    let (dir, dest, deploy) = tour();
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str()], &dest),
+    );
+
+    result.assert_success();
+    assert!(dest.join("config/settings.toml").is_file());
+}
+
+/// `config set` and `config get` carry the key like any other, and the value
+/// reads back as the bare integer a TOML document spells rather than a
+/// quoted string.
+#[test]
+#[serial]
+fn the_size_bound_round_trips_through_set_and_get() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let set = harness(&dir).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "max_source_size", "4096"],
+    );
+    set.assert_success();
+
+    let got = harness(&dir).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "get", "max_source_size"],
+    );
+
+    got.assert_success();
+    assert!(
+        got.stdout().ends_with("max_source_size = 4096\n"),
+        "{}",
+        got.stdout()
+    );
+}
+
+/// Writes the size bound into the configuration the way an operator would,
+/// through the CLI's own `config set`.
+fn set_size_bound(dir: &TempDir, bytes: &str) {
+    harness(dir)
+        .run(
+            &app(),
+            cli::command(),
+            ["proiectio", "conf", "set", "max_source_size", bytes],
+        )
+        .assert_success();
 }

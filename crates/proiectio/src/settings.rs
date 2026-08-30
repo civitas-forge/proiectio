@@ -14,6 +14,13 @@ pub(crate) struct ProiectioConfig {
     /// Default for `--owner`; the flag always wins.
     #[clapfig(default = "default")]
     pub(crate) owner: String,
+
+    /// How many bytes one write may read from its sources, counting an
+    /// archive as it expands rather than as it sits on disk — except a zip,
+    /// whose file must fit too, since its index is read before any member.
+    /// Default for `--max-source-size`; the flag always wins.
+    #[clapfig(default = 524_288_000)]
+    pub(crate) max_source_size: u64,
 }
 
 const APP: &str = "proiectio";
@@ -118,6 +125,16 @@ pub(crate) fn require_key(key: &str) -> Result<(), ClapfigError> {
         key: key.to_owned(),
         suggestion: clapfig::meta::nearest_key_shape(&shape, key, false),
     })
+}
+
+/// The keys the schema declares, in the order it declares them. The `config`
+/// help names them in prose, and this is what that prose is checked against.
+#[cfg(test)]
+pub(crate) fn declared_keys() -> Vec<String> {
+    match ProiectioConfig::shape() {
+        Shape::Object(schema) => schema.fields.into_iter().map(|field| field.name).collect(),
+        _ => panic!("the configuration is an object of named keys"),
+    }
 }
 
 pub(crate) fn leaf_type(key: &str) -> Option<LeafType> {

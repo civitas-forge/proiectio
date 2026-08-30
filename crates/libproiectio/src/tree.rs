@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
 use std::os::fd::AsFd;
 use std::path::Path;
 
@@ -8,7 +7,8 @@ use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
-use crate::{Desired, Entry, Error, MAX_WALK_DEPTH, Origin, Refusal, Refused, Result};
+use crate::limits::Budget;
+use crate::{Desired, Entry, Error, Limits, MAX_WALK_DEPTH, Origin, Refusal, Refused, Result};
 
 /// Walks `source` into a desired tree: every regular file becomes an
 /// [`Entry::File`] with its bytes and owner-executable bit, every symlink an
@@ -17,19 +17,24 @@ use crate::{Desired, Entry, Error, MAX_WALK_DEPTH, Origin, Refusal, Refused, Res
 ///
 /// Walked keys the containment gateway refuses are aggregated into one
 /// [`Refusal::Containment`]; a name or target that is not UTF-8, a node kind
-/// the projection never writes, and a tree nesting past [`MAX_WALK_DEPTH`]
-/// each fail the load.
-pub fn load_tree(source: &Utf8Path) -> Result<Desired> {
+/// the projection never writes, a tree nesting past [`MAX_WALK_DEPTH`], and a
+/// walk whose contents sum past [`Limits::max_source_bytes`] each fail the
+/// load. That sum is everything the walk holds: file bytes, the key each
+/// entry is filed under, each symlink's target, and each name containment
+/// refused.
+pub fn load_tree(source: &Utf8Path, limits: Limits) -> Result<Desired> {
     let source = crate::absolutize(source)?;
     let source = source.as_path();
     let root = Dir::open_ambient_dir(source, ambient_authority()).map_err(|e| Error::Io {
         path: source.to_owned(),
         source: e,
     })?;
+    let budget = Budget::new(limits);
     let mut walk = Walk {
         source,
         tree: BTreeMap::new(),
         refused: BTreeSet::new(),
+        budget: &budget,
     };
     walk.descend(&root, Utf8Path::new(""), 0)?;
     if !walk.refused.is_empty() {
@@ -58,6 +63,9 @@ struct Walk<'a> {
     source: &'a Utf8Path,
     tree: BTreeMap<Utf8PathBuf, Entry>,
     refused: BTreeSet<Utf8PathBuf>,
+    /// One budget across the whole walk: everything it reads is held in the
+    /// tree at once.
+    budget: &'a Budget,
 }
 
 impl Walk<'_> {
@@ -81,7 +89,7 @@ impl Walk<'_> {
                     name: raw.to_string_lossy().into_owned(),
                 })?;
             let rel = prefix.join(&name);
-            let Some(key) = self.admit(&rel) else {
+            let Some(key) = self.admit(&rel)? else {
                 continue;
             };
             // `metadata` and not `file_type`: cap-std reads the latter from
@@ -115,9 +123,14 @@ impl Walk<'_> {
                     });
                 }
                 let executable = is_executable(&meta);
-                let mut contents = Vec::new();
-                file.read_to_end(&mut contents)
-                    .map_err(io_at(self.absolute(&rel)))?;
+                let contents = self
+                    .budget
+                    .read_to_end(&mut file)
+                    .map_err(io_at(self.absolute(&rel)))?
+                    .ok_or_else(|| Error::SourceTooLarge {
+                        path: self.absolute(&rel),
+                        limit: self.budget.limit(),
+                    })?;
                 Entry::File {
                     contents,
                     executable,
@@ -127,20 +140,63 @@ impl Walk<'_> {
                     path: self.absolute(&rel),
                 });
             };
-            self.tree.insert(key, node);
+            self.retain(&rel, key, node)?;
         }
+        Ok(())
+    }
+
+    /// Enters one walked node in the tree, spending what holding it costs.
+    ///
+    /// A file's bytes are already spent by the time this is called, but they
+    /// are not all the walk keeps: the key every entry is filed under and the
+    /// target every symlink carries are bytes read out of the source tree and
+    /// held for as long as the tree is. Nothing else bounds how many entries
+    /// a walk may retain — a directory of a million empty files or symlinks
+    /// costs no file bytes at all — so charging what is retained is what
+    /// bounds it, without a second constant to keep in step with the first.
+    fn retain(&mut self, rel: &Utf8Path, key: Utf8PathBuf, node: Entry) -> Result<()> {
+        // What holding this entry costs beyond the file bytes
+        // `Budget::read_to_end` already spent: the key, and whatever the node
+        // carries of its own.
+        let held = key.as_str().len()
+            + match &node {
+                Entry::File { .. } => 0,
+                Entry::Symlink { target } => target.len(),
+                Entry::Block { body, marker, .. } => body.len() + marker.len(),
+            };
+        self.spend(rel, held)?;
+        self.tree.insert(key, node);
         Ok(())
     }
 
     /// Normalizes one walked path, recording it among the refused and
     /// answering `None` where containment declines it.
-    fn admit(&mut self, rel: &Utf8Path) -> Option<Utf8PathBuf> {
+    ///
+    /// A refused name is held as long as an admitted one — the walk carries
+    /// every one of them to the end so a single refusal can name them all —
+    /// so it is spent like an admitted one. Nothing else bounds how many
+    /// names a walk may refuse.
+    fn admit(&mut self, rel: &Utf8Path) -> Result<Option<Utf8PathBuf>> {
         match crate::containment::contained_normalize(rel) {
-            Some(normalized) => Some(normalized),
+            Some(normalized) => Ok(Some(normalized)),
             None => {
+                self.spend(rel, rel.as_str().len())?;
                 self.refused.insert(rel.to_owned());
-                None
+                Ok(None)
             }
+        }
+    }
+
+    /// Spends `held` bytes of the walk's one budget, naming `rel` where that
+    /// is what runs it out.
+    fn spend(&self, rel: &Utf8Path, held: usize) -> Result<()> {
+        if self.budget.spend(held as u64) {
+            Ok(())
+        } else {
+            Err(Error::SourceTooLarge {
+                path: self.absolute(rel),
+                limit: self.budget.limit(),
+            })
         }
     }
 

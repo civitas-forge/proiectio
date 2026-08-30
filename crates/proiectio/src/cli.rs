@@ -57,6 +57,16 @@ pub(crate) enum Commands {
         #[arg(long, value_name = "NAME")]
         owner: Option<String>,
 
+        /// Most bytes one run may read from its sources; default from the
+        /// configuration.
+        ///
+        /// One bound across every source the run reads, in bytes: an
+        /// archive counts what it expands to rather than its size on disk.
+        /// A zip counts both — its index is read whole before any member,
+        /// so the zip file itself has to fit too.
+        #[arg(long, id = "max-source-size", value_name = "BYTES")]
+        max_source_size: Option<u64>,
+
         /// Plan and report, write nothing.
         #[arg(long, id = "dry-run")]
         dry_run: bool,
@@ -132,7 +142,7 @@ pub(crate) fn command() -> clap::Command {
 }
 
 /// Clapfig's key-argument help names a `database.url` example from its own docs;
-/// proiectio's one key is `owner`, so name that instead.
+/// proiectio's keys are flat words, so name one of those instead.
 ///
 /// `mut_arg` drops a positional's index, and clap then re-derives every
 /// positional index on the command — so once one is set by hand they all must
@@ -195,7 +205,7 @@ case-insensitive, so PROIECTIO__OWNER sets `owner`). The `user` scope is the \
 platform config directory, which is also the search path; `set` and `unset` \
 with no --scope write there.
 
-Available keys (1): owner.";
+Available keys (2): owner, max_source_size.";
 
 #[cfg(test)]
 #[path = "cli_tests.rs"]
