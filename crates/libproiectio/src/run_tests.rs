@@ -402,8 +402,7 @@ fn a_plan_from_a_read_takes_no_lock() {
 }
 
 // A read returns the manifest its plan was decided against, so the report
-// the pair renders names the owners the verdicts were classified against,
-// whatever a later writer records.
+// the pair renders names the owners recorded when the verdicts were decided.
 #[test]
 fn a_read_returns_the_manifest_its_plan_was_decided_against() {
     let dest = Tree::new().materialize();

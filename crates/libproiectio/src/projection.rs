@@ -178,9 +178,9 @@ impl Projection {
     }
 }
 
-/// A plan and the manifest read in the same pass, so a report's owners come
-/// from the state the plan's verdicts were decided against rather than from a
-/// second read a concurrent writer could move between.
+/// The plan a read decided and the manifest it was decided against, so a
+/// caller renders the report from what the verdicts were classified against
+/// rather than reading the manifest again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Planned {
     /// What applying would do, per path.
