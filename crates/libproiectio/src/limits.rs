@@ -12,13 +12,20 @@ use serde::Serialize;
 /// ceiling on that, spent once per load and shared by every source the load
 /// touches.
 ///
+/// A caller starts from [`Limits::default`] and names the bounds it wants
+/// changed, rather than spelling a struct literal: the crate holds hard-coded
+/// bounds on an archive's member count and its nesting depth that a later
+/// version may make configurable here, and a literal naming every field would
+/// stop compiling the day one of them arrives.
+///
 /// ```
 /// # use libproiectio::Limits;
-/// let tight = Limits { max_source_bytes: 1 << 20 };
+/// let tight = Limits::default().with_max_source_bytes(1 << 20);
 /// assert_eq!(Limits::default().max_source_bytes, Limits::DEFAULT_MAX_SOURCE_BYTES);
 /// assert!(tight.max_source_bytes < Limits::default().max_source_bytes);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
 pub struct Limits {
     /// How many bytes one load may read into memory, summed over every source
     /// it reads: an archive's decompressed stream and members, a walked
@@ -31,6 +38,14 @@ pub struct Limits {
 impl Limits {
     /// The bound [`Limits::default`] carries: 500 MiB.
     pub const DEFAULT_MAX_SOURCE_BYTES: u64 = 500 << 20;
+
+    /// The same bounds with [`max_source_bytes`](Self::max_source_bytes) set
+    /// to `bytes`.
+    #[must_use]
+    pub fn with_max_source_bytes(mut self, bytes: u64) -> Self {
+        self.max_source_bytes = bytes;
+        self
+    }
 }
 
 impl Default for Limits {

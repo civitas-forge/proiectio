@@ -122,7 +122,10 @@ fn write_settings(
             )
         }
     };
-    Ok((owner, Limits { max_source_bytes }))
+    Ok((
+        owner,
+        Limits::default().with_max_source_bytes(max_source_bytes),
+    ))
 }
 
 fn drift(force: bool) -> DriftPolicy {

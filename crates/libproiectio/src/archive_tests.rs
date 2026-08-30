@@ -888,8 +888,8 @@ fn a_tar_split_across_gzip_members_expands_whole() {
 #[test]
 fn a_zstd_frame_asking_for_too_large_a_window_fails_to_decode() {
     // A frame header and nothing else: magic, a descriptor claiming no
-    // content size and no dictionary, and a window descriptor whose
-    // exponent asks for 2^27 — twice the byte bound.
+    // content size and no dictionary, and a window descriptor one exponent
+    // past what the cap allows.
     let exponent = window_log_max(Limits::DEFAULT_MAX_SOURCE_BYTES) - 10 + 1;
     let mut bytes = vec![0x28, 0xB5, 0x2F, 0xFD, 0x00];
     bytes.push(u8::try_from(exponent << 3).unwrap());
@@ -901,6 +901,40 @@ fn a_zstd_frame_asking_for_too_large_a_window_fails_to_decode() {
     // Named so the test cannot pass on some other decode failure: the
     // decoder refuses the *window*, not the truncated frame behind it.
     assert!(error.to_string().contains("too much memory"), "{error}");
+}
+
+// zstd takes its cap as an exponent, and a byte bound is not a power of two.
+// Rounding the exponent down would cap a 500 MiB bound at 2^28 — 256 MiB —
+// and refuse frames whose window fits the bound with room to spare, so the
+// exponent is the one that covers the bound rather than the one under it.
+#[test]
+fn the_window_cap_covers_the_byte_bound_rather_than_falling_under_it() {
+    assert_eq!(window_log_max(Limits::DEFAULT_MAX_SOURCE_BYTES), 29);
+    assert!((1u64 << window_log_max(Limits::DEFAULT_MAX_SOURCE_BYTES)) >= 500 << 20);
+    // A bound that is already a power of two names its own exponent: there
+    // is nothing to round up to.
+    assert_eq!(window_log_max(1 << 28), 28);
+    // The format's own range, either side of it.
+    assert_eq!(window_log_max(0), 10);
+    assert_eq!(window_log_max(1), 10);
+    assert_eq!(window_log_max(u64::MAX), 31);
+}
+
+// The frame the rounding buys back: a window of 288 MiB, which is over 2^28
+// and under the 500 MiB bound. Its header is all there is, so the decode
+// still fails — on the truncated frame behind the window, which is the point.
+#[test]
+fn a_zstd_frame_whose_window_fits_the_bound_is_not_refused_for_its_window() {
+    // A window descriptor is an exponent and a three-bit mantissa:
+    // 2^(10 + 18) + (2^28 / 8) * 1 = 288 MiB.
+    let mut bytes = vec![0x28, 0xB5, 0x2F, 0xFD, 0x00];
+    bytes.push((18 << 3) | 1);
+    let error = expand_bytes("wide.tar.zst", &bytes, 0).unwrap_err();
+    assert!(
+        matches!(&error, Error::ArchiveDecode { format, .. } if *format == ArchiveFormat::TarZst),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("too much memory"), "{error}");
 }
 
 // The zstd counterpart: frames concatenate the same way.
@@ -1369,6 +1403,32 @@ fn an_archive_carrying_too_many_members_fails_the_load() {
     assert!(matches!(
         load_archive(&path, 0, crate::Limits::default()).unwrap_err(),
         Error::ArchiveTooManyMembers { limit, .. } if limit == MAX_MEMBERS
+    ));
+}
+
+// A zip's central directory is read by `ZipArchive::new`, not through the
+// budgeted reader that meters every other byte, so a zip is weighed by the
+// size of its file before the parser is handed it.
+//
+// The archive here has had its end-of-central-directory record cut off: no
+// parser can read it, so the second load fails to decode. That is what makes
+// the first load's refusal mean something — under a bound smaller than the
+// file, the size check answers before the parser ever runs.
+#[test]
+fn a_zip_larger_than_the_bound_is_refused_before_its_directory_is_parsed() {
+    let mut bytes = zip(&zip_members());
+    bytes.truncate(bytes.len() - 4);
+    let fixture = Tree::new().file("wide.zip", bytes.clone()).materialize();
+    let path = fixture.path("wide.zip");
+
+    let tight = Limits::default().with_max_source_bytes(bytes.len() as u64 - 1);
+    assert!(matches!(
+        load_archive(&path, 0, tight).unwrap_err(),
+        Error::ArchiveTooLarge { limit, .. } if limit == tight.max_source_bytes
+    ));
+    assert!(matches!(
+        load_archive(&path, 0, Limits::default()).unwrap_err(),
+        Error::ArchiveDecode { format, .. } if format == ArchiveFormat::Zip
     ));
 }
 
