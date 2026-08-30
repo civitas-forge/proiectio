@@ -491,6 +491,64 @@ fn removal_prunes_emptied_dirs_and_keeps_one_holding_a_foreign_file() {
 }
 
 #[test]
+fn removal_prunes_the_dirs_a_hand_deleted_path_left_empty() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new().file("only/deep/file.txt", "projected");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    fs::remove_file(dest.path("only/deep/file.txt")).expect("delete the file by hand");
+
+    let report = removal_pipeline(
+        &dest,
+        &state,
+        "own",
+        RemovalScope::Everything,
+        DriftPolicy::Refuse,
+    )
+    .expect("removal");
+
+    // The record is dropped and nothing was unlinked, so the row says
+    // `Forgot` rather than claiming a removal; the directories the path
+    // held open go all the same, leaving the destination as the write
+    // found it.
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([("only/deep/file.txt".into(), ApplyOutcome::Forgot)])
+    );
+    assert_tree(dest.root(), &Tree::new());
+    assert!(persisted(&state).entries.is_empty());
+}
+
+#[test]
+fn a_named_path_the_owner_does_not_hold_is_reported_and_nothing_else() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new().file("mine.txt", "projected");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    fs::write(dest.path("foreign.txt"), "theirs").expect("plant a foreign file");
+
+    let report = removal_pipeline(
+        &dest,
+        &state,
+        "own",
+        RemovalScope::Paths(&requested(&["typo.txt", "foreign.txt", "mine.txt"])),
+        DriftPolicy::Refuse,
+    )
+    .expect("removal");
+
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([
+            ("foreign.txt".into(), ApplyOutcome::NotRecorded),
+            ("mine.txt".into(), ApplyOutcome::Removed),
+            ("typo.txt".into(), ApplyOutcome::NotRecorded),
+        ])
+    );
+    // Naming a path is not a licence to touch it: the foreign file the
+    // manifest never recorded is still there, byte for byte.
+    assert_tree(dest.root(), &Tree::new().file("foreign.txt", "theirs"));
+    assert!(persisted(&state).entries.is_empty());
+}
+
+#[test]
 fn a_subset_removal_clears_the_named_paths_and_leaves_the_rest() {
     let (dest, state) = fixtures();
     let tree = Tree::new()
@@ -549,7 +607,7 @@ fn a_subset_removal_refuses_a_path_that_violates_containment() {
 }
 
 #[test]
-fn removing_a_missing_path_drops_the_manifest_entry_alone() {
+fn removing_a_missing_path_forgets_it_rather_than_claiming_a_removal() {
     let (dest, state) = fixtures();
     let mut manifest = Manifest::new();
     manifest.entries.insert(
@@ -563,7 +621,7 @@ fn removing_a_missing_path_drops_the_manifest_entry_alone() {
 
     assert_eq!(
         verdicts(&report),
-        BTreeMap::from([("gone.txt".into(), ApplyOutcome::Removed)])
+        BTreeMap::from([("gone.txt".into(), ApplyOutcome::Forgot)])
     );
     assert!(persisted(&state).entries.is_empty());
 }

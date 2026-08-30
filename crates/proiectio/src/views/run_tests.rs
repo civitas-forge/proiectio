@@ -71,8 +71,11 @@ fn each_verdict_spells_one_style_and_one_verb() {
         (json!("Skipped"), "skipped", "skipped"),
         (json!("Remove"), "removed", "would remove"),
         (json!("Removed"), "removed", "removed"),
+        (json!("Forget"), "removed", "would forget"),
+        (json!("Forgot"), "removed", "forgot"),
         (json!("Release"), "removed", "would release"),
         (json!("Released"), "removed", "released"),
+        (json!("NotRecorded"), "skipped", "no record"),
         (
             json!({ "Refuse": { "refusal": "Drift" } }),
             "refused",
@@ -437,6 +440,13 @@ fn a_real_run_counts_what_it_did_and_a_plan_counts_nothing() {
             vec!["Skipped", "Removed"],
             "0 written, 1 skipped, 1 removed",
         ),
+        (vec!["Removed", "Forgot"], "1 removed, 1 forgotten"),
+        (vec!["Forgot"], "1 forgotten"),
+        // A pass that did nothing at every path it was handed counts the
+        // paths rather than reading `nothing to do`, which is what an owner
+        // removing a path it never recorded would otherwise be told.
+        (vec!["NotRecorded"], "1 not recorded"),
+        (vec!["Removed", "NotRecorded"], "1 removed, 1 not recorded"),
         (vec![], "nothing to do"),
     ] {
         let rows: serde_json::Map<String, JsonValue> = verdicts

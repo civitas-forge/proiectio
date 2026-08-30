@@ -149,8 +149,10 @@ fn facts_of(
             })
         }
         // A refusal decides no node, so its row states the source that named
-        // the path, plus the owners already recorded there.
-        Action::Refuse { .. } => None,
+        // the path, plus the owners already recorded there. A path the owner
+        // does not hold decides no node either, and its row states whoever
+        // does hold it.
+        Action::Refuse { .. } | Action::NotRecorded => None,
         Action::Remove { expected: None } => {
             return None;
         }
@@ -169,8 +171,12 @@ fn verdict_of(action: &Action) -> PlannedAction {
         Action::Write { .. } => PlannedAction::Write,
         Action::Overwrite { reason, .. } => PlannedAction::Overwrite { reason: *reason },
         Action::Skip { .. } => PlannedAction::Skip,
-        Action::Remove { .. } => PlannedAction::Remove,
+        Action::Remove {
+            expected: Some(_), ..
+        } => PlannedAction::Remove,
+        Action::Remove { expected: None } => PlannedAction::Forget,
         Action::Release => PlannedAction::Release,
+        Action::NotRecorded => PlannedAction::NotRecorded,
         Action::Refuse { refusal } => PlannedAction::Refuse {
             refusal: refusal.clone(),
         },
@@ -211,12 +217,17 @@ pub enum Action {
     Remove {
         /// The node the disk must still hold at apply time. `None` for a path
         /// already gone at plan time, which apply drops from the manifest
-        /// alone and refuses if a node has appeared since.
+        /// without unlinking anything — pruning the directories the absent
+        /// path leaves empty — and refuses if a node has appeared since.
         expected: Option<NodeSignature>,
     },
     /// Drop this owner from the path's manifest entry and leave the disk
     /// alone: other owners still hold it. Apply re-checks nothing on disk.
     Release,
+    /// The removal named this path and the owner does not hold it — nothing
+    /// records it, or another owner alone does. Nothing is written and no
+    /// record changes; the row says the path was named and not held.
+    NotRecorded,
     /// The path is named and left untouched. Applying a plan containing
     /// refusals fails with [`Error::Refused`](crate::Error::Refused).
     Refuse {
@@ -235,11 +246,19 @@ pub enum OverwriteReason {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum PlannedAction {
     Write,
-    Overwrite { reason: OverwriteReason },
+    Overwrite {
+        reason: OverwriteReason,
+    },
     Skip,
     Remove,
+    /// Drop the record of a path nothing stands at; nothing is unlinked.
+    Forget,
     Release,
-    Refuse { refusal: Refusal },
+    /// The path was named by the removal and this owner does not hold it.
+    NotRecorded,
+    Refuse {
+        refusal: Refusal,
+    },
 }
 
 /// The on-disk node an action expects at apply time. Apply re-checks all

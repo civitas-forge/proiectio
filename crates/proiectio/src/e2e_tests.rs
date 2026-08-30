@@ -357,6 +357,149 @@ fn a_dry_run_of_rm_reports_the_plan_and_removes_nothing() {
     assert!(dest.join("bin/tool").exists());
 }
 
+/// Forges the manifest at `dest` so it records `paths` under the owner
+/// `write` recorded with, each carrying the entry already recorded for
+/// `borrowed`. Only a hand-edited manifest holds keys like these; the
+/// library never writes one.
+fn forge_manifest_keys(dest: &Utf8Path, borrowed: &str, paths: &[&str]) {
+    let mut manifest = manifest_of(dest);
+    let entry = manifest.entries[Utf8Path::new(borrowed)].clone();
+    for path in paths {
+        manifest
+            .entries
+            .insert(Utf8PathBuf::from(*path), entry.clone());
+    }
+    std::fs::write(
+        dest.join(".proiectio/manifest.json").as_std_path(),
+        serde_json::to_vec_pretty(&manifest).expect("a serialized manifest"),
+    )
+    .expect("a forged manifest");
+}
+
+/// The keys a forged manifest escapes the destination with.
+const ESCAPING: [&str; 2] = ["../ESCAPE/x", "/etc/passwd"];
+
+/// A dry run reaches the verdict the real run reaches, which for a manifest
+/// key outside the destination is a containment refusal — not a preview of a
+/// removal there. Both leave the destination as it stands.
+#[test]
+#[serial]
+fn a_dry_run_of_rm_refuses_the_escaping_keys_the_real_run_refuses() {
+    let (dir, dest, deploy) = tour();
+    run(&dir, &["write", deploy.as_str(), "--dest", dest.as_str()]).assert_success();
+    forge_manifest_keys(&dest, "bin/tool", &ESCAPING);
+
+    let verdict = exit::Verdict::default();
+    let dry = run_over(
+        &dir,
+        OutputMode::Text,
+        &verdict,
+        &["rm", "--dest", dest.as_str(), "--dry-run"],
+    );
+
+    assert_eq!(leaving(&dry, &verdict), exit::REFUSAL);
+    assert_eq!(
+        dry.stdout(),
+        "would refuse     /etc/passwd           (containment)\n\
+         would refuse     ../ESCAPE/x           (containment)\n\
+         would remove     bin/tool              (exec)\n\
+         would remove     config/settings.toml\n\
+         would remove     current\n"
+    );
+
+    let real = run(&dir, &["rm", "--dest", dest.as_str()]);
+
+    assert_eq!(exit::status(real.outcome()), exit::REFUSAL);
+    let message = real.error().unwrap_or_default();
+    assert!(
+        message.contains("refusing paths that violate containment"),
+        "{message}"
+    );
+    for path in ESCAPING {
+        assert!(message.contains(path), "{message}");
+    }
+    // Neither run touched the destination: the real one refuses whole.
+    assert!(dest.join("bin/tool").exists());
+}
+
+/// A path deleted by hand before the removal leaves the destination as the
+/// write found it — the directories it held open included — and the row says
+/// the record was dropped rather than claiming a file was removed.
+#[test]
+#[serial]
+fn rm_of_a_hand_deleted_path_prunes_its_dirs_and_says_it_forgot_it() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let root = utf8(&dir);
+    let dest = root.join("dest");
+    std::fs::create_dir(&dest).expect("a destination");
+    let mapping = root.join("deep.toml");
+    std::fs::write(
+        mapping.as_std_path(),
+        b"version = 1\n\n[files.\"only/deep/file.txt\"]\ncontents = \"x\\n\"\n",
+    )
+    .expect("a mapping projecting one nested file");
+
+    run(&dir, &["write", mapping.as_str(), "--dest", dest.as_str()]).assert_success();
+    std::fs::remove_file(dest.join("only/deep/file.txt").as_std_path())
+        .expect("a hand-deleted file");
+
+    let result = run(&dir, &["rm", "--dest", dest.as_str()]);
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        "forgot     only/deep/file.txt\n1 forgotten\n"
+    );
+    assert_eq!(
+        entries(&dest),
+        vec![".proiectio".to_owned()],
+        "the directories the deleted path held open survived the removal"
+    );
+    assert!(manifest_of(&dest).entries.is_empty());
+}
+
+/// A named path the owner never recorded is reported as such rather than
+/// disappearing into `nothing to do`; the run still succeeds, since removal
+/// is a request for the path to be absent.
+#[test]
+#[serial]
+fn rm_of_a_path_the_owner_never_recorded_says_so_and_still_succeeds() {
+    let (dir, dest, deploy) = tour();
+    run(&dir, &["write", deploy.as_str(), "--dest", dest.as_str()]).assert_success();
+
+    let result = run(
+        &dir,
+        &[
+            "rm",
+            "typo.txt",
+            "config/settings.toml",
+            "--dest",
+            dest.as_str(),
+        ],
+    );
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        "removed    config/settings.toml\n\
+         no record  typo.txt\n\
+         1 removed, 1 not recorded\n"
+    );
+    assert!(dest.join("bin/tool").exists());
+
+    let json = run_as(
+        &dir,
+        OutputMode::Json,
+        &["rm", "typo.txt", "--dest", dest.as_str()],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    assert_eq!(
+        value["report"]["rows"]["typo.txt"]["verdict"],
+        "NotRecorded"
+    );
+}
+
 /// A refused dry run of `rm` renders the whole plan too: the rows it would
 /// remove beside the row it refuses, on stdout and with the refusal status,
 /// and structured output is the library's own plan document.

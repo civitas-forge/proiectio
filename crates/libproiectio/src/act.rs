@@ -133,6 +133,9 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                 continue;
             }
         }
+        if matches!(action, Action::NotRecorded) {
+            continue;
+        }
         if !matches!(action, Action::Write { .. }) && !manifest.entries.contains_key(path) {
             refuse(Refusal::Foreign);
             continue;
@@ -191,7 +194,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                 }
             }
             Action::Remove { expected: None } | Action::Release => {}
-            Action::Refuse { .. } => unreachable!("matched above"),
+            Action::Refuse { .. } | Action::NotRecorded => unreachable!("matched above"),
         }
     }
     if let Some(refused) = Refused::aggregate(refused) {
@@ -264,7 +267,11 @@ fn run(
                 path.clone(),
                 Row {
                     facts: recorded_facts(recorded.as_ref(), plan.origin_of(path)),
-                    verdict: ApplyOutcome::Removed,
+                    verdict: if expected.is_some() {
+                        ApplyOutcome::Removed
+                    } else {
+                        ApplyOutcome::Forgot
+                    },
                 },
             );
         }
@@ -343,6 +350,15 @@ fn run(
                 rows.insert(
                     path.clone(),
                     entry_row(manifest, plan, path, entry, ApplyOutcome::Skipped),
+                );
+            }
+            Action::NotRecorded => {
+                rows.insert(
+                    path.clone(),
+                    Row {
+                        facts: recorded_facts(manifest.entries.get(path), plan.origin_of(path)),
+                        verdict: ApplyOutcome::NotRecorded,
+                    },
                 );
             }
             Action::Release => {
@@ -545,38 +561,37 @@ fn regrade_recorded_link(
     ))
 }
 
-/// Executes one [`Action::Remove`], returning the *resolved* location it
-/// unlinked — the action key unless the walk followed an owned link — or
-/// `None` where the plan expected nothing there. The entry leaves the
-/// manifest either way.
+/// Executes one [`Action::Remove`], returning the *resolved* location the
+/// path vacated — the action key unless the walk followed an owned link — for
+/// the caller to prune the directories above. A path the plan expected
+/// nothing at vacates its location too, having been deleted by hand before
+/// the run; only ancestry that is not there answers `None`. The entry leaves
+/// the manifest either way.
 fn remove(
     dest: &Dir,
     manifest: &Manifest,
     path: &Utf8Path,
     expected: Option<&NodeSignature>,
 ) -> Result<Option<Utf8PathBuf>> {
+    let Some((parent, leaf, resolved_parent)) = verified_parent(dest, manifest, path, false)?
+    else {
+        return match expected {
+            Some(_) => Err(drift(path)),
+            None => Ok(None),
+        };
+    };
     match expected {
         Some(expected) => {
-            let Some((parent, leaf, resolved_parent)) =
-                verified_parent(dest, manifest, path, false)?
-            else {
-                return Err(drift(path));
-            };
             check_leaf(&parent, &leaf, path, expected)?;
             parent.remove_file(&leaf).map_err(io_error(path))?;
-            Ok(Some(resolved_parent.join(leaf)))
         }
-        None => {
-            if let Some((parent, leaf, _)) = verified_parent(dest, manifest, path, false)? {
-                match parent.symlink_metadata(&leaf) {
-                    Ok(_) => return Err(drift(path)),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(io_error(path)(e)),
-                }
-            }
-            Ok(None)
-        }
+        None => match parent.symlink_metadata(&leaf) {
+            Ok(_) => return Err(drift(path)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_error(path)(e)),
+        },
     }
+    Ok(Some(resolved_parent.join(leaf)))
 }
 
 /// Prunes directories emptied by this run's removals, deepest first. A

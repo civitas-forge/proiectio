@@ -2699,7 +2699,7 @@ fn a_removal_request_the_state_dir_sits_beneath_refuses_containment() {
 }
 
 #[test]
-fn naming_a_path_this_owner_does_not_hold_plans_nothing() {
+fn naming_a_path_this_owner_does_not_hold_says_so_and_changes_nothing() {
     let entry = file("alpha\n", false);
     let manifest = manifest_of(&[("theirs.txt", recorded(&entry, &["other"]))]);
     let observations = observed(&[
@@ -2709,7 +2709,9 @@ fn naming_a_path_this_owner_does_not_hold_plans_nothing() {
 
     // Never recorded, recorded under another owner alone, and a directory
     // (which the manifest never records): a removal owes nothing at any of
-    // them, so re-running one that already succeeded stays a no-op.
+    // them, so re-running one that already succeeded still writes nothing.
+    // Each one is named all the same — an owner asking to remove a path it
+    // never recorded learns that from the plan rather than from silence.
     let plan = removal(
         RemovalScope::Paths(&requested(&["gone.txt", "foreign.txt", "theirs.txt", "b"])),
         &manifest,
@@ -2717,7 +2719,71 @@ fn naming_a_path_this_owner_does_not_hold_plans_nothing() {
         DriftPolicy::Refuse,
     );
 
-    assert_eq!(plan.actions, BTreeMap::new());
+    assert_eq!(
+        plan.actions,
+        BTreeMap::from([
+            ("b".into(), Action::NotRecorded),
+            ("foreign.txt".into(), Action::NotRecorded),
+            ("gone.txt".into(), Action::NotRecorded),
+            ("theirs.txt".into(), Action::NotRecorded),
+        ])
+    );
+}
+
+#[test]
+fn a_manifest_key_that_escapes_the_destination_refuses_rather_than_planning_a_removal() {
+    // A forged manifest is the only way to reach these keys, and applying one
+    // refuses on containment. Deciding refuses on the same terms, so a dry
+    // run previews the verdict the real run reaches instead of announcing a
+    // removal outside the destination.
+    let entry = file("alpha\n", false);
+    let manifest = manifest_of(&[
+        ("../ESCAPE/x", recorded(&entry, &[OWNER])),
+        ("/etc/passwd", recorded(&entry, &[OWNER])),
+        ("a\\b", recorded(&entry, &[OWNER])),
+        ("a.txt", recorded(&entry, &[OWNER])),
+    ]);
+    let observations = observed(&[("a.txt", on_disk(&entry))]);
+
+    let swept = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    for path in ["../ESCAPE/x", "/etc/passwd", "a\\b"] {
+        assert_eq!(
+            action(&swept, path),
+            &Action::Refuse {
+                refusal: Refusal::Containment,
+            },
+            "expected {path} refused"
+        );
+    }
+    assert_eq!(
+        action(&swept, "a.txt"),
+        &Action::Remove {
+            expected: Some(signature(&entry)),
+        }
+    );
+    // The same keys reached through a write, whose orphans come off the same
+    // manifest side of the table.
+    let projected = plan(
+        &tree(&[("a.txt", &entry)]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+    for path in ["../ESCAPE/x", "/etc/passwd", "a\\b"] {
+        assert_eq!(
+            action(&projected, path),
+            &Action::Refuse {
+                refusal: Refusal::Containment,
+            },
+            "expected {path} refused"
+        );
+    }
 }
 
 #[test]
