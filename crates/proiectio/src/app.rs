@@ -83,12 +83,16 @@ pub(crate) fn build(verdict: Verdict) -> Result<App> {
         .context_fn("run", |context: &RenderContext| {
             Value::from_serialize(views::run_lines(context.data, context.ambiguous_width()))
         })
+        .context_fn("status", |context: &RenderContext| {
+            Value::from_serialize(views::status_lines(context.data, context.ambiguous_width()))
+        })
         .command_with("write", handlers::write__handler, |cfg| {
             cfg.template("run.jinja")
         })?
         .command_with("rm", handlers::rm__handler, |cfg| cfg.template("run.jinja"))?
         .command_with("status", handlers::status__handler, |cfg| {
             cfg.template("status.jinja")
+                .structured_output_projection(views::status_csv())
         })?
         .command_with("config", handlers::config_root__handler, |cfg| {
             cfg.template("config.jinja")

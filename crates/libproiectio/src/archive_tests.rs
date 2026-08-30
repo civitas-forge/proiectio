@@ -256,7 +256,7 @@ fn zip(members: &[ZipMember]) -> Vec<u8> {
 
 fn expand_at(name: &str, bytes: &[u8], strip: u32) -> (Fixture, Result<Desired>) {
     let fixture = Tree::new().file(name, bytes.to_vec()).materialize();
-    let expanded = load_archive(&fixture.path(name), strip);
+    let expanded = load_archive(&fixture.path(name), strip, crate::Limits::default());
     (fixture, expanded)
 }
 
@@ -757,7 +757,7 @@ fn members_strip_erases_still_count_against_the_member_cap() {
         encoder.finish().expect("finish the archive");
     }
     assert!(matches!(
-        load_archive(&path, 1).unwrap_err(),
+        load_archive(&path, 1, crate::Limits::default()).unwrap_err(),
         Error::ArchiveTooManyMembers { limit, .. } if limit == MAX_MEMBERS
     ));
 }
@@ -844,7 +844,7 @@ fn a_relative_archive_path_resolves_against_the_current_directory() {
     let absent = MissingName::with_suffix(".tar");
 
     assert!(matches!(
-        load_archive(absent.relative(), 0).unwrap_err(),
+        load_archive(absent.relative(), 0, crate::Limits::default()).unwrap_err(),
         Error::Io { path, .. } if path == absent.absolute()
     ));
 }
@@ -888,9 +888,9 @@ fn a_tar_split_across_gzip_members_expands_whole() {
 #[test]
 fn a_zstd_frame_asking_for_too_large_a_window_fails_to_decode() {
     // A frame header and nothing else: magic, a descriptor claiming no
-    // content size and no dictionary, and a window descriptor whose
-    // exponent asks for 2^27 — twice the byte bound.
-    let exponent = MAX_EXPANDED_BYTES.trailing_zeros() - 10 + 1;
+    // content size and no dictionary, and a window descriptor one exponent
+    // past what the cap allows.
+    let exponent = window_log_max(Limits::DEFAULT_MAX_SOURCE_BYTES) - 10 + 1;
     let mut bytes = vec![0x28, 0xB5, 0x2F, 0xFD, 0x00];
     bytes.push(u8::try_from(exponent << 3).unwrap());
     let error = expand_bytes("wide.tar.zst", &bytes, 0).unwrap_err();
@@ -901,6 +901,70 @@ fn a_zstd_frame_asking_for_too_large_a_window_fails_to_decode() {
     // Named so the test cannot pass on some other decode failure: the
     // decoder refuses the *window*, not the truncated frame behind it.
     assert!(error.to_string().contains("too much memory"), "{error}");
+}
+
+// zstd takes its cap as an exponent, and a byte bound is not a power of two.
+// Rounding the exponent down would cap a 500 MiB bound at 2^28 — 256 MiB —
+// and refuse frames whose window fits the bound with room to spare, so the
+// exponent is the one that covers the bound rather than the one under it.
+#[test]
+fn the_window_cap_covers_the_byte_bound_rather_than_falling_under_it() {
+    assert_eq!(window_log_max(Limits::DEFAULT_MAX_SOURCE_BYTES), 29);
+    assert!((1u64 << window_log_max(Limits::DEFAULT_MAX_SOURCE_BYTES)) >= 500 << 20);
+    // A bound that is already a power of two names its own exponent: there
+    // is nothing to round up to.
+    assert_eq!(window_log_max(1 << 28), 28);
+    // The format's own range, either side of it.
+    assert_eq!(window_log_max(0), 10);
+    assert_eq!(window_log_max(1), 10);
+    assert_eq!(window_log_max(u64::MAX), 31);
+}
+
+// The frame the rounding buys back: a window of 288 MiB, which is over 2^28
+// and under the 500 MiB bound. Its header is all there is, so the decode
+// still fails — on the truncated frame behind the window, which is the point.
+#[test]
+fn a_zstd_frame_whose_window_fits_the_bound_is_not_refused_for_its_window() {
+    // A window descriptor is an exponent and a three-bit mantissa:
+    // 2^(10 + 18) + (2^28 / 8) * 1 = 288 MiB.
+    let mut bytes = vec![0x28, 0xB5, 0x2F, 0xFD, 0x00];
+    bytes.push((18 << 3) | 1);
+    let error = expand_bytes("wide.tar.zst", &bytes, 0).unwrap_err();
+    assert!(
+        matches!(&error, Error::ArchiveDecode { format, .. } if *format == ArchiveFormat::TarZst),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("too much memory"), "{error}");
+}
+
+// The cap is taken off what the load has left, not off the bound it opened
+// at. A mapping expands its archives against one budget, so a last archive
+// asking for a window the earlier sources already spent would allocate the
+// bound a second time — the decoder holds that buffer whatever the reader
+// beyond it goes on to meter.
+#[test]
+fn a_spent_budget_narrows_the_window_a_later_archive_may_ask_for() {
+    // A frame header asking for a 512 KiB window: 2^(10 + 9), no mantissa.
+    let mut bytes = vec![0x28, 0xB5, 0x2F, 0xFD, 0x00];
+    bytes.push(9 << 3);
+    let fixture = Tree::new().file("late.tar.zst", bytes).materialize();
+    let path = fixture.path("late.tar.zst");
+    let limits = Limits::default().with_max_source_bytes(1 << 20);
+    let expand_with = |budget: &Rc<Budget>| {
+        expand(&path, 0, Utf8Path::new(""), None, budget)
+            .unwrap_err()
+            .to_string()
+    };
+
+    // Against the whole 1 MiB bound the window is inside what the load may
+    // hold, and the frame fails on the nothing behind its header instead.
+    let fresh = Rc::new(Budget::new(limits));
+    assert!(!expand_with(&fresh).contains("too much memory"));
+
+    // The same frame reached with 256 KiB left is refused at the window.
+    let spent = Rc::new(Budget::new(limits));
+    assert!(spent.spend((1 << 20) - (1 << 18)));
+    assert!(expand_with(&spent).contains("too much memory"));
 }
 
 // The zstd counterpart: frames concatenate the same way.
@@ -937,7 +1001,8 @@ fn hostile_member_names_are_refused_and_named() {
         Member::file("ok", "kept\n"),
     ];
     let fixture = Tree::new().file("hostile.tar", tar(&members)).materialize();
-    let error = load_archive(&fixture.path("hostile.tar"), 0).unwrap_err();
+    let error =
+        load_archive(&fixture.path("hostile.tar"), 0, crate::Limits::default()).unwrap_err();
     let refused = match &error {
         Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
             origins_of(refused)
@@ -1239,14 +1304,16 @@ fn a_member_nesting_past_the_depth_limit_fails_the_load() {
 }
 
 // A decompression bomb: a few kilobytes of gzip expanding past what one
-// archive may allocate. The bound stops it while it is still being read,
-// so the memory it wanted is never taken.
+// load may hold. The bound stops it while it is still being read, so the
+// memory it wanted is never taken. Every bomb here is built and judged
+// against BOMB_LIMIT rather than the 500 MiB default, so the tests also say
+// that a caller's own limit is the one enforced.
 #[test]
 fn an_archive_expanding_past_the_byte_bound_fails_the_load() {
     let bomb = bomb_at("bomb.tar.gz", b"big", REGULAR, "");
     assert!(matches!(
-        load_archive(&bomb.path("bomb.tar.gz"), 0).unwrap_err(),
-        Error::ArchiveTooLarge { limit, .. } if limit == MAX_EXPANDED_BYTES
+        load_archive(&bomb.path("bomb.tar.gz"), 0, BOMB_LIMIT).unwrap_err(),
+        Error::ArchiveTooLarge { limit, .. } if limit == BOMB_LIMIT.max_source_bytes
     ));
 }
 
@@ -1258,8 +1325,8 @@ fn an_archive_expanding_past_the_byte_bound_fails_the_load() {
 fn a_declined_members_bytes_spend_the_budget_too() {
     let bomb = bomb_at("declined.tar.gz", b"/etc/passwd", REGULAR, "");
     assert!(matches!(
-        load_archive(&bomb.path("declined.tar.gz"), 0).unwrap_err(),
-        Error::ArchiveTooLarge { limit, .. } if limit == MAX_EXPANDED_BYTES
+        load_archive(&bomb.path("declined.tar.gz"), 0, BOMB_LIMIT).unwrap_err(),
+        Error::ArchiveTooLarge { limit, .. } if limit == BOMB_LIMIT.max_source_bytes
     ));
 }
 
@@ -1270,8 +1337,8 @@ fn a_declined_members_bytes_spend_the_budget_too() {
 fn a_symlink_header_claiming_a_body_spends_the_budget_too() {
     let bomb = bomb_at("claimed.tar.gz", b"current", SYMLINK, "releases/1.2.3");
     assert!(matches!(
-        load_archive(&bomb.path("claimed.tar.gz"), 0).unwrap_err(),
-        Error::ArchiveTooLarge { limit, .. } if limit == MAX_EXPANDED_BYTES
+        load_archive(&bomb.path("claimed.tar.gz"), 0, BOMB_LIMIT).unwrap_err(),
+        Error::ArchiveTooLarge { limit, .. } if limit == BOMB_LIMIT.max_source_bytes
     ));
 }
 
@@ -1285,8 +1352,8 @@ fn a_long_name_header_cannot_outspend_the_budget() {
     const GNU_LONGNAME: u8 = b'L';
     let bomb = bomb_at("longname.tar.gz", b"././@LongLink", GNU_LONGNAME, "");
     assert!(matches!(
-        load_archive(&bomb.path("longname.tar.gz"), 0).unwrap_err(),
-        Error::ArchiveTooLarge { limit, .. } if limit == MAX_EXPANDED_BYTES
+        load_archive(&bomb.path("longname.tar.gz"), 0, BOMB_LIMIT).unwrap_err(),
+        Error::ArchiveTooLarge { limit, .. } if limit == BOMB_LIMIT.max_source_bytes
     ));
 }
 
@@ -1296,7 +1363,7 @@ fn a_long_name_header_cannot_outspend_the_budget() {
 // spent.
 #[test]
 fn a_header_claiming_more_than_the_stream_holds_fails_to_decode() {
-    let member = Member::new("short", REGULAR).declaring(MAX_EXPANDED_BYTES + 1);
+    let member = Member::new("short", REGULAR).declaring(Limits::DEFAULT_MAX_SOURCE_BYTES + 1);
     let mut bytes = Vec::new();
     write_member(&mut bytes, &member);
     write_end(&mut bytes);
@@ -1306,14 +1373,20 @@ fn a_header_claiming_more_than_the_stream_holds_fails_to_decode() {
     ));
 }
 
+// The bound the bombs below are built and loaded against: small enough that
+// building one is cheap, and nothing about the bound depends on its size.
+const BOMB_LIMIT: Limits = Limits {
+    max_source_bytes: 1 << 20,
+};
+
 // Writes a gzipped tar into a fresh fixture under `file`: one member of
 // kind `kind` named `name`, whose body really carries
-// `MAX_EXPANDED_BYTES + 1` bytes. The bytes are zeros, so what lands on
-// disk is a few hundred kilobytes — which is the whole point of the bound.
+// `BOMB_LIMIT.max_source_bytes + 1` bytes. The bytes are zeros, so what lands
+// on disk is a few kilobytes — which is the whole point of the bound.
 fn bomb_at(file: &str, name: &[u8], kind: u8, link: &str) -> Fixture {
     let fixture = Tree::new().materialize();
     let path = fixture.path(file);
-    let size = MAX_EXPANDED_BYTES + 1;
+    let size = BOMB_LIMIT.max_source_bytes + 1;
     let file = fs::File::create(&path).expect("create the bomb");
     let mut encoder =
         flate2::write::GzEncoder::new(BufWriter::new(file), flate2::Compression::fast());
@@ -1358,8 +1431,56 @@ fn an_archive_carrying_too_many_members_fails_the_load() {
         encoder.finish().expect("finish the archive");
     }
     assert!(matches!(
-        load_archive(&path, 0).unwrap_err(),
+        load_archive(&path, 0, crate::Limits::default()).unwrap_err(),
         Error::ArchiveTooManyMembers { limit, .. } if limit == MAX_MEMBERS
+    ));
+}
+
+// A zip's central directory is read by `ZipArchive::new`, not through the
+// budgeted reader that meters every other byte, so a zip is weighed by the
+// size of its file before the parser is handed it.
+//
+// The archive here has had its end-of-central-directory record cut off: no
+// parser can read it, so the second load fails to decode. That is what makes
+// the first load's refusal mean something — under a bound smaller than the
+// file, the size check answers before the parser ever runs.
+#[test]
+fn a_zip_larger_than_the_bound_is_refused_before_its_directory_is_parsed() {
+    let mut bytes = zip(&zip_members());
+    bytes.truncate(bytes.len() - 4);
+    let fixture = Tree::new().file("wide.zip", bytes.clone()).materialize();
+    let path = fixture.path("wide.zip");
+
+    let tight = Limits::default().with_max_source_bytes(bytes.len() as u64 - 1);
+    let error = load_archive(&path, 0, tight).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            Error::ArchiveFileTooLarge { size, remaining, limit, .. }
+                if *size == bytes.len() as u64
+                    && *remaining == tight.max_source_bytes
+                    && *limit == tight.max_source_bytes
+        ),
+        "{error}"
+    );
+    // The one refusal weighing a file rather than what it expands to says so,
+    // and names both numbers: the operator can see that raising the bound
+    // past the file is what answers it.
+    let message = error.to_string();
+    assert!(
+        message.contains(&format!("is {} bytes on disk", bytes.len())),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "{} bytes one load may hold",
+            tight.max_source_bytes
+        )),
+        "{message}"
+    );
+    assert!(matches!(
+        load_archive(&path, 0, Limits::default()).unwrap_err(),
+        Error::ArchiveDecode { format, .. } if format == ArchiveFormat::Zip
     ));
 }
 
@@ -1380,7 +1501,7 @@ fn a_prefix_places_every_member_beneath_it() {
         0,
         Utf8Path::new("vendor/lib"),
         None,
-        &new_budget(),
+        &Rc::new(Budget::new(Limits::default())),
     )
     .unwrap()
     .tree;
@@ -1409,7 +1530,7 @@ fn a_prefix_never_absorbs_a_climbing_member() {
         0,
         Utf8Path::new("vendor"),
         None,
-        &new_budget(),
+        &Rc::new(Budget::new(Limits::default())),
     )
     .unwrap_err()
     {
@@ -1437,7 +1558,7 @@ fn a_prefix_leaves_a_symlink_target_verbatim() {
         0,
         Utf8Path::new("vendor"),
         None,
-        &new_budget(),
+        &Rc::new(Budget::new(Limits::default())),
     )
     .unwrap()
     .tree;

@@ -10,8 +10,10 @@
 //!
 //! A caller computes the desired tree of [`Entry`] values itself, or builds
 //! one with [`load_mapping`], [`load_tree`], [`load_archive`], or
-//! [`load_files`]. Content is bytes and owners are opaque strings; nothing
-//! here names what the files are for.
+//! [`load_files`]. Each of those takes [`Limits`], which bounds what one load
+//! may read into memory from input the caller did not write; `Limits::default`
+//! is 500 MiB. Content is bytes and owners are opaque strings; nothing here
+//! names what the files are for.
 //!
 //! [`Error::is_refusal`] splits refusals from runtime failures, which a CLI's
 //! 0/1/2 exit contract matches on.
@@ -34,6 +36,7 @@ mod desired;
 mod entry;
 mod error;
 mod files;
+mod limits;
 mod lock;
 mod manifest;
 mod mapping;
@@ -59,6 +62,7 @@ pub use desired::*;
 pub use entry::*;
 pub use error::*;
 pub use files::*;
+pub use limits::*;
 pub(crate) use lock::*;
 pub use manifest::*;
 pub use mapping::*;

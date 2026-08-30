@@ -5,6 +5,7 @@
 //! structured modes skip, so `--output json` stays the library's own report.
 
 use std::collections::BTreeSet;
+use std::iter;
 
 use libproiectio::{ApplyReport, BlockFault, Dropped, PlannedAction, Report};
 use serde::Serialize;
@@ -13,6 +14,7 @@ use standout::AmbiguousWidth;
 use standout::tabular::visible_width_with_policy;
 
 use crate::app::verbatim;
+use crate::views::pad;
 
 /// A plan on a dry run, what apply did on a real one; untagged, so structured
 /// output is the library's own either way.
@@ -332,7 +334,10 @@ impl Tally {
 }
 
 /// The verb column: the widest verb a plan spells, and the widest a real run
-/// spells.
+/// spells. Either is the least that tense's column is ever wide — a verdict
+/// this CLI has no word for reads as its own name, and a longer one widens the
+/// column. The tests drive every verdict the library declares through
+/// `spelling` and check the verb still fits its tense's constant.
 const PLANNED_VERBS: usize = "would overwrite".len();
 const APPLIED_VERBS: usize = "overwrote".len();
 
@@ -344,13 +349,13 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
         Some(applied) => (applied, false),
         None => (document, true),
     };
-    let Some(rows) = report.get("rows").and_then(JsonValue::as_object) else {
+    let Some(rows) = report.get("rows").and_then(JsonValue::as_array) else {
         return RunLines::default();
     };
 
     let paths: Vec<(String, &JsonValue)> = rows
         .iter()
-        .map(|(path, row)| (verbatim(path), row))
+        .filter_map(|row| Some((verbatim(row.get("path")?.as_str()?), row)))
         .collect();
     // A plan flattens its rows into the document that carries `dropped`, and
     // an apply nests its rows under `report` beside it, so drops read from
@@ -375,7 +380,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
         .map(|cell| visible_width_with_policy(cell, width))
         .max()
         .unwrap_or_default();
-    let verbs = if planning {
+    let tense = if planning {
         PLANNED_VERBS
     } else {
         APPLIED_VERBS
@@ -403,7 +408,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
 
         lines.push(RowView {
             style,
-            verb_pad: pad(verbs, &verb, width),
+            verb_pad: String::new(),
             verb,
             path_pad: pad(column, &path, width),
             path,
@@ -413,12 +418,24 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
     for (member, note) in dropped {
         lines.push(RowView {
             style: "skipped",
-            verb_pad: pad(verbs, DROPPED, width),
+            verb_pad: String::new(),
             verb: DROPPED.to_owned(),
             path_pad: pad(column, &member, width),
             path: member,
             note: Some(note),
         });
+    }
+    // A verdict this CLI has no word for reads as its own name, which can run
+    // longer than either tense's widest verb, so the column takes the widest
+    // verb it actually holds rather than spilling one path out of line.
+    let verbs = lines
+        .iter()
+        .map(|row| visible_width_with_policy(&row.verb, width))
+        .chain(iter::once(tense))
+        .max()
+        .unwrap_or(tense);
+    for row in &mut lines {
+        row.verb_pad = pad(verbs, &row.verb, width);
     }
 
     RunLines {
@@ -474,10 +491,6 @@ fn executable(shape: Option<&JsonValue>) -> bool {
         .and_then(|file| file.get("executable"))
         .and_then(JsonValue::as_bool)
         .unwrap_or_default()
-}
-
-fn pad(column: usize, cell: &str, width: AmbiguousWidth) -> String {
-    " ".repeat(column.saturating_sub(visible_width_with_policy(cell, width)))
 }
 
 #[cfg(test)]

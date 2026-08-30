@@ -11,7 +11,11 @@ use crate::{Dropped, RefusalKind};
 const MAPPING: &str = "/maps/deploy.toml";
 
 fn parse_at(text: &str) -> Result<Desired> {
-    parse(Utf8Path::new(MAPPING), text)
+    parse(
+        Utf8Path::new(MAPPING),
+        text,
+        &Rc::new(Budget::new(Limits::default())),
+    )
 }
 
 fn file(contents: &str, executable: bool) -> Entry {
@@ -371,7 +375,7 @@ fn archive_members_expand_under_their_prefix_as_ordinary_entries() {
         via: Some(fixture.path("deploy.toml")),
     };
     assert_eq!(
-        load_mapping(&fixture.path("deploy.toml")).unwrap(),
+        load_mapping(&fixture.path("deploy.toml"), crate::Limits::default()).unwrap(),
         sourced(&[
             ("plugins/hello.lua", file("print()\n", false), plugins),
             ("vendor/bin/run", file("#!/bin/sh\n", true), vendor.clone()),
@@ -405,7 +409,7 @@ fn an_archive_member_strip_erases_is_dropped_and_named_by_its_archive() {
         path: fixture.path("assets/vendor.tar.gz"),
         via: Some(fixture.path("deploy.toml")),
     };
-    let loaded = load_mapping(&fixture.path("deploy.toml")).unwrap();
+    let loaded = load_mapping(&fixture.path("deploy.toml"), crate::Limits::default()).unwrap();
     assert_eq!(
         loaded.iter().collect::<Vec<_>>(),
         sourced(&[("vendor/lib/tool.so", file("so\n", false), origin.clone())])
@@ -464,7 +468,7 @@ fn two_archives_dropping_the_same_member_name_are_both_recorded() {
             via: Some(fixture.path("deploy.toml")),
         },
     };
-    let loaded = load_mapping(&fixture.path("deploy.toml")).unwrap();
+    let loaded = load_mapping(&fixture.path("deploy.toml"), crate::Limits::default()).unwrap();
     assert_eq!(
         loaded.dropped(),
         &BTreeSet::from([
@@ -507,7 +511,7 @@ fn an_entry_strip_erases_entirely_fails_the_whole_mapping() {
 
     let junk = fixture.path("assets/junk.tar.gz");
     assert!(matches!(
-        load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
+        load_mapping(&fixture.path("deploy.toml"), crate::Limits::default()).unwrap_err(),
         Error::ArchiveFullyStripped { path, strip, dropped }
             if path == junk && strip == 1 && dropped == 2
     ));
@@ -547,7 +551,7 @@ fn one_archive_expanded_under_two_prefixes_drops_a_member_once_per_entry() {
             via: Some(fixture.path("deploy.toml")),
         },
     };
-    let loaded = load_mapping(&fixture.path("deploy.toml")).unwrap();
+    let loaded = load_mapping(&fixture.path("deploy.toml"), crate::Limits::default()).unwrap();
     assert_eq!(
         loaded.dropped(),
         &BTreeSet::from([asked_by("backup", 2), asked_by("vendor", 1)])
@@ -581,7 +585,7 @@ fn an_archive_member_climbing_out_of_its_prefix_is_refused_by_name() {
         .materialize();
 
     assert!(matches!(
-        load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
+        load_mapping(&fixture.path("deploy.toml"), crate::Limits::default()).unwrap_err(),
         Error::Refused(refused)
             if origins_of(&refused) == BTreeMap::from([(
                 Utf8PathBuf::from("../escape"),
@@ -611,7 +615,7 @@ fn a_refused_member_names_its_archive_and_the_mapping_that_named_it() {
         .file("assets/second.zip", zip_named("../escape", "out\n"))
         .materialize();
 
-    let error = load_mapping(&fixture.path("deploy.toml")).unwrap_err();
+    let error = load_mapping(&fixture.path("deploy.toml"), crate::Limits::default()).unwrap_err();
 
     match &error {
         Error::Refused(refused) => {
@@ -659,7 +663,7 @@ fn an_archive_member_colliding_with_another_entry_is_a_duplicate() {
         .materialize();
 
     assert!(matches!(
-        load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
+        load_mapping(&fixture.path("deploy.toml"), crate::Limits::default()).unwrap_err(),
         Error::MappingDuplicate { key, .. } if key == "vendor/lib/tool.so"
     ));
 }
@@ -689,8 +693,11 @@ fn two_archive_tables_naming_one_prefix_are_a_duplicate() {
 // every expanded tree live at once because they all merge into one.
 #[test]
 fn archive_tables_in_one_mapping_share_one_byte_budget() {
+    const LIMIT: Limits = Limits {
+        max_source_bytes: 1 << 20,
+    };
     // Two halves of the budget, each fine alone and not together.
-    let half = usize::try_from(crate::archive::MAX_EXPANDED_BYTES / 2 + (1 << 20)).unwrap();
+    let half = usize::try_from(LIMIT.max_source_bytes / 2 + (1 << 12)).unwrap();
     let body = "0".repeat(half);
     let text = r#"
         version = 1
@@ -705,7 +712,7 @@ fn archive_tables_in_one_mapping_share_one_byte_budget() {
         .materialize();
 
     assert!(matches!(
-        load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
+        load_mapping(&fixture.path("deploy.toml"), LIMIT).unwrap_err(),
         Error::ArchiveTooLarge { .. }
     ));
 }
@@ -762,7 +769,7 @@ fn the_cli_tour_example_parses_to_its_tree_archive_included() {
         via: Some(fixture.path("deploy.toml")),
     };
     assert_eq!(
-        load_mapping(&fixture.path("deploy.toml")).unwrap(),
+        load_mapping(&fixture.path("deploy.toml"), crate::Limits::default()).unwrap(),
         sourced(&[
             (
                 "config/settings.toml",
@@ -801,7 +808,11 @@ fn relative_sources_resolve_against_the_mapping_files_directory() {
         .materialize();
 
     assert_eq!(
-        load_mapping(&fixture.path("nested/deploy.toml")).unwrap(),
+        load_mapping(
+            &fixture.path("nested/deploy.toml"),
+            crate::Limits::default()
+        )
+        .unwrap(),
         from_mapping(
             &fixture.path("nested/deploy.toml"),
             &[
@@ -824,7 +835,7 @@ fn an_absolute_source_is_read_as_given() {
         .materialize();
 
     assert_eq!(
-        load_mapping(&mapping.path("deploy.toml")).unwrap(),
+        load_mapping(&mapping.path("deploy.toml"), crate::Limits::default()).unwrap(),
         from_mapping(
             &mapping.path("deploy.toml"),
             &[("x", file("anywhere the invoker can read", false))],
@@ -852,7 +863,7 @@ fn source_metadata_is_copied_and_the_override_wins() {
         .materialize();
 
     assert_eq!(
-        load_mapping(&fixture.path("deploy.toml")).unwrap(),
+        load_mapping(&fixture.path("deploy.toml"), crate::Limits::default()).unwrap(),
         from_mapping(
             &fixture.path("deploy.toml"),
             &[
@@ -876,7 +887,7 @@ fn a_missing_source_is_an_io_error_naming_the_resolved_path() {
         .materialize();
 
     assert!(matches!(
-        load_mapping(&fixture.path("deploy.toml")).unwrap_err(),
+        load_mapping(&fixture.path("deploy.toml"), crate::Limits::default()).unwrap_err(),
         Error::Io { path, .. } if path == fixture.path("assets/gone.txt")
     ));
 }
@@ -886,7 +897,7 @@ fn a_missing_mapping_file_is_an_io_error() {
     let fixture = crate::test_support::Tree::new().materialize();
 
     assert!(matches!(
-        load_mapping(&fixture.path("gone.toml")).unwrap_err(),
+        load_mapping(&fixture.path("gone.toml"), crate::Limits::default()).unwrap_err(),
         Error::Io { path, .. } if path == fixture.path("gone.toml")
     ));
 }
@@ -898,7 +909,53 @@ fn a_relative_mapping_path_resolves_against_the_current_directory() {
     let absent = MissingName::with_suffix(".toml");
 
     assert!(matches!(
-        load_mapping(absent.relative()).unwrap_err(),
+        load_mapping(absent.relative(), crate::Limits::default()).unwrap_err(),
         Error::Io { path, .. } if path == absent.absolute()
     ));
+}
+
+// A mapping's own text is input the caller did not write, so it is charged
+// too: a mapping cannot buy the whole budget for its `source` files by
+// carrying the bytes inline instead.
+#[test]
+fn a_mapping_larger_than_the_bound_fails_before_it_parses() {
+    let text = format!(
+        "version = 1\n[files.\"motd\"]\ncontents = \"{}\"\n",
+        "0".repeat(2000)
+    );
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .materialize();
+    let path = fixture.path("deploy.toml");
+
+    assert!(matches!(
+        load_mapping(&path, Limits { max_source_bytes: 1000 }).unwrap_err(),
+        Error::SourceTooLarge { path: named, limit } if named == path && limit == 1000
+    ));
+    load_mapping(&path, Limits::default()).expect("load under the default bound");
+}
+
+// The files a mapping's `source` keys name spend the same budget the mapping
+// itself did.
+#[test]
+fn a_mappings_source_files_spend_the_same_budget() {
+    let text = r#"
+        version = 1
+        [files."a"]
+        source = "./a.bin"
+        [files."b"]
+        source = "./b.bin"
+    "#;
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .file("a.bin", "0".repeat(600))
+        .file("b.bin", "0".repeat(600))
+        .materialize();
+    let path = fixture.path("deploy.toml");
+
+    assert!(matches!(
+        load_mapping(&path, Limits { max_source_bytes: 1250 }).unwrap_err(),
+        Error::SourceTooLarge { path: named, .. } if named == fixture.path("b.bin")
+    ));
+    load_mapping(&path, Limits::default()).expect("load under the default bound");
 }

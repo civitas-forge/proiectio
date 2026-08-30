@@ -9,13 +9,29 @@ use libproiectio::{
 use serde::Serialize;
 use serde_json::json;
 
+/// The `rows` sequence a report serializes, from the rows a case states by
+/// path: each record carries its path as a field beside what the row states.
+fn records(rows: JsonValue) -> JsonValue {
+    JsonValue::Array(
+        rows.as_object()
+            .expect("rows stated by path")
+            .iter()
+            .map(|(path, row)| {
+                let mut record = row.as_object().expect("a row").clone();
+                record.insert("path".to_owned(), json!(path));
+                JsonValue::Object(record)
+            })
+            .collect(),
+    )
+}
+
 fn planned(rows: JsonValue) -> RunLines {
-    lines(&json!({ "rows": rows }), AmbiguousWidth::Narrow)
+    lines(&json!({ "rows": records(rows) }), AmbiguousWidth::Narrow)
 }
 
 fn applied(rows: JsonValue) -> RunLines {
     lines(
-        &json!({ "report": { "rows": rows } }),
+        &json!({ "report": { "rows": records(rows) } }),
         AmbiguousWidth::Narrow,
     )
 }
@@ -123,6 +139,14 @@ fn every_verdict_the_library_declares_reads_as_one_spelling() {
         let row = only(planned(json!({ "one": file(serialized(&verdict)) })));
 
         assert_eq!((row.style, row.verb.as_str()), spelled, "{verdict:?}");
+        // The verb column is a constant, and the verbs it has to hold come
+        // from these enums; one spelled wider than the constant would leave no
+        // pad and push its path out of line.
+        assert_eq!(
+            row.verb.len() + row.verb_pad.len(),
+            PLANNED_VERBS,
+            "{verdict:?} fits the verb column"
+        );
     }
     for verdict in [
         ApplyOutcome::Written,
@@ -149,6 +173,11 @@ fn every_verdict_the_library_declares_reads_as_one_spelling() {
         });
 
         assert_eq!((row.style, row.verb.as_str()), spelled, "{verdict:?}");
+        assert_eq!(
+            row.verb.len() + row.verb_pad.len(),
+            APPLIED_VERBS,
+            "{verdict:?} fits the verb column"
+        );
         // The second stringly mapping: a verdict `counted` does not know
         // falls out of the tally, and a run of one row reads as idle.
         assert_ne!(
@@ -557,6 +586,24 @@ fn the_verb_column_pads_to_the_widest_verb_the_run_spells() {
     assert_eq!(real.verb.len() + real.verb_pad.len(), 9);
 }
 
+/// An unknown verdict reads as its own name, which can be longer than any verb
+/// this CLI spells. The column widens to hold it, so the paths stay in one
+/// place instead of the long row pushing its own out of line.
+#[test]
+fn a_verb_longer_than_the_column_widens_it_for_every_row() {
+    let document = applied(json!({
+        "long.txt": file(json!("SomethingUnheardOf")),
+        "short.txt": file(json!("Written")),
+    }));
+
+    let widths: Vec<usize> = document
+        .rows
+        .iter()
+        .map(|row| row.verb.len() + row.verb_pad.len())
+        .collect();
+    assert_eq!(widths, vec!["SomethingUnheardOf".len(); 2]);
+}
+
 /// A plan states no count; a real run counts what it did. A pass that
 /// projected leads with the written/skipped pair, one that only cleared paths
 /// counts what it cleared, and one that touched nothing says so.
@@ -645,8 +692,8 @@ fn a_dropped_member_prints_a_row_naming_the_archive() {
         },
     })]);
     for document in [
-        json!({ "rows": {}, "dropped": dropped }),
-        json!({ "report": { "rows": {} }, "dropped": dropped }),
+        json!({ "rows": [], "dropped": dropped }),
+        json!({ "report": { "rows": [] }, "dropped": dropped }),
     ] {
         let row = only(lines(&document, AmbiguousWidth::Narrow));
         assert_eq!(row.style, "skipped");
@@ -676,7 +723,7 @@ fn two_archives_dropping_the_same_member_print_both_rows() {
         })
     };
     let document = json!({
-        "rows": {},
+        "rows": [],
         "dropped": [carried_by("/assets/plugins.tar.gz"), carried_by("/assets/vendor.tar.gz")],
     });
 
@@ -715,7 +762,7 @@ fn one_archive_under_two_prefixes_prints_a_row_per_entry() {
         })
     };
     let document = json!({
-        "rows": {},
+        "rows": [],
         "dropped": [asked_by("backup", 2), asked_by("vendor", 1)],
     });
 
@@ -742,7 +789,7 @@ fn one_archive_under_two_prefixes_prints_a_row_per_entry() {
 #[test]
 fn dropped_members_share_the_path_column_with_the_rows() {
     let document = json!({
-        "rows": { "a/very/long/path": file(json!("Write")) },
+        "rows": records(json!({ "a/very/long/path": file(json!("Write")) })),
         "dropped": [serialized(Dropped {
             member: Utf8PathBuf::from("._pkg"),
             prefix: Utf8PathBuf::new(),

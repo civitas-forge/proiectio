@@ -18,7 +18,7 @@ use crate::cli;
 use crate::exit;
 use crate::testing::{
     appledouble_tarball, assert_styles_resolved, assert_tags_declared, classified, dot_tarball,
-    flat_tarball, harness, manifest_of, modified, skeleton, tarball, tour, utf8,
+    flat_tarball, harness, manifest_of, modified, row, skeleton, stated, tarball, tour, utf8,
 };
 
 fn app() -> App {
@@ -127,9 +127,83 @@ fn status_is_the_librarys_own_status_document() {
     result.assert_success();
     let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
     assert_eq!(value, expected);
-    assert_eq!(value["rows"]["bin/tool"]["verdict"], "Drifted");
-    assert_eq!(value["rows"]["config/settings.toml"]["verdict"], "Clean");
-    assert_eq!(value["rows"]["current"]["verdict"], "Missing");
+    let rows = &value["rows"];
+    assert_eq!(stated(rows, "bin/tool")["verdict"], "Drifted");
+    assert_eq!(stated(rows, "config/settings.toml")["verdict"], "Clean");
+    assert_eq!(stated(rows, "current")["verdict"], "Missing");
+}
+
+/// A destination holding the two paths one XML element name cannot tell
+/// apart: `a/b` and `a_b`. The name XML would give the first is the second's
+/// own name, so a document spelling paths as names reports one row for the
+/// two; a row stating its own path reports both.
+fn colliding_dir() -> (TempDir, Utf8PathBuf) {
+    let dir = TempDir::new().expect("a temporary directory");
+    let dest = utf8(&dir);
+    std::fs::create_dir(dest.join("a")).expect("a directory");
+    std::fs::write(dest.join("a").join("b"), b"nested\n").expect("a nested file");
+    std::fs::write(dest.join("a_b"), b"flat\n").expect("a flat file");
+    (dir, dest)
+}
+
+/// XML carries every path as a value, so every row a destination classifies
+/// reaches a consumer whatever its paths are named.
+#[test]
+#[serial]
+fn xml_carries_paths_as_values_and_keeps_every_row() {
+    let (dir, dest) = colliding_dir();
+
+    let result = harness(&dir).output_mode(OutputMode::Xml).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "status", "--dest", dest.as_str()],
+    );
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout().trim(),
+        "<data>\
+         <rows><path>a/b</path><verdict>Foreign</verdict><facts/></rows>\
+         <rows><path>a_b</path><verdict>Foreign</verdict><facts/></rows>\
+         </data>"
+    );
+}
+
+/// CSV writes one record per classified path under a header that names the
+/// columns rather than the destination's paths, so the same reader reads
+/// every destination.
+#[test]
+#[serial]
+fn csv_writes_one_row_per_path_under_the_same_header() {
+    let (colliding, colliding_dest) = colliding_dir();
+    let (classified, classified_dest) = classified_dir();
+
+    let foreign = harness(&colliding).output_mode(OutputMode::Csv).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "status", "--dest", colliding_dest.as_str()],
+    );
+    let recorded = harness(&classified).output_mode(OutputMode::Csv).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "status", "--dest", classified_dest.as_str()],
+    );
+
+    foreign.assert_success();
+    recorded.assert_success();
+    assert_eq!(
+        foreign.stdout(),
+        "path,verdict,shape,executable,owners\n\
+         a/b,Foreign,,,\n\
+         a_b,Foreign,,,\n"
+    );
+    assert_eq!(
+        recorded.stdout(),
+        "path,verdict,shape,executable,owners\n\
+         bin/tool,Drifted,file,false,\"[\"\"default\"\"]\"\n\
+         config/settings.toml,Clean,file,false,\"[\"\"default\"\"]\"\n\
+         current,Missing,file,false,\"[\"\"default\"\"]\"\n"
+    );
 }
 
 /// A destination with no manifest and nothing on disk classifies nothing, and
@@ -317,8 +391,8 @@ fn a_path_spelled_like_a_style_tag_renders_as_itself() {
         .run(&app(), cli::command(), argv);
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
-    assert_eq!(value["rows"][DIRECTORY], JsonValue::Null);
-    assert_eq!(value["rows"][FILE]["verdict"], "Foreign");
+    assert!(row(&value["rows"], DIRECTORY).is_none());
+    assert_eq!(stated(&value["rows"], FILE)["verdict"], "Foreign");
 }
 
 /// An unknown tag spelling reaches the terminal whole rather than as the `?`
@@ -354,7 +428,7 @@ fn a_config_value_spelled_like_a_style_tag_renders_as_itself() {
 
     let text = harness(&dir).run(&app(), cli::command(), argv);
     text.assert_success();
-    text.assert_stdout_contains(&format!("set owner = {SPELLED}"));
+    text.assert_stdout_contains(&format!("set owner = \"{SPELLED}\""));
 
     let json = harness(&dir)
         .output_mode(OutputMode::Json)
@@ -364,11 +438,11 @@ fn a_config_value_spelled_like_a_style_tag_renders_as_itself() {
     assert_eq!(value["value"], SPELLED);
 }
 
-/// Every config line the CLI prints is clapfig's own, so a string value keeps
-/// the spelling the active format gives it.
+/// The term output and the `rendered` field are one spelling, so what a reader
+/// copies off the terminal is what a structured consumer reads.
 #[test]
 #[serial]
-fn config_lines_are_the_spelling_clapfig_rendered() {
+fn config_lines_are_the_spelling_the_view_rendered() {
     let dir = TempDir::new().expect("a temporary directory");
 
     let listing = harness(&dir).run(&app(), cli::command(), ["proiectio", "conf", "list"]);
@@ -386,9 +460,353 @@ fn config_lines_are_the_spelling_clapfig_rendered() {
     assert_eq!(get.stdout(), format!("{rendered}\n"));
 }
 
+/// What `list` and `get` print goes back into the file it came from: a value
+/// needing quotes carries them.
+#[test]
+#[serial]
+fn a_config_line_parses_as_the_config_file_it_looks_like() {
+    const SPELLED: &str = "me and you";
+
+    let dir = TempDir::new().expect("a temporary directory");
+    harness(&dir)
+        .run(
+            &app(),
+            cli::command(),
+            ["proiectio", "conf", "set", "owner", SPELLED],
+        )
+        .assert_success();
+
+    for argv in [
+        vec!["proiectio", "conf", "list"],
+        vec!["proiectio", "conf", "get", "owner"],
+    ] {
+        let rendered = rendered_field(&dir, argv.clone());
+        let parsed: toml::Table = rendered
+            .parse()
+            .unwrap_or_else(|error| panic!("{argv:?} printed {rendered:?}: {error}"));
+        assert_eq!(parsed["owner"].as_str(), Some(SPELLED));
+    }
+}
+
+/// A set and an unset change a file every invocation on the machine reads, so
+/// each names the file it wrote.
+#[test]
+#[serial]
+fn a_persisted_value_names_the_file_it_was_written_to() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let set = ["proiectio", "conf", "set", "owner", "site"];
+
+    let json = harness(&dir)
+        .output_mode(OutputMode::Json)
+        .run(&app(), cli::command(), set);
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"));
+    assert!(path.starts_with(utf8(&dir)), "{path}");
+    assert!(
+        std::fs::read_to_string(&path)
+            .expect("the file the set named")
+            .contains("site")
+    );
+
+    for argv in [set.to_vec(), vec!["proiectio", "conf", "unset", "owner"]] {
+        let text = harness(&dir).run(&app(), cli::command(), argv.clone());
+        text.assert_success();
+        text.assert_stdout_contains(&format!("wrote {path}"));
+    }
+}
+
+/// Clapfig treats an unset with no file to read as a successful no-op. A CLI
+/// that claimed `wrote` there would name a file that does not exist, so the
+/// run says which file it found nothing at.
+#[test]
+#[serial]
+fn an_unset_with_no_file_to_edit_names_no_written_file() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let argv = ["proiectio", "conf", "unset", "owner"];
+
+    let json = harness(&dir)
+        .output_mode(OutputMode::Json)
+        .run(&app(), cli::command(), argv);
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the unset targeted"));
+    assert_eq!(value["wrote"], false);
+    assert!(!path.exists(), "the unset created {path}");
+
+    let text = harness(&dir).run(&app(), cli::command(), argv);
+    text.assert_success();
+    assert!(
+        !text.stdout().contains("wrote"),
+        "an unset that wrote nothing claimed it wrote: {}",
+        text.stdout()
+    );
+    text.assert_stdout_contains(&format!("no file at {path}"));
+
+    let debug = harness(&dir)
+        .output_mode(OutputMode::TermDebug)
+        .run(&app(), cli::command(), argv);
+    debug.assert_success();
+    assert_tags_declared("an unset with no file", debug.stdout());
+}
+
+/// Unsetting is an edit like setting, so a key the schema does not declare is
+/// the same typo it is there rather than a silent success.
+#[test]
+#[serial]
+fn unsetting_a_key_the_schema_does_not_declare_fails_as_setting_one_does() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    for argv in [
+        vec!["proiectio", "conf", "unset", "onwer"],
+        vec!["proiectio", "conf", "set", "onwer", "site"],
+    ] {
+        let result = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        assert!(
+            result
+                .error()
+                .unwrap_or_default()
+                .contains("Key not found: onwer"),
+            "{argv:?}: {}",
+            result.error().unwrap_or_default()
+        );
+    }
+}
+
+/// `config schema` allowlists `^//` on every object, so a file spelling a note
+/// that way loads. A note is not a setting, and the listing leaves it in the
+/// file the writer put it in.
+#[test]
+#[serial]
+fn a_comment_key_the_schema_allowlists_loads_and_is_not_a_setting() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let json = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "owner", "site"],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"));
+    let noted = format!(
+        "\"//\" = \"a note\"\n{}",
+        std::fs::read_to_string(&path).expect("the file the set named")
+    );
+    std::fs::write(&path, &noted).expect("a config file carrying a note");
+
+    let listing = harness(&dir).run(&app(), cli::command(), ["proiectio", "conf", "list"]);
+
+    listing.assert_success();
+    assert_eq!(listing.stdout(), configured_listing());
+}
+
+/// The merged listing every `config list` without a scope renders here: the
+/// two declared keys, `owner` set to `site` and the size bound left at its
+/// compiled default.
+fn configured_listing() -> String {
+    format!(
+        "max_source_size = {}\nowner = \"site\"\n",
+        libproiectio::Limits::DEFAULT_MAX_SOURCE_BYTES
+    )
+}
+
+/// The allowlist the loader honours is the one `config schema` publishes, read
+/// off the emitted document rather than restated here: a validator handed that
+/// schema and a file carrying a note agrees with the loader about both.
+#[test]
+#[serial]
+fn the_emitted_schema_allowlists_the_comment_keys_the_loader_accepts() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    let schema = harness(&dir).run(&app(), cli::command(), ["proiectio", "conf", "schema"]);
+    schema.assert_success();
+    let emitted: JsonValue = serde_json::from_str(schema.stdout()).expect("a JSON Schema document");
+
+    assert_eq!(
+        emitted["patternProperties"]["^//"],
+        serde_json::json!({}),
+        "the schema publishes no comment-key allowlist: {}",
+        schema.stdout()
+    );
+    assert_eq!(
+        emitted["additionalProperties"], false,
+        "the schema closes no object, so nothing needs allowlisting"
+    );
+}
+
+/// A note under a table of its own is a note at every depth the schema
+/// allowlists it, and the listing leaves the whole subtree in the file — the
+/// key the loader saw is the table, not the leaf beneath it.
+#[test]
+#[serial]
+fn a_comment_table_is_left_out_of_the_scope_that_reads_the_file_itself() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let json = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "owner", "site"],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"));
+    std::fs::write(
+        &path,
+        "owner = \"site\"\n\n[\"//notes\"]\nwhy = \"a note\"\n",
+    )
+    .expect("a config file carrying a noted table");
+
+    // The scoped listing reads the file, which carries only `owner`; the
+    // merged one also carries the size bound's compiled default.
+    for (argv, expected) in [
+        (vec!["proiectio", "conf", "list"], configured_listing()),
+        (
+            vec!["proiectio", "conf", "list", "--scope", "user"],
+            "owner = \"site\"\n".to_owned(),
+        ),
+    ] {
+        let listing = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        listing.assert_success();
+        assert_eq!(listing.stdout(), expected, "{argv:?}");
+    }
+}
+
+/// `set`, `get` and `unset` all read the same key argument, so an invocation
+/// wrong in both its key and its scope reports the same one of them first
+/// whichever command it named.
+#[test]
+#[serial]
+fn the_edit_commands_agree_on_which_wrong_argument_they_report_first() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    for argv in [
+        vec![
+            "proiectio",
+            "conf",
+            "set",
+            "--scope",
+            "local",
+            "onwer",
+            "site",
+        ],
+        vec!["proiectio", "conf", "get", "--scope", "local", "onwer"],
+        vec!["proiectio", "conf", "unset", "--scope", "local", "onwer"],
+    ] {
+        let result = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        let error = result.error().unwrap_or_default();
+        assert!(
+            error.contains("Key not found: onwer"),
+            "{argv:?} reported the scope before the key: {error}"
+        );
+    }
+}
+
+/// A note is not a setting, so it is not a key `get` answers for, any more
+/// than `set` and `unset` accept one. The listing leaves it in the file for
+/// the same reason.
+#[test]
+#[serial]
+fn a_comment_key_is_not_one_the_reading_commands_answer_for() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let json = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "owner", "site"],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"));
+    std::fs::write(&path, "owner = \"site\"\n\"//\" = \"a note\"\n").expect("a noted config file");
+
+    for argv in [
+        vec!["proiectio", "conf", "get", "//"],
+        vec!["proiectio", "conf", "get", "//", "--scope", "user"],
+    ] {
+        let result = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        assert!(
+            result
+                .error()
+                .unwrap_or_default()
+                .contains("Key not found: //"),
+            "{argv:?}: {}",
+            result.error().unwrap_or_default()
+        );
+    }
+}
+
+/// A scoped listing reads the file itself rather than the merged schema, so
+/// the keys it prints are the writer's. One a bare TOML key cannot carry is
+/// quoted, or the line it prints would not parse back.
+#[test]
+#[serial]
+fn a_listed_key_a_bare_toml_key_cannot_carry_is_quoted() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let json = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "owner", "site"],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"));
+    std::fs::write(&path, "owner = \"site\"\n\"a b\" = 1\n")
+        .expect("a config file with an odd key");
+
+    let listing = harness(&dir).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "list", "--scope", "user"],
+    );
+
+    listing.assert_success();
+    let parsed: toml::Table = listing
+        .stdout()
+        .parse()
+        .unwrap_or_else(|error| panic!("the listing printed {:?}: {error}", listing.stdout()));
+    assert_eq!(parsed["a b"].as_integer(), Some(1));
+    assert_eq!(parsed["owner"].as_str(), Some("site"));
+}
+
+/// `user` is the only scope the builder registers, so no other spelling can
+/// reach a file — and the run that names one says which scopes exist rather
+/// than reporting a write to the user scope.
+#[test]
+#[serial]
+fn a_scope_the_builder_does_not_register_is_refused_by_name() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    for argv in [
+        vec![
+            "proiectio",
+            "conf",
+            "set",
+            "--scope",
+            "local",
+            "owner",
+            "site",
+        ],
+        vec!["proiectio", "conf", "unset", "--scope", "local", "owner"],
+    ] {
+        let result = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        let error = result.error().unwrap_or_default();
+        assert!(
+            error.contains("Unknown scope 'local'") && error.contains("user"),
+            "{argv:?}: {error}"
+        );
+    }
+}
+
 /// The `rendered` field of a config view, read back through the same run under
 /// `--output json`.
-fn rendered_field<const N: usize>(dir: &TempDir, argv: [&str; N]) -> String {
+fn rendered_field<'a>(dir: &TempDir, argv: impl IntoIterator<Item = &'a str>) -> String {
     let result = harness(dir)
         .output_mode(OutputMode::Json)
         .run(&app(), cli::command(), argv);
@@ -505,8 +923,8 @@ fn a_path_carrying_control_characters_renders_as_visible_escapes() {
         .run(&app(), cli::command(), argv);
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
-    assert_eq!(value["rows"][ESCAPE]["verdict"], "Foreign");
-    assert_eq!(value["rows"][NEWLINE]["verdict"], "Foreign");
+    assert_eq!(stated(&value["rows"], ESCAPE)["verdict"], "Foreign");
+    assert_eq!(stated(&value["rows"], NEWLINE)["verdict"], "Foreign");
 }
 
 /// Configuration-derived text goes through the same filter, so a stored value
@@ -521,7 +939,7 @@ fn a_config_value_carrying_an_escape_sequence_renders_as_itself() {
 
     let text = harness(&dir).run(&app(), cli::command(), argv);
     text.assert_success();
-    text.assert_stdout_contains(r"owner = \u{1b}[31mred");
+    text.assert_stdout_contains(r#"owner = "\u001B[31mred""#);
     assert!(
         !text.stdout().contains('\u{1b}'),
         "an escape sequence reached the terminal: {:?}",
@@ -791,8 +1209,8 @@ fn a_dropped_member_rides_the_librarys_own_report() {
 
     planned.assert_success();
     let value: JsonValue = serde_json::from_str(planned.stdout()).expect("a JSON document");
-    assert_eq!(value["rows"]["top"]["verdict"], "Write");
-    assert!(value["rows"].get("._skeleton-1.2").is_none());
+    assert_eq!(stated(&value["rows"], "top")["verdict"], "Write");
+    assert!(row(&value["rows"], "._skeleton-1.2").is_none());
     assert_eq!(value["dropped"], record);
 
     let applied = harness(&dir).output_mode(OutputMode::Json).run(
@@ -803,8 +1221,11 @@ fn a_dropped_member_rides_the_librarys_own_report() {
 
     applied.assert_success();
     let value: JsonValue = serde_json::from_str(applied.stdout()).expect("a JSON document");
-    assert_eq!(value["report"]["rows"]["top"]["verdict"], "Written");
-    assert!(value["report"]["rows"].get("._skeleton-1.2").is_none());
+    assert_eq!(
+        stated(&value["report"]["rows"], "top")["verdict"],
+        "Written"
+    );
+    assert!(row(&value["report"]["rows"], "._skeleton-1.2").is_none());
     assert!(value["report"].get("dropped").is_none());
     assert_eq!(value["dropped"], record);
 }
@@ -1068,7 +1489,8 @@ fn a_refused_dry_run_is_the_librarys_own_plan_document() {
         .expect("a projection")
         .plan(
             crate::testing::OWNER,
-            &libproiectio::load_mapping(&deploy).expect("a desired tree"),
+            &libproiectio::load_mapping(&deploy, libproiectio::Limits::default())
+                .expect("a desired tree"),
             libproiectio::PlanOptions::default(),
         )
         .expect("a plan");
@@ -1076,14 +1498,9 @@ fn a_refused_dry_run_is_the_librarys_own_plan_document() {
         value,
         serde_json::to_value(planned.report()).expect("a serialized report")
     );
-    assert_eq!(
-        value["rows"]["bin/tool"]["verdict"]["Refuse"]["refusal"],
-        "Drift"
-    );
-    assert_eq!(
-        value["rows"]["bin/tool"]["facts"]["origin"]["Mapping"]["path"],
-        deploy.as_str()
-    );
+    let tool = stated(&value["rows"], "bin/tool");
+    assert_eq!(tool["verdict"]["Refuse"]["refusal"], "Drift");
+    assert_eq!(tool["facts"]["origin"]["Mapping"]["path"], deploy.as_str());
 }
 
 /// A refused real run performed nothing, so it keeps the error channel and
@@ -1306,16 +1723,15 @@ fn a_dry_run_release_row_carries_the_owners_the_real_run_reports() {
     applied.assert_success();
     let planned: JsonValue = serde_json::from_str(dry.stdout()).expect("a JSON document");
     let real: JsonValue = serde_json::from_str(applied.stdout()).expect("a JSON document");
-    assert_eq!(planned["rows"]["conf"]["verdict"], "Release");
-    assert_eq!(real["report"]["rows"]["conf"]["verdict"], "Released");
+    let planned_conf = stated(&planned["rows"], "conf");
+    let real_conf = stated(&real["report"]["rows"], "conf");
+    assert_eq!(planned_conf["verdict"], "Release");
+    assert_eq!(real_conf["verdict"], "Released");
     assert_eq!(
-        planned["rows"]["conf"]["facts"]["owners"],
+        planned_conf["facts"]["owners"],
         serde_json::json!(["one", "two"])
     );
-    assert_eq!(
-        planned["rows"]["conf"]["facts"],
-        real["report"]["rows"]["conf"]["facts"]
-    );
+    assert_eq!(planned_conf["facts"], real_conf["facts"]);
 }
 
 /// A symlink out of the destination refuses until the invocation permits it.
@@ -1364,7 +1780,8 @@ fn a_dry_run_is_the_librarys_own_plan_report() {
     result.assert_success();
     let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
     let projection = Projection::new(&dest, None).expect("a projection");
-    let desired = libproiectio::load_mapping(&deploy).expect("a desired tree");
+    let desired = libproiectio::load_mapping(&deploy, libproiectio::Limits::default())
+        .expect("a desired tree");
     let planned = projection
         .plan(
             crate::testing::OWNER,
@@ -1401,7 +1818,10 @@ fn a_real_run_is_the_librarys_own_apply_report() {
             .collect::<Vec<_>>(),
         vec!["report", "manifest"]
     );
-    assert_eq!(value["report"]["rows"]["bin/tool"]["verdict"], "Written");
+    assert_eq!(
+        stated(&value["report"]["rows"], "bin/tool")["verdict"],
+        "Written"
+    );
     assert_eq!(
         serde_json::from_value::<Manifest>(value["manifest"].clone()).expect("a manifest"),
         manifest_of(&dest)
@@ -1565,4 +1985,139 @@ fn a_path_and_a_target_spelled_like_style_tags_render_as_themselves() {
     );
     term.assert_success();
     assert_styles_resolved("a write spelled like a tag", term.stdout());
+}
+
+// ---------------------------------------------------------------------------
+// The size bound on untrusted input
+// ---------------------------------------------------------------------------
+
+/// A bound small enough that the tour's own mapping runs past it, so a test
+/// need not build a large source to reach the error.
+const TIGHT: &str = "64";
+
+/// The bound is the run's, not the archive loader's alone: a mapping whose
+/// text and source files outweigh it fails the run, and the diagnostic names
+/// both the file being read and the number the run was held to.
+#[test]
+#[serial]
+fn a_write_past_the_size_bound_fails_naming_the_limit() {
+    let (dir, dest, deploy) = tour();
+    let verdict = exit::Verdict::default();
+
+    let result = harness(&dir).run(
+        &over(&verdict),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--max-source-size", TIGHT], &dest),
+    );
+
+    assert_eq!(leaving(&result, &verdict), exit::FAILURE);
+    assert_eq!(result.stdout(), "");
+    let error = result.error().unwrap_or_default();
+    assert!(
+        error.contains(deploy.as_str())
+            && error.contains("reads past the 64 bytes one load may hold in memory"),
+        "{error}"
+    );
+}
+
+/// The same bound written to the configuration rather than named on the
+/// command line, which is the layer under the flag.
+#[test]
+#[serial]
+fn the_configured_size_bound_holds_a_write_with_no_flag() {
+    let (dir, dest, deploy) = tour();
+    set_size_bound(&dir, TIGHT);
+    let verdict = exit::Verdict::default();
+
+    let result = harness(&dir).run(
+        &over(&verdict),
+        cli::command(),
+        write_argv(&[deploy.as_str()], &dest),
+    );
+
+    assert_eq!(leaving(&result, &verdict), exit::FAILURE);
+    assert!(
+        result
+            .error()
+            .unwrap_or_default()
+            .contains("one load may hold in memory"),
+        "{}",
+        result.error().unwrap_or_default()
+    );
+}
+
+/// The three layers in order: the flag wins over the configured key, which
+/// wins over the compiled default. The configured bound here would refuse the
+/// run, and the flag naming a wider one lets it through.
+#[test]
+#[serial]
+fn the_flag_wins_over_the_configured_size_bound() {
+    let (dir, dest, deploy) = tour();
+    set_size_bound(&dir, TIGHT);
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--max-source-size", "1048576"], &dest),
+    );
+
+    result.assert_success();
+    assert!(dest.join("config/settings.toml").is_file());
+}
+
+/// With nothing configured and no flag, the compiled default applies, which
+/// is wide enough for a mapping a tight bound refuses.
+#[test]
+#[serial]
+fn the_compiled_default_applies_when_nothing_names_a_bound() {
+    let (dir, dest, deploy) = tour();
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str()], &dest),
+    );
+
+    result.assert_success();
+    assert!(dest.join("config/settings.toml").is_file());
+}
+
+/// `config set` and `config get` carry the key like any other, and the value
+/// reads back as the bare integer a TOML document spells rather than a
+/// quoted string.
+#[test]
+#[serial]
+fn the_size_bound_round_trips_through_set_and_get() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let set = harness(&dir).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "max_source_size", "4096"],
+    );
+    set.assert_success();
+
+    let got = harness(&dir).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "get", "max_source_size"],
+    );
+
+    got.assert_success();
+    assert!(
+        got.stdout().ends_with("max_source_size = 4096\n"),
+        "{}",
+        got.stdout()
+    );
+}
+
+/// Writes the size bound into the configuration the way an operator would,
+/// through the CLI's own `config set`.
+fn set_size_bound(dir: &TempDir, bytes: &str) {
+    harness(dir)
+        .run(
+            &app(),
+            cli::command(),
+            ["proiectio", "conf", "set", "max_source_size", bytes],
+        )
+        .assert_success();
 }
