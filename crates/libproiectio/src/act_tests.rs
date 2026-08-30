@@ -180,14 +180,14 @@ fn projects_a_fresh_tree_and_persists_the_manifest() {
     assert_eq!(
         facts_at(&report, "bin/run"),
         &PathFacts {
-            shape: PathShape::File { executable: true },
+            shape: Some(PathShape::File { executable: true }),
             owners: BTreeSet::from(["own".to_owned()]),
             origin: Some(Origin::Caller),
         }
     );
     assert_eq!(
         facts_at(&report, "notes/a.txt").shape,
-        PathShape::File { executable: false }
+        Some(PathShape::File { executable: false })
     );
     // The report's manifest is the persisted one, atomically written with
     // no tempfile left beside it.
@@ -620,7 +620,7 @@ fn removing_a_recorded_symlink_unlinks_it_and_leaves_the_target() {
     assert_eq!(
         facts_at(&report, "latest"),
         &PathFacts {
-            shape: PathShape::Symlink { target: None },
+            shape: Some(PathShape::Symlink { target: None }),
             owners: BTreeSet::from(["own".to_owned()]),
             origin: Some(Origin::Caller),
         }
@@ -1597,9 +1597,9 @@ fn projects_links_with_their_targets_verbatim_dangling_included() {
     assert_eq!(
         facts_at(&report, "nested/up"),
         &PathFacts {
-            shape: PathShape::Symlink {
+            shape: Some(PathShape::Symlink {
                 target: Some("../notes/a.txt".to_owned()),
-            },
+            }),
             owners: BTreeSet::from(["own".to_owned()]),
             origin: Some(Origin::Caller),
         }
@@ -1633,9 +1633,9 @@ fn re_applying_an_unchanged_link_reports_the_target_it_left_in_place() {
     assert_eq!(
         facts_at(&report, "latest"),
         &PathFacts {
-            shape: PathShape::Symlink {
+            shape: Some(PathShape::Symlink {
                 target: Some("notes/a.txt".to_owned()),
-            },
+            }),
             owners: BTreeSet::from(["own".to_owned()]),
             origin: Some(Origin::Caller),
         }

@@ -119,7 +119,7 @@ fn facts_of(
 ) -> Option<PathFacts> {
     let shape = match action {
         Action::Write { entry } | Action::Overwrite { entry, .. } | Action::Skip { entry, .. } => {
-            match entry {
+            Some(match entry {
                 Entry::File { executable, .. } => PathShape::File {
                     executable: *executable,
                 },
@@ -127,28 +127,31 @@ fn facts_of(
                     target: Some(target.clone()),
                 },
                 Entry::Block { .. } => PathShape::Block,
-            }
+            })
         }
         Action::Remove {
             expected: Some(expected),
-        } => match expected.kind {
+        } => Some(match expected.kind {
             EntryKind::File => PathShape::File {
                 executable: expected.executable,
             },
             EntryKind::Symlink => PathShape::Symlink { target: None },
             EntryKind::Block { .. } => PathShape::Block,
-        },
+        }),
         Action::Release => {
             let recorded = recorded?;
-            match recorded.kind {
+            Some(match recorded.kind {
                 EntryKind::File => PathShape::File {
                     executable: recorded.executable,
                 },
                 EntryKind::Symlink => PathShape::Symlink { target: None },
                 EntryKind::Block { .. } => PathShape::Block,
-            }
+            })
         }
-        Action::Remove { expected: None } | Action::Refuse { .. } => {
+        // A refusal decides no node, so its row states the source that named
+        // the path, plus the owners already recorded there.
+        Action::Refuse { .. } => None,
+        Action::Remove { expected: None } => {
             return None;
         }
     };

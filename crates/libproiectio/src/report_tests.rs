@@ -5,7 +5,7 @@ use crate::PathState;
 
 fn facts(shape: PathShape, origin: Option<Origin>) -> PathFacts {
     PathFacts {
-        shape,
+        shape: Some(shape),
         owners: BTreeSet::from(["site".to_owned()]),
         origin,
     }

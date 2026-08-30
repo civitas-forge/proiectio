@@ -122,7 +122,7 @@ fn a_recorded_row_carries_the_manifest_entry_and_a_foreign_one_carries_nothing()
     assert_eq!(
         facts(&report, "bin/tool"),
         &Some(PathFacts {
-            shape: PathShape::File { executable: true },
+            shape: Some(PathShape::File { executable: true }),
             owners: BTreeSet::from(["harness".to_owned(), "site".to_owned()]),
             origin: None,
         })
@@ -132,7 +132,7 @@ fn a_recorded_row_carries_the_manifest_entry_and_a_foreign_one_carries_nothing()
     assert_eq!(
         facts(&report, "current"),
         &Some(PathFacts {
-            shape: PathShape::Symlink { target: None },
+            shape: Some(PathShape::Symlink { target: None }),
             owners: BTreeSet::from(["harness".to_owned(), "site".to_owned()]),
             origin: None,
         })

@@ -4,7 +4,7 @@
 //! The lines reach the template through Standout's context injection, which
 //! structured modes skip, so `--output json` stays the library's own report.
 
-use libproiectio::{ApplyReport, PlannedAction, Report};
+use libproiectio::{ApplyReport, BlockFault, PlannedAction, Report};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use standout::AmbiguousWidth;
@@ -58,6 +58,7 @@ fn spelling(verdict: &str, symlink: bool) -> Option<(&'static str, &'static str)
         ("Removed", _) => ("removed", "removed"),
         ("Release", _) => ("removed", "would release"),
         ("Released", _) => ("removed", "released"),
+        ("Refuse", _) => ("refused", "would refuse"),
         _ => return None,
     })
 }
@@ -73,6 +74,42 @@ fn counted(verdict: &str) -> Option<Counted> {
     })
 }
 
+/// What a verdict's payload says about the row: why a plan would overwrite a
+/// path, or why it would refuse one and which source named it.
+fn qualifying(fields: &JsonValue, facts: Option<&JsonValue>) -> Option<String> {
+    if let Some(reason) = fields.get("reason").and_then(JsonValue::as_str) {
+        return Some(overwriting(reason).to_owned());
+    }
+    let refused = refusing(fields.get("refusal")?);
+    Some(match sourcing(facts) {
+        Some(source) => format!("{refused} {source}"),
+        None => refused,
+    })
+}
+
+/// Which source named a refused path, in the phrase `Origin`'s own message
+/// spells it with; `None` where the caller named the path itself, or the row
+/// states no source.
+fn sourcing(facts: Option<&JsonValue>) -> Option<String> {
+    let (kind, payload) = named(facts?.get("origin"));
+    let string = |field| payload?.get(field).and_then(JsonValue::as_str);
+    let phrase = match kind {
+        "Mapping" => format!("from mapping {}", verbatim(string("path")?)),
+        "Tree" => format!("from tree {}", verbatim(string("path")?)),
+        "Archive" => match string("via") {
+            Some(mapping) => format!(
+                "from archive {}, named by mapping {}",
+                verbatim(string("path")?),
+                verbatim(mapping)
+            ),
+            None => format!("from archive {}", verbatim(string("path")?)),
+        },
+        "Files" => "from individually named files".to_owned(),
+        _ => return None,
+    };
+    Some(format!("({phrase})"))
+}
+
 /// Why a plan would overwrite a path.
 fn overwriting(reason: &str) -> &'static str {
     match reason {
@@ -80,6 +117,95 @@ fn overwriting(reason: &str) -> &'static str {
         "ExecutableChanged" => "(executable changed)",
         _ => "(drifted, forced)",
     }
+}
+
+/// Why a plan refuses a path: the refusal's own name, in the vocabulary the
+/// exit table names the refusal kinds with, and what the refusal carries after
+/// it, in the words `Refusal`'s own message spells the payload with.
+fn refusing(refusal: &JsonValue) -> String {
+    let (kind, payload) = named(Some(refusal));
+    let spelled = match kind {
+        "Containment" => "containment",
+        "TreeConflict" => "tree conflict",
+        "Foreign" => "foreign",
+        "Drift" => "drifted",
+        "OwnerConflict" => "owner conflict",
+        "ExternalTarget" => "external target",
+        "InvalidTarget" => "invalid target",
+        "Block" => "block",
+        unknown => return format!("({})", verbatim(unknown)),
+    };
+    match payload.and_then(|payload| detailing(kind, payload)) {
+        Some(detail) => format!("({spelled}) {detail}"),
+        None => format!("({spelled})"),
+    }
+}
+
+/// What a refusal's payload says beyond its name: the keys claiming the same
+/// location, the owners holding the path, the offending target — quoted, as
+/// the library quotes it, where it is not a path — or the rule a block entry
+/// broke. `None` where the kind carries nothing, or where the payload is not
+/// the shape the library serializes.
+fn detailing(kind: &str, payload: &JsonValue) -> Option<String> {
+    let string = |field| payload.get(field).and_then(JsonValue::as_str);
+    match kind {
+        "TreeConflict" => Some(format!("(with {})", listed(payload.get("paths")?, ", ")?)),
+        "OwnerConflict" => Some(format!(
+            "(held by {})",
+            listed(payload.get("owners")?, "+")?
+        )),
+        "ExternalTarget" => Some(format!("-> {}", verbatim(string("target")?))),
+        "InvalidTarget" => Some(format!(
+            "-> {}",
+            verbatim(&format!("{:?}", string("target")?))
+        )),
+        "Block" => Some(format!("({})", faulting(string("fault")?))),
+        _ => None,
+    }
+}
+
+/// Every fault a block entry is refused for, as the library declares them.
+const BLOCK_FAULTS: [BlockFault; 10] = [
+    BlockFault::MarkerEmpty,
+    BlockFault::MarkerNotOneLine,
+    BlockFault::MarkerEdgeWhitespace,
+    BlockFault::BodyCarriesMarker,
+    BlockFault::BodyNotNewlineTerminated,
+    BlockFault::ContainerNotNewlineTerminated,
+    BlockFault::ContainerMissing,
+    BlockFault::KindChange,
+    BlockFault::SignatureNotRecorded,
+    BlockFault::MarkerInAuthorText,
+];
+
+/// What a block refusal's fault says: the sentence `BlockFault`'s own message
+/// spells, found by the name the library serializes the fault under; a fault
+/// this CLI does not know reads as that name, escaped.
+fn faulting(name: &str) -> String {
+    BLOCK_FAULTS
+        .into_iter()
+        .find(|fault| fault_name(*fault).as_deref() == Some(name))
+        .map_or_else(|| verbatim(name), |fault| fault.to_string())
+}
+
+/// The name the library serializes one fault under, taken from the fault.
+fn fault_name(fault: BlockFault) -> Option<String> {
+    match serde_json::to_value(fault) {
+        Ok(JsonValue::String(name)) => Some(name),
+        _ => None,
+    }
+}
+
+/// One payload's list of strings, each escaped, joined the way the library
+/// joins that field. `None` where the field holds no strings.
+fn listed(values: &JsonValue, separator: &str) -> Option<String> {
+    let items: Vec<String> = values
+        .as_array()?
+        .iter()
+        .filter_map(JsonValue::as_str)
+        .map(verbatim)
+        .collect();
+    (!items.is_empty()).then(|| items.join(separator))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -168,7 +294,8 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
     let mut tally = Tally::default();
     let mut lines = Vec::with_capacity(paths.len());
     for (path, row) in paths {
-        let shape = row.get("facts").and_then(|facts| facts.get("shape"));
+        let facts = row.get("facts");
+        let shape = facts.and_then(|facts| facts.get("shape"));
         let target = shape
             .and_then(|shape| shape.get("Symlink"))
             .and_then(|symlink| symlink.get("target"))
@@ -181,11 +308,8 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
         if let Some(counted) = counted(verdict) {
             tally.count(counted);
         }
-        let qualifier = fields
-            .and_then(|fields| fields.get("reason"))
-            .and_then(JsonValue::as_str)
-            .map(overwriting);
-        let note = note(target, qualifier, executable(shape));
+        let qualifier = fields.and_then(|fields| qualifying(fields, facts));
+        let note = note(target, qualifier.as_deref(), executable(shape));
 
         lines.push(RowView {
             style,

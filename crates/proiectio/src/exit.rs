@@ -1,7 +1,9 @@
 //! The 0/1/2 exit contract, which `main` owns because Standout spends 2
 //! on a command line clap rejects and this CLI spends it on refusals.
 
+use std::cell::Cell;
 use std::io::{ErrorKind, Write};
+use std::rc::Rc;
 
 use libproiectio::Error;
 use standout::cli::{ArtifactRun, ExternalFailure, RunError, RunErrorKind, RunResult};
@@ -9,6 +11,31 @@ use standout::cli::{ArtifactRun, ExternalFailure, RunError, RunErrorKind, RunRes
 pub(crate) const OK: u8 = 0;
 pub(crate) const FAILURE: u8 = 1;
 pub(crate) const REFUSAL: u8 = 2;
+
+/// The status a run that rendered its output nonetheless leaves with.
+///
+/// A Standout handler either renders and succeeds or fails with its output
+/// replaced by the diagnostic. A refused dry run is neither: the plan it
+/// refuses is the whole point of the run, so the handler renders it and
+/// records the refusal here, and `main` reads the cell back once the run has
+/// been written. The composition root owns one and the app holds a clone.
+#[derive(Clone, Default)]
+pub(crate) struct Verdict(Rc<Cell<u8>>);
+
+impl Verdict {
+    /// Records `status`, keeping whichever of it and the recorded one is
+    /// greater.
+    pub(crate) fn record(&self, status: u8) {
+        self.0.set(self.0.get().max(status));
+    }
+
+    /// The status the process leaves with, over what emitting the run
+    /// reported: a failed write still raises the run, and never lowers a
+    /// recorded refusal.
+    pub(crate) fn over(&self, emitted: u8) -> u8 {
+        emitted.max(self.0.get())
+    }
+}
 
 pub(crate) fn of_error(error: &Error) -> u8 {
     match error {

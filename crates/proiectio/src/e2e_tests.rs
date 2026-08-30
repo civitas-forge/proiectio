@@ -22,11 +22,25 @@ fn run(dir: &TempDir, args: &[&str]) -> TestResult {
 }
 
 fn run_as(dir: &TempDir, mode: OutputMode, args: &[&str]) -> TestResult {
+    run_over(dir, mode, &exit::Verdict::default(), args)
+}
+
+/// The same, over a verdict the caller keeps: a refused dry run renders its
+/// plan and leaves the refusal there rather than in the run's result.
+fn run_over(dir: &TempDir, mode: OutputMode, verdict: &exit::Verdict, args: &[&str]) -> TestResult {
     let mut argv = vec!["proiectio"];
     argv.extend_from_slice(args);
-    harness(dir)
-        .output_mode(mode)
-        .run(&app::build().expect("an app"), cli::command(), argv)
+    harness(dir).output_mode(mode).run(
+        &app::build(verdict.clone()).expect("an app"),
+        cli::command(),
+        argv,
+    )
+}
+
+/// The status the process leaves with: what emitting the run reports, over
+/// what the run recorded.
+fn leaving(result: &TestResult, verdict: &exit::Verdict) -> u8 {
+    verdict.over(exit::status(result.outcome()))
 }
 
 /// What the destination holds, by name, at one level.
@@ -66,6 +80,18 @@ const CLEARED: &str = "removed    bin/tool              (exec)\n\
                        removed    current\n\
                        3 removed\n";
 
+/// What the plan reads once `bin/tool` is edited underneath it and `current`
+/// removed: the refused row names its reason and the source that named the
+/// path, the rest of the plan stands, as `docs/cli-tour.lex` section 2 prints
+/// it.
+fn refused_plan(deploy: &Utf8Path) -> String {
+    format!(
+        "would refuse     bin/tool              (drifted) (from mapping {deploy})\n\
+         would skip       config/settings.toml\n\
+         would link       current               -> releases/1.2.3\n"
+    )
+}
+
 const EDITED: &[u8] = b"#!/bin/sh\necho edited\n";
 const PROJECTED_TOOL: &[u8] = b"#!/bin/sh\necho hi\n";
 
@@ -95,6 +121,14 @@ fn a_destination_is_projected_re_projected_refused_forced_and_cleared() {
         drifted.stdout(),
         "drifted  bin/tool\nclean    config/settings.toml\nmissing  current\n"
     );
+
+    let verdict = exit::Verdict::default();
+    let mut planned = source.to_vec();
+    planned.push("--dry-run");
+    let dry = run_over(&dir, OutputMode::Text, &verdict, &planned);
+    assert_eq!(leaving(&dry, &verdict), exit::REFUSAL);
+    assert_eq!(dry.stdout(), refused_plan(&deploy));
+    assert_eq!(dry.error(), None);
 
     let refused = run(&dir, &source);
     assert_eq!(exit::status(refused.outcome()), exit::REFUSAL);
@@ -304,9 +338,16 @@ fn a_dry_run_of_rm_reports_the_plan_and_removes_nothing() {
     let (dir, dest, deploy) = tour();
     run(&dir, &["write", deploy.as_str(), "--dest", dest.as_str()]).assert_success();
 
-    let result = run(&dir, &["rm", "--dest", dest.as_str(), "--dry-run"]);
+    let verdict = exit::Verdict::default();
+    let result = run_over(
+        &dir,
+        OutputMode::Text,
+        &verdict,
+        &["rm", "--dest", dest.as_str(), "--dry-run"],
+    );
 
     result.assert_success();
+    assert_eq!(leaving(&result, &verdict), exit::OK);
     assert_eq!(
         result.stdout(),
         "would remove     bin/tool              (exec)\n\
@@ -314,6 +355,42 @@ fn a_dry_run_of_rm_reports_the_plan_and_removes_nothing() {
          would remove     current\n"
     );
     assert!(dest.join("bin/tool").exists());
+}
+
+/// A refused dry run of `rm` renders the whole plan too: the rows it would
+/// remove beside the row it refuses, on stdout and with the refusal status,
+/// and structured output is the library's own plan document.
+#[test]
+#[serial]
+fn a_refused_dry_run_of_rm_renders_the_whole_plan() {
+    let (dir, dest, deploy) = tour();
+    run(&dir, &["write", deploy.as_str(), "--dest", dest.as_str()]).assert_success();
+    std::fs::write(dest.join("bin/tool").as_std_path(), EDITED).expect("a local edit");
+    let argv = ["rm", "--dest", dest.as_str(), "--dry-run"];
+
+    let verdict = exit::Verdict::default();
+    let result = run_over(&dir, OutputMode::Text, &verdict, &argv);
+
+    assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
+    assert_eq!(
+        result.stdout(),
+        "would refuse     bin/tool              (drifted)\n\
+         would remove     config/settings.toml\n\
+         would remove     current\n"
+    );
+    assert_eq!(result.error(), None);
+    assert!(dest.join("bin/tool").exists());
+
+    let structured = exit::Verdict::default();
+    let json = run_over(&dir, OutputMode::Json, &structured, &argv);
+
+    assert_eq!(leaving(&json, &structured), exit::REFUSAL);
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    assert_eq!(
+        value["rows"]["bin/tool"]["verdict"]["Refuse"]["refusal"],
+        "Drift"
+    );
+    assert_eq!(value["rows"]["config/settings.toml"]["verdict"], "Remove");
 }
 
 /// With nothing recorded under the owner there is nothing to remove, and the

@@ -83,7 +83,7 @@ fn recorded_facts(recorded: &ManifestEntry) -> PathFacts {
         EntryKind::Block { .. } => PathShape::Block,
     };
     PathFacts {
-        shape,
+        shape: Some(shape),
         owners: recorded.owners.clone(),
         origin: None,
     }

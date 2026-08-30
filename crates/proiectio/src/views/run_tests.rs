@@ -1,5 +1,10 @@
 use super::*;
 
+use std::collections::BTreeSet;
+
+use camino::Utf8PathBuf;
+use libproiectio::{BlockFault, Origin, Refusal, RefusalKind};
+use serde::Serialize;
 use serde_json::json;
 
 fn planned(rows: JsonValue) -> RunLines {
@@ -19,6 +24,29 @@ fn file(verdict: JsonValue) -> JsonValue {
 
 fn link(verdict: JsonValue, target: &str) -> JsonValue {
     json!({ "facts": { "shape": { "Symlink": { "target": target } } }, "verdict": verdict })
+}
+
+/// The one row a plan refusing a single path prints.
+fn refused(refusal: &JsonValue) -> RunLines {
+    planned(json!({
+        "one": { "facts": null, "verdict": { "Refuse": { "refusal": refusal } } },
+    }))
+}
+
+/// The same row, with the facts a refused row carries: the source that named
+/// the path, and no shape.
+fn refused_by(refusal: &JsonValue, origin: &Origin) -> RunLines {
+    planned(json!({
+        "one": {
+            "facts": { "shape": null, "owners": [], "origin": serialized(origin) },
+            "verdict": { "Refuse": { "refusal": refusal } },
+        },
+    }))
+}
+
+/// A library value as the context provider hands it over.
+fn serialized(value: impl Serialize) -> JsonValue {
+    serde_json::to_value(value).expect("a serializable library value")
 }
 
 fn only(document: RunLines) -> RowView {
@@ -45,6 +73,11 @@ fn each_verdict_spells_one_style_and_one_verb() {
         (json!("Removed"), "removed", "removed"),
         (json!("Release"), "removed", "would release"),
         (json!("Released"), "removed", "released"),
+        (
+            json!({ "Refuse": { "refusal": "Drift" } }),
+            "refused",
+            "would refuse",
+        ),
     ] {
         let row = only(planned(json!({ "one": file(verdict.clone()) })));
         assert_eq!((row.style, row.verb.as_str()), (style, verb), "{verdict}");
@@ -70,9 +103,216 @@ fn a_symlink_reads_as_a_link_only_where_the_run_writes_it() {
 /// family the stylesheet spells.
 #[test]
 fn an_unknown_verdict_renders_its_own_name() {
-    let row = only(planned(json!({ "one": file(json!("Refuse")) })));
+    let row = only(planned(json!({ "one": file(json!("Ponder")) })));
 
-    assert_eq!((row.style, row.verb.as_str()), ("unknown", "Refuse"));
+    assert_eq!((row.style, row.verb.as_str()), ("unknown", "Ponder"));
+}
+
+/// A refused row names the refusal it carries, in the vocabulary the exit
+/// table names the kinds with; one this CLI does not know reads as the name
+/// the library spelled, escaped.
+#[test]
+fn a_refused_row_names_the_refusal() {
+    for (refusal, note) in [
+        (json!("Drift"), "(drifted)"),
+        (json!("Foreign"), "(foreign)"),
+        (json!("Containment"), "(containment)"),
+        (json!("[wrote]"), "(\\[wrote\\])"),
+    ] {
+        let row = only(refused(&refusal));
+
+        assert_eq!(row.note.as_deref(), Some(note), "{refusal}");
+    }
+}
+
+/// Every kind the library declares reads as one spelling: the arms are matched
+/// over `RefusalKind` itself, so a kind added there stops this compiling until
+/// the view spells it, and each kind is fed in as the library serializes it, so
+/// a renamed one fails here rather than falling through to the unknown arm.
+#[test]
+fn every_refusal_kind_the_library_declares_reads_as_one_spelling() {
+    for kind in [
+        RefusalKind::Containment,
+        RefusalKind::TreeConflict,
+        RefusalKind::Foreign,
+        RefusalKind::Drift,
+        RefusalKind::OwnerConflict,
+        RefusalKind::ExternalTarget,
+        RefusalKind::InvalidTarget,
+        RefusalKind::Block,
+    ] {
+        let spelled = match kind {
+            RefusalKind::Containment => "containment",
+            RefusalKind::TreeConflict => "tree conflict",
+            RefusalKind::Foreign => "foreign",
+            RefusalKind::Drift => "drifted",
+            RefusalKind::OwnerConflict => "owner conflict",
+            RefusalKind::ExternalTarget => "external target",
+            RefusalKind::InvalidTarget => "invalid target",
+            RefusalKind::Block => "block",
+        };
+        let row = only(refused(&serialized(kind)));
+
+        assert_eq!(row.note.as_deref(), Some(format!("({spelled})").as_str()));
+    }
+}
+
+/// A refusal carrying a payload renders it, in the words the library's own
+/// message renders it with, every payload string escaped like any other value
+/// a run did not write.
+#[test]
+fn a_refused_row_renders_the_payload_its_refusal_carries() {
+    for (refusal, note) in [
+        (
+            Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("other"), Utf8PathBuf::from("third")]),
+            },
+            "(tree conflict) (with other, third)",
+        ),
+        (
+            Refusal::OwnerConflict {
+                owners: BTreeSet::from(["base".to_owned(), "site".to_owned()]),
+            },
+            "(owner conflict) (held by base+site)",
+        ),
+        (
+            Refusal::ExternalTarget {
+                target: "/opt/x".to_owned(),
+            },
+            "(external target) -> /opt/x",
+        ),
+        (
+            Refusal::ExternalTarget {
+                target: "[x]".to_owned(),
+            },
+            "(external target) -> \\[x\\]",
+        ),
+        (
+            Refusal::InvalidTarget {
+                target: String::new(),
+            },
+            "(invalid target) -> \"\"",
+        ),
+        (
+            Refusal::Block {
+                fault: BlockFault::MarkerEmpty,
+            },
+            "(block) (the marker is empty)",
+        ),
+    ] {
+        let row = only(refused(&serialized(&refusal)));
+
+        assert_eq!(row.note.as_deref(), Some(note), "{refusal:?}");
+    }
+}
+
+/// Every fault the library declares reads as the sentence its own message
+/// spells rather than the name it serializes under; the arms are matched over
+/// `BlockFault` itself, so a fault added there stops this compiling until this
+/// list carries it, and each fault is fed in as the library serializes it, so
+/// a renamed one fails here rather than reaching the view's unknown arm.
+#[test]
+fn every_block_fault_reads_as_the_message_the_library_spells() {
+    for fault in [
+        BlockFault::MarkerEmpty,
+        BlockFault::MarkerNotOneLine,
+        BlockFault::MarkerEdgeWhitespace,
+        BlockFault::BodyCarriesMarker,
+        BlockFault::BodyNotNewlineTerminated,
+        BlockFault::ContainerNotNewlineTerminated,
+        BlockFault::ContainerMissing,
+        BlockFault::KindChange,
+        BlockFault::SignatureNotRecorded,
+        BlockFault::MarkerInAuthorText,
+    ] {
+        let spelled = match fault {
+            BlockFault::MarkerEmpty
+            | BlockFault::MarkerNotOneLine
+            | BlockFault::MarkerEdgeWhitespace
+            | BlockFault::BodyCarriesMarker
+            | BlockFault::BodyNotNewlineTerminated
+            | BlockFault::ContainerNotNewlineTerminated
+            | BlockFault::ContainerMissing
+            | BlockFault::KindChange
+            | BlockFault::SignatureNotRecorded
+            | BlockFault::MarkerInAuthorText => fault.to_string(),
+        };
+        let row = only(refused(&serialized(Refusal::Block { fault })));
+
+        assert_eq!(
+            row.note.as_deref(),
+            Some(format!("(block) ({spelled})").as_str()),
+            "{fault:?}"
+        );
+    }
+}
+
+/// A fault this CLI does not know reads as the name the library spelled,
+/// escaped.
+#[test]
+fn an_unknown_block_fault_reads_as_its_own_name() {
+    let row = only(refused(&json!({ "Block": { "fault": "[Pondered]" } })));
+
+    assert_eq!(row.note.as_deref(), Some("(block) (\\[Pondered\\])"));
+}
+
+/// A refused row names the source that named the path, in the phrase the
+/// library's own refusal message names it with: the arms are matched over
+/// `Origin` itself, so a source added there stops this compiling, and the
+/// phrase is the origin's own message rather than a copy of it. A path the
+/// caller named itself states only its refusal.
+#[test]
+fn a_refused_row_names_the_source_that_named_the_path() {
+    for origin in [
+        Origin::Caller,
+        Origin::Mapping {
+            path: Utf8PathBuf::from("/etc/deploy.toml"),
+        },
+        Origin::Tree {
+            path: Utf8PathBuf::from("/srv/skeleton"),
+        },
+        Origin::Archive {
+            path: Utf8PathBuf::from("/srv/app.tgz"),
+            via: None,
+        },
+        Origin::Archive {
+            path: Utf8PathBuf::from("/srv/app.tgz"),
+            via: Some(Utf8PathBuf::from("/etc/deploy.toml")),
+        },
+        Origin::Files,
+    ] {
+        let phrase = match &origin {
+            Origin::Caller => String::new(),
+            named @ (Origin::Mapping { .. }
+            | Origin::Tree { .. }
+            | Origin::Archive { .. }
+            | Origin::Files) => format!(" ({named})"),
+        };
+        let row = only(refused_by(&json!("Drift"), &origin));
+
+        assert_eq!(
+            row.note.as_deref(),
+            Some(format!("(drifted){phrase}").as_str()),
+            "{origin:?}"
+        );
+    }
+}
+
+/// A source path spelled like markup reaches the terminal as the characters
+/// it is.
+#[test]
+fn a_refused_rows_source_path_is_escaped() {
+    let row = only(refused_by(
+        &json!("Drift"),
+        &Origin::Tree {
+            path: Utf8PathBuf::from("/srv/[x]"),
+        },
+    ));
+
+    assert_eq!(
+        row.note.as_deref(),
+        Some("(drifted) (from tree /srv/\\[x\\])")
+    );
 }
 
 /// A name spelled like markup reaches the terminal as the characters it is.

@@ -11,12 +11,20 @@ use crate::{ManifestEntry, RefusalKind};
 fn one_of_each() -> Plan {
     Plan {
         owner: "site".to_owned(),
-        origins: BTreeMap::from([(
-            Utf8PathBuf::from("bin/tool"),
-            Origin::Mapping {
-                path: Utf8PathBuf::from("/etc/deploy.toml"),
-            },
-        )]),
+        origins: BTreeMap::from([
+            (
+                Utf8PathBuf::from("bin/tool"),
+                Origin::Mapping {
+                    path: Utf8PathBuf::from("/etc/deploy.toml"),
+                },
+            ),
+            (
+                Utf8PathBuf::from("toolchain"),
+                Origin::Tree {
+                    path: Utf8PathBuf::from("/srv/skeleton"),
+                },
+            ),
+        ]),
         external_targets: ExternalTargetPolicy::Allow,
         actions: BTreeMap::from([
             (
@@ -183,7 +191,7 @@ fn write_and_overwrite_rows_take_their_facts_from_the_entry() {
     assert_eq!(
         facts(&report, "bin/tool"),
         Some(PathFacts {
-            shape: PathShape::File { executable: true },
+            shape: Some(PathShape::File { executable: true }),
             owners: BTreeSet::from(["ops".to_owned(), "site".to_owned()]),
             origin: Some(Origin::Mapping {
                 path: Utf8PathBuf::from("/etc/deploy.toml")
@@ -210,9 +218,9 @@ fn a_planned_symlink_carries_its_target() {
     assert_eq!(
         facts(&report, "current"),
         Some(PathFacts {
-            shape: PathShape::Symlink {
+            shape: Some(PathShape::Symlink {
                 target: Some("releases/1.2.3".to_owned())
-            },
+            }),
             owners: BTreeSet::new(),
             origin: Some(Origin::Caller),
         })
@@ -228,16 +236,16 @@ fn skip_rows_take_their_facts_from_the_desired_entry() {
     assert_eq!(
         facts(&report, "config/settings.toml"),
         Some(PathFacts {
-            shape: PathShape::File { executable: false },
+            shape: Some(PathShape::File { executable: false }),
             owners: BTreeSet::from(["site".to_owned()]),
             origin: Some(Origin::Caller),
         })
     );
     assert_eq!(
         facts(&report, "config/theme").map(|facts| facts.shape),
-        Some(PathShape::Symlink {
+        Some(Some(PathShape::Symlink {
             target: Some("themes/dark".to_owned())
-        })
+        }))
     );
 }
 
@@ -247,7 +255,7 @@ fn a_remove_row_takes_its_facts_from_the_expected_signature() {
 
     assert_eq!(
         facts(&report, "orphan.txt").map(|facts| facts.shape),
-        Some(PathShape::File { executable: false })
+        Some(Some(PathShape::File { executable: false }))
     );
 }
 
@@ -261,20 +269,37 @@ fn a_release_row_takes_its_facts_from_the_manifest_entry() {
     assert_eq!(
         facts(&report, "shared/.zshrc"),
         Some(PathFacts {
-            shape: PathShape::File { executable: false },
+            shape: Some(PathShape::File { executable: false }),
             owners: BTreeSet::from(["shell".to_owned(), "site".to_owned()]),
             origin: Some(Origin::Caller),
         })
     );
 }
 
-// Nothing on disk is expected at these paths, so there is nothing to state.
+// Nothing on disk is expected at this path, so there is nothing to state.
 #[test]
-fn rows_without_an_entry_or_a_signature_carry_no_facts() {
+fn a_row_without_an_entry_or_a_signature_carries_no_facts() {
     let report = one_of_each().report(&recorded());
 
     assert_eq!(facts(&report, "gone.txt"), None);
-    assert_eq!(facts(&report, "toolchain"), None);
+}
+
+// A refusal decides no node, so its row states the source that named the
+// path — what the refusal diagnostic names — and no shape.
+#[test]
+fn a_refused_row_carries_the_source_that_named_the_path() {
+    let report = one_of_each().report(&recorded());
+
+    assert_eq!(
+        facts(&report, "toolchain"),
+        Some(PathFacts {
+            shape: None,
+            owners: BTreeSet::new(),
+            origin: Some(Origin::Tree {
+                path: Utf8PathBuf::from("/srv/skeleton")
+            }),
+        })
+    );
 }
 
 #[test]

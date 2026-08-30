@@ -554,3 +554,50 @@ fn a_diagnostic_clap_spelled_over_several_lines_keeps_them() {
         "error: unexpected argument '--nope' found\n\nUsage: proiectio status [OPTIONS]\n"
     );
 }
+
+/// A run that recorded nothing leaves with whatever emitting it reported.
+#[test]
+fn an_unrecorded_verdict_leaves_the_emitted_status_alone() {
+    let verdict = Verdict::default();
+
+    for emitted in [OK, FAILURE, REFUSAL] {
+        assert_eq!(verdict.over(emitted), emitted);
+    }
+}
+
+/// A refused dry run rendered its plan, so the refusal it recorded is what
+/// the process leaves with — and a failed write of that plan still raises the
+/// run without lowering the refusal.
+#[test]
+fn a_recorded_refusal_survives_whatever_emitting_the_run_reported() {
+    let verdict = Verdict::default();
+    verdict.record(REFUSAL);
+
+    assert_eq!(verdict.over(OK), REFUSAL);
+    assert_eq!(verdict.over(FAILURE), REFUSAL);
+    assert_eq!(verdict.over(REFUSAL), REFUSAL);
+}
+
+/// The cell keeps the gravest status recorded in it, whichever order the
+/// records arrived in.
+#[test]
+fn a_verdict_keeps_the_gravest_status_recorded() {
+    let verdict = Verdict::default();
+
+    verdict.record(REFUSAL);
+    verdict.record(OK);
+
+    assert_eq!(verdict.over(OK), REFUSAL);
+}
+
+/// The app holds a clone of the cell the composition root reads back, so what
+/// a handler records reaches `main`.
+#[test]
+fn a_clone_records_into_the_same_cell() {
+    let verdict = Verdict::default();
+    let held = verdict.clone();
+
+    held.record(REFUSAL);
+
+    assert_eq!(verdict.over(OK), REFUSAL);
+}
