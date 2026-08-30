@@ -278,11 +278,11 @@ fn a_removal_plan_names_no_source() {
     let state = Tree::new().materialize();
     let projection = projection(&dest, state.root());
 
-    let plan = projection
+    let planned = projection
         .plan_removal("harness", RemovalScope::Everything, PlanOptions::default())
         .expect("plan the removal");
 
-    assert!(plan.origins.is_empty());
+    assert!(planned.plan.origins.is_empty());
 }
 
 // The refusals apply raises come from deep inside the walk, so this is what

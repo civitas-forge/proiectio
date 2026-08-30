@@ -117,25 +117,26 @@ impl Projection {
     }
 
     /// The removal of everything `owner` holds, or of the recorded paths
-    /// `scope` names ([`RemovalScope`]); a report, on the same terms as
-    /// [`plan`](Projection::plan).
+    /// `scope` names ([`RemovalScope`]), with the manifest it was decided
+    /// against; a report, on the same terms as [`plan`](Projection::plan).
     pub fn plan_removal(
         &self,
         owner: &str,
         scope: RemovalScope<'_>,
         options: PlanOptions,
-    ) -> Result<Plan> {
+    ) -> Result<Planned> {
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
         let observations = observe(&dest, &manifest, &BlockMarkers::new())?;
-        Ok(decide_removal(
+        let plan = decide_removal(
             owner,
             scope,
             &manifest,
             &observations,
             self.state_prefix(),
             options,
-        ))
+        );
+        Ok(Planned { plan, manifest })
     }
 
     /// A handle on the destination directory, which must already exist.
