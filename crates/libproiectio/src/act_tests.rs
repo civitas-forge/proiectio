@@ -596,6 +596,63 @@ fn a_named_path_the_owner_does_not_hold_is_reported_and_nothing_else() {
     assert!(persisted(&state).entries.is_empty());
 }
 
+// The no-alias rule is what lets a removal prune from its action key when
+// the walk dies on missing ancestry: no manifest this library writes holds a
+// recorded link above a recorded key, so the ancestry above a removal is
+// physical and the key names it. Both orders that would build that shape
+// refuse instead.
+#[test]
+fn no_write_records_a_key_beneath_an_owned_link() {
+    let linked = Tree::new().symlink("logs", "real/missing");
+    let beneath = Tree::new().file("logs/deep/file.txt", "projected");
+
+    let (dest, state) = fixtures();
+    pipeline(&dest, &state, "own", &linked.entries(), DriftPolicy::Refuse).expect("project a link");
+    let error = pipeline(
+        &dest,
+        &state,
+        "second",
+        &beneath.entries(),
+        DriftPolicy::Refuse,
+    )
+    .expect_err("a key behind the link refuses");
+    assert!(
+        matches!(
+            &error,
+            Error::Refused(refused)
+                if refused.kind() == RefusalKind::Containment
+                    && paths_of(refused)
+                        == BTreeSet::from([Utf8PathBuf::from("logs/deep/file.txt")])
+        ),
+        "{error}"
+    );
+
+    // The other order, where the link would have to go down over the
+    // directory a recorded key stands in. Forcing lifts the drift policy,
+    // not this.
+    let (dest, state) = fixtures();
+    pipeline(
+        &dest,
+        &state,
+        "own",
+        &beneath.entries(),
+        DriftPolicy::Refuse,
+    )
+    .expect("project");
+    for policy in [DriftPolicy::Refuse, DriftPolicy::Overwrite] {
+        let error = pipeline(&dest, &state, "second", &linked.entries(), policy)
+            .expect_err("a link over the recorded ancestry refuses");
+        assert!(
+            matches!(
+                &error,
+                Error::Refused(refused) if refused.kind() == RefusalKind::Foreign
+            ),
+            "{error}"
+        );
+    }
+    assert_tree(dest.root(), &beneath);
+}
+
 #[test]
 fn a_removal_states_the_same_facts_whether_it_is_planned_or_applied() {
     let (dest, state) = fixtures();
