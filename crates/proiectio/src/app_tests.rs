@@ -985,6 +985,63 @@ fn dropping_a_path_another_owner_holds_releases_it_rather_than_removing_it() {
     );
 }
 
+/// A released row states the owners the manifest records, on a dry run as on
+/// the real one: planning reads them off the manifest it decided against, so
+/// the two reports agree on who holds the path.
+#[test]
+#[serial]
+fn a_dry_run_release_row_carries_the_owners_the_real_run_reports() {
+    let (dir, dest, _) = tour();
+    let root = utf8(&dir);
+    let shared = root.join("shared.toml");
+    std::fs::write(
+        shared.as_std_path(),
+        b"version = 1\n\n[files.\"conf\"]\ncontents = \"shared\\n\"\n",
+    )
+    .expect("a mapping two owners project");
+    let apart = root.join("apart.toml");
+    std::fs::write(
+        apart.as_std_path(),
+        b"version = 1\n\n[files.\"apart\"]\ncontents = \"apart\\n\"\n",
+    )
+    .expect("a mapping naming another path");
+    for owner in ["one", "two"] {
+        harness(&dir)
+            .run(
+                &app(),
+                cli::command(),
+                write_argv(&[shared.as_str(), "--owner", owner], &dest),
+            )
+            .assert_success();
+    }
+
+    let dry = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        write_argv(&[apart.as_str(), "--owner", "one", "--dry-run"], &dest),
+    );
+    let applied = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        write_argv(&[apart.as_str(), "--owner", "one"], &dest),
+    );
+
+    dry.assert_success();
+    applied.assert_success();
+    let planned: JsonValue = serde_json::from_str(dry.stdout()).expect("a JSON document");
+    let real: JsonValue = serde_json::from_str(applied.stdout()).expect("a JSON document");
+    assert_eq!(planned["rows"]["conf"]["verdict"], "Release");
+    assert_eq!(real["report"]["rows"]["conf"]["verdict"], "Released");
+    assert_eq!(
+        planned["rows"]["conf"]["facts"]["owners"],
+        serde_json::json!(["one", "two"])
+    );
+    assert_eq!(
+        planned["rows"]["conf"]["facts"],
+        real["report"]["rows"]["conf"]["facts"]
+    );
+}
+
 /// A symlink out of the destination refuses until the invocation permits it.
 #[test]
 #[serial]

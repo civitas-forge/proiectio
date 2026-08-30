@@ -96,8 +96,8 @@ fn one_of_each() -> Plan {
     }
 }
 
-// What the manifest records for the plan above: two of its paths, one held
-// by a second owner. `current` and `gone.txt` are recorded nowhere.
+// What the manifest records for the plan above: three of its paths, two of
+// them held by a second owner. `current` and `gone.txt` are recorded nowhere.
 fn recorded() -> Manifest {
     let mut manifest = Manifest::new();
     manifest.entries.extend([
@@ -117,6 +117,15 @@ fn recorded() -> Manifest {
                 hash: "dd44".to_owned(),
                 executable: false,
                 owners: BTreeSet::from(["site".to_owned()]),
+            },
+        ),
+        (
+            Utf8PathBuf::from("shared/.zshrc"),
+            ManifestEntry {
+                kind: EntryKind::File,
+                hash: "ff66".to_owned(),
+                executable: false,
+                owners: BTreeSet::from(["shell".to_owned(), "site".to_owned()]),
             },
         ),
     ]);
@@ -242,13 +251,29 @@ fn a_remove_row_takes_its_facts_from_the_expected_signature() {
     );
 }
 
+// A release writes nothing, so its row states what the manifest records: the
+// shape and the owners an apply report gives a released path, including the
+// owner the release drops.
+#[test]
+fn a_release_row_takes_its_facts_from_the_manifest_entry() {
+    let report = one_of_each().report(&recorded());
+
+    assert_eq!(
+        facts(&report, "shared/.zshrc"),
+        Some(PathFacts {
+            shape: PathShape::File { executable: false },
+            owners: BTreeSet::from(["shell".to_owned(), "site".to_owned()]),
+            origin: Some(Origin::Caller),
+        })
+    );
+}
+
 // Nothing on disk is expected at these paths, so there is nothing to state.
 #[test]
 fn rows_without_an_entry_or_a_signature_carry_no_facts() {
     let report = one_of_each().report(&recorded());
 
     assert_eq!(facts(&report, "gone.txt"), None);
-    assert_eq!(facts(&report, "shared/.zshrc"), None);
     assert_eq!(facts(&report, "toolchain"), None);
 }
 

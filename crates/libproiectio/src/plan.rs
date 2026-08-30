@@ -1,10 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
 use crate::{
-    Entry, EntryKind, Manifest, Origin, PathFacts, PathShape, Refusal, Refused, Report, Row,
+    Entry, EntryKind, Manifest, ManifestEntry, Origin, PathFacts, PathShape, Refusal, Refused,
+    Report, Row,
 };
 
 /// What planning does when a recorded path's state on disk differs from the
@@ -93,13 +94,8 @@ impl Plan {
                 .actions
                 .iter()
                 .map(|(path, action)| {
-                    let owners = manifest
-                        .entries
-                        .get(path)
-                        .map(|recorded| recorded.owners.clone())
-                        .unwrap_or_default();
                     let row = Row {
-                        facts: facts_of(action, self.origin_of(path), owners),
+                        facts: facts_of(action, self.origin_of(path), manifest.entries.get(path)),
                         verdict: verdict_of(action),
                     };
                     (path.clone(), row)
@@ -116,7 +112,11 @@ impl Plan {
     }
 }
 
-fn facts_of(action: &Action, origin: Origin, owners: BTreeSet<String>) -> Option<PathFacts> {
+fn facts_of(
+    action: &Action,
+    origin: Origin,
+    recorded: Option<&ManifestEntry>,
+) -> Option<PathFacts> {
     let shape = match action {
         Action::Write { entry } | Action::Overwrite { entry, .. } | Action::Skip { entry, .. } => {
             match entry {
@@ -138,13 +138,25 @@ fn facts_of(action: &Action, origin: Origin, owners: BTreeSet<String>) -> Option
             EntryKind::Symlink => PathShape::Symlink { target: None },
             EntryKind::Block { .. } => PathShape::Block,
         },
-        Action::Remove { expected: None } | Action::Release | Action::Refuse { .. } => {
+        Action::Release => {
+            let recorded = recorded?;
+            match recorded.kind {
+                EntryKind::File => PathShape::File {
+                    executable: recorded.executable,
+                },
+                EntryKind::Symlink => PathShape::Symlink { target: None },
+                EntryKind::Block { .. } => PathShape::Block,
+            }
+        }
+        Action::Remove { expected: None } | Action::Refuse { .. } => {
             return None;
         }
     };
     Some(PathFacts {
         shape,
-        owners,
+        owners: recorded
+            .map(|recorded| recorded.owners.clone())
+            .unwrap_or_default(),
         origin: Some(origin),
     })
 }
