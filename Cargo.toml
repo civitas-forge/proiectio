@@ -18,6 +18,7 @@ cap-tempfile = "4.0"
 clap = { version = "4.5", features = ["derive"] }
 clapfig = "0.23.0"
 flate2 = "1.1"
+minijinja = "2"
 rustix = { version = "1.1", features = ["fs"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"

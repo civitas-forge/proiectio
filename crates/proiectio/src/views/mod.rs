@@ -6,3 +6,4 @@ mod write;
 
 pub(crate) use config::ConfigView;
 pub(crate) use write::WriteView;
+pub(crate) use write::lines as write_lines;

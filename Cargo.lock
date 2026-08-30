@@ -1520,6 +1520,7 @@ dependencies = [
  "clapfig",
  "flate2",
  "libproiectio",
+ "minijinja",
  "serde",
  "serde_json",
  "serial_test",

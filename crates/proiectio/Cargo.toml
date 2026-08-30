@@ -17,6 +17,8 @@ camino.workspace = true
 clap.workspace = true
 clapfig.workspace = true
 libproiectio = { path = "../libproiectio", version = "0.1.0" }
+# Standout takes a render-only template context as a `minijinja::Value`.
+minijinja.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 standout.workspace = true
