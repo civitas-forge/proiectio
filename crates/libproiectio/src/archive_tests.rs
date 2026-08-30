@@ -1472,7 +1472,10 @@ fn a_zip_larger_than_the_bound_is_refused_before_its_directory_is_parsed() {
         "{message}"
     );
     assert!(
-        message.contains(&format!("{} one load may hold", tight.max_source_bytes)),
+        message.contains(&format!(
+            "{} bytes one load may hold",
+            tight.max_source_bytes
+        )),
         "{message}"
     );
     assert!(matches!(

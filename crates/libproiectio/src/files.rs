@@ -9,7 +9,8 @@ use crate::tree::{is_executable, open_file_nofollow};
 use crate::{Desired, Entry, Error, Limits, Origin, Result};
 
 /// Loads each path as an entry keyed by its own basename. One budget of
-/// [`Limits::max_source_bytes`] covers every file the call reads.
+/// [`Limits::max_source_bytes`] covers everything the call holds: each
+/// file's bytes, the basename it is keyed by, and each symlink's target.
 pub fn load_files(paths: &[Utf8PathBuf], limits: Limits) -> Result<Desired> {
     let mut named: BTreeMap<String, Utf8PathBuf> = BTreeMap::new();
     for path in paths {
@@ -34,7 +35,24 @@ pub fn load_files(paths: &[Utf8PathBuf], limits: Limits) -> Result<Desired> {
     let budget = Budget::new(limits);
     let mut tree = BTreeMap::new();
     for (name, path) in named {
-        tree.insert(Utf8PathBuf::from(name), load_one(&path, &budget)?);
+        let entry = load_one(&path, &budget)?;
+        // The same rule the tree walk holds itself to: a file's bytes are
+        // already spent, and what is held besides them — the basename this
+        // entry is keyed by, a symlink's target — is spent here. A hundred
+        // thousand empty files are a hundred thousand keys and no bytes.
+        let held = name.len()
+            + match &entry {
+                Entry::File { .. } => 0,
+                Entry::Symlink { target } => target.len(),
+                Entry::Block { body, marker, .. } => body.len() + marker.len(),
+            };
+        if !budget.spend(held as u64) {
+            return Err(Error::SourceTooLarge {
+                path,
+                limit: budget.limit(),
+            });
+        }
+        tree.insert(Utf8PathBuf::from(name), entry);
     }
     Ok(Desired::from_source(tree, Origin::Files))
 }

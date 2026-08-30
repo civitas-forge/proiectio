@@ -20,7 +20,8 @@ use crate::{Desired, Entry, Error, Limits, MAX_WALK_DEPTH, Origin, Refusal, Refu
 /// the projection never writes, a tree nesting past [`MAX_WALK_DEPTH`], and a
 /// walk whose contents sum past [`Limits::max_source_bytes`] each fail the
 /// load. That sum is everything the walk holds: file bytes, the key each
-/// entry is filed under, and each symlink's target.
+/// entry is filed under, each symlink's target, and each name containment
+/// refused.
 pub fn load_tree(source: &Utf8Path, limits: Limits) -> Result<Desired> {
     let source = crate::absolutize(source)?;
     let source = source.as_path();
@@ -88,7 +89,7 @@ impl Walk<'_> {
                     name: raw.to_string_lossy().into_owned(),
                 })?;
             let rel = prefix.join(&name);
-            let Some(key) = self.admit(&rel) else {
+            let Some(key) = self.admit(&rel)? else {
                 continue;
             };
             // `metadata` and not `file_type`: cap-std reads the latter from
@@ -163,25 +164,39 @@ impl Walk<'_> {
                 Entry::Symlink { target } => target.len(),
                 Entry::Block { body, marker, .. } => body.len() + marker.len(),
             };
-        if !self.budget.spend(held as u64) {
-            return Err(Error::SourceTooLarge {
-                path: self.absolute(rel),
-                limit: self.budget.limit(),
-            });
-        }
+        self.spend(rel, held)?;
         self.tree.insert(key, node);
         Ok(())
     }
 
     /// Normalizes one walked path, recording it among the refused and
     /// answering `None` where containment declines it.
-    fn admit(&mut self, rel: &Utf8Path) -> Option<Utf8PathBuf> {
+    ///
+    /// A refused name is held as long as an admitted one — the walk carries
+    /// every one of them to the end so a single refusal can name them all —
+    /// so it is spent like an admitted one. Nothing else bounds how many
+    /// names a walk may refuse.
+    fn admit(&mut self, rel: &Utf8Path) -> Result<Option<Utf8PathBuf>> {
         match crate::containment::contained_normalize(rel) {
-            Some(normalized) => Some(normalized),
+            Some(normalized) => Ok(Some(normalized)),
             None => {
+                self.spend(rel, rel.as_str().len())?;
                 self.refused.insert(rel.to_owned());
-                None
+                Ok(None)
             }
+        }
+    }
+
+    /// Spends `held` bytes of the walk's one budget, naming `rel` where that
+    /// is what runs it out.
+    fn spend(&self, rel: &Utf8Path, held: usize) -> Result<()> {
+        if self.budget.spend(held as u64) {
+            Ok(())
+        } else {
+            Err(Error::SourceTooLarge {
+                path: self.absolute(rel),
+                limit: self.budget.limit(),
+            })
         }
     }
 

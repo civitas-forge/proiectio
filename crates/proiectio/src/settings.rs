@@ -127,6 +127,16 @@ pub(crate) fn require_key(key: &str) -> Result<(), ClapfigError> {
     })
 }
 
+/// The keys the schema declares, in the order it declares them. The `config`
+/// help names them in prose, and this is what that prose is checked against.
+#[cfg(test)]
+pub(crate) fn declared_keys() -> Vec<String> {
+    match ProiectioConfig::shape() {
+        Shape::Object(schema) => schema.fields.into_iter().map(|field| field.name).collect(),
+        _ => panic!("the configuration is an object of named keys"),
+    }
+}
+
 pub(crate) fn leaf_type(key: &str) -> Option<LeafType> {
     let segments: Vec<&str> = key.split('.').collect();
     leaf_type_in(&ProiectioConfig::shape(), &segments)

@@ -202,3 +202,30 @@ fn loose_files_outweighing_the_bound_fail_the_load() {
     ));
     load_files(&paths, Limits::default()).expect("load under the default bound");
 }
+
+// And they spend it on the same things a walk does. A loose empty file
+// carries no bytes and still costs the basename it is keyed by; a loose
+// symlink costs its target too. Without that, a zero-byte bound would load
+// any number of them.
+#[test]
+fn loose_files_spend_the_bound_on_what_they_hold_besides_bytes() {
+    let source = Tree::new()
+        .file("empty.bin", "")
+        .symlink("current", "releases/v1")
+        .materialize();
+    let paths = [source.path("empty.bin"), source.path("current")];
+
+    assert!(matches!(
+        load_files(&paths, Limits::default().with_max_source_bytes(0)).unwrap_err(),
+        Error::SourceTooLarge { limit, .. } if limit == 0
+    ));
+    // "current" is 7 bytes of key and "releases/v1" is 11 of target;
+    // "empty.bin" is 9 bytes of key and no contents. One byte short of the
+    // 27 they come to together, and then exactly enough.
+    assert!(matches!(
+        load_files(&paths, Limits::default().with_max_source_bytes(26)).unwrap_err(),
+        Error::SourceTooLarge { limit, .. } if limit == 26
+    ));
+    load_files(&paths, Limits::default().with_max_source_bytes(27))
+        .expect("a bound covering every key and target");
+}

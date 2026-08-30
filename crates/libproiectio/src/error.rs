@@ -250,8 +250,8 @@ pub enum Error {
     /// format is weighed by what it expands to. Not a refusal.
     #[error(
         "archive {path} is {size} bytes on disk, and a zip's index is read whole before any \
-         member, so the file itself has to fit: {remaining} bytes are left of the {limit} one \
-         load may hold in memory"
+         member, so the file itself has to fit: {remaining} bytes are left of the {limit} bytes \
+         one load may hold in memory"
     )]
     ArchiveFileTooLarge {
         /// The archive's location.

@@ -508,6 +508,57 @@ fn a_tree_of_empty_files_spends_the_bound_on_the_names_it_holds() {
         .expect("a bound covering every key exactly");
 }
 
+// Whichever charge runs the budget out, the refusal names the node it was
+// on — not the directory holding it. A review read `self.absolute(&rel)` as
+// the parent; `rel` is `prefix.join(&name)`, so it is the node itself, and
+// this pins that rather than leaving it to be re-read.
+#[test]
+fn the_refusal_names_the_node_the_budget_ran_out_on() {
+    let source = Tree::new()
+        .file("nested/big.bin", "0".repeat(600))
+        .materialize();
+    let refused_at = |bound: u64| match load_tree(
+        source.root(),
+        Limits::default().with_max_source_bytes(bound),
+    )
+    .unwrap_err()
+    {
+        Error::SourceTooLarge { path, .. } => path,
+        other => panic!("expected the bound to refuse, got {other}"),
+    };
+
+    // 100 bytes runs out inside the file's own 600, mid-read.
+    assert_eq!(refused_at(100), source.root().join("nested/big.bin"));
+    // 610 covers the bytes and leaves 10, which the 14-byte key does not
+    // fit — a different charge, and the same node named.
+    assert_eq!(refused_at(610), source.root().join("nested/big.bin"));
+}
+
+// A name containment refuses is held to the end of the walk as surely as an
+// admitted one — every refusal is reported together — so it is spent too.
+// Nothing else bounds how many names a walk may refuse.
+#[test]
+fn refused_names_spend_the_bound_they_are_held_against() {
+    let mut source = Tree::new();
+    for index in 0..100 {
+        // A backslash is refused by containment, and the file is empty, so
+        // the name is the only thing the walk holds.
+        source = source.file(format!("bad\\{index:03}"), "");
+    }
+    let source = source.materialize();
+
+    assert!(matches!(
+        load_tree(source.root(), Limits::default().with_max_source_bytes(200)).unwrap_err(),
+        Error::SourceTooLarge { limit, .. } if limit == 200
+    ));
+    // With room for every refused name, the walk reaches the refusal it was
+    // always going to report.
+    assert!(matches!(
+        load_tree(source.root(), Limits::default()).unwrap_err(),
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment
+    ));
+}
+
 // A symlink's target is read out of the source tree and held as long as the
 // tree is, so it is spent like a file's bytes.
 #[test]
