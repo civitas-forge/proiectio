@@ -2,8 +2,16 @@ use super::*;
 
 const SCOPE: &str = "/home/u/.config/proiectio/proiectio.toml";
 
+/// A view of a result whose edit reached the file it names.
 fn view(result: ConfigResult) -> ConfigView {
-    ConfigView::of(result, Utf8PathBuf::from(SCOPE)).expect("a view")
+    ConfigView::of(result, || Ok(wrote(true))).expect("a view")
+}
+
+fn wrote(wrote: bool) -> Edit {
+    Edit {
+        path: Utf8PathBuf::from(SCOPE),
+        wrote,
+    }
 }
 
 #[test]
@@ -54,6 +62,46 @@ fn an_edited_file_is_named_by_the_results_that_edited_it() {
             SCOPE,
             "the {case} view names no file"
         );
+    }
+}
+
+/// Clapfig treats an unset with no file to read as a successful no-op, so the
+/// view carries whether the file was written rather than assuming it was.
+#[test]
+fn an_unset_that_wrote_no_file_says_so() {
+    let unset = ConfigView::of(
+        ConfigResult::ValueUnset {
+            key: "owner".into(),
+        },
+        || Ok(wrote(false)),
+    )
+    .expect("a view");
+
+    let value = serde_json::to_value(&unset).expect("a serialized view");
+    assert_eq!(value["wrote"], false);
+    assert_eq!(value["path"], SCOPE, "the view names no file");
+}
+
+/// A read edits nothing, so it never pays for the platform lookup that names
+/// an edited file — and renders on a machine where that lookup fails.
+#[test]
+fn a_result_that_edited_no_file_never_resolves_one() {
+    for result in [
+        ConfigResult::Listing {
+            entries: vec![("owner".into(), "site".into())],
+            rendered: "owner = site".into(),
+        },
+        ConfigResult::KeyValue {
+            key: "owner".into(),
+            value: "site".into(),
+            doc: Vec::new(),
+            rendered: "owner = site".into(),
+        },
+        ConfigResult::Template("owner = \"site\"".into()),
+        ConfigResult::Schema("{}".into()),
+    ] {
+        ConfigView::of(result, || panic!("a read asked for the edited file"))
+            .expect("a view built without one");
     }
 }
 
@@ -135,11 +183,8 @@ fn a_written_path_that_is_not_utf8_is_reported_rather_than_rendered() {
 
     let path = PathBuf::from(OsString::from_vec(vec![0x2f, 0xff]));
 
-    let error = ConfigView::of(
-        ConfigResult::SchemaWritten { path },
-        Utf8PathBuf::from(SCOPE),
-    )
-    .expect_err("a path that is not UTF-8");
+    let error = ConfigView::of(ConfigResult::SchemaWritten { path }, || Ok(wrote(true)))
+        .expect_err("a path that is not UTF-8");
 
     assert!(matches!(error, Error::PathNotUtf8 { .. }), "{error}");
 }

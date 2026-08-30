@@ -8,7 +8,7 @@ use clapfig::runtime::LeafType;
 use libproiectio::Error;
 use serde::Serialize;
 
-use crate::settings;
+use crate::settings::{self, Edit};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ConfigEntryView {
@@ -38,6 +38,7 @@ pub(crate) enum ConfigView {
     ValueUnset {
         key: String,
         path: Utf8PathBuf,
+        wrote: bool,
     },
     Template {
         body: String,
@@ -54,14 +55,18 @@ pub(crate) enum ConfigView {
 }
 
 impl ConfigView {
-    /// `scope` is the file the invocation's scope persists to: the results that
-    /// edited it name it, and the rest ignore it.
+    /// `edit` reports what the invocation did to the file its scope persists
+    /// to. Only the two results that edited one ask for it, so a read costs no
+    /// platform lookup and succeeds where none resolves.
     ///
     /// The written-file variants name a path of clapfig's own, and a path this
     /// CLI cannot render is the one thing clapfig can hand back that no output
     /// mode can carry. Reading `--file` as UTF-8 refuses such a path at the
     /// command line, so what is left here is a path clapfig chose itself.
-    pub(crate) fn of(result: ConfigResult, scope: Utf8PathBuf) -> Result<Self, Error> {
+    pub(crate) fn of(
+        result: ConfigResult,
+        edit: impl FnOnce() -> Result<Edit, Error>,
+    ) -> Result<Self, Error> {
         Ok(match result {
             ConfigResult::Listing { entries, .. } => {
                 let entries: Vec<(String, String)> = entries
@@ -92,9 +97,16 @@ impl ConfigView {
                 rendered: assignment(&key, &value),
                 key,
                 value,
-                path: scope,
+                path: edit()?.path,
             },
-            ConfigResult::ValueUnset { key } => Self::ValueUnset { key, path: scope },
+            ConfigResult::ValueUnset { key } => {
+                let edit = edit()?;
+                Self::ValueUnset {
+                    key,
+                    path: edit.path,
+                    wrote: edit.wrote,
+                }
+            }
             ConfigResult::Template(body) => Self::Template { body },
             ConfigResult::TemplateWritten { path } => Self::TemplateWritten { path: utf8(path)? },
             ConfigResult::Schema(body) => Self::Schema { body },

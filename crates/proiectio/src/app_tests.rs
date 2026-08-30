@@ -442,6 +442,40 @@ fn a_persisted_value_names_the_file_it_was_written_to() {
     }
 }
 
+/// Clapfig treats an unset with no file to read as a successful no-op. A CLI
+/// that claimed `wrote` there would name a file that does not exist, so the
+/// run says which file it found nothing at.
+#[test]
+#[serial]
+fn an_unset_with_no_file_to_edit_names_no_written_file() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let argv = ["proiectio", "conf", "unset", "owner"];
+
+    let json = harness(&dir)
+        .output_mode(OutputMode::Json)
+        .run(&app(), cli::command(), argv);
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the unset targeted"));
+    assert_eq!(value["wrote"], false);
+    assert!(!path.exists(), "the unset created {path}");
+
+    let text = harness(&dir).run(&app(), cli::command(), argv);
+    text.assert_success();
+    assert!(
+        !text.stdout().contains("wrote"),
+        "an unset that wrote nothing claimed it wrote: {}",
+        text.stdout()
+    );
+    text.assert_stdout_contains(&format!("no file at {path}"));
+
+    let debug = harness(&dir)
+        .output_mode(OutputMode::TermDebug)
+        .run(&app(), cli::command(), argv);
+    debug.assert_success();
+    assert_tags_declared("an unset with no file", debug.stdout());
+}
+
 /// Unsetting is an edit like setting, so a key the schema does not declare is
 /// the same typo it is there rather than a silent success.
 #[test]
@@ -492,6 +526,93 @@ fn a_comment_key_the_schema_allowlists_loads_and_is_not_a_setting() {
 
     listing.assert_success();
     assert_eq!(listing.stdout(), "owner = \"site\"\n");
+}
+
+/// The allowlist the loader honours is the one `config schema` publishes, read
+/// off the emitted document rather than restated here: a validator handed that
+/// schema and a file carrying a note agrees with the loader about both.
+#[test]
+#[serial]
+fn the_emitted_schema_allowlists_the_comment_keys_the_loader_accepts() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    let schema = harness(&dir).run(&app(), cli::command(), ["proiectio", "conf", "schema"]);
+    schema.assert_success();
+    let emitted: JsonValue = serde_json::from_str(schema.stdout()).expect("a JSON Schema document");
+
+    assert_eq!(
+        emitted["patternProperties"]["^//"],
+        serde_json::json!({}),
+        "the schema publishes no comment-key allowlist: {}",
+        schema.stdout()
+    );
+    assert_eq!(
+        emitted["additionalProperties"], false,
+        "the schema closes no object, so nothing needs allowlisting"
+    );
+}
+
+/// A note under a table of its own is a note at every depth the schema
+/// allowlists it, and the listing leaves the whole subtree in the file — the
+/// key the loader saw is the table, not the leaf beneath it.
+#[test]
+#[serial]
+fn a_comment_table_is_left_out_of_the_scope_that_reads_the_file_itself() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let json = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "set", "owner", "site"],
+    );
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    let path = Utf8PathBuf::from(value["path"].as_str().expect("the file the set wrote"));
+    std::fs::write(
+        &path,
+        "owner = \"site\"\n\n[\"//notes\"]\nwhy = \"a note\"\n",
+    )
+    .expect("a config file carrying a noted table");
+
+    for argv in [
+        vec!["proiectio", "conf", "list"],
+        vec!["proiectio", "conf", "list", "--scope", "user"],
+    ] {
+        let listing = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        listing.assert_success();
+        assert_eq!(listing.stdout(), "owner = \"site\"\n", "{argv:?}");
+    }
+}
+
+/// `user` is the only scope the builder registers, so no other spelling can
+/// reach a file — and the run that names one says which scopes exist rather
+/// than reporting a write to the user scope.
+#[test]
+#[serial]
+fn a_scope_the_builder_does_not_register_is_refused_by_name() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    for argv in [
+        vec![
+            "proiectio",
+            "conf",
+            "set",
+            "--scope",
+            "local",
+            "owner",
+            "site",
+        ],
+        vec!["proiectio", "conf", "unset", "--scope", "local", "owner"],
+    ] {
+        let result = harness(&dir).run(&app(), cli::command(), argv.clone());
+
+        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        let error = result.error().unwrap_or_default();
+        assert!(
+            error.contains("Unknown scope 'local'") && error.contains("user"),
+            "{argv:?}: {error}"
+        );
+    }
 }
 
 /// The `rendered` field of a config view, read back through the same run under

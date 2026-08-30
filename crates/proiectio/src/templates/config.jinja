@@ -1,5 +1,5 @@
 {#- One template for the whole config group: branches on the ConfigView tag.
-    Every assignment line is clapfig's own, spelled in the active format. -#}
+    Every assignment line is the view's own, spelled as a line of the file. -#}
 {% if kind == "listing" -%}
 {{ rendered|verbatim_block }}
 {% elif kind == "key_value" -%}
@@ -9,7 +9,11 @@
 [ok]wrote[/ok] {{ path|verbatim }}
 {% elif kind == "value_unset" -%}
 [ok]unset[/ok] [key]{{ key|verbatim }}[/key]
+{% if wrote -%}
 [ok]wrote[/ok] {{ path|verbatim }}
+{% else -%}
+[skipped]no file at[/skipped] {{ path|verbatim }}
+{% endif -%}
 {% elif kind == "template" -%}
 {{ body|verbatim_block }}
 {% elif kind == "template_written" -%}

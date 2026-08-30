@@ -16,8 +16,9 @@ anyhow.workspace = true
 camino.workspace = true
 clap.workspace = true
 clapfig.workspace = true
-# The user scope's directory, resolved the way clapfig's own Platform scope
-# resolves it, so the echoed path is the path the edit landed in.
+# The user scope's directory, resolved by the same call clapfig's own Platform
+# scope makes, so the echoed path is the path the edit landed in. Clapfig keeps
+# its resolved persist path private, so there is nothing to ask instead.
 directories.workspace = true
 libproiectio = { path = "../libproiectio", version = "0.9.1" }
 # Standout takes a render-only template context as a `minijinja::Value`.
