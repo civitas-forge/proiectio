@@ -4,7 +4,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
 use crate::RefusalKind;
-use crate::test_support::origins_of;
+use crate::test_support::{MissingName, origins_of};
 
 // A fixed absolute location for table tests: entries that only carry
 // inline `contents` never read the filesystem, so the file need not exist.
@@ -711,10 +711,10 @@ fn a_missing_mapping_file_is_an_io_error() {
 // failing, so the error names where the load actually looked.
 #[test]
 fn a_relative_mapping_path_resolves_against_the_current_directory() {
-    let expected = crate::absolutize(Utf8Path::new("deploy.toml")).expect("absolutized");
+    let absent = MissingName::with_suffix(".toml");
 
     assert!(matches!(
-        load_mapping(Utf8Path::new("deploy.toml")).unwrap_err(),
-        Error::Io { path, .. } if path == expected
+        load_mapping(absent.relative()).unwrap_err(),
+        Error::Io { path, .. } if path == absent.absolute()
     ));
 }

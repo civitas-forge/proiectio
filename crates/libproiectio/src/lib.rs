@@ -44,6 +44,7 @@ mod projection;
 mod refusal;
 mod report;
 mod run;
+mod source;
 mod status;
 #[cfg(test)]
 mod test_support;
@@ -68,5 +69,6 @@ pub use projection::*;
 pub use refusal::*;
 pub use report::*;
 pub use run::*;
+pub use source::*;
 pub use status::*;
 pub use tree::*;

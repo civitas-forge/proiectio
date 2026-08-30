@@ -313,6 +313,8 @@ pub enum Error {
         /// The next path carrying it.
         second: Utf8PathBuf,
     },
+    #[error("source {path} is a directory: strip drops components of archive members")]
+    StripOnDirectory { path: Utf8PathBuf },
 }
 
 fn display_string<T: std::fmt::Display, S: Serializer>(

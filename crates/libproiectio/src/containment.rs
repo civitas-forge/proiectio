@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::convert::Infallible;
 
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 
 use crate::{Error, Origin, Refusal, Refused, Result};
 
@@ -39,6 +39,9 @@ pub(crate) fn contained_normalize(rel: &Utf8Path) -> Option<Utf8PathBuf> {
 }
 
 pub fn absolutize(path: &Utf8Path) -> Result<Utf8PathBuf> {
+    if path.is_absolute() {
+        return Ok(collapse(path));
+    }
     let cwd = std::env::current_dir().map_err(|source| Error::CurrentDirectory { source })?;
     let cwd = Utf8PathBuf::from_path_buf(cwd).map_err(|cwd| Error::PathNotUtf8 {
         path: cwd.to_string_lossy().into_owned(),
@@ -47,18 +50,21 @@ pub fn absolutize(path: &Utf8Path) -> Result<Utf8PathBuf> {
 }
 
 fn absolutize_from(cwd: &Utf8Path, path: &Utf8Path) -> Utf8PathBuf {
-    let joined = cwd.join(path);
-    let mut kept: Vec<&str> = Vec::new();
-    for component in joined.as_str().split('/') {
+    collapse(&cwd.join(path))
+}
+
+fn collapse(path: &Utf8Path) -> Utf8PathBuf {
+    let mut collapsed = Utf8PathBuf::from("/");
+    for component in path.components() {
         match component {
-            "" | "." => {}
-            ".." => {
-                kept.pop();
+            Utf8Component::Normal(name) => collapsed.push(name),
+            Utf8Component::ParentDir => {
+                collapsed.pop();
             }
-            name => kept.push(name),
+            _ => {}
         }
     }
-    Utf8PathBuf::from(format!("/{}", kept.join("/")))
+    collapsed
 }
 
 /// What [`contained_target_chain`]'s caller finds at one component of a

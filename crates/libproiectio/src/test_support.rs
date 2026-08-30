@@ -199,6 +199,48 @@ impl Fixture {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct MissingName {
+    _temp: tempfile::TempDir,
+    relative: Utf8PathBuf,
+    absolute: Utf8PathBuf,
+}
+
+impl MissingName {
+    // A random basename, held by a temporary directory elsewhere so no
+    // current directory carries it, and the absolute path cwd resolves it to.
+    pub(crate) fn with_suffix(suffix: &str) -> MissingName {
+        let temp = tempfile::Builder::new()
+            .prefix("proiectio-absent-")
+            .suffix(suffix)
+            .tempdir()
+            .expect("a temporary directory");
+        let relative = Utf8PathBuf::from(
+            temp.path()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("a UTF-8 temporary directory name"),
+        );
+        let cwd = std::env::current_dir().expect("a readable current directory");
+        let absolute = Utf8PathBuf::from_path_buf(cwd)
+            .expect("a UTF-8 current directory")
+            .join(&relative);
+        MissingName {
+            _temp: temp,
+            relative,
+            absolute,
+        }
+    }
+
+    pub(crate) fn relative(&self) -> &Utf8Path {
+        &self.relative
+    }
+
+    pub(crate) fn absolute(&self) -> &Utf8Path {
+        &self.absolute
+    }
+}
+
 // Asserts `path` is relative and made only of normal segments. Checks the
 // raw string: `Utf8Path::components()` normalizes `.` and empty segments away.
 fn assert_normal_relative(path: &Utf8Path) {
