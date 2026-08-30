@@ -157,7 +157,9 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                     block(BlockFault::KindChange);
                 }
             }
-            Action::Overwrite { entry, expected } => {
+            Action::Overwrite {
+                entry, expected, ..
+            } => {
                 if let Some(fault) = entry_block_fault(entry) {
                     block(fault);
                 }
@@ -276,7 +278,9 @@ fn run(
                 record(manifest, path, entry, &plan.owner);
                 outcomes.insert(path.clone(), outcome);
             }
-            Action::Overwrite { entry, expected } if matches!(entry, Entry::Block { .. }) => {
+            Action::Overwrite {
+                entry, expected, ..
+            } if matches!(entry, Entry::Block { .. }) => {
                 acting_on(plan, path, || {
                     overwrite_block(dest, manifest, path, entry, expected)
                 })?;
@@ -290,7 +294,9 @@ fn run(
                 record(manifest, path, entry, &plan.owner);
                 outcomes.insert(path.clone(), ApplyOutcome::Written);
             }
-            Action::Overwrite { entry, expected } => {
+            Action::Overwrite {
+                entry, expected, ..
+            } => {
                 acting_on(plan, path, || {
                     check_expected(dest, manifest, path, expected)?;
                     write(dest, manifest, path, entry, false, plan, &unpublished)
