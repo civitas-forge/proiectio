@@ -185,10 +185,16 @@ fn detailing(kind: &str, payload: &JsonValue) -> Option<String> {
             "(held by {})",
             listed(payload.get("owners")?, "+")?
         )),
-        "DirectoryInTheWay" => Some(format!(
-            "(holding {}, which --force does not remove)",
-            holding(payload.get("holding")?)?
-        )),
+        "DirectoryInTheWay" => {
+            let mut clauses = Vec::new();
+            if let Some(held) = payload.get("holding").and_then(holding) {
+                clauses.push(format!("holding {held}, which --force does not remove"));
+            }
+            if let Some(names) = payload.get("unreadable").and_then(|it| listed(it, ", ")) {
+                clauses.push(format!("holding names that are not UTF-8 in {names}"));
+            }
+            (!clauses.is_empty()).then(|| format!("({})", clauses.join(", and ")))
+        }
         "ExternalTarget" => Some(format!("-> {}", verbatim(string("target")?))),
         "InvalidTarget" => Some(format!(
             "-> {}",

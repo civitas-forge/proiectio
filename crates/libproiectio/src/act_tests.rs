@@ -726,6 +726,53 @@ fn an_empty_directory_nested_in_the_scaffolding_holds_it() {
     assert_tree(dest.root(), &nested.clone().dir("build.sh/scratch"));
 }
 
+// A name the walk cannot represent is one no plan may reason about: pruning
+// would keep the directory, the write would meet it after the removal landed,
+// and the manifest would be saved having forgotten a file still on disk. So
+// the refusal comes first and nothing moves.
+#[test]
+fn a_name_the_walk_cannot_read_holds_the_directory_and_nothing_is_written() {
+    let (dest, state) = fixtures();
+    let nested = Tree::new().file("build.sh/main.sh", "#!/bin/sh\n");
+    pipeline(&dest, &state, "own", &nested.entries(), DriftPolicy::Refuse).expect("project");
+    let unnameable = dest
+        .path("build.sh")
+        .as_std_path()
+        .join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"bad-\xff-name"));
+    if fs::write(&unnameable, b"unnameable").is_err() {
+        // APFS on macOS refuses non-UTF-8 names outright, so the entry this
+        // test turns on cannot exist here. CI runs on Linux, where it can.
+        return;
+    }
+
+    let flat = Tree::new().executable("build.sh", "#!/bin/sh\nmake\n");
+    for policy in [DriftPolicy::Refuse, DriftPolicy::Overwrite] {
+        let error = pipeline(&dest, &state, "own", &flat.entries(), policy)
+            .expect_err("the unreadable name holds the directory");
+        assert!(
+            matches!(
+                &error,
+                Error::Refused(refused)
+                    if refused.kind() == RefusalKind::DirectoryInTheWay
+                        && paths_of(refused) == BTreeSet::from([Utf8PathBuf::from("build.sh")])
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("not UTF-8"), "{error}");
+    }
+
+    // Neither side moved: the orphan the plan would have removed is still on
+    // disk, and the manifest still records it.
+    assert_eq!(
+        fs::read_to_string(dest.path("build.sh/main.sh")).expect("the orphan is still there"),
+        "#!/bin/sh\n"
+    );
+    assert_eq!(
+        persisted(&state).entries.keys().collect::<Vec<_>>(),
+        [Utf8Path::new("build.sh/main.sh")]
+    );
+}
+
 // A recorded path replaced by hand with an empty directory: no signature
 // describes it, so forcing re-checks it by removing it and writes in its
 // place.

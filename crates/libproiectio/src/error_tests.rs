@@ -11,6 +11,7 @@ fn every_variant() -> Vec<Error> {
             RefusalKind::Drift => Refusal::Drift,
             RefusalKind::DirectoryInTheWay => Refusal::DirectoryInTheWay {
                 holding: BTreeMap::from([(Utf8PathBuf::from("bin/tool/note.md"), BTreeSet::new())]),
+                unreadable: BTreeSet::new(),
             },
             RefusalKind::Foreign => Refusal::Foreign,
             RefusalKind::Containment => Refusal::Containment,

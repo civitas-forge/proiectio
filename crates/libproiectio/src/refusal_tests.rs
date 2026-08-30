@@ -22,6 +22,7 @@ fn one_of_each() -> Vec<(Utf8PathBuf, Refusal, Origin)> {
                         BTreeSet::from(["site".to_owned()]),
                     ),
                 ]),
+                unreadable: BTreeSet::new(),
             },
             Origin::Caller,
         ),
@@ -164,7 +165,7 @@ fn messages_open_with_the_kind_and_name_each_path_with_its_detail() {
         rendered,
         [
             "refusing to touch drifted paths (edited on disk): drift",
-            "refusing directories standing where a file or a link belongs: \
+            "refusing directories the plan can neither replace nor remove: \
              directory (holding directory/note.md, directory/theirs (held by site), \
              which --force does not remove)",
             "refusing to touch foreign paths (not written by this projection): foreign",
@@ -176,6 +177,38 @@ fn messages_open_with_the_kind_and_name_each_path_with_its_detail() {
             "refusing symlinks whose targets are not paths: invalid -> \"\"",
             "refusing block entries: block (the marker is empty)",
         ]
+    );
+}
+
+// The two things that hold a directory read as two clauses: what --force
+// will not remove, and what the walk could not name in the first place.
+#[test]
+fn a_directory_message_states_what_it_holds_and_what_it_could_not_read() {
+    let message = |holding: BTreeMap<Utf8PathBuf, BTreeSet<String>>, unreadable: &[&str]| {
+        Refused::one(
+            path("build.sh"),
+            Refusal::DirectoryInTheWay {
+                holding,
+                unreadable: unreadable.iter().map(|s| path(s)).collect(),
+            },
+            Origin::Caller,
+        )
+        .to_string()
+    };
+
+    assert_eq!(
+        message(BTreeMap::new(), &["build.sh"]),
+        "refusing directories the plan can neither replace nor remove: \
+         build.sh (holding names that are not UTF-8 in build.sh)"
+    );
+    assert_eq!(
+        message(
+            BTreeMap::from([(path("build.sh/notes.md"), BTreeSet::new())]),
+            &["build.sh/nested"],
+        ),
+        "refusing directories the plan can neither replace nor remove: \
+         build.sh (holding build.sh/notes.md, which --force does not remove, \
+         and holding names that are not UTF-8 in build.sh/nested)"
     );
 }
 

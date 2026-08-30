@@ -36,6 +36,11 @@ pub enum Refusal {
         /// it — empty where nothing records it. An empty map is a directory
         /// holding nothing the run may remove: one somebody made by hand.
         holding: BTreeMap<Utf8PathBuf, BTreeSet<String>>,
+        /// The directory itself, or ones beneath it, holding a name that is
+        /// not UTF-8. Observation cannot represent such an entry, so nothing
+        /// may conclude the directory empties, and the run refuses rather
+        /// than remove on a premise it cannot check.
+        unreadable: BTreeSet<Utf8PathBuf>,
     },
     /// The desired entry — bytes, kind, or executable bit — differs from what
     /// another owner holds at this path.
@@ -140,12 +145,28 @@ impl Refusal {
     fn detail(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Refusal::Drift | Refusal::Foreign | Refusal::Containment => Ok(()),
-            Refusal::DirectoryInTheWay { holding } if holding.is_empty() => Ok(()),
-            Refusal::DirectoryInTheWay { holding } => write!(
-                f,
-                " (holding {}, which --force does not remove)",
-                holding.iter().map(held).collect::<Vec<_>>().join(", ")
-            ),
+            Refusal::DirectoryInTheWay {
+                holding,
+                unreadable,
+            } => {
+                let mut clauses = Vec::new();
+                if !holding.is_empty() {
+                    clauses.push(format!(
+                        "holding {}, which --force does not remove",
+                        holding.iter().map(held).collect::<Vec<_>>().join(", ")
+                    ));
+                }
+                if !unreadable.is_empty() {
+                    clauses.push(format!(
+                        "holding names that are not UTF-8 in {}",
+                        join(unreadable.iter().map(|path| path.as_str()), ", ")
+                    ));
+                }
+                if clauses.is_empty() {
+                    return Ok(());
+                }
+                write!(f, " ({})", clauses.join(", and "))
+            }
             Refusal::TreeConflict { paths } => write!(
                 f,
                 " (with {})",
@@ -205,7 +226,7 @@ impl RefusalKind {
                 "refusing to touch foreign paths (not written by this projection)"
             }
             RefusalKind::DirectoryInTheWay => {
-                "refusing directories standing where a file or a link belongs"
+                "refusing directories the plan can neither replace nor remove"
             }
             RefusalKind::Containment => "refusing paths that violate containment",
             RefusalKind::TreeConflict => "refusing desired paths that claim overlapping locations",

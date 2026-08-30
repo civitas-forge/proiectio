@@ -261,6 +261,7 @@ fn a_refused_row_renders_the_payload_its_refusal_carries() {
                         BTreeSet::from(["base".to_owned(), "site".to_owned()]),
                     ),
                 ]),
+                unreadable: BTreeSet::new(),
             },
             "(directory in the way) (holding build.sh/notes.md, \
              build.sh/theirs (held by base+site), which --force does not remove)",
@@ -268,8 +269,27 @@ fn a_refused_row_renders_the_payload_its_refusal_carries() {
         (
             Refusal::DirectoryInTheWay {
                 holding: BTreeMap::new(),
+                unreadable: BTreeSet::new(),
             },
             "(directory in the way)",
+        ),
+        (
+            Refusal::DirectoryInTheWay {
+                holding: BTreeMap::new(),
+                unreadable: BTreeSet::from([Utf8PathBuf::from("build.sh/nested")]),
+            },
+            "(directory in the way) (holding names that are not UTF-8 in build.sh/nested)",
+        ),
+        (
+            Refusal::DirectoryInTheWay {
+                holding: BTreeMap::from([(
+                    Utf8PathBuf::from("build.sh/notes.md"),
+                    BTreeSet::new(),
+                )]),
+                unreadable: BTreeSet::from([Utf8PathBuf::from("build.sh")]),
+            },
+            "(directory in the way) (holding build.sh/notes.md, which --force does not remove, \
+             and holding names that are not UTF-8 in build.sh)",
         ),
         (
             Refusal::ExternalTarget {
