@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
 use crate::{
-    Entry, EntryKind, Manifest, ManifestEntry, Origin, PathFacts, PathShape, Refusal, Refused,
-    Report, Row,
+    Dropped, Entry, EntryKind, Manifest, ManifestEntry, Origin, PathFacts, PathShape, Refusal,
+    Refused, Report, Row,
 };
 
 /// What planning does when a recorded path's state on disk differs from the
@@ -70,7 +70,9 @@ pub struct Plan {
     pub external_targets: ExternalTargetPolicy,
     /// The per-path actions.
     pub actions: BTreeMap<Utf8PathBuf, Action>,
-    pub dropped: BTreeMap<Utf8PathBuf, Origin>,
+    /// Archive members `strip` erased, which no action can state: they
+    /// reached no path in the destination.
+    pub dropped: BTreeSet<Dropped>,
 }
 
 impl Plan {

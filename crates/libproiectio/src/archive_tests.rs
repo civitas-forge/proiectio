@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufWriter, Write};
 
@@ -8,7 +8,7 @@ use cap_std::fs_utf8::Dir as Utf8Dir;
 use super::*;
 use crate::test_support::{Fixture, MissingName, Tree, assert_tree, origins_of};
 use crate::{
-    Manifest, Origin, PlanOptions, Refusal, RefusalKind, apply, block_markers, decide,
+    Dropped, Manifest, Origin, PlanOptions, Refusal, RefusalKind, apply, block_markers, decide,
     load_manifest, observe,
 };
 
@@ -262,6 +262,14 @@ fn expand_at(name: &str, bytes: &[u8], strip: u32) -> (Fixture, Result<Desired>)
 
 fn expand_bytes(name: &str, bytes: &[u8], strip: u32) -> Result<Desired> {
     expand_at(name, bytes, strip).1
+}
+
+fn dropped_members(desired: &Desired) -> Vec<&str> {
+    desired
+        .dropped()
+        .iter()
+        .map(|dropped| dropped.member.as_str())
+        .collect()
 }
 
 fn from_archive(fixture: &Fixture, name: &str, entries: BTreeMap<Utf8PathBuf, Entry>) -> Desired {
@@ -563,13 +571,13 @@ fn a_file_member_strip_erases_is_dropped_and_the_rest_loads() {
     );
     assert_eq!(
         expanded.dropped(),
-        &BTreeMap::from([(
-            Utf8PathBuf::from("._pkg"),
-            Origin::Archive {
+        &BTreeSet::from([Dropped {
+            member: Utf8PathBuf::from("._pkg"),
+            origin: Origin::Archive {
                 path: fixture.path("pkg.tar"),
                 via: None,
-            }
-        )])
+            },
+        }])
     );
 }
 
@@ -597,10 +605,7 @@ fn a_symlink_member_strip_erases_is_dropped() {
         Member::file("pkg/README", "read me\n"),
     ];
     let expanded = expand_bytes("pkg.tar", &tar(&members), 1).unwrap();
-    assert_eq!(
-        expanded.dropped().keys().collect::<Vec<_>>(),
-        vec![&Utf8PathBuf::from("current")]
-    );
+    assert_eq!(dropped_members(&expanded), vec!["current"]);
 }
 
 // A zip goes through the same admission, so its members drop on the same
@@ -622,10 +627,7 @@ fn a_zip_member_strip_erases_is_dropped_and_the_rest_loads() {
             .iter()
             .collect::<BTreeMap<_, _>>()
     );
-    assert_eq!(
-        expanded.dropped().keys().collect::<Vec<_>>(),
-        vec![&Utf8PathBuf::from("._pkg")]
-    );
+    assert_eq!(dropped_members(&expanded), vec!["._pkg"]);
     let _ = fixture;
 }
 

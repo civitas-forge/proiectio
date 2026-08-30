@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
-use crate::RefusalKind;
 use crate::test_support::{MissingName, origins_of};
+use crate::{Dropped, RefusalKind};
 
 // A fixed absolute location for table tests: entries that only carry
 // inline `contents` never read the filesystem, so the file need not exist.
@@ -414,7 +414,62 @@ fn an_archive_member_strip_erases_is_dropped_and_named_by_its_archive() {
     );
     assert_eq!(
         loaded.dropped(),
-        &BTreeMap::from([(Utf8PathBuf::from("._vendor-1.0"), origin)])
+        &BTreeSet::from([Dropped {
+            member: Utf8PathBuf::from("._vendor-1.0"),
+            origin,
+        }])
+    );
+}
+
+// A member name is unique only inside its own archive. Two archives in one
+// mapping both dropping `._pkg` are two drops, each named by the archive
+// that carried it — neither displaces the other.
+#[test]
+fn two_archives_dropping_the_same_member_name_are_both_recorded() {
+    let text = r#"
+        version = 1
+        [archives."vendor/"]
+        source = "./assets/vendor.tar.gz"
+        strip = 1
+        [archives."plugins/"]
+        source = "./assets/plugins.tar.gz"
+        strip = 1
+    "#;
+    let fixture = crate::test_support::Tree::new()
+        .file("deploy.toml", text)
+        .file(
+            "assets/vendor.tar.gz",
+            targz(&[
+                ("._pkg", "Mac OS X\n", false),
+                ("pkg/lib/tool.so", "so\n", false),
+            ]),
+        )
+        .file(
+            "assets/plugins.tar.gz",
+            targz(&[
+                ("._pkg", "Mac OS X\n", false),
+                ("pkg/hello.lua", "print()\n", false),
+            ]),
+        )
+        .materialize();
+
+    let carried_by = |archive: &str| Origin::Archive {
+        path: fixture.path(archive),
+        via: Some(fixture.path("deploy.toml")),
+    };
+    let loaded = load_mapping(&fixture.path("deploy.toml")).unwrap();
+    assert_eq!(
+        loaded.dropped(),
+        &BTreeSet::from([
+            Dropped {
+                member: Utf8PathBuf::from("._pkg"),
+                origin: carried_by("assets/plugins.tar.gz"),
+            },
+            Dropped {
+                member: Utf8PathBuf::from("._pkg"),
+                origin: carried_by("assets/vendor.tar.gz"),
+            },
+        ])
     );
 }
 

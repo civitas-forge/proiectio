@@ -10,7 +10,7 @@ use crate::{ManifestEntry, RefusalKind};
 // remove that has one, nothing for the rest.
 fn one_of_each() -> Plan {
     Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "site".to_owned(),
         origins: BTreeMap::from([
             (

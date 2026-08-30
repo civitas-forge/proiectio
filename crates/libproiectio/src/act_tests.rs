@@ -732,7 +732,7 @@ fn a_write_target_appearing_in_the_gap_refuses_as_foreign() {
 fn applying_a_plan_with_two_refusal_kinds_reports_the_one_precedence_ranks_first() {
     let (dest, state) = fixtures();
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::from([("z/escape".into(), Origin::Files)]),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -779,7 +779,7 @@ fn a_hand_built_plan_with_unnormalized_keys_refuses_containment() {
         executable: false,
     };
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -827,7 +827,7 @@ fn a_plan_writing_past_the_walk_depth_is_named_and_writes_nothing() {
     let past = Utf8PathBuf::from(format!("{}/leaf", ["d"; MAX_WALK_DEPTH + 1].join("/")));
 
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         actions: BTreeMap::from([(
@@ -846,7 +846,7 @@ fn a_plan_writing_past_the_walk_depth_is_named_and_writes_nothing() {
 
     let (dest, state) = fixtures();
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         actions: BTreeMap::from([(past.clone(), Action::Write { entry })]),
@@ -881,7 +881,7 @@ fn a_plan_removing_past_the_walk_depth_is_named_and_removes_nothing() {
         recorded(EntryKind::File, sha256_hex(b"deep"), &["own"]),
     );
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         actions: BTreeMap::from([(past.clone(), Action::Remove { expected: None })]),
@@ -919,7 +919,7 @@ fn a_write_landing_past_the_walk_depth_through_an_owned_link_is_named() {
         ),
     );
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         actions: BTreeMap::from([(
@@ -954,7 +954,7 @@ fn a_forged_remove_of_an_unrecorded_path_refuses_foreign() {
         .file("victim.txt", "precious")
         .write_under(dest.root());
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -989,7 +989,7 @@ fn a_forged_skip_of_an_unrecorded_path_refuses_instead_of_adopting() {
         .file("theirs.txt", "same bytes")
         .write_under(dest.root());
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -1043,7 +1043,7 @@ fn a_hand_built_plan_replacing_a_region_with_a_whole_file_fails_up_front() {
         ),
     );
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -1114,7 +1114,7 @@ fn a_recorded_link_whose_matching_target_is_not_utf8_refuses_containment() {
         recorded(EntryKind::Symlink, sha256_hex(target_bytes), &["own"]),
     );
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -1159,7 +1159,7 @@ fn a_file_write_the_walk_would_relocate_through_an_owned_link_refuses() {
     // rule), so a write reaches the followed arm only from a hand-built
     // plan — or from a link that appeared in the plan-to-apply gap.
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -1207,7 +1207,7 @@ fn a_block_whose_container_the_walk_relocates_refuses() {
         recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own"]),
     );
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -1342,7 +1342,7 @@ fn a_link_the_walk_would_relocate_through_an_owned_link_refuses() {
         recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own"]),
     );
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -1403,7 +1403,7 @@ fn a_removal_through_an_owned_link_prunes_the_resolved_directory() {
         recorded(EntryKind::File, sha256_hex(b"bytes"), &["own"]),
     );
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -1485,7 +1485,7 @@ fn a_recorded_symlink_ancestor_with_a_changed_target_refuses_drift() {
         recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own"]),
     );
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -1522,7 +1522,7 @@ fn a_recorded_symlink_ancestor_with_an_external_target_refuses_containment() {
         recorded(EntryKind::Symlink, sha256_hex(b"../outside"), &["own"]),
     );
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -1565,7 +1565,7 @@ fn an_owned_link_cycle_refuses_instead_of_looping() {
         recorded(EntryKind::Symlink, sha256_hex(b"l1"), &["own"]),
     );
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -1705,7 +1705,7 @@ fn a_target_that_is_not_a_pathname_fails_up_front_and_writes_nothing() {
     // letting the OS reject it partway through the sorted order.
     let (dest, state) = fixtures();
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,
@@ -3448,7 +3448,7 @@ fn a_hand_built_plan_expecting_another_marker_fails_up_front() {
         ),
     );
     let plan = Plan {
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
         owner: "own".to_owned(),
         origins: BTreeMap::new(),
         external_targets: ExternalTargetPolicy::Refuse,

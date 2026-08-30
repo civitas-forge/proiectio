@@ -3,7 +3,7 @@ use super::*;
 use std::collections::BTreeSet;
 
 use camino::Utf8PathBuf;
-use libproiectio::{BlockFault, Origin, Refusal, RefusalKind};
+use libproiectio::{BlockFault, Dropped, Origin, Refusal, RefusalKind};
 use serde::Serialize;
 use serde_json::json;
 
@@ -467,11 +467,13 @@ fn a_document_that_names_no_rows_prints_nothing() {
 /// spells it, not a location in the destination.
 #[test]
 fn a_dropped_member_prints_a_row_naming_the_archive() {
-    let origin = Origin::Archive {
-        path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
-        via: None,
-    };
-    let dropped = json!({ "._pkg": serialized(&origin) });
+    let dropped = json!([serialized(Dropped {
+        member: Utf8PathBuf::from("._pkg"),
+        origin: Origin::Archive {
+            path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+            via: None,
+        },
+    })]);
     for document in [
         json!({ "rows": {}, "dropped": dropped }),
         json!({ "report": { "rows": {}, "dropped": dropped } }),
@@ -487,16 +489,56 @@ fn a_dropped_member_prints_a_row_naming_the_archive() {
     }
 }
 
+/// Two archives dropping the same member name print two rows, each naming
+/// the archive that carried it: a member name is unique only inside its own
+/// archive, so one drop cannot stand for the other.
+#[test]
+fn two_archives_dropping_the_same_member_print_both_rows() {
+    let carried_by = |archive: &str| {
+        serialized(Dropped {
+            member: Utf8PathBuf::from("._pkg"),
+            origin: Origin::Archive {
+                path: Utf8PathBuf::from(archive),
+                via: None,
+            },
+        })
+    };
+    let document = json!({
+        "rows": {},
+        "dropped": [carried_by("/assets/plugins.tar.gz"), carried_by("/assets/vendor.tar.gz")],
+    });
+
+    let rows = lines(&document, AmbiguousWidth::Narrow).rows;
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.path.as_str(), row.note.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "._pkg",
+                Some("(no path left after strip) (from archive /assets/plugins.tar.gz)")
+            ),
+            (
+                "._pkg",
+                Some("(no path left after strip) (from archive /assets/vendor.tar.gz)")
+            ),
+        ]
+    );
+}
+
 /// A dropped member takes the same path column as the rows beside it, so the
 /// notes line up.
 #[test]
 fn dropped_members_share_the_path_column_with_the_rows() {
     let document = json!({
         "rows": { "a/very/long/path": file(json!("Write")) },
-        "dropped": { "._pkg": serialized(Origin::Archive {
-            path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
-            via: Some(Utf8PathBuf::from("/srv/deploy.toml")),
-        }) },
+        "dropped": [serialized(Dropped {
+            member: Utf8PathBuf::from("._pkg"),
+            origin: Origin::Archive {
+                path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+                via: Some(Utf8PathBuf::from("/srv/deploy.toml")),
+            },
+        })],
     });
     let rows = lines(&document, AmbiguousWidth::Narrow).rows;
     assert_eq!(rows.len(), 2);

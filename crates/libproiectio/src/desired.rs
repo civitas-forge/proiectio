@@ -1,13 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use crate::{Entry, Origin};
+use crate::{Dropped, Entry, Origin};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Desired {
     entries: BTreeMap<Utf8PathBuf, (Entry, Origin)>,
-    dropped: BTreeMap<Utf8PathBuf, Origin>,
+    dropped: BTreeSet<Dropped>,
 }
 
 impl Desired {
@@ -21,7 +21,7 @@ impl Desired {
                 .into_iter()
                 .map(|(path, entry)| (path, (entry, Origin::Caller)))
                 .collect(),
-            dropped: BTreeMap::new(),
+            dropped: BTreeSet::new(),
         }
     }
 
@@ -31,7 +31,7 @@ impl Desired {
                 .into_iter()
                 .map(|(path, entry)| (path, (entry, origin.clone())))
                 .collect(),
-            dropped: BTreeMap::new(),
+            dropped: BTreeSet::new(),
         }
     }
 
@@ -39,11 +39,14 @@ impl Desired {
         self.entries.insert(path, (entry, origin)).is_none()
     }
 
+    /// Record an archive member `strip` erased, against the archive that
+    /// carried it.
     pub fn record_dropped(&mut self, member: Utf8PathBuf, origin: Origin) {
-        self.dropped.insert(member, origin);
+        self.dropped.insert(Dropped { member, origin });
     }
 
-    pub fn dropped(&self) -> &BTreeMap<Utf8PathBuf, Origin> {
+    /// Every archive member `strip` erased on the way to this tree.
+    pub fn dropped(&self) -> &BTreeSet<Dropped> {
         &self.dropped
     }
 

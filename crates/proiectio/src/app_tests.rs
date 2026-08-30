@@ -757,8 +757,11 @@ fn a_dropped_member_rides_the_librarys_own_report() {
     assert_eq!(value["rows"]["top"]["verdict"], "Write");
     assert!(value["rows"].get("._skeleton-1.2").is_none());
     assert_eq!(
-        value["dropped"]["._skeleton-1.2"]["Archive"]["path"],
-        JsonValue::from(archive.as_str())
+        value["dropped"],
+        serde_json::json!([{
+            "member": "._skeleton-1.2",
+            "origin": { "Archive": { "path": archive.as_str(), "via": null } },
+        }])
     );
 }
 

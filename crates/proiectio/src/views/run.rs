@@ -287,20 +287,24 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
         .iter()
         .map(|(path, row)| (verbatim(path), row))
         .collect();
-    let dropped: Vec<(String, &JsonValue)> = report
+    let dropped: Vec<(String, Option<&JsonValue>)> = report
         .get("dropped")
-        .and_then(JsonValue::as_object)
-        .map(|members| {
-            members
+        .and_then(JsonValue::as_array)
+        .map(|records| {
+            records
                 .iter()
-                .map(|(member, origin)| (verbatim(member), origin))
+                .filter_map(|record| {
+                    let member = record.get("member").and_then(JsonValue::as_str)?;
+                    Some((verbatim(member), record.get("origin")))
+                })
                 .collect()
         })
         .unwrap_or_default();
     let column = paths
         .iter()
-        .chain(dropped.iter())
-        .map(|(path, _)| visible_width_with_policy(path, width))
+        .map(|(path, _)| path)
+        .chain(dropped.iter().map(|(member, _)| member))
+        .map(|cell| visible_width_with_policy(cell, width))
         .max()
         .unwrap_or_default();
     let verbs = if planning {
@@ -339,7 +343,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
         });
     }
     for (member, origin) in dropped {
-        let note = match origin_phrase(Some(origin)) {
+        let note = match origin_phrase(origin) {
             Some(source) => format!("{STRIPPED} {source}"),
             None => STRIPPED.to_owned(),
         };

@@ -59,7 +59,7 @@ pub(crate) fn classify(
     }
     Report {
         rows,
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
     }
 }
 
@@ -211,7 +211,7 @@ pub(crate) fn decide_removal(
         origins: BTreeMap::new(),
         external_targets: options.external_targets,
         actions,
-        dropped: BTreeMap::new(),
+        dropped: BTreeSet::new(),
     }
 }
 
