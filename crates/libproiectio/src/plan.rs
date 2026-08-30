@@ -149,7 +149,7 @@ fn facts_of(
             })
         }
         // A refusal decides no node, so its row states the source that named
-        // the path and nothing else.
+        // the path, plus the owners already recorded there.
         Action::Refuse { .. } => None,
         Action::Remove { expected: None } => {
             return None;
