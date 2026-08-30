@@ -6,9 +6,9 @@ use cap_std::ambient_authority;
 use cap_std::fs_utf8::Dir;
 
 use crate::{
-    BlockMarkers, Desired, Error, Manifest, Plan, PlanOptions, PlannedAction, RemovalScope, Report,
-    Result, Status, absolutize, block_markers, decide, decide_removal, load_manifest, observe,
-    status,
+    BlockMarkers, Desired, DriftPolicy, Error, Manifest, Plan, PlanOptions, PlannedAction,
+    RemovalScope, Report, Result, Status, absolutize, block_markers, decide, decide_removal,
+    load_manifest, observe, status,
 };
 
 const DEFAULT_STATE_DIR: &str = ".proiectio";
@@ -123,7 +123,7 @@ impl Projection {
         &self,
         owner: &str,
         scope: RemovalScope<'_>,
-        options: PlanOptions,
+        drift: DriftPolicy,
     ) -> Result<Planned> {
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
@@ -134,7 +134,7 @@ impl Projection {
             &manifest,
             &observations,
             self.state_prefix(),
-            options,
+            drift,
         );
         Ok(Planned { plan, manifest })
     }

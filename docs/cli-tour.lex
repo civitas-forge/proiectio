@@ -103,9 +103,9 @@ The CLI
 
 3. Status
 
-    Reads the manifest, classifies every recorded path, writes
-    nothing:
+    Reads the manifest, classifies every recorded path, writes nothing:
 
+        $ rm current
         $ proiectio status --dest ~/apps/site
         drifted  bin/tool
         clean    config/settings.toml
@@ -115,15 +115,20 @@ The CLI
 
 4. Removal
 
-    rm removes what the manifest owns — everything under an owner, or
-    a subset by path. A drifted file refuses (exit 2) unless --force;
-    directories emptied by removal are pruned.
+    rm removes what the manifest owns. A drifted file refuses (exit 2)
+    unless --force; directories emptied by removal are pruned.
+
+    Everything under an owner:
 
         $ proiectio rm --dest ~/apps/site --owner site
         removed    bin/tool              (exec)
         removed    config/settings.toml
         removed    current
         3 removed
+
+    :: shell ::
+
+    Or a subset by path:
 
         $ proiectio rm config/settings.toml
         removed    config/settings.toml
@@ -142,32 +147,32 @@ The CLI
 
     A mapping:
 
-    version = 1
+        version = 1
 
-    [files."config/settings.toml"]
-    contents = """
-    listen = ":8080"
-    """
+        [files."config/settings.toml"]
+        contents = """
+        listen = ":8080"
+        """
 
-    [files."bin/tool"]
-    source = "./assets/tool.sh"
-    executable = true
+        [files."bin/tool"]
+        source = "./assets/tool.sh"
+        executable = true
 
-    # standard symlink semantics: target is written verbatim and
-    # resolves relative to the link's parent, inside dest
-    [links."current"]
-    target = "releases/1.2.3"
+        # standard symlink semantics: target is written verbatim and
+        # resolves relative to the link's parent, inside dest
+        [links."current"]
+        target = "releases/1.2.3"
 
-    # absolute target: refused unless the invoker passes
-    # --allow-external-targets
-    [links."toolchain"]
-    target = "/opt/toolchains/rust-1.80"
+        # absolute target: refused unless the invoker passes
+        # --allow-external-targets
+        [links."toolchain"]
+        target = "/opt/toolchains/rust-1.80"
 
-    # extracted under the key prefix at plan time; each member
-    # becomes an ordinary manifest entry
-    [archives."vendor/"]
-    source = "./assets/vendor.tar.gz"
-    strip = 1
+        # extracted under the key prefix at plan time; each member
+        # becomes an ordinary manifest entry
+        [archives."vendor/"]
+        source = "./assets/vendor.tar.gz"
+        strip = 1
 
     :: toml ::
 

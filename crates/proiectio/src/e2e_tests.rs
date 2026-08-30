@@ -88,11 +88,12 @@ fn a_destination_is_projected_re_projected_refused_forced_and_cleared() {
     assert_eq!(stamps, mtimes(&dest), "a skipped path was rewritten");
 
     std::fs::write(dest.join("bin/tool").as_std_path(), EDITED).expect("a local edit");
+    std::fs::remove_file(dest.join("current").as_std_path()).expect("a local removal");
     let drifted = run(&dir, &["status", "--dest", dest.as_str()]);
     drifted.assert_success();
     assert_eq!(
         drifted.stdout(),
-        "drifted  bin/tool\nclean    config/settings.toml\nclean    current\n"
+        "drifted  bin/tool\nclean    config/settings.toml\nmissing  current\n"
     );
 
     let refused = run(&dir, &source);

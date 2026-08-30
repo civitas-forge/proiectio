@@ -76,22 +76,19 @@ pub(crate) fn rm(
         RemovalScope::Paths(&named)
     };
     let owner = owner_or_configured(owner)?;
-    let options = PlanOptions {
-        drift: drift(force),
-        external_targets: ExternalTargetPolicy::Refuse,
-    };
+    let drift = drift(force);
 
     let projection = projection(&dest, state_dir.as_deref())?;
     if dry_run {
         let planned = projection
-            .plan_removal(&owner, scope, options)
+            .plan_removal(&owner, scope, drift)
             .map_err(exit::failure)?;
         refusals(&planned.plan)?;
         return Ok(Output::Render(RunView::Planned(planned.report())));
     }
     let mut run = projection.begin().map_err(exit::failure)?;
     let plan = run
-        .plan_removal(&owner, scope, options)
+        .plan_removal(&owner, scope, drift)
         .map_err(exit::failure)?;
     refusals(plan)?;
     run.apply()
