@@ -950,6 +950,10 @@ fn a_forged_skip_of_an_unrecorded_path_refuses_instead_of_adopting() {
         actions: BTreeMap::from([(
             "theirs.txt".into(),
             Action::Skip {
+                entry: Entry::File {
+                    contents: b"same bytes".to_vec(),
+                    executable: false,
+                },
                 expected: NodeSignature {
                     kind: EntryKind::File,
                     hash: sha256_hex(b"same bytes"),

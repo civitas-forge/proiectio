@@ -56,7 +56,7 @@ impl EntryKind {
 
 /// One node of the desired tree, keyed by its relative path in the
 /// `BTreeMap<Utf8PathBuf, Entry>` the caller passes to `plan`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
     /// A regular file with the given contents.
     File {
