@@ -24,7 +24,9 @@ standout.workspace = true
 standout-dispatch.workspace = true
 
 [dev-dependencies]
+flate2.workspace = true
 serial_test.workspace = true
 standout-test.workspace = true
+tar.workspace = true
 tempfile.workspace = true
 toml.workspace = true

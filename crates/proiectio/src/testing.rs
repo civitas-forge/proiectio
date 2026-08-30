@@ -44,6 +44,81 @@ pub(crate) fn classified(dest: &Utf8Path) {
     std::fs::remove_file(dest.join("current")).expect("a removed file");
 }
 
+/// The mapping `docs/cli-tour.lex` section 1 writes: an inline file, an
+/// executable file from a source beside the mapping, and a link.
+pub(crate) fn mapping(dir: &Utf8Path) -> Utf8PathBuf {
+    let assets = dir.join("assets");
+    std::fs::create_dir_all(&assets).expect("an asset directory");
+    let tool = assets.join("tool.sh");
+    std::fs::write(&tool, b"#!/bin/sh\necho hi\n").expect("a source file");
+    executable(&tool);
+
+    let path = dir.join("deploy.toml");
+    std::fs::write(
+        &path,
+        b"version = 1\n\
+          \n\
+          [files.\"config/settings.toml\"]\n\
+          contents = \"listen = \\\":8080\\\"\\n\"\n\
+          \n\
+          [files.\"bin/tool\"]\n\
+          source = \"./assets/tool.sh\"\n\
+          executable = true\n\
+          \n\
+          [links.\"current\"]\n\
+          target = \"releases/1.2.3\"\n",
+    )
+    .expect("a mapping file");
+    path
+}
+
+/// A directory holding `top` and `nested/leaf.txt`, for the tree mode.
+pub(crate) fn skeleton(dir: &Utf8Path) -> Utf8PathBuf {
+    let root = dir.join("skeleton");
+    std::fs::create_dir_all(root.join("nested")).expect("a tree");
+    std::fs::write(root.join("top"), b"top\n").expect("a file");
+    std::fs::write(root.join("nested/leaf.txt"), b"leaf\n").expect("a file");
+    root
+}
+
+/// The same tree as [`skeleton`], gzipped under one leading component.
+pub(crate) fn tarball(dir: &Utf8Path) -> Utf8PathBuf {
+    let path = dir.join("skeleton-1.2.tar.gz");
+    let file = std::fs::File::create(&path).expect("an archive");
+    let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+        file,
+        flate2::Compression::default(),
+    ));
+    for (name, contents) in [
+        ("skeleton-1.2/top", &b"top\n"[..]),
+        ("skeleton-1.2/nested/leaf.txt", &b"leaf\n"[..]),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, name, contents)
+            .expect("an archived member");
+    }
+    builder
+        .into_inner()
+        .expect("a finished archive")
+        .finish()
+        .expect("a flushed archive");
+    path
+}
+
+fn executable(path: &Utf8Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut mode = std::fs::metadata(path)
+        .expect("a source file")
+        .permissions();
+    mode.set_mode(0o755);
+    std::fs::set_permissions(path, mode).expect("an executable source file");
+}
+
 fn file(contents: &[u8]) -> Entry {
     Entry::File {
         contents: contents.to_vec(),

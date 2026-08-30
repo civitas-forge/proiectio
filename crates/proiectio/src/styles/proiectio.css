@@ -1,9 +1,16 @@
-/* Two families: how a recorded path classifies, and how a config line reads. */
+/* Three families: how a recorded path classifies, what a write did or would
+   do to one, and how a config line reads. */
 
 .clean { color: green; }
 .drifted { color: yellow; }
 .missing { color: red; }
 .foreign { color: magenta; }
+
+.wrote { color: green; }
+.linked { color: cyan; }
+.overwrote { color: yellow; }
+.skipped { color: blue; }
+.removed { color: red; }
 
 .key { color: yellow; }
 .ok {
@@ -16,6 +23,11 @@
     .drifted { color: #915c00; }
     .missing { color: #aa0000; }
     .foreign { color: #7b2d8b; }
+    .wrote { color: #006400; }
+    .linked { color: #00708a; }
+    .overwrote { color: #915c00; }
+    .skipped { color: #005f87; }
+    .removed { color: #aa0000; }
     .key { color: #915c00; }
     .ok { color: #006400; }
 }
@@ -25,6 +37,11 @@
     .drifted { color: #ffd75f; }
     .missing { color: #ff5f5f; }
     .foreign { color: #d787ff; }
+    .wrote { color: #5fd75f; }
+    .linked { color: #5fd7d7; }
+    .overwrote { color: #ffd75f; }
+    .skipped { color: #5fafd7; }
+    .removed { color: #ff5f5f; }
     .key { color: #ffd75f; }
     .ok { color: #5fd75f; }
 }

@@ -5,8 +5,8 @@
 
 use super::*;
 
-use camino::Utf8PathBuf;
-use libproiectio::{Origin, Projection, Refusal, Refused, Status};
+use camino::{Utf8Path, Utf8PathBuf};
+use libproiectio::{Manifest, Origin, Projection, Refusal, Refused, Status};
 use serde_json::Value as JsonValue;
 use serial_test::serial;
 use standout::OutputMode;
@@ -16,7 +16,10 @@ use tempfile::TempDir;
 
 use crate::cli;
 use crate::exit;
-use crate::testing::{assert_styles_resolved, assert_tags_declared, classified, harness, utf8};
+use crate::testing::{
+    assert_styles_resolved, assert_tags_declared, classified, harness, mapping, skeleton, tarball,
+    utf8,
+};
 
 fn app() -> App {
     build().expect("an app")
@@ -551,4 +554,553 @@ fn a_config_file_path_that_is_not_utf8_is_rejected_before_anything_is_written() 
             .count(),
         0
     );
+}
+
+/// The tour's own material: a mapping beside its assets, and an empty
+/// destination under the same working directory.
+fn tour() -> (TempDir, Utf8PathBuf, Utf8PathBuf) {
+    let dir = TempDir::new().expect("a temporary directory");
+    let root = utf8(&dir);
+    let dest = root.join("dest");
+    std::fs::create_dir(&dest).expect("a destination");
+    let deploy = mapping(&root);
+    (dir, dest, deploy)
+}
+
+fn write_argv<'a>(source: &[&'a str], dest: &'a Utf8PathBuf) -> Vec<&'a str> {
+    let mut argv = vec!["proiectio", "write"];
+    argv.extend_from_slice(source);
+    argv.extend_from_slice(&["--dest", dest.as_str()]);
+    argv
+}
+
+/// What a projection recorded, read back through the library.
+fn manifest_of(dest: &Utf8PathBuf) -> Manifest {
+    Projection::new(dest, None)
+        .expect("a projection")
+        .manifest()
+        .expect("a manifest")
+}
+
+fn modified(path: &Utf8Path) -> std::time::SystemTime {
+    std::fs::metadata(path)
+        .expect("a projected path")
+        .modified()
+        .expect("a modification time")
+}
+
+/// A mapping file names each projected path, its content, and its executable
+/// bit; the run reports one line per path and counts what it did
+/// (`docs/cli-tour.lex` section 1).
+#[test]
+#[serial]
+fn write_projects_a_mapping_file() {
+    let (dir, dest, deploy) = tour();
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str()], &dest),
+    );
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        "wrote      bin/tool              (exec)\n\
+         wrote      config/settings.toml\n\
+         linked     current               -> releases/1.2.3\n\
+         3 written, 0 skipped\n"
+    );
+    assert_eq!(
+        std::fs::read(dest.join("config/settings.toml")).expect("the projected file"),
+        b"listen = \":8080\"\n"
+    );
+    assert_eq!(
+        std::fs::read_link(dest.join("current")).expect("the projected link"),
+        std::path::Path::new("releases/1.2.3")
+    );
+}
+
+/// The destination and the owner are the invocation's, never the mapping's.
+#[test]
+#[serial]
+fn write_records_the_owner_the_invocation_names() {
+    let (dir, dest, deploy) = tour();
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--owner", "site"], &dest),
+    );
+
+    result.assert_success();
+    assert_eq!(
+        manifest_of(&dest).entries[Utf8Path::new("bin/tool")].owners,
+        std::collections::BTreeSet::from(["site".to_owned()])
+    );
+}
+
+/// Without the flag the owner is the configured one, which is what the
+/// `owner` setting is for.
+#[test]
+#[serial]
+fn write_falls_back_to_the_configured_owner() {
+    let (dir, dest, deploy) = tour();
+    harness(&dir)
+        .run(
+            &app(),
+            cli::command(),
+            ["proiectio", "conf", "set", "owner", "configured"],
+        )
+        .assert_success();
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str()], &dest),
+    );
+
+    result.assert_success();
+    assert_eq!(
+        manifest_of(&dest).entries[Utf8Path::new("bin/tool")].owners,
+        std::collections::BTreeSet::from(["configured".to_owned()])
+    );
+}
+
+/// A directory is projected verbatim, keyed relative to its root.
+#[test]
+#[serial]
+fn write_projects_a_directory_tree() {
+    let (dir, dest, _) = tour();
+    let skeleton = skeleton(&utf8(&dir));
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&["--tree", skeleton.as_str()], &dest),
+    );
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        "wrote      nested/leaf.txt\n\
+         wrote      top\n\
+         2 written, 0 skipped\n"
+    );
+}
+
+/// An archive is a tree too, and `--strip` drops the wrapper a release
+/// tarball carries.
+#[test]
+#[serial]
+fn write_projects_an_archive_under_strip() {
+    let (dir, dest, _) = tour();
+    let archive = tarball(&utf8(&dir));
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&["--tree", archive.as_str(), "--strip", "1"], &dest),
+    );
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        "wrote      nested/leaf.txt\n\
+         wrote      top\n\
+         2 written, 0 skipped\n"
+    );
+    assert_eq!(
+        std::fs::read(dest.join("nested/leaf.txt")).expect("the projected member"),
+        b"leaf\n"
+    );
+}
+
+/// Without `--strip` the wrapper is part of the tree, which is the same rule
+/// read the other way.
+#[test]
+#[serial]
+fn an_archive_without_strip_keeps_its_leading_component() {
+    let (dir, dest, _) = tour();
+    let archive = tarball(&utf8(&dir));
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&["--tree", archive.as_str()], &dest),
+    );
+
+    result.assert_success();
+    result.assert_stdout_contains("skeleton-1.2/top");
+}
+
+/// Loose files are a one-entry-per-basename tree.
+#[test]
+#[serial]
+fn write_projects_loose_files_under_their_basenames() {
+    let (dir, dest, _) = tour();
+    let root = utf8(&dir);
+    std::fs::write(root.join("motd"), b"motd\n").expect("a loose file");
+    std::fs::write(root.join("banner.txt"), b"banner\n").expect("a loose file");
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(
+            &[root.join("motd").as_str(), root.join("banner.txt").as_str()],
+            &dest,
+        ),
+    );
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        "wrote      banner.txt\n\
+         wrote      motd\n\
+         2 written, 0 skipped\n"
+    );
+}
+
+/// Re-running a write is a no-op: every path is skipped and its mtime
+/// survives.
+#[test]
+#[serial]
+fn re_running_a_write_skips_every_path_and_keeps_their_mtimes() {
+    let (dir, dest, deploy) = tour();
+    let argv = write_argv(&[deploy.as_str()], &dest);
+    harness(&dir)
+        .run(&app(), cli::command(), argv.clone())
+        .assert_success();
+    let before: Vec<_> = ["bin/tool", "config/settings.toml"]
+        .map(|path| modified(&dest.join(path)))
+        .to_vec();
+
+    let result = harness(&dir).run(&app(), cli::command(), argv);
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        "skipped    bin/tool              (exec)\n\
+         skipped    config/settings.toml\n\
+         skipped    current               -> releases/1.2.3\n\
+         3 unchanged\n"
+    );
+    let after: Vec<_> = ["bin/tool", "config/settings.toml"]
+        .map(|path| modified(&dest.join(path)))
+        .to_vec();
+    assert_eq!(before, after);
+}
+
+/// A dry run reports the plan and writes nothing.
+#[test]
+#[serial]
+fn a_dry_run_reports_the_plan_and_writes_nothing() {
+    let (dir, dest, deploy) = tour();
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--dry-run"], &dest),
+    );
+
+    result.assert_success();
+    assert_eq!(
+        result.stdout(),
+        "would write      bin/tool              (exec)\n\
+         would write      config/settings.toml\n\
+         would link       current               -> releases/1.2.3\n"
+    );
+    assert!(!dest.join("bin/tool").exists());
+}
+
+/// A plan that overwrites says so, and why.
+#[test]
+#[serial]
+fn a_dry_run_names_what_it_would_overwrite() {
+    let (dir, dest, deploy) = tour();
+    harness(&dir)
+        .run(
+            &app(),
+            cli::command(),
+            write_argv(&[deploy.as_str()], &dest),
+        )
+        .assert_success();
+    std::fs::write(deploy.as_std_path(), MAPPING_WITH_CHANGED_CONTENT).expect("an edited mapping");
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--dry-run"], &dest),
+    );
+
+    result.assert_success();
+    result.assert_stdout_contains("would overwrite  config/settings.toml  (content changed)");
+}
+
+const MAPPING_WITH_CHANGED_CONTENT: &[u8] = b"version = 1\n\
+    \n\
+    [files.\"config/settings.toml\"]\n\
+    contents = \"listen = \\\":9090\\\"\\n\"\n";
+
+/// The exit code is the verdict on a dry run and a real one alike: a drifted
+/// path refuses either way, and names itself.
+#[test]
+#[serial]
+fn a_drifted_path_refuses_on_a_dry_run_and_a_real_one_alike() {
+    let (dir, dest, deploy) = tour();
+    harness(&dir)
+        .run(
+            &app(),
+            cli::command(),
+            write_argv(&[deploy.as_str()], &dest),
+        )
+        .assert_success();
+    std::fs::write(dest.join("bin/tool"), b"#!/bin/sh\necho edited\n").expect("a local edit");
+
+    for extra in [vec![], vec!["--dry-run"]] {
+        let mut source = vec![deploy.as_str()];
+        source.extend_from_slice(&extra);
+
+        let result = harness(&dir).run(&app(), cli::command(), write_argv(&source, &dest));
+
+        assert_eq!(
+            exit::status(result.outcome()),
+            exit::REFUSAL,
+            "{extra:?}: {}",
+            result.error().unwrap_or_default()
+        );
+        assert!(
+            result.error().unwrap_or_default().contains("bin/tool"),
+            "{extra:?}: {}",
+            result.error().unwrap_or_default()
+        );
+    }
+    assert_eq!(
+        std::fs::read(dest.join("bin/tool")).expect("the edited file"),
+        b"#!/bin/sh\necho edited\n"
+    );
+}
+
+/// `--force` lifts the drift refusal, one policy at a time and always from
+/// the invocation.
+#[test]
+#[serial]
+fn force_overwrites_a_drifted_path() {
+    let (dir, dest, deploy) = tour();
+    harness(&dir)
+        .run(
+            &app(),
+            cli::command(),
+            write_argv(&[deploy.as_str()], &dest),
+        )
+        .assert_success();
+    std::fs::write(dest.join("bin/tool"), b"#!/bin/sh\necho edited\n").expect("a local edit");
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--force"], &dest),
+    );
+
+    result.assert_success();
+    result.assert_stdout_contains("overwrote  bin/tool");
+    result.assert_stdout_contains("1 written, 2 skipped");
+    assert_eq!(
+        std::fs::read(dest.join("bin/tool")).expect("the overwritten file"),
+        b"#!/bin/sh\necho hi\n"
+    );
+}
+
+/// A symlink out of the destination refuses until the invocation permits it.
+#[test]
+#[serial]
+fn an_external_symlink_target_refuses_until_the_invocation_allows_it() {
+    let (dir, dest, _) = tour();
+    let external = utf8(&dir).join("external.toml");
+    std::fs::write(
+        external.as_std_path(),
+        b"version = 1\n\n[links.\"toolchain\"]\ntarget = \"/opt/toolchains/rust-1.80\"\n",
+    )
+    .expect("a mapping naming an external target");
+
+    let refused = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[external.as_str()], &dest),
+    );
+    assert_eq!(exit::status(refused.outcome()), exit::REFUSAL);
+    assert!(!dest.join("toolchain").exists());
+
+    let allowed = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[external.as_str(), "--allow-external-targets"], &dest),
+    );
+
+    allowed.assert_success();
+    allowed.assert_stdout_contains("linked     toolchain  -> /opt/toolchains/rust-1.80");
+}
+
+/// Structured output is the library's own plan report: no view model stands
+/// between a consumer and the document the library serializes.
+#[test]
+#[serial]
+fn a_dry_run_is_the_librarys_own_plan_report() {
+    let (dir, dest, deploy) = tour();
+
+    let result = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--dry-run"], &dest),
+    );
+
+    result.assert_success();
+    let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
+    let mut run = Projection::new(&dest, None)
+        .expect("a projection")
+        .begin()
+        .expect("a run");
+    let desired = libproiectio::load_mapping(&deploy).expect("a desired tree");
+    let manifest = run.manifest().clone();
+    let plan = run
+        .plan(
+            crate::testing::OWNER,
+            &desired,
+            libproiectio::PlanOptions::default(),
+        )
+        .expect("a plan");
+    assert_eq!(
+        value,
+        serde_json::to_value(plan.report(&manifest)).expect("a serialized report")
+    );
+}
+
+/// And a real run is the library's own apply report, whose manifest reads
+/// back as the one on disk.
+#[test]
+#[serial]
+fn a_real_run_is_the_librarys_own_apply_report() {
+    let (dir, dest, deploy) = tour();
+
+    let result = harness(&dir).output_mode(OutputMode::Json).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str()], &dest),
+    );
+
+    result.assert_success();
+    let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
+    assert_eq!(
+        value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .collect::<Vec<_>>(),
+        vec!["report", "manifest"]
+    );
+    assert_eq!(value["report"]["rows"]["bin/tool"]["verdict"], "Written");
+    assert_eq!(
+        serde_json::from_value::<Manifest>(value["manifest"].clone()).expect("a manifest"),
+        manifest_of(&dest)
+    );
+}
+
+/// One positional is a mapping file whatever it turns out to be: a directory
+/// fails as an unreadable mapping rather than becoming a tree.
+#[test]
+#[serial]
+fn a_directory_named_as_a_mapping_fails_rather_than_becoming_a_tree() {
+    let (dir, dest, _) = tour();
+    let skeleton = skeleton(&utf8(&dir));
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[skeleton.as_str()], &dest),
+    );
+
+    assert_eq!(exit::status(result.outcome()), exit::FAILURE);
+    assert!(!dest.join("top").exists());
+}
+
+/// A command line that names no desired tree, and one that pairs `--strip`
+/// with no archive, are usage errors.
+#[test]
+#[serial]
+fn a_command_line_that_names_no_desired_tree_is_a_usage_error() {
+    let (dir, dest, deploy) = tour();
+
+    for source in [
+        vec![],
+        vec!["--strip", "1"],
+        vec![deploy.as_str(), "--strip", "1"],
+    ] {
+        let result = harness(&dir).run(&app(), cli::command(), write_argv(&source, &dest));
+
+        assert_eq!(
+            exit::status(result.outcome()),
+            exit::FAILURE,
+            "{source:?}: {}",
+            result.error().unwrap_or_default()
+        );
+    }
+}
+
+#[test]
+#[serial]
+fn write_names_only_styles_the_stylesheet_declares_and_the_theme_resolves() {
+    let (dir, dest, deploy) = tour();
+    let argv = write_argv(&[deploy.as_str(), "--dry-run"], &dest);
+
+    let debug =
+        harness(&dir)
+            .output_mode(OutputMode::TermDebug)
+            .run(&app(), cli::command(), argv.clone());
+    debug.assert_success();
+    assert_tags_declared("write", debug.stdout());
+
+    let term = harness(&dir).output_mode(OutputMode::Term).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str()], &dest),
+    );
+    term.assert_success();
+    assert_styles_resolved("write", term.stdout());
+}
+
+/// A projected path and a link target are data, not markup: both reach the
+/// terminal as the characters they are.
+#[test]
+#[serial]
+fn a_path_and_a_target_spelled_like_style_tags_render_as_themselves() {
+    const PATH: &str = "[wrote]";
+    const TARGET: &str = "[linked]/x";
+
+    let (dir, dest, _) = tour();
+    let spelled = utf8(&dir).join("spelled.toml");
+    std::fs::write(
+        spelled.as_std_path(),
+        format!(
+            "version = 1\n\n[files.\"{PATH}\"]\ncontents = \"x\\n\"\n\n\
+             [links.\"link\"]\ntarget = \"{TARGET}\"\n"
+        ),
+    )
+    .expect("a mapping spelled like markup");
+
+    let text = harness(&dir).run(
+        &app(),
+        cli::command(),
+        write_argv(&[spelled.as_str()], &dest),
+    );
+    text.assert_success();
+    text.assert_stdout_contains(PATH);
+    text.assert_stdout_contains(TARGET);
+
+    let term = harness(&dir).output_mode(OutputMode::Term).run(
+        &app(),
+        cli::command(),
+        write_argv(&[spelled.as_str()], &dest),
+    );
+    term.assert_success();
+    assert_styles_resolved("a write spelled like a tag", term.stdout());
 }

@@ -75,6 +75,9 @@ pub(crate) fn build() -> Result<App> {
         .templates(templates())
         .styles(embed_styles!("src/styles"))
         .default_theme("proiectio")
+        .command_with("write", handlers::write__handler, |cfg| {
+            cfg.template("write.jinja")
+        })?
         .command_with("status", handlers::status__handler, |cfg| {
             cfg.template("status.jinja")
         })?
