@@ -26,8 +26,10 @@ pub enum PathShape {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PathFacts {
-    /// What the row is about on disk; `None` where the verdict decides no
-    /// node, as a refusal does.
+    /// What the row is about on disk: the entry a write carries, the node a
+    /// removal expects, or the manifest's own record where the verdict
+    /// decides no node itself. `None` where nothing names a shape — a
+    /// refusal, or a path no manifest entry records.
     pub shape: Option<PathShape>,
     pub owners: BTreeSet<String>,
     pub origin: Option<Origin>,

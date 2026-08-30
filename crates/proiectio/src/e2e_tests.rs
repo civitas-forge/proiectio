@@ -459,8 +459,10 @@ fn rm_of_a_hand_deleted_path_prunes_its_dirs_and_says_it_forgot_it() {
 }
 
 /// A named path the owner never recorded is reported as such rather than
-/// disappearing into `nothing to do`; the run still succeeds, since removal
-/// is a request for the path to be absent.
+/// disappearing into `nothing to do`; the run still succeeds, since a
+/// removal clears this owner's record and the owner has no record here to
+/// clear. It promises nothing about what stands at the path: one this owner
+/// does not hold is left where it is, whether or not anything is there.
 #[test]
 #[serial]
 fn rm_of_a_path_the_owner_never_recorded_says_so_and_still_succeeds() {
