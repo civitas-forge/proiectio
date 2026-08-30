@@ -1,6 +1,8 @@
 //! The 0/1/2 exit contract, which `main` owns because Standout spends 2
 //! on a command line clap rejects and this CLI spends it on refusals.
 
+use std::io::{ErrorKind, Write};
+
 use libproiectio::Error;
 use standout::cli::{ExternalFailure, RunError, RunErrorKind, RunResult};
 
@@ -39,14 +41,37 @@ fn of_run_error(error: &RunError) -> u8 {
     }
 }
 
-pub(crate) fn emit(result: &RunResult) {
-    match result {
-        RunResult::Handled(output) if output.is_empty() => {}
-        RunResult::Handled(output) => println!("{output}"),
-        RunResult::Error(error) if error.kind() == RunErrorKind::External => eprint!("{error}"),
-        RunResult::Error(error) => eprintln!("{error}"),
-        _ => {}
+/// Writes the completed run and reports the status the process leaves with: a
+/// reader that closed the stream is not a failure, any other write failure is.
+pub(crate) fn emit(result: &RunResult) -> u8 {
+    emit_to(
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+        result,
+    )
+}
+
+fn emit_to(out: &mut impl Write, err: &mut impl Write, result: &RunResult) -> u8 {
+    let status = status(result);
+    let written = match result {
+        RunResult::Handled(output) if output.is_empty() => Ok(()),
+        RunResult::Handled(output) => write(out, output.as_str()),
+        RunResult::Error(error) if error.kind() == RunErrorKind::External => {
+            write(err, error.as_str())
+        }
+        RunResult::Error(error) => write(err, &format!("{error}\n")),
+        _ => Ok(()),
+    };
+    match written {
+        Ok(()) => status,
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => status,
+        Err(_) => status.max(FAILURE),
     }
+}
+
+fn write(stream: &mut impl Write, text: &str) -> std::io::Result<()> {
+    stream.write_all(text.as_bytes())?;
+    stream.flush()
 }
 
 #[cfg(test)]

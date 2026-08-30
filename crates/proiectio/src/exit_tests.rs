@@ -172,3 +172,122 @@ fn a_declared_refusal_reaches_the_shell_as_two() {
     let result = RunResult::Error(RunError::from(declared));
     assert_eq!(status(&result), REFUSAL);
 }
+
+/// A stream whose every write fails with one kind, standing in for a reader
+/// that closed the pipe and for a disk that has no room left.
+struct Failing(ErrorKind);
+
+impl Write for Failing {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let _ = buffer;
+        Err(std::io::Error::from(self.0))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::from(self.0))
+    }
+}
+
+fn handled(text: &str) -> RunResult {
+    RunResult::Handled(RunOutput::command(text))
+}
+
+#[test]
+fn handled_text_reaches_stdout_as_the_template_spelled_it() {
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+
+    let status = emit_to(
+        &mut out,
+        &mut err,
+        &handled("clean    config/settings.toml\n"),
+    );
+
+    assert_eq!(status, OK);
+    assert_eq!(
+        String::from_utf8(out).expect("text"),
+        "clean    config/settings.toml\n"
+    );
+    assert!(err.is_empty());
+}
+
+#[test]
+fn an_empty_handled_run_writes_nothing() {
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+
+    assert_eq!(emit_to(&mut out, &mut err, &handled("")), OK);
+    assert!(out.is_empty());
+}
+
+/// `proiectio status | head` closes stdout early, which is the reader's
+/// choice and not this process's failure.
+#[test]
+fn a_reader_that_closed_stdout_leaves_the_status_alone() {
+    let mut err = Vec::new();
+
+    assert_eq!(
+        emit_to(
+            &mut Failing(ErrorKind::BrokenPipe),
+            &mut err,
+            &handled("rows\n")
+        ),
+        OK
+    );
+}
+
+#[test]
+fn a_stdout_write_that_fails_otherwise_exits_one() {
+    let mut err = Vec::new();
+
+    assert_eq!(
+        emit_to(
+            &mut Failing(ErrorKind::StorageFull),
+            &mut err,
+            &handled("rows\n")
+        ),
+        FAILURE
+    );
+}
+
+/// A declared refusal keeps its 2 even when the diagnostic cannot be written.
+#[test]
+fn a_write_failure_never_lowers_a_refusal() {
+    let declared = ExternalFailure::new(REFUSAL, "Error: refused\n").expect("an external failure");
+    let result = RunResult::Error(RunError::from(declared));
+    let mut out = Vec::new();
+
+    assert_eq!(
+        emit_to(&mut out, &mut Failing(ErrorKind::StorageFull), &result),
+        REFUSAL
+    );
+}
+
+/// An external failure carries the diagnostic the handler spelled, newline
+/// and all; every other error is one line the shell terminates itself.
+#[test]
+fn diagnostics_reach_stderr_with_exactly_one_newline() {
+    let declared =
+        ExternalFailure::new(FAILURE, "Error: no such destination\n").expect("an external failure");
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+
+    let status = emit_to(
+        &mut out,
+        &mut err,
+        &RunResult::Error(RunError::from(declared)),
+    );
+
+    assert_eq!(status, FAILURE);
+    assert_eq!(
+        String::from_utf8(err).expect("text"),
+        "Error: no such destination\n"
+    );
+    assert!(out.is_empty());
+
+    let usage = RunResult::Error(RunError::new("bad flag", RunErrorKind::ClapUsage));
+    let mut err = Vec::new();
+    assert_eq!(emit_to(&mut Vec::new(), &mut err, &usage), FAILURE);
+    let text = String::from_utf8(err).expect("text");
+    assert!(text.ends_with('\n') && !text.ends_with("\n\n"), "{text:?}");
+}

@@ -6,7 +6,6 @@
 .foreign { color: magenta; }
 
 .key { color: yellow; }
-.muted { color: gray; }
 .ok {
     color: green;
     font-weight: bold;
@@ -18,7 +17,6 @@
     .missing { color: #aa0000; }
     .foreign { color: #7b2d8b; }
     .key { color: #915c00; }
-    .muted { color: #555555; }
     .ok { color: #006400; }
 }
 
@@ -28,6 +26,5 @@
     .missing { color: #ff5f5f; }
     .foreign { color: #d787ff; }
     .key { color: #ffd75f; }
-    .muted { color: #999999; }
     .ok { color: #5fd75f; }
 }

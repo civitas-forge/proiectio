@@ -1,23 +1,19 @@
-{#- One template for the whole config group: branches on the ConfigView tag. -#}
+{#- One template for the whole config group: branches on the ConfigView tag.
+    Every assignment line is clapfig's own, spelled in the active format. -#}
 {% if kind == "listing" -%}
-{% for entry in entries -%}
-[key]{{ entry.key }}[/key] = {{ entry.value }}
-{% endfor -%}
+{{ rendered|verbatim }}
 {% elif kind == "key_value" -%}
-{% for line in doc -%}
-[muted]# {{ line }}[/muted]
-{% endfor -%}
-[key]{{ key }}[/key] = {{ value }}
+{{ rendered|verbatim }}
 {% elif kind == "value_set" -%}
-[ok]set[/ok] [key]{{ key }}[/key] = {{ value }}
+[ok]set[/ok] {{ rendered|verbatim }}
 {% elif kind == "value_unset" -%}
-[ok]unset[/ok] [key]{{ key }}[/key]
+[ok]unset[/ok] [key]{{ key|verbatim }}[/key]
 {% elif kind == "template" -%}
-{{ body }}
+{{ body|verbatim }}
 {% elif kind == "template_written" -%}
-[ok]wrote[/ok] {{ path }}
+[ok]wrote[/ok] {{ path|verbatim }}
 {% elif kind == "schema" -%}
-{{ body }}
+{{ body|verbatim }}
 {% elif kind == "schema_written" -%}
-[ok]wrote[/ok] {{ path }}
+[ok]wrote[/ok] {{ path|verbatim }}
 {% endif -%}

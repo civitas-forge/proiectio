@@ -61,6 +61,11 @@ fn status_prints_one_line_per_recorded_path() {
         "foreign  bin\ndrifted  bin/tool\nforeign  config\n\
          clean    config/settings.toml\nmissing  current\n"
     );
+    let stdout = result.stdout();
+    assert!(
+        stdout.ends_with('\n') && !stdout.ends_with("\n\n"),
+        "{stdout:?}"
+    );
 }
 
 /// A path on disk the manifest does not record is the fourth state, and it
@@ -209,6 +214,7 @@ fn refusing_app() -> App {
         .templates(templates())
         .styles(embed_styles!("src/styles"))
         .default_theme("proiectio")
+        .template_engine(Box::new(engine()))
         .command_with("status", refusing__handler, |cfg| {
             cfg.template("status.jinja")
         })
@@ -268,4 +274,146 @@ fn every_outcome_pins_the_status_the_process_exits_with() {
             );
         }
     }
+}
+
+/// A path is data, not markup. One whose components are spelled as style tags
+/// reaches the terminal as the characters they are, and structured output
+/// carries them unescaped.
+#[test]
+#[serial]
+fn a_path_spelled_like_a_style_tag_renders_as_itself() {
+    const DIRECTORY: &str = "[clean]";
+    const FILE: &str = "[clean]/y";
+
+    let (dir, dest) = classified_dir();
+    std::fs::create_dir(dest.join(DIRECTORY)).expect("a stray directory");
+    std::fs::write(dest.join(FILE), b"not ours\n").expect("a stray file");
+    let argv = ["proiectio", "status", "--dest", dest.as_str()];
+
+    let text = harness(&dir).run(&app(), cli::command(), argv);
+    text.assert_success();
+    text.assert_stdout_contains(&format!("foreign  {DIRECTORY}"));
+    text.assert_stdout_contains(&format!("foreign  {FILE}"));
+
+    let term = harness(&dir)
+        .output_mode(OutputMode::Term)
+        .run(&app(), cli::command(), argv);
+    term.assert_success();
+    term.assert_stdout_contains(FILE);
+
+    let json = harness(&dir)
+        .output_mode(OutputMode::Json)
+        .run(&app(), cli::command(), argv);
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    assert_eq!(value["rows"][DIRECTORY]["verdict"], "Foreign");
+    assert_eq!(value["rows"][FILE]["verdict"], "Foreign");
+}
+
+/// An unknown tag spelling reaches the terminal whole rather than as the `?`
+/// marker Standout gives a style it cannot resolve.
+#[test]
+#[serial]
+fn a_path_spelled_like_an_unknown_tag_renders_as_itself() {
+    const DIRECTORY: &str = "[nope]";
+
+    let (dir, dest) = classified_dir();
+    std::fs::create_dir(dest.join(DIRECTORY)).expect("a stray directory");
+    std::fs::write(dest.join(DIRECTORY).join("y"), b"not ours\n").expect("a stray file");
+
+    let result = harness(&dir).output_mode(OutputMode::Term).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "status", "--dest", dest.as_str()],
+    );
+
+    result.assert_success();
+    result.assert_stdout_contains(DIRECTORY);
+    assert_styles_resolved("a path spelled like a tag", result.stdout());
+}
+
+/// A config value is data too, and `config set` reports the value it stored.
+#[test]
+#[serial]
+fn a_config_value_spelled_like_a_style_tag_renders_as_itself() {
+    const SPELLED: &str = "[ok]site[/ok]";
+
+    let dir = TempDir::new().expect("a temporary directory");
+    let argv = ["proiectio", "conf", "set", "owner", SPELLED];
+
+    let text = harness(&dir).run(&app(), cli::command(), argv);
+    text.assert_success();
+    text.assert_stdout_contains(&format!("set owner = {SPELLED}"));
+
+    let json = harness(&dir)
+        .output_mode(OutputMode::Json)
+        .run(&app(), cli::command(), argv);
+    json.assert_success();
+    let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    assert_eq!(value["value"], SPELLED);
+}
+
+/// Every config line the CLI prints is clapfig's own, so a string value keeps
+/// the spelling the active format gives it.
+#[test]
+#[serial]
+fn config_lines_are_the_spelling_clapfig_rendered() {
+    let dir = TempDir::new().expect("a temporary directory");
+
+    let listing = harness(&dir).run(&app(), cli::command(), ["proiectio", "conf", "list"]);
+    listing.assert_success();
+    let rendered = rendered_field(&dir, ["proiectio", "conf", "list"]);
+    assert_eq!(listing.stdout(), format!("{rendered}\n"));
+
+    let get = harness(&dir).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "conf", "get", "owner"],
+    );
+    get.assert_success();
+    let rendered = rendered_field(&dir, ["proiectio", "conf", "get", "owner"]);
+    assert_eq!(get.stdout(), format!("{rendered}\n"));
+}
+
+/// The `rendered` field of a config view, read back through the same run under
+/// `--output json`.
+fn rendered_field<const N: usize>(dir: &TempDir, argv: [&str; N]) -> String {
+    let result = harness(dir)
+        .output_mode(OutputMode::Json)
+        .run(&app(), cli::command(), argv);
+    result.assert_success();
+    let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
+    value["rendered"]
+        .as_str()
+        .expect("a rendered spelling")
+        .to_owned()
+}
+
+/// Unix argv is bytes, not text. An argument that is not UTF-8 reaches clap,
+/// which rejects it with the diagnostic and the 1 the tour spends on usage.
+#[cfg(unix)]
+#[test]
+#[serial]
+fn an_argument_that_is_not_utf8_is_rejected_rather_than_panicking() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let (dir, _) = classified_dir();
+    let argv = vec![
+        OsString::from("proiectio"),
+        OsString::from("status"),
+        OsString::from("--dest"),
+        OsString::from_vec(vec![0x2f, 0xff]),
+    ];
+
+    let result = harness(&dir).run(&app(), cli::command(), argv);
+
+    assert_eq!(exit::status(result.outcome()), exit::FAILURE);
+}
+
+#[test]
+fn a_bracket_leaves_the_markup_pass_as_the_bracket_it_was() {
+    assert_eq!(verbatim("[clean]x[/clean]"), r"\[clean\]x\[/clean\]");
+    assert_eq!(verbatim("plain/path"), "plain/path");
+    assert_eq!(verbatim(r"C:\dir"), r"C:\dir");
 }
