@@ -109,6 +109,40 @@ pub(crate) fn tarball(dir: &Utf8Path) -> Utf8PathBuf {
     path
 }
 
+/// One file under `x/`, packaged as `tar czf dot.tgz -C skel .` packages it: names carry a leading `./`.
+pub(crate) fn dot_tarball(dir: &Utf8Path) -> Utf8PathBuf {
+    let path = dir.join("dot.tgz");
+    let file = std::fs::File::create(&path).expect("an archive");
+    let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+        file,
+        flate2::Compression::default(),
+    ));
+    for name in ["./", "./x/"] {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_size(0);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, name, std::io::empty())
+            .expect("an archived directory");
+    }
+    let contents = &b"a\n"[..];
+    let mut header = tar::Header::new_gnu();
+    header.set_size(contents.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, "./x/a.txt", contents)
+        .expect("an archived member");
+    builder
+        .into_inner()
+        .expect("a finished archive")
+        .finish()
+        .expect("a flushed archive");
+    path
+}
+
 fn executable(path: &Utf8Path) {
     use std::os::unix::fs::PermissionsExt;
 

@@ -361,6 +361,10 @@ impl Expansion<'_> {
         } else {
             name
         };
+        if is_dir && names_only_dot(spelled) {
+            return Ok(None);
+        }
+        let spelled = without_dot_prefix(spelled);
         let Some(normalized) = crate::containment::contained_normalize(Utf8Path::new(spelled))
         else {
             self.refused.insert(Utf8PathBuf::from(name));
@@ -479,6 +483,21 @@ const S_IFLNK: u32 = 0o120_000;
 
 fn is_executable(mode: u32) -> bool {
     mode & 0o100 != 0
+}
+
+/// `name` without the leading `./`, however many times a writer spelled one.
+fn without_dot_prefix(name: &str) -> &str {
+    let mut rest = name;
+    loop {
+        match rest.strip_prefix("./") {
+            Some(shorter) => rest = shorter,
+            None => return if rest == "." { "" } else { rest },
+        }
+    }
+}
+
+fn names_only_dot(name: &str) -> bool {
+    !name.is_empty() && without_dot_prefix(name).is_empty()
 }
 
 #[cfg(test)]
