@@ -6,7 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs_utf8::Dir;
 
 use super::*;
-use crate::test_support::{Fixture, Tree, assert_tree, paths_of, refusals_of, sourced_of};
+use crate::test_support::{Fixture, Tree, assert_tree, paths_of, plant, refusals_of, sourced_of};
 use crate::{
     BlockMarkers, Desired, DriftPolicy, Dropped, EntryKind, ExternalTargetPolicy, Origin,
     OverwriteReason, PlanOptions, RefusalKind, RemovalScope, block_markers, decide, decide_removal,
@@ -739,9 +739,7 @@ fn a_name_the_walk_cannot_read_holds_the_directory_and_nothing_is_written() {
         .path("build.sh")
         .as_std_path()
         .join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"bad-\xff-name"));
-    if fs::write(&unnameable, b"unnameable").is_err() {
-        // APFS on macOS refuses non-UTF-8 names outright, so the entry this
-        // test turns on cannot exist here. CI runs on Linux, where it can.
+    if !plant(&unnameable) {
         return;
     }
 

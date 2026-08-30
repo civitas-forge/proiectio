@@ -7,7 +7,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs_utf8::Dir;
 
 use super::*;
-use crate::test_support::{Fixture, Tree, assert_tree};
+use crate::test_support::{Fixture, Tree, assert_tree, plant};
 use crate::{BlockMarkers, EntryKind, ManifestEntry, Placement};
 
 // Opens the destination handle observe takes, rooted at the fixture.
@@ -244,10 +244,7 @@ fn non_utf8_entry_name_is_skipped_and_names_its_directory_unreadable() {
         .as_std_path()
         .join("scaffolding")
         .join(OsStr::from_bytes(b"bad-\xff-name"));
-    if fs::write(&bad_name, b"unnameable").is_err() {
-        // The filesystem refuses non-UTF-8 names outright (APFS on macOS
-        // enforces UTF-8), so the entry this test skips cannot exist here.
-        // CI runs on Linux, where it can.
+    if !plant(&bad_name) {
         return;
     }
 
