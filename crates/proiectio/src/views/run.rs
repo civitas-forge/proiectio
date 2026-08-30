@@ -5,6 +5,7 @@
 //! structured modes skip, so `--output json` stays the library's own report.
 
 use std::collections::BTreeSet;
+use std::iter;
 
 use libproiectio::{ApplyReport, BlockFault, Dropped, PlannedAction, Report};
 use serde::Serialize;
@@ -307,8 +308,10 @@ impl Tally {
 }
 
 /// The verb column: the widest verb a plan spells, and the widest a real run
-/// spells. The tests drive every verdict the library declares through
-/// `spelling` and check the verb still fits its tense's column.
+/// spells. Either is the least that tense's column is ever wide — a verdict
+/// this CLI has no word for reads as its own name, and a longer one widens the
+/// column. The tests drive every verdict the library declares through
+/// `spelling` and check the verb still fits its tense's constant.
 const PLANNED_VERBS: usize = "would overwrite".len();
 const APPLIED_VERBS: usize = "overwrote".len();
 
@@ -351,7 +354,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
         .map(|cell| visible_width_with_policy(cell, width))
         .max()
         .unwrap_or_default();
-    let verbs = if planning {
+    let tense = if planning {
         PLANNED_VERBS
     } else {
         APPLIED_VERBS
@@ -379,7 +382,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
 
         lines.push(RowView {
             style,
-            verb_pad: pad(verbs, &verb, width),
+            verb_pad: String::new(),
             verb,
             path_pad: pad(column, &path, width),
             path,
@@ -389,12 +392,24 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
     for (member, note) in dropped {
         lines.push(RowView {
             style: "skipped",
-            verb_pad: pad(verbs, DROPPED, width),
+            verb_pad: String::new(),
             verb: DROPPED.to_owned(),
             path_pad: pad(column, &member, width),
             path: member,
             note: Some(note),
         });
+    }
+    // A verdict this CLI has no word for reads as its own name, which can run
+    // longer than either tense's widest verb, so the column takes the widest
+    // verb it actually holds rather than spilling one path out of line.
+    let verbs = lines
+        .iter()
+        .map(|row| visible_width_with_policy(&row.verb, width))
+        .chain(iter::once(tense))
+        .max()
+        .unwrap_or(tense);
+    for row in &mut lines {
+        row.verb_pad = pad(verbs, &row.verb, width);
     }
 
     RunLines {

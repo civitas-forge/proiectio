@@ -7,10 +7,12 @@
 //! for anything else, so without a projection a document whose rows sit under
 //! a field flattens to a single row.
 
+use std::iter;
+
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use standout::AmbiguousWidth;
-use standout::tabular::{Column, Width};
+use standout::tabular::{Column, Width, visible_width_with_policy};
 use standout::{CsvProjection, StructuredOutputProjection};
 
 use crate::app::verbatim;
@@ -33,9 +35,12 @@ pub(crate) struct StatusLines {
     pub(crate) rows: Vec<StateView>,
 }
 
-/// The classification column: the widest word a state reads as. The tests
-/// drive every state the library declares through `spelling` and check the
-/// word still fits here.
+/// The classification column: the widest word a state the library declares
+/// reads as, which is the least the column is ever wide. A verdict this CLI
+/// has no word for reads as its own name, and a name longer than this widens
+/// the column for every row rather than spilling one path out of line. The
+/// tests drive every state the library declares through `spelling` and check
+/// the word still fits the constant.
 const STATES: usize = "drifted".len();
 
 /// The style and the word one classification reads as; a verdict this CLI does
@@ -68,17 +73,28 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> StatusLines 
         return StatusLines::default();
     };
 
-    let lines = rows
+    let spelled: Vec<(&'static str, String, String)> = rows
         .iter()
         .filter_map(|row| {
             let path = row.get("path")?.as_str()?;
             let (style, state) = spelling(verdict_name(row.get("verdict")));
-            Some(StateView {
-                state_pad: pad(STATES, &state, width),
-                style,
-                state,
-                path: verbatim(path),
-            })
+            Some((style, state, verbatim(path)))
+        })
+        .collect();
+    let states = spelled
+        .iter()
+        .map(|(_, state, _)| visible_width_with_policy(state, width))
+        .chain(iter::once(STATES))
+        .max()
+        .unwrap_or(STATES);
+
+    let lines = spelled
+        .into_iter()
+        .map(|(style, state, path)| StateView {
+            state_pad: pad(states, &state, width),
+            style,
+            state,
+            path,
         })
         .collect();
 
@@ -87,11 +103,19 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> StatusLines 
 
 /// The columns `--output csv` writes, one row per classified path: the same
 /// header line for every destination, whatever its rows carry.
+///
+/// The verdict cell is the name the printed line reads, not the raw field: a
+/// verdict that ever carried fields would otherwise arrive as a JSON object in
+/// a column every other row spells as a word, and the two outputs would
+/// disagree about the same row. What such a payload said would need a column
+/// of its own, as `origin` does.
 pub(crate) fn csv() -> StructuredOutputProjection {
     StructuredOutputProjection::csv(
         CsvProjection::builder("rows")
             .column(column("path"))
-            .column(column("verdict"))
+            .derived_column(named("verdict"), |row, _| {
+                cell(Some(verdict_name(row.get("verdict")).to_owned()))
+            })
             .derived_column(named("shape"), |row, _| cell(shape(row)))
             .derived_column(named("executable"), |row, _| cell(executable(row)))
             .derived_column(named("owners"), |row, _| cell(owners(row)))

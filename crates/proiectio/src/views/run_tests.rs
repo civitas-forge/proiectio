@@ -503,6 +503,24 @@ fn the_verb_column_pads_to_the_widest_verb_the_run_spells() {
     assert_eq!(real.verb.len() + real.verb_pad.len(), 9);
 }
 
+/// An unknown verdict reads as its own name, which can be longer than any verb
+/// this CLI spells. The column widens to hold it, so the paths stay in one
+/// place instead of the long row pushing its own out of line.
+#[test]
+fn a_verb_longer_than_the_column_widens_it_for_every_row() {
+    let document = applied(json!({
+        "long.txt": file(json!("SomethingUnheardOf")),
+        "short.txt": file(json!("Written")),
+    }));
+
+    let widths: Vec<usize> = document
+        .rows
+        .iter()
+        .map(|row| row.verb.len() + row.verb_pad.len())
+        .collect();
+    assert_eq!(widths, vec!["SomethingUnheardOf".len(); 2]);
+}
+
 /// A plan states no count; a real run counts what it did. A pass that
 /// projected leads with the written/skipped pair, one that only cleared paths
 /// counts what it cleared, and one that touched nothing says so.

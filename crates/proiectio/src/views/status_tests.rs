@@ -82,6 +82,24 @@ fn an_unknown_state_reads_as_its_own_name() {
     assert_eq!((row.style, row.state.as_str()), ("unknown", "Invented"));
 }
 
+/// An unknown verdict reads as its own name, which can be longer than any
+/// word this CLI spells. The column widens to hold it, so the paths stay in
+/// one place instead of the long row pushing its own out of line.
+#[test]
+fn a_state_longer_than_the_column_widens_it_for_every_row() {
+    let document = status(json!({
+        "long.txt": { "verdict": "SomethingUnheardOf", "facts": null },
+        "short.txt": { "verdict": "Clean", "facts": null },
+    }));
+
+    let widths: Vec<usize> = document
+        .rows
+        .iter()
+        .map(|row| row.state.len() + row.state_pad.len())
+        .collect();
+    assert_eq!(widths, vec!["SomethingUnheardOf".len(); 2]);
+}
+
 /// The state column is as wide as the widest word, so every path starts in
 /// the same place.
 #[test]
@@ -152,6 +170,30 @@ fn csv_writes_one_row_per_path_under_a_fixed_header() {
         "path,verdict,shape,executable,owners\n\
          bin/tool,Clean,file,true,\"[\"\"harness\"\",\"\"site\"\"]\"\n\
          bin_tool,Foreign,,,\n"
+    );
+}
+
+/// The verdict cell is the name the printed line reads. A verdict carrying
+/// fields fills the column with its name rather than with the JSON object the
+/// row states it as, so the two outputs agree about the row.
+#[test]
+fn the_verdict_cell_reads_the_name_a_verdict_carrying_fields_states() {
+    let document = json!({
+        "rows": [{
+            "path": "one",
+            "verdict": { "Drifted": { "reason": "ContentChanged" } },
+            "facts": null,
+        }]
+    });
+
+    let csv = csv()
+        .csv_projection()
+        .render(&document)
+        .expect("a CSV projection");
+
+    assert_eq!(
+        csv,
+        "path,verdict,shape,executable,owners\none,Drifted,,,\n"
     );
 }
 
