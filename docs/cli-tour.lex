@@ -85,6 +85,7 @@ The CLI
     refused for that reason in place of the rows, and leaves with
     the 2 a real run would:
 
+        $ echo edited >> bin/tool
         $ proiectio write deploy.toml --dry-run
         Error: refusing to touch drifted paths (edited on disk): bin/tool
         $ echo $?
