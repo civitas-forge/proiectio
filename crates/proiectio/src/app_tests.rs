@@ -901,9 +901,11 @@ fn a_refused_dry_run_renders_the_whole_plan() {
     assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
     assert_eq!(
         result.stdout(),
-        "would refuse     bin/tool              (drifted)\n\
-         would overwrite  config/settings.toml  (content changed)\n\
-         would skip       current               -> releases/1.2.3\n"
+        format!(
+            "would refuse     bin/tool              (drifted) (from mapping {deploy})\n\
+             would overwrite  config/settings.toml  (content changed)\n\
+             would skip       current               -> releases/1.2.3\n"
+        )
     );
     assert_eq!(result.error(), None);
     assert_eq!(
@@ -944,6 +946,10 @@ fn a_refused_dry_run_is_the_librarys_own_plan_document() {
     assert_eq!(
         value["rows"]["bin/tool"]["verdict"]["Refuse"]["refusal"],
         "Drift"
+    );
+    assert_eq!(
+        value["rows"]["bin/tool"]["facts"]["origin"]["Mapping"]["path"],
+        deploy.as_str()
     );
 }
 

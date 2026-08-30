@@ -81,11 +81,16 @@ const CLEARED: &str = "removed    bin/tool              (exec)\n\
                        3 removed\n";
 
 /// What the plan reads once `bin/tool` is edited underneath it and `current`
-/// removed: the refused row names its reason and the rest of the plan stands,
-/// as `docs/cli-tour.lex` section 2 prints it.
-const REFUSED_PLAN: &str = "would refuse     bin/tool              (drifted)\n\
-                            would skip       config/settings.toml\n\
-                            would link       current               -> releases/1.2.3\n";
+/// removed: the refused row names its reason and the source that named the
+/// path, the rest of the plan stands, as `docs/cli-tour.lex` section 2 prints
+/// it.
+fn refused_plan(deploy: &Utf8Path) -> String {
+    format!(
+        "would refuse     bin/tool              (drifted) (from mapping {deploy})\n\
+         would skip       config/settings.toml\n\
+         would link       current               -> releases/1.2.3\n"
+    )
+}
 
 const EDITED: &[u8] = b"#!/bin/sh\necho edited\n";
 const PROJECTED_TOOL: &[u8] = b"#!/bin/sh\necho hi\n";
@@ -122,7 +127,7 @@ fn a_destination_is_projected_re_projected_refused_forced_and_cleared() {
     planned.push("--dry-run");
     let dry = run_over(&dir, OutputMode::Text, &verdict, &planned);
     assert_eq!(leaving(&dry, &verdict), exit::REFUSAL);
-    assert_eq!(dry.stdout(), REFUSED_PLAN);
+    assert_eq!(dry.stdout(), refused_plan(&deploy));
     assert_eq!(dry.error(), None);
 
     let refused = run(&dir, &source);

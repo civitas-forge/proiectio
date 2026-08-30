@@ -14,7 +14,9 @@ pub enum PathShape {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PathFacts {
-    pub shape: PathShape,
+    /// What the row is about on disk; `None` where the verdict decides no
+    /// node, as a refusal does.
+    pub shape: Option<PathShape>,
     pub owners: BTreeSet<String>,
     pub origin: Option<Origin>,
 }

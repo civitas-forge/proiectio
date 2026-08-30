@@ -73,7 +73,7 @@ The CLI
 
         $ proiectio write deploy.toml --dry-run
         would skip       bin/tool              (exec)
-        would overwrite  config/settings.toml  (content changed)
+        would skip       config/settings.toml
         would skip       current               -> releases/1.2.3
         $ echo $?
         0
@@ -84,7 +84,7 @@ The CLI
 
         $ echo edited >> bin/tool
         $ proiectio write deploy.toml --dry-run
-        would refuse     bin/tool              (drifted)
+        would refuse     bin/tool              (drifted) (from mapping /home/you/deploy.toml)
         would skip       config/settings.toml
         would skip       current               -> releases/1.2.3
         $ echo $?

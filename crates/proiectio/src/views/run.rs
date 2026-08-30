@@ -4,7 +4,7 @@
 //! The lines reach the template through Standout's context injection, which
 //! structured modes skip, so `--output json` stays the library's own report.
 
-use libproiectio::{ApplyReport, PlannedAction, Report};
+use libproiectio::{ApplyReport, BlockFault, PlannedAction, Report};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use standout::AmbiguousWidth;
@@ -75,12 +75,39 @@ fn counted(verdict: &str) -> Option<Counted> {
 }
 
 /// What a verdict's payload says about the row: why a plan would overwrite a
-/// path, or why it would refuse one.
-fn qualifying(fields: &JsonValue) -> Option<String> {
+/// path, or why it would refuse one and which source named it.
+fn qualifying(fields: &JsonValue, facts: Option<&JsonValue>) -> Option<String> {
     if let Some(reason) = fields.get("reason").and_then(JsonValue::as_str) {
         return Some(overwriting(reason).to_owned());
     }
-    fields.get("refusal").map(refusing)
+    let refused = refusing(fields.get("refusal")?);
+    Some(match sourcing(facts) {
+        Some(source) => format!("{refused} {source}"),
+        None => refused,
+    })
+}
+
+/// Which source named a refused path, in the phrase `Origin`'s own message
+/// spells it with; `None` where the caller named the path itself, or the row
+/// states no source.
+fn sourcing(facts: Option<&JsonValue>) -> Option<String> {
+    let (kind, payload) = named(facts?.get("origin"));
+    let string = |field| payload?.get(field).and_then(JsonValue::as_str);
+    let phrase = match kind {
+        "Mapping" => format!("from mapping {}", verbatim(string("path")?)),
+        "Tree" => format!("from tree {}", verbatim(string("path")?)),
+        "Archive" => match string("via") {
+            Some(mapping) => format!(
+                "from archive {}, named by mapping {}",
+                verbatim(string("path")?),
+                verbatim(mapping)
+            ),
+            None => format!("from archive {}", verbatim(string("path")?)),
+        },
+        "Files" => "from individually named files".to_owned(),
+        _ => return None,
+    };
+    Some(format!("({phrase})"))
 }
 
 /// Why a plan would overwrite a path.
@@ -132,7 +159,39 @@ fn detailing(kind: &str, payload: &JsonValue) -> Option<String> {
             "-> {}",
             verbatim(&format!("{:?}", string("target")?))
         )),
-        "Block" => Some(format!("({})", verbatim(string("fault")?))),
+        "Block" => Some(format!("({})", faulting(string("fault")?))),
+        _ => None,
+    }
+}
+
+/// Every fault a block entry is refused for, as the library declares them.
+const BLOCK_FAULTS: [BlockFault; 10] = [
+    BlockFault::MarkerEmpty,
+    BlockFault::MarkerNotOneLine,
+    BlockFault::MarkerEdgeWhitespace,
+    BlockFault::BodyCarriesMarker,
+    BlockFault::BodyNotNewlineTerminated,
+    BlockFault::ContainerNotNewlineTerminated,
+    BlockFault::ContainerMissing,
+    BlockFault::KindChange,
+    BlockFault::SignatureNotRecorded,
+    BlockFault::MarkerInAuthorText,
+];
+
+/// What a block refusal's fault says: the sentence `BlockFault`'s own message
+/// spells, found by the name the library serializes the fault under; a fault
+/// this CLI does not know reads as that name, escaped.
+fn faulting(name: &str) -> String {
+    BLOCK_FAULTS
+        .into_iter()
+        .find(|fault| fault_name(*fault).as_deref() == Some(name))
+        .map_or_else(|| verbatim(name), |fault| fault.to_string())
+}
+
+/// The name the library serializes one fault under, taken from the fault.
+fn fault_name(fault: BlockFault) -> Option<String> {
+    match serde_json::to_value(fault) {
+        Ok(JsonValue::String(name)) => Some(name),
         _ => None,
     }
 }
@@ -235,7 +294,8 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
     let mut tally = Tally::default();
     let mut lines = Vec::with_capacity(paths.len());
     for (path, row) in paths {
-        let shape = row.get("facts").and_then(|facts| facts.get("shape"));
+        let facts = row.get("facts");
+        let shape = facts.and_then(|facts| facts.get("shape"));
         let target = shape
             .and_then(|shape| shape.get("Symlink"))
             .and_then(|symlink| symlink.get("target"))
@@ -248,7 +308,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
         if let Some(counted) = counted(verdict) {
             tally.count(counted);
         }
-        let qualifier = fields.and_then(qualifying);
+        let qualifier = fields.and_then(|fields| qualifying(fields, facts));
         let note = note(target, qualifier.as_deref(), executable(shape));
 
         lines.push(RowView {

@@ -401,7 +401,7 @@ fn entry_row(
 ) -> Row<ApplyOutcome> {
     Row {
         facts: Some(PathFacts {
-            shape: match entry {
+            shape: Some(match entry {
                 Entry::File { executable, .. } => PathShape::File {
                     executable: *executable,
                 },
@@ -409,7 +409,7 @@ fn entry_row(
                     target: Some(target.clone()),
                 },
                 Entry::Block { .. } => PathShape::Block,
-            },
+            }),
             owners: owners_of(manifest, path),
             origin: Some(plan.origin_of(path)),
         }),
@@ -427,7 +427,7 @@ fn recorded_shape(kind: &EntryKind, executable: bool) -> PathShape {
 
 fn recorded_facts(recorded: Option<&ManifestEntry>, origin: Origin) -> Option<PathFacts> {
     recorded.map(|recorded| PathFacts {
-        shape: recorded_shape(&recorded.kind, recorded.executable),
+        shape: Some(recorded_shape(&recorded.kind, recorded.executable)),
         owners: recorded.owners.clone(),
         origin: Some(origin),
     })
