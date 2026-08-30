@@ -77,16 +77,20 @@ Security Model
 3. Symlinks
 
     A symlink's *placement* is a path in the tree and is confined
-    like any other. Its *target* is graded:
+    like any other.
 
-    | in-dest   | relative target resolving inside dest —      |
-    |           | always allowed                               |
-    | external  | absolute, relative escaping dest, reaching   |
-    |           | outside through a link dest will hold, or    |
-    |           | a backslash or drive designator anywhere —   |
-    |           | refused unless --allow-external-targets      |
-    | not a     | empty, or carrying a NUL — refused under     |
-    | path      | either policy                                |
+    Its *target* is graded:
+
+        | in-dest   | relative target resolving inside dest —      |
+        |           | always allowed                               |
+        | external  | absolute, relative escaping dest, reaching   |
+        |           | outside through a link dest will hold, or    |
+        |           | a backslash or drive designator anywhere —   |
+        |           | refused unless --allow-external-targets      |
+        | not a     | empty, or carrying a NUL — refused under     |
+        | path      | either policy                                |
+
+    :: table header=0 ::
 
     Grading resolves the target string from the link's parent and
     follows the destination's own links hop by hop, so "pivot/passwd"

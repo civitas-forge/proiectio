@@ -20,19 +20,21 @@ Proiectio Design
     atomically and after every other write — and on a failed apply
     still persisted, recording the entries actually applied, so a
     partial run heals on re-run instead of classifying its own
-    writes as Foreign:
+    writes as Foreign.
 
-    pub struct Manifest {
-    pub version: u32,
-    pub entries: BTreeMap<Utf8PathBuf, ManifestEntry>,
-    }
-    pub struct ManifestEntry {
-    pub kind: EntryKind,          // File | Symlink | Block
-    pub hash: String,             // sha256 of written bytes;
-      //   Block: of the body
-    pub executable: bool,
-    pub owners: BTreeSet<String>, // opaque strings
-    }
+    The manifest and its entries:
+
+        pub struct Manifest {
+        pub version: u32,
+        pub entries: BTreeMap<Utf8PathBuf, ManifestEntry>,
+        }
+        pub struct ManifestEntry {
+        pub kind: EntryKind,          // File | Symlink | Block
+        pub hash: String,             // sha256 of written bytes;
+          //   Block: of the body
+        pub executable: bool,
+        pub owners: BTreeSet<String>, // opaque strings
+        }
 
     :: rust ::
 
@@ -48,13 +50,17 @@ Proiectio Design
     against it to choose actions. A non-UTF-8 entry on disk can never
     match a desired or a recorded path, so it stays outside the table —
     never overwritten, never removed, and a
-    directory holding one is never pruned:
+    directory holding one is never pruned.
 
-    | State   | Meaning                                            |
-    | Clean   | disk matches the recorded entry: bytes, kind, mode |
-    | Drifted | disk differs from the recorded entry — a user edit |
-    | Missing | recorded, but gone from disk                       |
-    | Foreign | on disk, absent from the manifest                  |
+    One state per path:
+
+        | State   | Meaning                                            |
+        | Clean   | disk matches the recorded entry: bytes, kind, mode |
+        | Drifted | disk differs from the recorded entry — a user edit |
+        | Missing | recorded, but gone from disk                       |
+        | Foreign | on disk, absent from the manifest                  |
+
+    :: table header=0 ::
 
     plan turns states into actions, per path:
 
@@ -129,29 +135,31 @@ Proiectio Design
 
 3. API
 
-    pub enum DriftPolicy { Refuse, Overwrite }
-    pub enum ExternalTargetPolicy { Refuse, Allow }
-    pub struct PlanOptions { drift, external_targets }
-    pub enum RemovalScope<'a> { Everything, Paths(&'a BTreeSet<Utf8PathBuf>) }
-    pub enum Origin { Caller, Mapping, Tree, Archive, Files }
+    The exported surface:
 
-    pub struct Projection { target: Utf8PathBuf, state_dir: Utf8PathBuf }
-    impl Projection {
-    // Reads: no lock, nothing written.
-    pub fn status(&self) -> Result<Status>;
-    pub fn manifest(&self) -> Result<Manifest>;
-    pub fn plan(&self, owner: &str, desired: &Desired,
-    origin: Origin, options: PlanOptions) -> Result<Planned>;
-    pub fn plan_removal(&self, owner: &str, scope: RemovalScope<'_>,
-    drift: DriftPolicy) -> Result<Planned>;
-    // The write pass.
-    pub fn begin(&self) -> Result<Run>;
-    }
-    impl Run {
-    pub fn plan(&mut self, ...) -> Result<&Plan>;
-    pub fn plan_removal(&mut self, ...) -> Result<&Plan>;
-    pub fn apply(self) -> Result<ApplyReport>;
-    }
+        pub enum DriftPolicy { Refuse, Overwrite }
+        pub enum ExternalTargetPolicy { Refuse, Allow }
+        pub struct PlanOptions { drift, external_targets }
+        pub enum RemovalScope<'a> { Everything, Paths(&'a BTreeSet<Utf8PathBuf>) }
+        pub enum Origin { Caller, Mapping, Tree, Archive, Files }
+
+        pub struct Projection { target: Utf8PathBuf, state_dir: Utf8PathBuf }
+        impl Projection {
+        // Reads: no lock, nothing written.
+        pub fn status(&self) -> Result<Status>;
+        pub fn manifest(&self) -> Result<Manifest>;
+        pub fn plan(&self, owner: &str, desired: &Desired,
+        origin: Origin, options: PlanOptions) -> Result<Planned>;
+        pub fn plan_removal(&self, owner: &str, scope: RemovalScope<'_>,
+        drift: DriftPolicy) -> Result<Planned>;
+        // The write pass.
+        pub fn begin(&self) -> Result<Run>;
+        }
+        impl Run {
+        pub fn plan(&mut self, ...) -> Result<&Plan>;
+        pub fn plan_removal(&mut self, ...) -> Result<&Plan>;
+        pub fn apply(self) -> Result<ApplyReport>;
+        }
 
     :: rust ::
 
