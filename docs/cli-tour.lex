@@ -35,7 +35,12 @@ The CLI
     An archive as the tree — --tree accepts .tar, .tar.gz/.tgz,
     .tar.zst and .zip, and treats the archive's members as the
     source tree. The extension picks the decoder; a wrong pick is an
-    error, not a guess. --strip N drops N leading path components.
+    error, not a guess. --strip N drops N leading path components. A
+    member the strip leaves with no path at all — the AppleDouble
+    ._ files a stock macOS tar embeds, typically — is skipped and
+    reported as a dropped row; a strip that would consume every
+    member the archive has fails the load instead of projecting an
+    empty tree.
 
     A release tarball wrapped in a top-level directory:
 
@@ -183,8 +188,10 @@ The CLI
     An archive entry is a tree constructor, not a node type: at plan
     time its members expand into ordinary file and symlink entries,
     hashed and tracked individually — status reports drift per
-    member, rm removes per member, and nothing downstream remembers
-    an archive existed. Directory members carry no entry of their
+    member, rm removes per member. The one trace of the archive
+    downstream is the dropped record each member a strip consumed
+    leaves in the write's report; the projected entries themselves
+    remember nothing. Directory members carry no entry of their
     own, as a walked directory does not: a projected tree implies its
     directories from its files' parent components, so an archive
     whose only content is an empty directory projects nothing.
