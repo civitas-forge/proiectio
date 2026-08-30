@@ -130,8 +130,12 @@ pub(crate) fn expand(
             // A zstd frame header names a window buffer allocated inside the
             // decoder, which no `Budgeted` reader sees; the reference
             // library's default would let a small archive ask for 128 MiB.
+            // The cap comes off what the load has left rather than the bound
+            // it opened at: a mapping that has already retained most of its
+            // budget would otherwise let a last archive allocate the whole
+            // bound over again.
             decoder
-                .window_log_max(window_log_max(budget.limit()))
+                .window_log_max(window_log_max(budget.remaining()))
                 .map_err(|e| decode_error(source, format, e))?;
             expansion.read_tar(Budgeted::new(decoder, Rc::clone(budget)))?;
         }
@@ -348,9 +352,19 @@ impl Expansion<'_> {
     /// carrying it, so a file already larger than the budget's remainder is
     /// refused here instead, and what the parser retains stays proportional
     /// to the bound.
+    ///
+    /// This is the one place a source's compressed size is weighed at all,
+    /// so [`Limits::max_source_bytes`] names it as the exception it is, and
+    /// [`Error::ArchiveFileTooLarge`] names the file's size beside the bound
+    /// rather than reporting the expansion budget as spent.
     fn read_zip(&mut self, reader: impl Read + Seek, on_disk: u64) -> Result<()> {
         if on_disk > self.budget.remaining() {
-            return Err(self.too_large());
+            return Err(Error::ArchiveFileTooLarge {
+                path: self.source.to_owned(),
+                size: on_disk,
+                remaining: self.budget.remaining(),
+                limit: self.budget.limit(),
+            });
         }
         let mut archive = zip::ZipArchive::new(reader).map_err(|e| self.decode(e.into()))?;
         if archive.len() > MAX_MEMBERS {

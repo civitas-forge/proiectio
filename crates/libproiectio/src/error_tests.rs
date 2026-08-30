@@ -128,6 +128,12 @@ fn every_variant() -> Vec<Error> {
             path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
             limit: 67_108_864,
         },
+        Error::ArchiveFileTooLarge {
+            path: Utf8PathBuf::from("/assets/vendor.zip"),
+            size: 70_000_000,
+            remaining: 67_108_864,
+            limit: 67_108_864,
+        },
         Error::ArchiveTooManyMembers {
             path: Utf8PathBuf::from("/assets/vendor.zip"),
             limit: 50_000,
@@ -181,7 +187,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    let (refusals, failures) = (8, 30);
+    let (refusals, failures) = (8, 31);
     assert_eq!(codes.len(), refusals + failures);
     assert!(codes[..refusals].iter().all(|&code| code == 2));
     assert!(codes[refusals..].iter().all(|&code| code == 1));
@@ -307,6 +313,23 @@ fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
         large.to_string(),
         "archive /assets/vendor.tar.gz expands past the 67108864 bytes one \
          load may hold in memory"
+    );
+
+    // The zip exception reads differently on purpose: it weighs the file
+    // rather than the expansion, so it says which file, how big it is, and
+    // what bound it is being held to.
+    let on_disk = Error::ArchiveFileTooLarge {
+        path: Utf8PathBuf::from("/assets/vendor.zip"),
+        size: 70_000_000,
+        remaining: 67_108_864,
+        limit: 67_108_864,
+    };
+    assert!(!on_disk.is_refusal());
+    assert_eq!(
+        on_disk.to_string(),
+        "archive /assets/vendor.zip is 70000000 bytes on disk, and a zip's index \
+         is read whole before any member, so the file itself has to fit: 67108864 \
+         bytes are left of the 67108864 one load may hold in memory"
     );
 
     // The same bound over a file read outside an archive: the message names
@@ -507,7 +530,7 @@ fn every_variant_serializes_under_a_kind_of_its_own() {
         })
         .collect();
 
-    let (refusals, failures) = (8, 30);
+    let (refusals, failures) = (8, 31);
     assert_eq!(kinds.len(), refusals + failures);
     assert!(kinds[..refusals].iter().all(|kind| kind == "refused"));
     assert_eq!(

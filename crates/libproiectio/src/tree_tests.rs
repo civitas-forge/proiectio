@@ -485,3 +485,41 @@ fn a_tree_whose_files_outweigh_the_bound_fails_the_load() {
     // both, and the default is wide enough for both together.
     load_tree(source.root(), Limits::default()).expect("load under the default bound");
 }
+
+// File bytes are not all a walk holds. A tree of empty files carries no
+// contents at all and still costs a key apiece, so the keys are spent too —
+// otherwise a directory of a million empty names would walk clean under any
+// bound, the zero-byte one included.
+#[test]
+fn a_tree_of_empty_files_spends_the_bound_on_the_names_it_holds() {
+    let mut source = Tree::new();
+    for index in 0..100 {
+        source = source.file(format!("empty-{index:03}"), "");
+    }
+    let source = source.materialize();
+
+    // Each key is "empty-NNN": nine bytes, so a hundred of them is 900.
+    let limits = Limits::default().with_max_source_bytes(800);
+    assert!(matches!(
+        load_tree(source.root(), limits).unwrap_err(),
+        Error::SourceTooLarge { limit, .. } if limit == 800
+    ));
+    load_tree(source.root(), Limits::default().with_max_source_bytes(900))
+        .expect("a bound covering every key exactly");
+}
+
+// A symlink's target is read out of the source tree and held as long as the
+// tree is, so it is spent like a file's bytes.
+#[test]
+fn a_symlink_target_spends_the_bound() {
+    let source = Tree::new().symlink("current", "releases/v1").materialize();
+
+    // "current" is 7 bytes of key and "releases/v1" is 11 of target.
+    let limits = Limits::default().with_max_source_bytes(17);
+    assert!(matches!(
+        load_tree(source.root(), limits).unwrap_err(),
+        Error::SourceTooLarge { limit, .. } if limit == 17
+    ));
+    load_tree(source.root(), Limits::default().with_max_source_bytes(18))
+        .expect("a bound covering the key and the target");
+}

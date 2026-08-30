@@ -62,6 +62,8 @@ pub(crate) enum Commands {
         ///
         /// One bound across every source the run reads, in bytes: an
         /// archive counts what it expands to rather than its size on disk.
+        /// A zip counts both — its index is read whole before any member,
+        /// so the zip file itself has to fit too.
         #[arg(long, id = "max-source-size", value_name = "BYTES")]
         max_source_size: Option<u64>,
 

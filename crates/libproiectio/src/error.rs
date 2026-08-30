@@ -244,6 +244,27 @@ pub enum Error {
         /// which every source the load reads spends together.
         limit: u64,
     },
+    /// A zip's own file is larger than what the load has left to hold, so
+    /// the archive is refused before it is parsed: a zip is read index-first,
+    /// and that index is not smaller than the file carrying it. Every other
+    /// format is weighed by what it expands to. Not a refusal.
+    #[error(
+        "archive {path} is {size} bytes on disk, and a zip's index is read whole before any \
+         member, so the file itself has to fit: {remaining} bytes are left of the {limit} one \
+         load may hold in memory"
+    )]
+    ArchiveFileTooLarge {
+        /// The archive's location.
+        path: Utf8PathBuf,
+        /// The archive file's own size on disk, which is what was weighed.
+        size: u64,
+        /// What the load had left when it reached this archive. A load
+        /// reading one archive and nothing else has its whole bound left.
+        remaining: u64,
+        /// The load's [`Limits::max_source_bytes`](crate::Limits::max_source_bytes),
+        /// which is the number to raise.
+        limit: u64,
+    },
     /// A file a load reads — a walked tree's, a loose one, a mapping file or
     /// a file its `source` names — ran the load past what it may hold in
     /// memory. The named file is the one the load was reading when the bytes

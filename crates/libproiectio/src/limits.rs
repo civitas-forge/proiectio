@@ -32,6 +32,10 @@ pub struct Limits {
     /// tree's files, the loose files named on their own, a mapping file's own
     /// text, and each file a mapping's `source` names. The compressed size of
     /// an archive on disk is not what is counted — what it expands to is.
+    ///
+    /// A zip is the one exception, and it is weighed both ways: a zip's
+    /// index is parsed whole before any member is read, so the zip file
+    /// itself has to fit this bound as well as what it expands to.
     pub max_source_bytes: u64,
 }
 

@@ -18,7 +18,9 @@ use crate::{Desired, Entry, Error, Limits, MAX_WALK_DEPTH, Origin, Refusal, Refu
 /// Walked keys the containment gateway refuses are aggregated into one
 /// [`Refusal::Containment`]; a name or target that is not UTF-8, a node kind
 /// the projection never writes, a tree nesting past [`MAX_WALK_DEPTH`], and a
-/// walk whose files sum past [`Limits::max_source_bytes`] each fail the load.
+/// walk whose contents sum past [`Limits::max_source_bytes`] each fail the
+/// load. That sum is everything the walk holds: file bytes, the key each
+/// entry is filed under, and each symlink's target.
 pub fn load_tree(source: &Utf8Path, limits: Limits) -> Result<Desired> {
     let source = crate::absolutize(source)?;
     let source = source.as_path();
@@ -60,7 +62,7 @@ struct Walk<'a> {
     source: &'a Utf8Path,
     tree: BTreeMap<Utf8PathBuf, Entry>,
     refused: BTreeSet<Utf8PathBuf>,
-    /// One budget across the whole walk: every file it reads is held in the
+    /// One budget across the whole walk: everything it reads is held in the
     /// tree at once.
     budget: &'a Budget,
 }
@@ -137,8 +139,37 @@ impl Walk<'_> {
                     path: self.absolute(&rel),
                 });
             };
-            self.tree.insert(key, node);
+            self.retain(&rel, key, node)?;
         }
+        Ok(())
+    }
+
+    /// Enters one walked node in the tree, spending what holding it costs.
+    ///
+    /// A file's bytes are already spent by the time this is called, but they
+    /// are not all the walk keeps: the key every entry is filed under and the
+    /// target every symlink carries are bytes read out of the source tree and
+    /// held for as long as the tree is. Nothing else bounds how many entries
+    /// a walk may retain — a directory of a million empty files or symlinks
+    /// costs no file bytes at all — so charging what is retained is what
+    /// bounds it, without a second constant to keep in step with the first.
+    fn retain(&mut self, rel: &Utf8Path, key: Utf8PathBuf, node: Entry) -> Result<()> {
+        // What holding this entry costs beyond the file bytes
+        // `Budget::read_to_end` already spent: the key, and whatever the node
+        // carries of its own.
+        let held = key.as_str().len()
+            + match &node {
+                Entry::File { .. } => 0,
+                Entry::Symlink { target } => target.len(),
+                Entry::Block { body, marker, .. } => body.len() + marker.len(),
+            };
+        if !self.budget.spend(held as u64) {
+            return Err(Error::SourceTooLarge {
+                path: self.absolute(rel),
+                limit: self.budget.limit(),
+            });
+        }
+        self.tree.insert(key, node);
         Ok(())
     }
 

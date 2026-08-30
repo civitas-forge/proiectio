@@ -16,7 +16,8 @@ pub(crate) struct ProiectioConfig {
     pub(crate) owner: String,
 
     /// How many bytes one write may read from its sources, counting an
-    /// archive as it expands rather than as it sits on disk.
+    /// archive as it expands rather than as it sits on disk — except a zip,
+    /// whose file must fit too, since its index is read before any member.
     /// Default for `--max-source-size`; the flag always wins.
     #[clapfig(default = 524_288_000)]
     pub(crate) max_source_size: u64,

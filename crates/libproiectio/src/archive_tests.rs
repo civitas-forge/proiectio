@@ -937,6 +937,36 @@ fn a_zstd_frame_whose_window_fits_the_bound_is_not_refused_for_its_window() {
     assert!(!error.to_string().contains("too much memory"), "{error}");
 }
 
+// The cap is taken off what the load has left, not off the bound it opened
+// at. A mapping expands its archives against one budget, so a last archive
+// asking for a window the earlier sources already spent would allocate the
+// bound a second time — the decoder holds that buffer whatever the reader
+// beyond it goes on to meter.
+#[test]
+fn a_spent_budget_narrows_the_window_a_later_archive_may_ask_for() {
+    // A frame header asking for a 512 KiB window: 2^(10 + 9), no mantissa.
+    let mut bytes = vec![0x28, 0xB5, 0x2F, 0xFD, 0x00];
+    bytes.push(9 << 3);
+    let fixture = Tree::new().file("late.tar.zst", bytes).materialize();
+    let path = fixture.path("late.tar.zst");
+    let limits = Limits::default().with_max_source_bytes(1 << 20);
+    let expand_with = |budget: &Rc<Budget>| {
+        expand(&path, 0, Utf8Path::new(""), None, budget)
+            .unwrap_err()
+            .to_string()
+    };
+
+    // Against the whole 1 MiB bound the window is inside what the load may
+    // hold, and the frame fails on the nothing behind its header instead.
+    let fresh = Rc::new(Budget::new(limits));
+    assert!(!expand_with(&fresh).contains("too much memory"));
+
+    // The same frame reached with 256 KiB left is refused at the window.
+    let spent = Rc::new(Budget::new(limits));
+    assert!(spent.spend((1 << 20) - (1 << 18)));
+    assert!(expand_with(&spent).contains("too much memory"));
+}
+
 // The zstd counterpart: frames concatenate the same way.
 #[test]
 fn a_tar_split_across_zstd_frames_expands_whole() {
@@ -1422,10 +1452,29 @@ fn a_zip_larger_than_the_bound_is_refused_before_its_directory_is_parsed() {
     let path = fixture.path("wide.zip");
 
     let tight = Limits::default().with_max_source_bytes(bytes.len() as u64 - 1);
-    assert!(matches!(
-        load_archive(&path, 0, tight).unwrap_err(),
-        Error::ArchiveTooLarge { limit, .. } if limit == tight.max_source_bytes
-    ));
+    let error = load_archive(&path, 0, tight).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            Error::ArchiveFileTooLarge { size, remaining, limit, .. }
+                if *size == bytes.len() as u64
+                    && *remaining == tight.max_source_bytes
+                    && *limit == tight.max_source_bytes
+        ),
+        "{error}"
+    );
+    // The one refusal weighing a file rather than what it expands to says so,
+    // and names both numbers: the operator can see that raising the bound
+    // past the file is what answers it.
+    let message = error.to_string();
+    assert!(
+        message.contains(&format!("is {} bytes on disk", bytes.len())),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!("{} one load may hold", tight.max_source_bytes)),
+        "{message}"
+    );
     assert!(matches!(
         load_archive(&path, 0, Limits::default()).unwrap_err(),
         Error::ArchiveDecode { format, .. } if format == ArchiveFormat::Zip
