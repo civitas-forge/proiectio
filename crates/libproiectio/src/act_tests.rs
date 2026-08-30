@@ -411,17 +411,7 @@ fn removal_pipeline(
         let manifest = load_manifest(&state).expect("load manifest");
         let observations =
             observe(&dest, &manifest, &BlockMarkers::new()).expect("observe destination");
-        let plan = decide_removal(
-            owner,
-            scope,
-            &manifest,
-            &observations,
-            None,
-            PlanOptions {
-                drift: policy,
-                ..PlanOptions::default()
-            },
-        );
+        let plan = decide_removal(owner, scope, &manifest, &observations, None, policy);
         (manifest, plan)
     };
     apply_at(dest, state, &manifest, &plan)
@@ -2806,7 +2796,7 @@ fn removing_a_block_leaves_the_container_byte_identical_apart_from_the_region() 
                 &manifest,
                 &observations,
                 None,
-                PlanOptions::default(),
+                DriftPolicy::Refuse,
             );
             (manifest, plan)
         };
@@ -3279,7 +3269,7 @@ fn the_bytes_outside_a_region_are_never_interpreted() {
             &manifest,
             &observations,
             None,
-            PlanOptions::default(),
+            DriftPolicy::Refuse,
         );
         (manifest, plan)
     };
@@ -3402,10 +3392,7 @@ fn a_second_marker_line_past_the_edge_refuses_and_strands_nothing() {
                 &manifest,
                 &observations,
                 None,
-                PlanOptions {
-                    drift: DriftPolicy::Overwrite,
-                    ..PlanOptions::default()
-                },
+                DriftPolicy::Overwrite,
             );
             (manifest, plan)
         };

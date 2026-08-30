@@ -226,7 +226,7 @@ fn a_removal_run_clears_what_the_owner_holds() {
     run.apply().expect("apply");
 
     let mut run = projection.begin().expect("begin the removal");
-    run.plan_removal("harness", RemovalScope::Everything, PlanOptions::default())
+    run.plan_removal("harness", RemovalScope::Everything, DriftPolicy::Refuse)
         .expect("plan the removal");
     run.apply().expect("apply the removal");
 
@@ -279,7 +279,7 @@ fn a_removal_plan_names_no_source() {
     let projection = projection(&dest, state.root());
 
     let planned = projection
-        .plan_removal("harness", RemovalScope::Everything, PlanOptions::default())
+        .plan_removal("harness", RemovalScope::Everything, DriftPolicy::Refuse)
         .expect("plan the removal");
 
     assert!(planned.plan.origins.is_empty());

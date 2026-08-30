@@ -2,8 +2,8 @@
 //! `libproiectio::Status` itself, so its structured output is the library's own.
 
 mod config;
-mod write;
+mod run;
 
 pub(crate) use config::ConfigView;
-pub(crate) use write::WriteView;
-pub(crate) use write::lines as write_lines;
+pub(crate) use run::RunView;
+pub(crate) use run::lines as run_lines;

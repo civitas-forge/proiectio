@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use libproiectio::{Desired, Entry, PlanOptions, Projection};
+use libproiectio::{Desired, Entry, Manifest, PlanOptions, Projection};
 use standout::{ColorMode, DEFAULT_MISSING_STYLE_INDICATOR as MISSING, Theme};
 use standout_test::TestHarness;
 use tempfile::TempDir;
@@ -24,6 +24,32 @@ pub(crate) fn harness(dir: &TempDir) -> TestHarness {
 
 pub(crate) fn utf8(dir: &TempDir) -> Utf8PathBuf {
     Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("a UTF-8 temporary directory")
+}
+
+/// The tour's own material: a mapping beside its assets, and an empty
+/// destination under the same working directory.
+pub(crate) fn tour() -> (TempDir, Utf8PathBuf, Utf8PathBuf) {
+    let dir = TempDir::new().expect("a temporary directory");
+    let root = utf8(&dir);
+    let dest = root.join("dest");
+    std::fs::create_dir(&dest).expect("a destination");
+    let deploy = mapping(&root);
+    (dir, dest, deploy)
+}
+
+/// What a projection recorded, read back through the library.
+pub(crate) fn manifest_of(dest: &Utf8Path) -> Manifest {
+    Projection::new(dest, None)
+        .expect("a projection")
+        .manifest()
+        .expect("a manifest")
+}
+
+pub(crate) fn modified(path: &Utf8Path) -> std::time::SystemTime {
+    std::fs::metadata(path)
+        .expect("a projected path")
+        .modified()
+        .expect("a modification time")
 }
 
 /// Projects three files, then edits one and removes another, so a status of
