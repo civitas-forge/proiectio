@@ -27,9 +27,7 @@ pub(crate) fn utf8(dir: &TempDir) -> Utf8PathBuf {
 }
 
 /// Projects three files, then edits one and removes another, so a status of
-/// `dest` reads one drifted, one clean and one missing path — and, since the
-/// manifest records files rather than the directories they imply, `bin` and
-/// `config` as foreign.
+/// `dest` reads one drifted, one clean and one missing path.
 pub(crate) fn classified(dest: &Utf8Path) {
     project(
         dest,

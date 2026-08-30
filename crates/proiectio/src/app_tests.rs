@@ -41,9 +41,7 @@ fn classified_dir() -> (TempDir, Utf8PathBuf) {
 }
 
 /// One line per classified path, the state padded to the width of the widest,
-/// as `docs/cli-tour.lex` section 3 states it. The directories the projected
-/// files imply are on disk and absent from the manifest, which is the library's
-/// `Foreign`, so they classify on the same terms as any other unrecorded path.
+/// as `docs/cli-tour.lex` section 3 states it.
 #[test]
 #[serial]
 fn status_prints_one_line_per_recorded_path() {
@@ -58,8 +56,7 @@ fn status_prints_one_line_per_recorded_path() {
     result.assert_success();
     assert_eq!(
         result.stdout(),
-        "foreign  bin\ndrifted  bin/tool\nforeign  config\n\
-         clean    config/settings.toml\nmissing  current\n"
+        "drifted  bin/tool\nclean    config/settings.toml\nmissing  current\n"
     );
     let stdout = result.stdout();
     assert!(
@@ -292,7 +289,6 @@ fn a_path_spelled_like_a_style_tag_renders_as_itself() {
 
     let text = harness(&dir).run(&app(), cli::command(), argv);
     text.assert_success();
-    text.assert_stdout_contains(&format!("foreign  {DIRECTORY}"));
     text.assert_stdout_contains(&format!("foreign  {FILE}"));
 
     let term = harness(&dir)
@@ -306,7 +302,7 @@ fn a_path_spelled_like_a_style_tag_renders_as_itself() {
         .run(&app(), cli::command(), argv);
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
-    assert_eq!(value["rows"][DIRECTORY]["verdict"], "Foreign");
+    assert_eq!(value["rows"][DIRECTORY], JsonValue::Null);
     assert_eq!(value["rows"][FILE]["verdict"], "Foreign");
 }
 
@@ -462,8 +458,8 @@ fn a_rendered_block_keeps_its_lines_and_escapes_the_rest() {
 fn a_path_carrying_control_characters_renders_as_visible_escapes() {
     const ESCAPE: &str = "\u{1b}[31mred";
     const NEWLINE: &str = "two\nlines";
-    /// The five rows `classified` leaves, plus the two files below.
-    const ROWS: usize = 7;
+    /// The three rows `classified` leaves, plus the two files below.
+    const ROWS: usize = 5;
 
     let (dir, dest) = classified_dir();
     std::fs::write(dest.join(ESCAPE), b"not ours\n").expect("a stray file");
