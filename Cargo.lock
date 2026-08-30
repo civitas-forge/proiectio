@@ -1518,6 +1518,7 @@ dependencies = [
  "camino",
  "clap",
  "clapfig",
+ "directories",
  "flate2",
  "libproiectio",
  "minijinja",

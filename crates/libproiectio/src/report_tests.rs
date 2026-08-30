@@ -102,29 +102,62 @@ fn an_empty_report_summarizes_to_nothing() {
     assert!(report.summary().is_empty());
 }
 
+// The one row a single-row report serializes, so a case reading fields can
+// name them without indexing past a sequence.
+fn serialized_row(report: &Report<PathState>) -> serde_json::Value {
+    let json = serde_json::to_value(report).expect("serialize");
+    let mut rows = json["rows"].as_array().expect("a rows array").clone();
+    assert_eq!(rows.len(), 1, "one row");
+    rows.remove(0)
+}
+
 #[test]
-fn a_report_serializes_with_paths_as_keys_and_no_bytes() {
+fn a_report_serializes_one_record_per_row_and_no_bytes() {
     let json = serde_json::to_value(two_rows()).expect("serialize");
 
     assert_eq!(
         json,
         serde_json::json!({
-            "rows": {
-                "bin/tool": {
+            "rows": [
+                {
+                    "path": "bin/tool",
+                    "verdict": "Drifted",
                     "facts": {
                         "shape": { "File": { "executable": true } },
                         "owners": ["site"],
                         "origin": { "Mapping": { "path": "/etc/deploy.toml" } },
                     },
-                    "verdict": "Drifted",
                 },
-                "theirs.txt": {
-                    "facts": null,
+                {
+                    "path": "theirs.txt",
                     "verdict": "Foreign",
+                    "facts": null,
                 },
-            }
+            ]
         })
     );
+}
+
+// A path is a value in every format the CLI writes, so two paths one XML
+// element name cannot tell apart still serialize as two rows.
+#[test]
+fn paths_that_share_an_xml_element_name_serialize_as_separate_rows() {
+    let report = Report {
+        rows: BTreeMap::from([
+            (Utf8PathBuf::from("a/b"), row(None, PathState::Foreign)),
+            (Utf8PathBuf::from("a_b"), row(None, PathState::Foreign)),
+        ]),
+    };
+
+    let json = serde_json::to_value(&report).expect("serialize");
+
+    let paths: Vec<&str> = json["rows"]
+        .as_array()
+        .expect("a rows array")
+        .iter()
+        .map(|row| row["path"].as_str().expect("a path"))
+        .collect();
+    assert_eq!(paths, vec!["a/b", "a_b"]);
 }
 
 #[test]
@@ -144,13 +177,14 @@ fn a_symlink_row_carries_its_target_verbatim() {
         )]),
     };
 
-    let json = serde_json::to_value(&report).expect("serialize");
+    let json = serialized_row(&report);
 
+    assert_eq!(json["path"], "current");
     assert_eq!(
-        json["rows"]["current"]["facts"]["shape"]["Symlink"]["target"],
+        json["facts"]["shape"]["Symlink"]["target"],
         "releases/1.2.3"
     );
-    assert_eq!(json["rows"]["current"]["facts"]["origin"], "Caller");
+    assert_eq!(json["facts"]["origin"], "Caller");
 }
 
 // A status row knows the manifest's hash of a link target rather than the
@@ -167,8 +201,8 @@ fn a_row_can_name_neither_target_nor_origin() {
         )]),
     };
 
-    let json = serde_json::to_value(&report).expect("serialize");
+    let json = serialized_row(&report);
 
-    assert!(json["rows"]["current"]["facts"]["shape"]["Symlink"]["target"].is_null());
-    assert!(json["rows"]["current"]["facts"]["origin"].is_null());
+    assert!(json["facts"]["shape"]["Symlink"]["target"].is_null());
+    assert!(json["facts"]["origin"].is_null());
 }

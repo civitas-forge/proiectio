@@ -7,9 +7,9 @@ use std::collections::BTreeSet;
 use camino::{Utf8Path, Utf8PathBuf};
 use clapfig::ConfigAction;
 use libproiectio::{
-    Aborted, Desired, DriftPolicy, Error, ExternalTargetPolicy, Manifest, Plan, PlanOptions,
-    PlannedAction, Projection, RemovalScope, Report, Run, Status, load_files, load_mapping,
-    load_source,
+    Aborted, Desired, DriftPolicy, Error, ExternalTargetPolicy, Limits, Manifest, Plan,
+    PlanOptions, PlannedAction, Projection, RemovalScope, Report, Run, Status, load_files,
+    load_mapping, load_source,
 };
 use standout::cli::{CommandContext, Output};
 use standout::handler;
@@ -30,13 +30,14 @@ pub(crate) fn write(
     #[arg] tree: Option<Utf8PathBuf>,
     #[arg] strip: Option<u32>,
     #[arg] owner: Option<String>,
+    #[arg(name = "max-source-size")] max_source_size: Option<u64>,
     #[flag(name = "dry-run")] dry_run: bool,
     #[flag] force: bool,
     #[flag(name = "allow-external-targets")] allow_external_targets: bool,
     #[ctx] ctx: &CommandContext,
 ) -> Result<Output<RunView>, anyhow::Error> {
-    let desired = desired(&paths, tree.as_deref(), strip).map_err(exit::failure)?;
-    let owner = owner_or_configured(owner)?;
+    let (owner, limits) = write_settings(owner, max_source_size)?;
+    let desired = desired(&paths, tree.as_deref(), strip, limits).map_err(exit::failure)?;
     let options = PlanOptions {
         drift: drift(force),
         external_targets: if allow_external_targets {
@@ -99,6 +100,29 @@ fn owner_or_configured(owner: Option<String>) -> Result<String, anyhow::Error> {
         Some(named) => Ok(named),
         None => Ok(settings::builder().load()?.owner),
     }
+}
+
+/// The two settings a write layers a flag over: `--owner` above `owner`, and
+/// `--max-source-size` above `max_source_size`. One load answers both, and a
+/// run whose flags name both never reads the configuration at all.
+fn write_settings(
+    owner: Option<String>,
+    max_source_size: Option<u64>,
+) -> Result<(String, Limits), anyhow::Error> {
+    let (owner, max_source_bytes) = match (owner, max_source_size) {
+        (Some(owner), Some(bytes)) => (owner, bytes),
+        (owner, max_source_size) => {
+            let configured = settings::builder().load()?;
+            (
+                owner.unwrap_or(configured.owner),
+                max_source_size.unwrap_or(configured.max_source_size),
+            )
+        }
+    };
+    Ok((
+        owner,
+        Limits::default().with_max_source_bytes(max_source_bytes),
+    ))
 }
 
 fn drift(force: bool) -> DriftPolicy {
@@ -220,11 +244,12 @@ fn desired(
     paths: &[Utf8PathBuf],
     tree: Option<&Utf8Path>,
     strip: Option<u32>,
+    limits: Limits,
 ) -> libproiectio::Result<Desired> {
     match (tree, paths) {
-        (Some(tree), _) => load_source(tree, strip),
-        (None, [mapping]) => load_mapping(mapping),
-        (None, files) => load_files(files),
+        (Some(tree), _) => load_source(tree, strip, limits),
+        (None, [mapping]) => load_mapping(mapping, limits),
+        (None, files) => load_files(files, limits),
     }
 }
 
@@ -238,8 +263,9 @@ pub(crate) fn status(
 }
 
 fn run_config(action: ConfigAction) -> Result<Output<ConfigView>, anyhow::Error> {
+    settings::check_edit_path(&action).map_err(exit::failure)?;
     let result = settings::builder().handle(&action)?;
-    ConfigView::try_from(result)
+    ConfigView::of(result, settings::persisted_edit)
         .map(Output::Render)
         .map_err(exit::failure)
 }
@@ -263,6 +289,7 @@ pub(crate) fn config_get(
     #[arg] key: String,
     #[arg] scope: Option<String>,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
+    settings::require_key(&key)?;
     run_config(ConfigAction::Get { key, scope })
 }
 
@@ -272,6 +299,7 @@ pub(crate) fn config_set(
     #[arg] value: String,
     #[arg] scope: Option<String>,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
+    settings::require_key(&key)?;
     run_config(ConfigAction::Set { key, value, scope })
 }
 
@@ -280,6 +308,7 @@ pub(crate) fn config_unset(
     #[arg] key: String,
     #[arg] scope: Option<String>,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
+    settings::require_key(&key)?;
     run_config(ConfigAction::Unset { key, scope })
 }
 

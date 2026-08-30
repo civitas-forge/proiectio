@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use libproiectio::{Desired, Entry, Manifest, PlanOptions, Projection};
+use serde_json::Value as JsonValue;
 use standout::{ColorMode, DEFAULT_MISSING_STYLE_INDICATOR as MISSING, Theme};
 use standout_test::TestHarness;
 use tempfile::TempDir;
@@ -43,6 +44,20 @@ pub(crate) fn manifest_of(dest: &Utf8Path) -> Manifest {
         .expect("a projection")
         .manifest()
         .expect("a manifest")
+}
+
+/// The row a serialized report states for `path`, and `None` where it states
+/// none: rows are a sequence, each record carrying its own path.
+pub(crate) fn row<'a>(rows: &'a JsonValue, path: &str) -> Option<&'a JsonValue> {
+    rows.as_array()
+        .expect("a rows sequence")
+        .iter()
+        .find(|row| row["path"] == path)
+}
+
+/// The same row, where the case has already established the report states it.
+pub(crate) fn stated<'a>(rows: &'a JsonValue, path: &str) -> &'a JsonValue {
+    row(rows, path).unwrap_or_else(|| panic!("a row for {path}"))
 }
 
 pub(crate) fn modified(path: &Utf8Path) -> std::time::SystemTime {

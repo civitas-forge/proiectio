@@ -86,7 +86,7 @@ fn a_tree_of_files_exec_bits_and_an_in_tree_link_round_trips() {
         .symlink("current", "releases/1.2.3");
     let source = declared.materialize();
 
-    let desired = load_tree(source.root()).unwrap();
+    let desired = load_tree(source.root(), crate::Limits::default()).unwrap();
     assert_eq!(desired, from_tree(&source, declared.entries()));
 
     let (dest, state) = (Tree::new().materialize(), Tree::new().materialize());
@@ -113,7 +113,7 @@ fn a_link_out_of_the_tree_is_carried_verbatim_and_graded_external() {
         .symlink("climb", "../../elsewhere")
         .materialize();
 
-    let desired = load_tree(source.root()).unwrap();
+    let desired = load_tree(source.root(), crate::Limits::default()).unwrap();
     assert_eq!(
         desired,
         from_tree(
@@ -163,7 +163,7 @@ fn a_directory_link_out_of_the_tree_is_carried_not_walked_into() {
         .symlink("peek", outside.path("secrets").as_str())
         .materialize();
 
-    let keys: Vec<String> = load_tree(source.root())
+    let keys: Vec<String> = load_tree(source.root(), crate::Limits::default())
         .unwrap()
         .iter()
         .map(|(key, _)| key.as_str().to_owned())
@@ -178,7 +178,7 @@ fn an_in_tree_link_is_graded_in_dest() {
         .symlink("current", "releases/1.2.3")
         .materialize();
 
-    let actions = actions_for(&load_tree(source.root()).unwrap());
+    let actions = actions_for(&load_tree(source.root(), crate::Limits::default()).unwrap());
     assert!(matches!(
         actions.get(Utf8Path::new("current")),
         Some(Action::Write { .. })
@@ -196,7 +196,7 @@ fn an_archive_inside_the_tree_is_a_file_copied_byte_for_byte() {
     let declared = Tree::new().file("vendor/bundle.tar.gz", ARCHIVE);
     let source = declared.materialize();
 
-    let desired = load_tree(source.root()).unwrap();
+    let desired = load_tree(source.root(), crate::Limits::default()).unwrap();
     assert_eq!(
         desired,
         from_tree(
@@ -232,7 +232,7 @@ fn empty_directories_carry_no_entry() {
         .file("deep/nested/file.txt", "x")
         .materialize();
 
-    let keys: Vec<String> = load_tree(source.root())
+    let keys: Vec<String> = load_tree(source.root(), crate::Limits::default())
         .unwrap()
         .iter()
         .map(|(key, _)| key.as_str().to_owned())
@@ -244,14 +244,17 @@ fn empty_directories_carry_no_entry() {
 fn a_source_holding_nothing_projects_nothing() {
     let source = Tree::new().materialize();
 
-    assert_eq!(load_tree(source.root()).unwrap(), Desired::new());
+    assert_eq!(
+        load_tree(source.root(), crate::Limits::default()).unwrap(),
+        Desired::new()
+    );
 }
 
 #[test]
 fn keys_stay_slash_separated_on_every_host() {
     let source = Tree::new().file("a/b/c.txt", "x").materialize();
 
-    let keys: Vec<String> = load_tree(source.root())
+    let keys: Vec<String> = load_tree(source.root(), crate::Limits::default())
         .unwrap()
         .iter()
         .map(|(key, _)| key.as_str().to_owned())
@@ -279,7 +282,7 @@ fn names_the_containment_gateway_refuses_are_reported_together_verbatim() {
     // A walked key is spelled relative to the source root, so the refusal
     // names the root it is spelled against.
     assert!(matches!(
-        load_tree(source.root()).unwrap_err(),
+        load_tree(source.root(), crate::Limits::default()).unwrap_err(),
         Error::Refused(refused) if refused.kind() == RefusalKind::Containment && origins_of(&refused) == want
     ));
 }
@@ -297,7 +300,7 @@ fn a_directory_the_gateway_refuses_is_named_instead_of_its_descendants() {
 
     let want = refused(&source, &["COM1"]);
     assert!(matches!(
-        load_tree(source.root()).unwrap_err(),
+        load_tree(source.root(), crate::Limits::default()).unwrap_err(),
         Error::Refused(refused) if refused.kind() == RefusalKind::Containment && origins_of(&refused) == want
     ));
 }
@@ -311,7 +314,7 @@ fn a_refused_directory_holding_nothing_is_still_refused() {
 
     let want = refused(&source, &["weird:name"]);
     assert!(matches!(
-        load_tree(source.root()).unwrap_err(),
+        load_tree(source.root(), crate::Limits::default()).unwrap_err(),
         Error::Refused(refused) if refused.kind() == RefusalKind::Containment && origins_of(&refused) == want
     ));
 }
@@ -335,12 +338,12 @@ fn a_tree_at_the_depth_limit_loads_and_one_past_it_is_named() {
     let deepest = nest(source.root(), MAX_WALK_DEPTH);
     fs::write(deepest.join("marker"), "deep").expect("write the deepest file");
 
-    let desired = load_tree(source.root()).unwrap();
+    let desired = load_tree(source.root(), crate::Limits::default()).unwrap();
     assert_eq!(desired.len(), 1);
 
     let past = nest(source.root(), MAX_WALK_DEPTH + 1);
     assert!(matches!(
-        load_tree(source.root()).unwrap_err(),
+        load_tree(source.root(), crate::Limits::default()).unwrap_err(),
         Error::TreeTooDeep { path, limit } if path == past && limit == MAX_WALK_DEPTH
     ));
 }
@@ -354,7 +357,7 @@ fn a_node_kind_the_projection_never_writes_is_named_and_never_opened() {
     let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind a unix socket");
 
     assert!(matches!(
-        load_tree(source.root()).unwrap_err(),
+        load_tree(source.root(), crate::Limits::default()).unwrap_err(),
         Error::TreeNodeKind { path } if path == socket
     ));
 }
@@ -372,7 +375,7 @@ fn a_symlink_target_that_is_not_utf8_names_the_link() {
     .expect("create a link with a non-UTF-8 target");
 
     assert!(matches!(
-        load_tree(source.root()).unwrap_err(),
+        load_tree(source.root(), crate::Limits::default()).unwrap_err(),
         Error::TreeTargetNotUtf8 { path, target }
             if path == link && target.starts_with("target")
     ));
@@ -391,7 +394,7 @@ fn a_name_that_is_not_utf8_names_the_directory_holding_it() {
     fs::write(&bad, "x").expect("write a file with a non-UTF-8 name");
 
     assert!(matches!(
-        load_tree(source.root()).unwrap_err(),
+        load_tree(source.root(), crate::Limits::default()).unwrap_err(),
         Error::TreeNameNotUtf8 { path, name }
             if path == dir && name.starts_with("bad")
     ));
@@ -405,7 +408,7 @@ fn executable_bits_come_from_the_source_metadata() {
         .materialize();
 
     assert_eq!(
-        load_tree(source.root()).unwrap(),
+        load_tree(source.root(), crate::Limits::default()).unwrap(),
         from_tree(
             &source,
             BTreeMap::from([
@@ -434,7 +437,7 @@ fn a_missing_source_is_an_io_error_naming_it() {
     let gone = fixture.path("gone");
 
     assert!(matches!(
-        load_tree(&gone).unwrap_err(),
+        load_tree(&gone, crate::Limits::default()).unwrap_err(),
         Error::Io { path, .. } if path == gone
     ));
 }
@@ -447,7 +450,7 @@ fn a_source_that_is_a_file_is_an_io_error_naming_it() {
     let file = fixture.path("notes.txt");
 
     assert!(matches!(
-        load_tree(&file).unwrap_err(),
+        load_tree(&file, crate::Limits::default()).unwrap_err(),
         Error::Io { path, .. } if path == file
     ));
 }
@@ -457,7 +460,117 @@ fn a_relative_source_path_resolves_against_the_current_directory() {
     let absent = MissingName::with_suffix("");
 
     assert!(matches!(
-        load_tree(absent.relative()).unwrap_err(),
+        load_tree(absent.relative(), crate::Limits::default()).unwrap_err(),
         Error::Io { path, .. } if path == absent.absolute()
     ));
+}
+
+// The bound covers a walked tree's files, not just archives: the walk holds
+// every file it reads in the tree at once, so the same budget meters it.
+#[test]
+fn a_tree_whose_files_outweigh_the_bound_fails_the_load() {
+    let source = Tree::new()
+        .file("a.bin", "0".repeat(600))
+        .file("b.bin", "0".repeat(600))
+        .materialize();
+
+    let limits = Limits {
+        max_source_bytes: 1000,
+    };
+    assert!(matches!(
+        load_tree(source.root(), limits).unwrap_err(),
+        Error::SourceTooLarge { limit, .. } if limit == 1000
+    ));
+    // Neither file exceeds the bound alone; the walk spends one budget across
+    // both, and the default is wide enough for both together.
+    load_tree(source.root(), Limits::default()).expect("load under the default bound");
+}
+
+// File bytes are not all a walk holds. A tree of empty files carries no
+// contents at all and still costs a key apiece, so the keys are spent too —
+// otherwise a directory of a million empty names would walk clean under any
+// bound, the zero-byte one included.
+#[test]
+fn a_tree_of_empty_files_spends_the_bound_on_the_names_it_holds() {
+    let mut source = Tree::new();
+    for index in 0..100 {
+        source = source.file(format!("empty-{index:03}"), "");
+    }
+    let source = source.materialize();
+
+    // Each key is "empty-NNN": nine bytes, so a hundred of them is 900.
+    let limits = Limits::default().with_max_source_bytes(800);
+    assert!(matches!(
+        load_tree(source.root(), limits).unwrap_err(),
+        Error::SourceTooLarge { limit, .. } if limit == 800
+    ));
+    load_tree(source.root(), Limits::default().with_max_source_bytes(900))
+        .expect("a bound covering every key exactly");
+}
+
+// Whichever charge runs the budget out, the refusal names the node it was
+// on — not the directory holding it. A review read `self.absolute(&rel)` as
+// the parent; `rel` is `prefix.join(&name)`, so it is the node itself, and
+// this pins that rather than leaving it to be re-read.
+#[test]
+fn the_refusal_names_the_node_the_budget_ran_out_on() {
+    let source = Tree::new()
+        .file("nested/big.bin", "0".repeat(600))
+        .materialize();
+    let refused_at = |bound: u64| match load_tree(
+        source.root(),
+        Limits::default().with_max_source_bytes(bound),
+    )
+    .unwrap_err()
+    {
+        Error::SourceTooLarge { path, .. } => path,
+        other => panic!("expected the bound to refuse, got {other}"),
+    };
+
+    // 100 bytes runs out inside the file's own 600, mid-read.
+    assert_eq!(refused_at(100), source.root().join("nested/big.bin"));
+    // 610 covers the bytes and leaves 10, which the 14-byte key does not
+    // fit — a different charge, and the same node named.
+    assert_eq!(refused_at(610), source.root().join("nested/big.bin"));
+}
+
+// A name containment refuses is held to the end of the walk as surely as an
+// admitted one — every refusal is reported together — so it is spent too.
+// Nothing else bounds how many names a walk may refuse.
+#[test]
+fn refused_names_spend_the_bound_they_are_held_against() {
+    let mut source = Tree::new();
+    for index in 0..100 {
+        // A backslash is refused by containment, and the file is empty, so
+        // the name is the only thing the walk holds.
+        source = source.file(format!("bad\\{index:03}"), "");
+    }
+    let source = source.materialize();
+
+    assert!(matches!(
+        load_tree(source.root(), Limits::default().with_max_source_bytes(200)).unwrap_err(),
+        Error::SourceTooLarge { limit, .. } if limit == 200
+    ));
+    // With room for every refused name, the walk reaches the refusal it was
+    // always going to report.
+    assert!(matches!(
+        load_tree(source.root(), Limits::default()).unwrap_err(),
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment
+    ));
+}
+
+// A symlink's target is read out of the source tree and held as long as the
+// tree is, so it is spent like a file's bytes.
+#[test]
+fn a_symlink_target_spends_the_bound() {
+    let source = Tree::new().symlink("current", "releases/v1").materialize();
+
+    // "current" is 7 bytes of key and "releases/v1" is 11 of target.
+    let limits = Limits::default().with_max_source_bytes(17);
+    assert!(matches!(
+        load_tree(source.root(), limits).unwrap_err(),
+        Error::SourceTooLarge { limit, .. } if limit == 17
+    ));
+    load_tree(source.root(), Limits::default().with_max_source_bytes(18))
+        .expect("a bound covering the key and the target");
 }

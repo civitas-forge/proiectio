@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
@@ -8,11 +7,8 @@ use std::rc::Rc;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
-use crate::{Desired, Entry, Error, Origin, Refusal, Refused, Result};
-
-/// How many bytes one load may expand archives to, summed over every member
-/// it keeps and, on a tar, over every byte the parser consumes.
-pub(crate) const MAX_EXPANDED_BYTES: u64 = 64 << 20;
+use crate::limits::Budget;
+use crate::{Desired, Entry, Error, Limits, Origin, Refusal, Refused, Result};
 
 /// How many members one archive may carry.
 const MAX_MEMBERS: usize = 50_000;
@@ -70,26 +66,22 @@ pub(crate) const ARCHIVE_EXTENSIONS: &str = ".tar, .tar.gz, .tgz, .tar.zst, .zip
 
 /// Expands an archive into a desired tree, dropping `strip` leading path
 /// components from each member and keeping only files, directories, and
-/// symlinks.
-pub fn load_archive(source: &Utf8Path, strip: u32) -> Result<Desired> {
+/// symlinks. What the expansion may hold in memory is
+/// [`Limits::max_source_bytes`].
+pub fn load_archive(source: &Utf8Path, strip: u32, limits: Limits) -> Result<Desired> {
     let source = crate::absolutize(source)?;
     let source = source.as_path();
     let origin = Origin::Archive {
         path: source.to_owned(),
         via: None,
     };
-    let expanded = expand(source, strip, Utf8Path::new(""), None, &new_budget())?;
+    let budget = Rc::new(Budget::new(limits));
+    let expanded = expand(source, strip, Utf8Path::new(""), None, &budget)?;
     let mut desired = Desired::from_source(expanded.tree, origin);
     for dropped in expanded.dropped {
         desired.record_dropped(dropped);
     }
     Ok(desired)
-}
-
-/// The byte budget one load spends, shared by every archive expanded into a
-/// single desired tree.
-pub(crate) fn new_budget() -> Rc<Budget> {
-    Budget::new(MAX_EXPANDED_BYTES)
 }
 
 /// Each member passes the containment gateway before `prefix` is joined onto
@@ -138,12 +130,26 @@ pub(crate) fn expand(
             // A zstd frame header names a window buffer allocated inside the
             // decoder, which no `Budgeted` reader sees; the reference
             // library's default would let a small archive ask for 128 MiB.
+            // The cap comes off what the load has left rather than the bound
+            // it opened at: a mapping that has already retained most of its
+            // budget would otherwise let a last archive allocate the whole
+            // bound over again.
             decoder
-                .window_log_max(MAX_EXPANDED_BYTES.ilog2())
+                .window_log_max(window_log_max(budget.remaining()))
                 .map_err(|e| decode_error(source, format, e))?;
             expansion.read_tar(Budgeted::new(decoder, Rc::clone(budget)))?;
         }
-        ArchiveFormat::Zip => expansion.read_zip(reader)?,
+        ArchiveFormat::Zip => {
+            let on_disk = reader
+                .get_ref()
+                .metadata()
+                .map_err(|e| Error::Io {
+                    path: source.to_owned(),
+                    source: e,
+                })?
+                .len();
+            expansion.read_zip(reader, on_disk)?;
+        }
     }
     if !expansion.refused.is_empty() {
         let origin = Origin::Archive {
@@ -215,32 +221,23 @@ pub struct Dropped {
     pub origin: Origin,
 }
 
-/// What is left of [`MAX_EXPANDED_BYTES`], and whether something ran it out.
-pub(crate) struct Budget {
-    remaining: Cell<u64>,
-    exhausted: Cell<bool>,
-}
-
-impl Budget {
-    fn new(bytes: u64) -> Rc<Self> {
-        Rc::new(Self {
-            remaining: Cell::new(bytes),
-            exhausted: Cell::new(false),
-        })
-    }
-
-    fn spend(&self, bytes: u64) -> bool {
-        match self.remaining.get().checked_sub(bytes) {
-            Some(left) => {
-                self.remaining.set(left);
-                true
-            }
-            None => {
-                self.exhausted.set(true);
-                false
-            }
-        }
-    }
+/// The window cap `limit` names, spelled the way zstd takes it: the base-2
+/// exponent of a window size, rounded **up** to the power of two that covers
+/// `limit` and clamped to the exponents the format spells.
+///
+/// A frame's own window is not a power of two — its header carries an
+/// exponent and a three-bit mantissa — so a 300 MiB body compressed in one
+/// frame declares a window of 320 MiB. Rounding the exponent down would cap
+/// the decoder at 2^28, or 256 MiB, and refuse that frame even though both
+/// its window and its body fit the 500 MiB default. Rounding up pays for
+/// that in the other direction: the window a decoder may hold reaches the
+/// next power of two past `limit` rather than stopping at `limit` itself.
+/// The clamp is the format's own range — a limit under 1 KiB would otherwise
+/// name a window no decoder accepts, failing every zstd archive rather than
+/// the oversized one.
+fn window_log_max(limit: u64) -> u32 {
+    let limit = limit.max(1);
+    (limit.ilog2() + u32::from(!limit.is_power_of_two())).clamp(10, 31)
 }
 
 /// A tar's decompressed stream, spending the [`Budget`] on every byte the
@@ -259,14 +256,14 @@ impl<R> Budgeted<R> {
 
 impl<R: Read> Read for Budgeted<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let headroom = self.budget.remaining.get().saturating_add(1);
+        let headroom = self.budget.remaining().saturating_add(1);
         let end = buf
             .len()
             .min(usize::try_from(headroom).unwrap_or(usize::MAX));
         let read = self.inner.read(&mut buf[..end])?;
         if !self.budget.spend(read as u64) {
             return Err(io::Error::other(
-                "archive expands past the bytes an archive may allocate",
+                "archive expands past the bytes one load may hold in memory",
             ));
         }
         Ok(read)
@@ -345,7 +342,30 @@ impl Expansion<'_> {
         Ok(())
     }
 
-    fn read_zip(&mut self, reader: impl Read + Seek) -> Result<()> {
+    /// `on_disk` is the archive file's own byte size, which is checked
+    /// against the budget before the parser runs. Unlike a tar, whose every
+    /// byte reaches the expansion through a [`Budgeted`] reader,
+    /// `ZipArchive::new` reads the central directory itself and keeps every
+    /// member's name, extra field, and comment before a single body is read —
+    /// so a zip of nothing but maximum-length names would allocate freely
+    /// under a bound it never spent. That directory cannot outgrow the file
+    /// carrying it, so a file already larger than the budget's remainder is
+    /// refused here instead, and what the parser retains stays proportional
+    /// to the bound.
+    ///
+    /// This is the one place a source's compressed size is weighed at all,
+    /// so [`Limits::max_source_bytes`] names it as the exception it is, and
+    /// [`Error::ArchiveFileTooLarge`] names the file's size beside the bound
+    /// rather than reporting the expansion budget as spent.
+    fn read_zip(&mut self, reader: impl Read + Seek, on_disk: u64) -> Result<()> {
+        if on_disk > self.budget.remaining() {
+            return Err(Error::ArchiveFileTooLarge {
+                path: self.source.to_owned(),
+                size: on_disk,
+                remaining: self.budget.remaining(),
+                limit: self.budget.limit(),
+            });
+        }
         let mut archive = zip::ZipArchive::new(reader).map_err(|e| self.decode(e.into()))?;
         if archive.len() > MAX_MEMBERS {
             return Err(Error::ArchiveTooManyMembers {
@@ -483,26 +503,24 @@ impl Expansion<'_> {
         Ok(())
     }
 
-    /// Reads one zip member's body, capped one byte past what the budget has
-    /// left; a declared size never sizes the buffer.
+    /// Reads one zip member's body against the budget; a declared size never
+    /// sizes the buffer.
     fn read_bounded(&mut self, reader: &mut impl Read) -> Result<Vec<u8>> {
-        let mut contents = Vec::new();
-        let read = reader
-            .take(self.budget.remaining.get().saturating_add(1))
-            .read_to_end(&mut contents)
-            .map_err(|e| self.decode(e))?;
-        self.charge(read as u64)?;
-        Ok(contents)
+        match self
+            .budget
+            .read_to_end(reader)
+            .map_err(|e| self.decode(e))?
+        {
+            Some(contents) => Ok(contents),
+            None => Err(self.too_large()),
+        }
     }
 
-    fn charge(&mut self, bytes: u64) -> Result<()> {
-        if self.budget.spend(bytes) {
-            return Ok(());
-        }
-        Err(Error::ArchiveTooLarge {
+    fn too_large(&self) -> Error {
+        Error::ArchiveTooLarge {
             path: self.source.to_owned(),
-            limit: MAX_EXPANDED_BYTES,
-        })
+            limit: self.budget.limit(),
+        }
     }
 
     fn utf8_target(&self, member: &Utf8Path, raw: &[u8]) -> Result<String> {
@@ -516,11 +534,8 @@ impl Expansion<'_> {
     }
 
     fn decode(&self, source: io::Error) -> Error {
-        if self.budget.exhausted.get() {
-            return Error::ArchiveTooLarge {
-                path: self.source.to_owned(),
-                limit: MAX_EXPANDED_BYTES,
-            };
+        if self.budget.exhausted() {
+            return self.too_large();
         }
         decode_error(self.source, self.format, source)
     }

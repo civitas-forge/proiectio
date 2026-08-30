@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use serde::Serialize;
+use serde::ser::{SerializeSeq, SerializeStruct};
+use serde::{Serialize, Serializer};
 
 use crate::{EntryKind, Origin};
 
@@ -37,13 +38,58 @@ pub struct PathFacts {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Row<V> {
-    pub facts: Option<PathFacts>,
     pub verdict: V,
+    pub facts: Option<PathFacts>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Every path the report classifies, in path order.
+///
+/// A row states its own path, so no format has to spell a path as a name:
+/// `rows` serializes as a sequence of records rather than as a map keyed by
+/// path. Spelled as names, paths cost the two formats different things. An XML
+/// element name cannot carry a `/`, and the underscore Standout substitutes
+/// for one turns `a/b` and `a_b` into one element name, so the second row
+/// overwrites the first. A CSV header can carry a `/` and keeps the two apart,
+/// but a header spelled from paths is a header that changes with the
+/// destination, and nothing can be written to read it. Carried as a value, a
+/// path is only ever itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report<V> {
     pub rows: BTreeMap<Utf8PathBuf, Row<V>>,
+}
+
+/// One row as it serializes: the path it classifies, then what [`Row`] states
+/// about that path.
+#[derive(Serialize)]
+struct RowRecord<'a, V> {
+    path: &'a Utf8PathBuf,
+    verdict: &'a V,
+    facts: &'a Option<PathFacts>,
+}
+
+/// The `rows` sequence, one [`RowRecord`] per entry of the map.
+struct Rows<'a, V>(&'a BTreeMap<Utf8PathBuf, Row<V>>);
+
+impl<V: Serialize> Serialize for Rows<'_, V> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut rows = serializer.serialize_seq(Some(self.0.len()))?;
+        for (path, row) in self.0 {
+            rows.serialize_element(&RowRecord {
+                path,
+                verdict: &row.verdict,
+                facts: &row.facts,
+            })?;
+        }
+        rows.end()
+    }
+}
+
+impl<V: Serialize> Serialize for Report<V> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut report = serializer.serialize_struct("Report", 1)?;
+        report.serialize_field("rows", &Rows(&self.rows))?;
+        report.end()
+    }
 }
 
 impl<V> Default for Report<V> {

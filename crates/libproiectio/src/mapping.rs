@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Read;
+use std::rc::Rc;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Deserialize;
 
-use crate::{Desired, Entry, Error, Origin, Refusal, Refused, Result};
+use crate::limits::Budget;
+use crate::{Desired, Entry, Error, Limits, Origin, Refusal, Refused, Result};
 
 /// The mapping format version this crate accepts.
 pub const MAPPING_VERSION: u32 = 1;
@@ -16,17 +17,43 @@ pub const MAPPING_VERSION: u32 = 1;
 /// The version, every projected key, and each entry's `contents`/`source`
 /// choice are all judged before any `source` file is read or any archive is
 /// opened.
-pub fn load_mapping(path: &Utf8Path) -> Result<Desired> {
+///
+/// One budget of [`Limits::max_source_bytes`] covers the mapping file's own
+/// text, every file its `source` keys name, and every archive it expands:
+/// the whole tree is live at once.
+pub fn load_mapping(path: &Utf8Path, limits: Limits) -> Result<Desired> {
     let path = crate::absolutize(path)?;
     let path = path.as_path();
-    let text = fs::read_to_string(path).map_err(|source| Error::Io {
-        path: path.to_owned(),
-        source,
-    })?;
-    parse(path, &text)
+    let budget = Rc::new(Budget::new(limits));
+    let text = read_mapping(path, &budget)?;
+    parse(path, &text, &budget)
 }
 
-fn parse(path: &Utf8Path, text: &str) -> Result<Desired> {
+/// The mapping file's own text, charged to the budget: a mapping is input the
+/// caller did not write, and its `contents` values are the bytes it carries.
+fn read_mapping(path: &Utf8Path, budget: &Budget) -> Result<String> {
+    let io = |source| Error::Io {
+        path: path.to_owned(),
+        source,
+    };
+    let mut file = fs::File::open(path).map_err(io)?;
+    let bytes =
+        budget
+            .read_to_end(&mut file)
+            .map_err(io)?
+            .ok_or_else(|| Error::SourceTooLarge {
+                path: path.to_owned(),
+                limit: budget.limit(),
+            })?;
+    String::from_utf8(bytes).map_err(|_| {
+        io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        ))
+    })
+}
+
+fn parse(path: &Utf8Path, text: &str, budget: &Rc<Budget>) -> Result<Desired> {
     let mapping_origin = Origin::Mapping {
         path: path.to_owned(),
     };
@@ -148,8 +175,12 @@ fn parse(path: &Utf8Path, text: &str) -> Result<Desired> {
                     Some(explicit) => explicit,
                     None => is_executable(&file.metadata().map_err(io)?),
                 };
-                let mut contents = Vec::new();
-                file.read_to_end(&mut contents).map_err(io)?;
+                let contents = budget.read_to_end(&mut file).map_err(io)?.ok_or_else(|| {
+                    Error::SourceTooLarge {
+                        path: source_path.clone(),
+                        limit: budget.limit(),
+                    }
+                })?;
                 Entry::File {
                     contents,
                     executable,
@@ -167,9 +198,9 @@ fn parse(path: &Utf8Path, text: &str) -> Result<Desired> {
             mapping_origin.clone(),
         );
     }
-    // One byte budget across every table: the expanded trees are all merged
-    // into this one, so they are all live at once.
-    let budget = crate::archive::new_budget();
+    // The same budget the mapping's own text and its `source` files spent:
+    // the expanded trees are all merged into this one, so they are all live
+    // at once.
     for (prefix, table) in archives {
         let source = dir.join(table.source);
         let expanded = crate::archive::expand(
@@ -177,7 +208,7 @@ fn parse(path: &Utf8Path, text: &str) -> Result<Desired> {
             table.strip.unwrap_or(0),
             &prefix,
             Some(path),
-            &budget,
+            budget,
         )?;
         let origin = Origin::Archive {
             path: source.clone(),

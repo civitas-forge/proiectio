@@ -28,7 +28,8 @@ fn a_directory_walks_as_a_tree() {
         .executable("bin/tool", "#!/bin/sh\n")
         .materialize();
 
-    let loaded = load_source(source.root(), None).expect("load the directory");
+    let loaded =
+        load_source(source.root(), None, crate::Limits::default()).expect("load the directory");
 
     assert_eq!(
         loaded,
@@ -53,7 +54,7 @@ fn an_archive_expands_with_strip_applied() {
     let fixture = Tree::new().file("skeleton-1.2.tar.gz", bytes).materialize();
     let path = fixture.path("skeleton-1.2.tar.gz");
 
-    let loaded = load_source(&path, Some(1)).expect("expand the archive");
+    let loaded = load_source(&path, Some(1), crate::Limits::default()).expect("expand the archive");
 
     assert_eq!(
         loaded,
@@ -74,7 +75,7 @@ fn an_archive_expands_with_strip_applied() {
 fn strip_on_a_directory_is_an_error() {
     let source = Tree::new().file("bin/tool", "#!/bin/sh\n").materialize();
 
-    let error = load_source(source.root(), Some(1)).unwrap_err();
+    let error = load_source(source.root(), Some(1), crate::Limits::default()).unwrap_err();
 
     assert!(!error.is_refusal());
     assert!(matches!(
@@ -97,7 +98,7 @@ fn a_name_no_decoder_claims_is_an_error() {
         .materialize();
     let path = fixture.path("notes.txt");
 
-    let error = load_source(&path, None).unwrap_err();
+    let error = load_source(&path, None, crate::Limits::default()).unwrap_err();
 
     assert!(matches!(
         &error,
@@ -112,7 +113,7 @@ fn a_missing_path_is_an_io_error_whatever_its_name() {
     for name in ["absent.tar.gz", "absent.txt"] {
         let path = fixture.path(name);
 
-        let error = load_source(&path, None).unwrap_err();
+        let error = load_source(&path, None, crate::Limits::default()).unwrap_err();
 
         assert!(matches!(
             &error,
@@ -130,7 +131,7 @@ fn a_node_kind_no_loader_reads_is_named_and_never_opened() {
     // both would otherwise reach the archive loader's blocking open.
     let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind a unix socket");
 
-    let error = load_source(&socket, None).unwrap_err();
+    let error = load_source(&socket, None, crate::Limits::default()).unwrap_err();
 
     assert!(matches!(&error, Error::TreeNodeKind { path } if *path == socket));
 }

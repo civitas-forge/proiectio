@@ -1,14 +1,17 @@
 use std::collections::BTreeMap;
-use std::io::Read;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
+use crate::limits::Budget;
 use crate::tree::{is_executable, open_file_nofollow};
-use crate::{Desired, Entry, Error, Origin, Result};
+use crate::{Desired, Entry, Error, Limits, Origin, Result};
 
-pub fn load_files(paths: &[Utf8PathBuf]) -> Result<Desired> {
+/// Loads each path as an entry keyed by its own basename. One budget of
+/// [`Limits::max_source_bytes`] covers everything the call holds: each
+/// file's bytes, the basename it is keyed by, and each symlink's target.
+pub fn load_files(paths: &[Utf8PathBuf], limits: Limits) -> Result<Desired> {
     let mut named: BTreeMap<String, Utf8PathBuf> = BTreeMap::new();
     for path in paths {
         let path = crate::absolutize(path)?;
@@ -29,14 +32,32 @@ pub fn load_files(paths: &[Utf8PathBuf]) -> Result<Desired> {
         }
     }
 
+    let budget = Budget::new(limits);
     let mut tree = BTreeMap::new();
     for (name, path) in named {
-        tree.insert(Utf8PathBuf::from(name), load_one(&path)?);
+        let entry = load_one(&path, &budget)?;
+        // The same rule the tree walk holds itself to: a file's bytes are
+        // already spent, and what is held besides them — the basename this
+        // entry is keyed by, a symlink's target — is spent here. A hundred
+        // thousand empty files are a hundred thousand keys and no bytes.
+        let held = name.len()
+            + match &entry {
+                Entry::File { .. } => 0,
+                Entry::Symlink { target } => target.len(),
+                Entry::Block { body, marker, .. } => body.len() + marker.len(),
+            };
+        if !budget.spend(held as u64) {
+            return Err(Error::SourceTooLarge {
+                path,
+                limit: budget.limit(),
+            });
+        }
+        tree.insert(Utf8PathBuf::from(name), entry);
     }
     Ok(Desired::from_source(tree, Origin::Files))
 }
 
-fn load_one(path: &Utf8Path) -> Result<Entry> {
+fn load_one(path: &Utf8Path, budget: &Budget) -> Result<Entry> {
     let parent = path.parent().expect("an absolute path has a parent");
     let name = path.file_name().expect("a named path has a file name");
     let io = |source| Error::Io {
@@ -75,8 +96,14 @@ fn load_one(path: &Utf8Path) -> Result<Entry> {
         });
     }
     let executable = is_executable(&meta);
-    let mut contents = Vec::new();
-    file.read_to_end(&mut contents).map_err(io)?;
+    let contents =
+        budget
+            .read_to_end(&mut file)
+            .map_err(io)?
+            .ok_or_else(|| Error::SourceTooLarge {
+                path: path.to_owned(),
+                limit: budget.limit(),
+            })?;
     Ok(Entry::File {
         contents,
         executable,

@@ -212,3 +212,23 @@ fn write_carries_every_permission_on_the_invocation() {
     assert!(write.get_flag("force"));
     assert!(write.get_flag("allow-external-targets"));
 }
+
+// The `config` help names its keys in prose, and prose does not follow a
+// schema that gains one — the count in front of them least of all. This is
+// the pair that keeps the two together: every key the schema declares is
+// named in the help, and the number promised is the number there are.
+#[test]
+fn the_config_help_names_every_key_the_schema_declares() {
+    let keys = crate::settings::declared_keys();
+
+    assert!(
+        CONFIG_ABOUT.contains(&format!("Available keys ({}):", keys.len())),
+        "{CONFIG_ABOUT}"
+    );
+    for key in &keys {
+        assert!(
+            CONFIG_ABOUT.contains(key.as_str()),
+            "the config help does not name {key}"
+        );
+    }
+}
