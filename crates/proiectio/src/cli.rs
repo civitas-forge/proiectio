@@ -5,7 +5,15 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clapfig::ConfigCommand;
 
 #[derive(Parser)]
-#[command(name = "proiectio", about = "Projects files onto a directory")]
+#[command(
+    name = "proiectio",
+    about = "Projects files onto a directory",
+    long_about = "Projects files onto a directory.\n\n\
+        Exit codes: 0 success, 1 error, 2 refused. A refusal (2) is a deliberate \
+        safety \"no\" — drift, a foreign path, or a containment violation — and is \
+        distinct from an error (1). Where a refusal has an override, re-run with \
+        --force (drift) or --allow-external-targets (a symlink leaving the destination)."
+)]
 pub(crate) struct Cli {
     /// Target directory; default cwd.
     #[arg(long, global = true, default_value = ".", value_name = "DIR")]
@@ -22,9 +30,7 @@ pub(crate) struct Cli {
 #[derive(Subcommand)]
 pub(crate) enum Commands {
     /// Projects a mapping file, loose files, or a tree onto the destination.
-    ///
-    /// One file positional is a mapping; two or more are the files to project
-    /// under their own basenames; `--tree` names a directory or an archive.
+    #[command(long_about = WRITE_ABOUT)]
     Write {
         /// A mapping file, or two or more files to project by basename.
         #[arg(
@@ -39,11 +45,15 @@ pub(crate) enum Commands {
         #[arg(long, value_name = "PATH", value_parser = clap::value_parser!(Utf8PathBuf))]
         tree: Option<Utf8PathBuf>,
 
-        /// Drop n leading path components; archive trees.
+        /// Drop N leading path components from archive members (archives only,
+        /// not directory trees).
         #[arg(long, value_name = "N", requires = "tree", conflicts_with = "paths")]
         strip: Option<u32>,
 
         /// Manifest owner; default from the configuration.
+        ///
+        /// Owners group entries so independent producers can share a
+        /// destination; a path is deleted only when its last owner releases it.
         #[arg(long, value_name = "NAME")]
         owner: Option<String>,
 
@@ -69,6 +79,9 @@ pub(crate) enum Commands {
         paths: Vec<Utf8PathBuf>,
 
         /// Manifest owner; default from the configuration.
+        ///
+        /// Owners group entries so independent producers can share a
+        /// destination; a path is deleted only when its last owner releases it.
         #[arg(long, value_name = "NAME")]
         owner: Option<String>,
 
@@ -83,6 +96,11 @@ pub(crate) enum Commands {
 
     /// Classifies the manifest's paths and everything else under the
     /// destination, writing nothing.
+    ///
+    /// Verdicts: clean (matches the manifest), drifted (edited on disk),
+    /// missing (recorded but absent from disk), foreign (present but
+    /// unrecorded). `status` always exits 0 regardless of the verdicts; to gate
+    /// CI on drift, use `write --dry-run`, which exits 2 when it would refuse.
     Status,
 }
 
@@ -102,9 +120,33 @@ pub(crate) fn command() -> clap::Command {
             .as_command("config")
             .visible_alias("conf")
             .long_about(CONFIG_ABOUT)
+            .mut_arg("scope", |scope| {
+                scope.help("Persist scope to target [possible values: user] [default: user].")
+            })
             .mut_subcommand("gen", utf8_destination)
-            .mut_subcommand("schema", utf8_destination),
+            .mut_subcommand("schema", utf8_destination)
+            .mut_subcommand("get", name_the_key)
+            .mut_subcommand("set", name_the_key)
+            .mut_subcommand("unset", name_the_key),
     )
+}
+
+/// Clapfig's key-argument help names a `database.url` example from its own docs;
+/// proiectio's one key is `owner`, so name that instead.
+///
+/// `mut_arg` drops a positional's index, and clap then re-derives every
+/// positional index on the command — so once one is set by hand they all must
+/// be, or the derived indices collide. `key` is first on every leaf that takes
+/// one; `set` names its value second.
+fn name_the_key(command: clap::Command) -> clap::Command {
+    let named = command.mut_arg("key", |key| {
+        key.index(1).help("Config key (e.g. \"owner\").")
+    });
+    if named.get_name() == "set" {
+        named.mut_arg("value", |value| value.index(2))
+    } else {
+        named
+    }
 }
 
 /// Clapfig parses `--file` as a `PathBuf` and writes the file before it
@@ -117,14 +159,43 @@ fn utf8_destination(command: clap::Command) -> clap::Command {
     })
 }
 
+const WRITE_ABOUT: &str = "\
+Projects a mapping file, loose files, or a tree onto the destination.
+
+A write declares an owner's COMPLETE set for the destination: paths the owner \
+recorded on an earlier run but does not name this time are released, and a path \
+released by its last owner is REMOVED from disk. Re-running the same inputs is \
+otherwise a no-op.
+
+Inputs: one file positional is a mapping (TOML); two or more positionals are \
+loose files projected under their own basenames; --tree names a directory or an \
+archive (.tar, .tar.gz, .tgz, .tar.zst, .zip). A single loose file has no \
+positional spelling — one positional is always read as a mapping — so project \
+it through a mapping's `source` or a --tree directory.
+
+Mapping files are TOML:
+
+    version = 1
+    [files.\"path/in/dest\"]        # exactly one of source / contents:
+    source     = \"path/to/file\"   #   copy a file (relative to the mapping's dir)
+    contents   = \"inline text\"    #   or write these literal bytes
+    executable = true             #   optional
+    [links.\"path/in/dest\"]
+    target = \"relative/target\"    # inside the destination unless --allow-external-targets
+    [archives.\"prefix/in/dest\"]
+    source = \"pkg.tar.gz\"
+    strip  = 1";
+
 const CONFIG_ABOUT: &str = "\
 Reads, writes and documents proiectio's configuration.
 
 Values resolve as compiled defaults, then files, then PROIECTIO__* \
-environment variables. The `user` scope is the platform config directory, \
-which is also the search path.
+environment variables (a doubled underscore separates key segments; keys are \
+case-insensitive, so PROIECTIO__OWNER sets `owner`). The `user` scope is the \
+platform config directory, which is also the search path; `set` and `unset` \
+with no --scope write there.
 
-A key is a dotted path to a single value: owner.";
+Available keys (1): owner.";
 
 #[cfg(test)]
 #[path = "cli_tests.rs"]
