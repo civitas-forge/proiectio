@@ -12,6 +12,19 @@ fn path(s: &str) -> Utf8PathBuf {
 fn one_of_each() -> Vec<(Utf8PathBuf, Refusal, Origin)> {
     vec![
         (path("drift"), Refusal::Drift, Origin::Caller),
+        (
+            path("directory"),
+            Refusal::DirectoryInTheWay {
+                holding: BTreeMap::from([
+                    (path("directory/note.md"), BTreeSet::new()),
+                    (
+                        path("directory/theirs"),
+                        BTreeSet::from(["site".to_owned()]),
+                    ),
+                ]),
+            },
+            Origin::Caller,
+        ),
         (path("foreign"), Refusal::Foreign, Origin::Caller),
         (path("containment"), Refusal::Containment, Origin::Caller),
         (
@@ -63,13 +76,14 @@ fn one_of_each_covers_every_kind() {
             | RefusalKind::TreeConflict
             | RefusalKind::Foreign
             | RefusalKind::Drift
+            | RefusalKind::DirectoryInTheWay
             | RefusalKind::OwnerConflict
             | RefusalKind::ExternalTarget
             | RefusalKind::InvalidTarget
             | RefusalKind::Block => {}
         }
     }
-    assert_eq!(kinds.len(), 8);
+    assert_eq!(kinds.len(), 9);
 }
 
 #[test]
@@ -86,6 +100,7 @@ fn precedence_is_declaration_order() {
             RefusalKind::TreeConflict,
             RefusalKind::Foreign,
             RefusalKind::Drift,
+            RefusalKind::DirectoryInTheWay,
             RefusalKind::OwnerConflict,
             RefusalKind::ExternalTarget,
             RefusalKind::InvalidTarget,
@@ -149,6 +164,9 @@ fn messages_open_with_the_kind_and_name_each_path_with_its_detail() {
         rendered,
         [
             "refusing to touch drifted paths (edited on disk): drift",
+            "refusing directories standing where a file or a link belongs: \
+             directory (holding directory/note.md, directory/theirs (held by site), \
+             which --force does not remove)",
             "refusing to touch foreign paths (not written by this projection): foreign",
             "refusing paths that violate containment: containment",
             "refusing desired paths that claim overlapping locations: tree (with tree/below)",

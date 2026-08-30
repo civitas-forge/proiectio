@@ -1,6 +1,6 @@
 use super::*;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camino::Utf8PathBuf;
 use libproiectio::{
@@ -211,6 +211,7 @@ fn every_refusal_kind_the_library_declares_reads_as_one_spelling() {
         RefusalKind::TreeConflict,
         RefusalKind::Foreign,
         RefusalKind::Drift,
+        RefusalKind::DirectoryInTheWay,
         RefusalKind::OwnerConflict,
         RefusalKind::ExternalTarget,
         RefusalKind::InvalidTarget,
@@ -221,6 +222,7 @@ fn every_refusal_kind_the_library_declares_reads_as_one_spelling() {
             RefusalKind::TreeConflict => "tree conflict",
             RefusalKind::Foreign => "foreign",
             RefusalKind::Drift => "drifted",
+            RefusalKind::DirectoryInTheWay => "directory in the way",
             RefusalKind::OwnerConflict => "owner conflict",
             RefusalKind::ExternalTarget => "external target",
             RefusalKind::InvalidTarget => "invalid target",
@@ -249,6 +251,25 @@ fn a_refused_row_renders_the_payload_its_refusal_carries() {
                 owners: BTreeSet::from(["base".to_owned(), "site".to_owned()]),
             },
             "(owner conflict) (held by base+site)",
+        ),
+        (
+            Refusal::DirectoryInTheWay {
+                holding: BTreeMap::from([
+                    (Utf8PathBuf::from("build.sh/notes.md"), BTreeSet::new()),
+                    (
+                        Utf8PathBuf::from("build.sh/theirs"),
+                        BTreeSet::from(["base".to_owned(), "site".to_owned()]),
+                    ),
+                ]),
+            },
+            "(directory in the way) (holding build.sh/notes.md, \
+             build.sh/theirs (held by base+site), which --force does not remove)",
+        ),
+        (
+            Refusal::DirectoryInTheWay {
+                holding: BTreeMap::new(),
+            },
+            "(directory in the way)",
         ),
         (
             Refusal::ExternalTarget {

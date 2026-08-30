@@ -28,6 +28,15 @@ pub enum Refusal {
     /// The recorded path was edited on disk. Lifted per-plan by
     /// [`DriftPolicy::Overwrite`](crate::DriftPolicy::Overwrite).
     Drift,
+    /// A directory stands where the plan needs a file or a link, or needs the
+    /// path gone, and the run's own removals do not empty it. Lifted by
+    /// nothing: what the directory holds is not the projection's to unlink.
+    DirectoryInTheWay {
+        /// What keeps the directory standing, each with the owners recording
+        /// it — empty where nothing records it. An empty map is a directory
+        /// holding nothing the run may remove: one somebody made by hand.
+        holding: BTreeMap<Utf8PathBuf, BTreeSet<String>>,
+    },
     /// The desired entry — bytes, kind, or executable bit — differs from what
     /// another owner holds at this path.
     OwnerConflict {
@@ -115,6 +124,7 @@ impl Refusal {
     pub fn kind(&self) -> RefusalKind {
         match self {
             Refusal::Drift => RefusalKind::Drift,
+            Refusal::DirectoryInTheWay { .. } => RefusalKind::DirectoryInTheWay,
             Refusal::Foreign => RefusalKind::Foreign,
             Refusal::Containment => RefusalKind::Containment,
             Refusal::TreeConflict { .. } => RefusalKind::TreeConflict,
@@ -130,6 +140,12 @@ impl Refusal {
     fn detail(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Refusal::Drift | Refusal::Foreign | Refusal::Containment => Ok(()),
+            Refusal::DirectoryInTheWay { holding } if holding.is_empty() => Ok(()),
+            Refusal::DirectoryInTheWay { holding } => write!(
+                f,
+                " (holding {}, which --force does not remove)",
+                holding.iter().map(held).collect::<Vec<_>>().join(", ")
+            ),
             Refusal::TreeConflict { paths } => write!(
                 f,
                 " (with {})",
@@ -166,6 +182,10 @@ pub enum RefusalKind {
     Foreign,
     /// [`Refusal::Drift`].
     Drift,
+    /// [`Refusal::DirectoryInTheWay`]. Ranked below [`Drift`](Self::Drift) so
+    /// that a drifted node beneath the directory — the one thing `--force`
+    /// clears out of the way — is the message a run states first.
+    DirectoryInTheWay,
     /// [`Refusal::OwnerConflict`].
     OwnerConflict,
     /// [`Refusal::ExternalTarget`].
@@ -183,6 +203,9 @@ impl RefusalKind {
             RefusalKind::Drift => "refusing to touch drifted paths (edited on disk)",
             RefusalKind::Foreign => {
                 "refusing to touch foreign paths (not written by this projection)"
+            }
+            RefusalKind::DirectoryInTheWay => {
+                "refusing directories standing where a file or a link belongs"
             }
             RefusalKind::Containment => "refusing paths that violate containment",
             RefusalKind::TreeConflict => "refusing desired paths that claim overlapping locations",
@@ -302,6 +325,19 @@ impl fmt::Display for Refused {
 
 fn join<'a>(items: impl Iterator<Item = &'a str>, sep: &str) -> String {
     items.collect::<Vec<_>>().join(sep)
+}
+
+/// One node keeping a directory standing: its path, and the owners recording
+/// it where any do.
+fn held((path, owners): (&Utf8PathBuf, &BTreeSet<String>)) -> String {
+    if owners.is_empty() {
+        path.to_string()
+    } else {
+        format!(
+            "{path} (held by {})",
+            join(owners.iter().map(String::as_str), "+")
+        )
+    }
 }
 
 #[cfg(test)]

@@ -147,7 +147,12 @@ fn origins_of(
 fn deepest_write(actions: &BTreeMap<Utf8PathBuf, Action>) -> Option<Utf8PathBuf> {
     actions
         .iter()
-        .filter(|(_, action)| matches!(action, Action::Write { .. } | Action::Overwrite { .. }))
+        .filter(|(_, action)| {
+            matches!(
+                action,
+                Action::Write { .. } | Action::Overwrite { .. } | Action::OverwriteDirectory { .. }
+            )
+        })
         .map(|(path, _)| path)
         .find(|path| path.components().count() - 1 > MAX_WALK_DEPTH)
         .map(|path| {
@@ -335,30 +340,204 @@ fn plan_actions(
                 .get(path)
                 .expect("recorded paths outside the state subtree always classify")
                 .verdict;
-            orphan_action(recorded, observations.paths.get(path), state, options.drift)
+            drifted_directory(
+                path,
+                recorded,
+                manifest,
+                observations,
+                options.drift,
+                || Action::RemoveDirectory,
+            )
+            .unwrap_or_else(|| {
+                orphan_action(recorded, observations.paths.get(path), state, options.drift)
+            })
         };
-        if matches!(action, Action::Remove { .. }) {
+        if matches!(action, Action::Remove { .. } | Action::RemoveDirectory) {
             vacated.insert(path.clone());
         }
         actions.insert(path.clone(), action);
     }
 
+    // Decided against the removals above rather than inserted among them: a
+    // directory standing at a desired path is cleared by those removals, and
+    // whether they empty it is what `directory_in_the_way` reads.
+    let mut desired_actions: Vec<(Utf8PathBuf, Action)> = Vec::new();
     for (path, entry) in &admitted {
         let action = match link_refusal(path, entry, &admitted, observations, &vacated, options) {
             Some(refusal) => refuse(refusal),
-            None => desired_action(
-                owner,
-                entry,
-                states.rows.get(path).map(|row| &row.verdict),
-                manifest.entries.get(path),
-                observations.paths.get(path),
-                options.drift,
-            ),
+            None => directory_action(path, entry, manifest, observations, &actions, options.drift)
+                .unwrap_or_else(|| {
+                    desired_action(
+                        owner,
+                        entry,
+                        states.rows.get(path).map(|row| &row.verdict),
+                        manifest.entries.get(path),
+                        observations.paths.get(path),
+                        options.drift,
+                    )
+                }),
         };
-        actions.insert(path.clone(), action);
+        desired_actions.push((path.clone(), action));
     }
+    actions.extend(desired_actions);
 
     actions
+}
+
+/// The action for a desired path standing on a directory: the write that
+/// clears the projection's own scaffolding out of the way, the overwrite that
+/// replaces an empty directory the record drifted into, or the refusal naming
+/// what holds the directory in place. `None` leaves the path to
+/// [`desired_action`] — nothing stands there, what stands there is not a
+/// directory, a block is involved, or another owner shares the record.
+fn directory_action(
+    path: &Utf8Path,
+    entry: &Entry,
+    manifest: &Manifest,
+    observations: &Observations,
+    actions: &BTreeMap<Utf8PathBuf, Action>,
+    policy: DriftPolicy,
+) -> Option<Action> {
+    if !matches!(observations.paths.get(path), Some(Observation::Directory))
+        || matches!(entry, Entry::Block { .. })
+    {
+        return None;
+    }
+    match manifest.entries.get(path) {
+        Some(recorded) => drifted_directory(path, recorded, manifest, observations, policy, || {
+            Action::OverwriteDirectory {
+                entry: entry.clone(),
+            }
+        }),
+        None => Some(
+            match directory_in_the_way(path, manifest, observations, actions) {
+                Some(holding) => refuse(Refusal::DirectoryInTheWay { holding }),
+                None => Action::Write {
+                    entry: entry.clone(),
+                },
+            },
+        ),
+    }
+}
+
+/// The action for a recorded path whose on-disk node is a directory: the
+/// record drifted into a kind no signature describes, so only an empty
+/// directory goes, and only where `policy` lifts the drift. Anything the
+/// directory holds is unrecorded at that location, so no policy clears it.
+/// `None` where the path is not a directory on disk, or is a block or shared
+/// with another owner, neither of which this rule speaks for.
+fn drifted_directory(
+    path: &Utf8Path,
+    recorded: &ManifestEntry,
+    manifest: &Manifest,
+    observations: &Observations,
+    policy: DriftPolicy,
+    clear: impl FnOnce() -> Action,
+) -> Option<Action> {
+    if !matches!(observations.paths.get(path), Some(Observation::Directory))
+        || recorded.kind.is_block()
+        || recorded.owners.len() > 1
+    {
+        return None;
+    }
+    let holding = children_of(path, manifest, observations);
+    if !holding.is_empty() {
+        return Some(refuse(Refusal::DirectoryInTheWay { holding }));
+    }
+    Some(match policy {
+        DriftPolicy::Refuse => refuse(Refusal::Drift),
+        DriftPolicy::Overwrite => clear(),
+    })
+}
+
+/// What keeps the unrecorded directory at `path` standing after this run's
+/// removals: every node on disk beneath it that no removal vacates, and every
+/// directory beneath it that no removal empties. `None` where the run empties
+/// the directory and pruning takes it; `Some` of an empty map where the
+/// directory holds nothing at all, which makes it somebody else's rather than
+/// this projection's scaffolding.
+fn directory_in_the_way(
+    path: &Utf8Path,
+    manifest: &Manifest,
+    observations: &Observations,
+    actions: &BTreeMap<Utf8PathBuf, Action>,
+) -> Option<BTreeMap<Utf8PathBuf, BTreeSet<String>>> {
+    // A removal that strips a block republishes its container, so only the
+    // whole-node removals leave a location empty for pruning to judge.
+    let vacating: BTreeSet<&Utf8Path> = actions
+        .iter()
+        .filter(|(key, action)| {
+            matches!(action, Action::Remove { .. } | Action::RemoveDirectory)
+                && !manifest
+                    .entries
+                    .get(*key)
+                    .is_some_and(|recorded| recorded.kind.is_block())
+        })
+        .map(|(key, _)| key.as_path())
+        .collect();
+    let emptied = |directory: &Utf8Path| {
+        vacating
+            .iter()
+            .any(|key| key.starts_with(directory) && *key != directory)
+    };
+    let mut blocked = false;
+    let mut holding = BTreeMap::new();
+    for (node, observation) in beneath(path, observations) {
+        let cleared = match observation {
+            Observation::Directory => emptied(node),
+            _ => vacating.contains(node),
+        };
+        if cleared {
+            continue;
+        }
+        blocked = true;
+        // A directory still standing because of what it holds is not itself
+        // worth naming: whatever holds it up is named below it. One holding
+        // nothing has nothing below it to name, so it is named here.
+        if *observation == Observation::Directory && beneath(node, observations).next().is_some() {
+            continue;
+        }
+        holding.insert(node.to_owned(), owners_of(manifest, node));
+    }
+    (blocked || !emptied(path)).then_some(holding)
+}
+
+/// What the directory at `path` holds on disk directly, each with the owners
+/// recording it: the children whose presence alone keeps the directory from
+/// being removed.
+fn children_of(
+    path: &Utf8Path,
+    manifest: &Manifest,
+    observations: &Observations,
+) -> BTreeMap<Utf8PathBuf, BTreeSet<String>> {
+    beneath(path, observations)
+        .filter(|(node, _)| node.parent() == Some(path))
+        .map(|(node, _)| (node.to_owned(), owners_of(manifest, node)))
+        .collect()
+}
+
+/// Every node the walk saw beneath `path`, at any depth. A recorded path the
+/// walk did not reach is not one of them: it stands nowhere, so it holds no
+/// directory up.
+fn beneath<'a>(
+    path: &'a Utf8Path,
+    observations: &'a Observations,
+) -> impl Iterator<Item = (&'a Utf8Path, &'a Observation)> {
+    observations
+        .paths
+        .iter()
+        .map(|(node, observation)| (node.as_path(), observation))
+        .filter(move |(node, observation)| {
+            **observation != Observation::Absent && *node != path && node.starts_with(path)
+        })
+}
+
+fn owners_of(manifest: &Manifest, path: &Utf8Path) -> BTreeSet<String> {
+    manifest
+        .entries
+        .get(path)
+        .map(|recorded| recorded.owners.clone())
+        .unwrap_or_default()
 }
 
 /// Whether a manifest key is one the projection may act at: the same
