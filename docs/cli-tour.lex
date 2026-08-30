@@ -17,9 +17,9 @@ The CLI
     A mapping file (a single file positional):
 
         $ proiectio write deploy.toml
-        wrote   config/settings.toml
-        wrote   bin/tool            (exec)
-        linked  current -> releases/1.2.3
+        wrote      bin/tool              (exec)
+        wrote      config/settings.toml
+        linked     current               -> releases/1.2.3
         3 written, 0 skipped
 
         $ proiectio write deploy.toml --dest ~/apps/site --owner site
@@ -53,6 +53,9 @@ The CLI
     their mtimes survive.
 
         $ proiectio write deploy.toml
+        skipped    bin/tool              (exec)
+        skipped    config/settings.toml
+        skipped    current               -> releases/1.2.3
         3 unchanged
 
     :: shell ::
@@ -69,8 +72,22 @@ The CLI
     |   | symlink target                                         |
 
         $ proiectio write deploy.toml --dry-run
-        would overwrite  config/settings.toml   (clean, content changed)
-        would refuse     bin/tool               (drifted - local edit)
+        would skip       bin/tool              (exec)
+        would overwrite  config/settings.toml  (content changed)
+        would skip       current               -> releases/1.2.3
+        $ echo $?
+        0
+
+    :: shell ::
+
+    A plan carrying a refusal is not a plan anything can act on, so
+    the run names its most severe refusal kind and every path
+    refused for that reason in place of the rows, and leaves with
+    the 2 a real run would:
+
+        $ echo edited >> bin/tool
+        $ proiectio write deploy.toml --dry-run
+        Error: refusing to touch drifted paths (edited on disk): bin/tool
         $ echo $?
         2
 

@@ -21,6 +21,45 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
+    /// Projects a mapping file, loose files, or a tree onto the destination.
+    ///
+    /// One file positional is a mapping; two or more are the files to project
+    /// under their own basenames; `--tree` names a directory or an archive.
+    Write {
+        /// A mapping file, or two or more files to project by basename.
+        #[arg(
+            value_name = "PATH",
+            required_unless_present = "tree",
+            conflicts_with = "tree",
+            value_parser = clap::value_parser!(Utf8PathBuf)
+        )]
+        paths: Vec<Utf8PathBuf>,
+
+        /// Project a directory or an archive as the desired tree.
+        #[arg(long, value_name = "PATH", value_parser = clap::value_parser!(Utf8PathBuf))]
+        tree: Option<Utf8PathBuf>,
+
+        /// Drop n leading path components; archive trees.
+        #[arg(long, value_name = "N", requires = "tree", conflicts_with = "paths")]
+        strip: Option<u32>,
+
+        /// Manifest owner; default from the configuration.
+        #[arg(long, value_name = "NAME")]
+        owner: Option<String>,
+
+        /// Plan and report, write nothing.
+        #[arg(long, id = "dry-run")]
+        dry_run: bool,
+
+        /// Overwrite drifted files.
+        #[arg(long)]
+        force: bool,
+
+        /// Permit symlink targets outside the destination.
+        #[arg(long, id = "allow-external-targets")]
+        allow_external_targets: bool,
+    },
+
     /// Classifies the manifest's paths and everything else under the
     /// destination, writing nothing.
     Status,

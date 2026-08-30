@@ -1,0 +1,6 @@
+{#- One line per row: the verb in its style, the path, and the note on it. -#}
+{%- for row in write.rows -%}
+{{ row.verb|style_as(row.style) }}{{ row.verb_pad }}  {% if row.note %}{{ row.path }}{{ row.path_pad }}  {{ row.note }}{% else %}{{ row.path }}{% endif %}
+{% endfor -%}
+{%- if write.summary %}{{ write.summary }}
+{% endif -%}

@@ -147,7 +147,7 @@ impl Run {
     /// # use libproiectio::{Desired, PlanOptions, Projection, Result};
     /// # fn write(projection: &Projection) -> Result<()> {
     /// let desired = Desired::new();
-    /// let plan = projection.plan("harness", &desired, PlanOptions::default())?;
+    /// let plan = projection.plan("harness", &desired, PlanOptions::default())?.plan;
     /// let run = projection.begin()?;
     /// let report = run.apply(&plan)?;
     /// # let _ = report;

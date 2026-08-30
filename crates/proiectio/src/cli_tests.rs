@@ -117,3 +117,98 @@ fn a_command_line_naming_no_command_is_refused() {
         ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
     );
 }
+
+/// The mode rule as the command line states it: one positional, several
+/// positionals, or `--tree`. Nothing reads the file to decide.
+#[test]
+fn write_reads_its_mode_off_the_command_line() {
+    for (argv, paths, tree) in [
+        (
+            vec!["proiectio", "write", "deploy.toml"],
+            vec!["deploy.toml"],
+            None,
+        ),
+        (
+            vec!["proiectio", "write", "./motd", "./banner.txt"],
+            vec!["./motd", "./banner.txt"],
+            None,
+        ),
+        (
+            vec!["proiectio", "write", "--tree", "./skeleton"],
+            vec![],
+            Some("./skeleton"),
+        ),
+    ] {
+        let matches = command()
+            .try_get_matches_from(&argv)
+            .unwrap_or_else(|error| panic!("{argv:?}: {error}"));
+        let write = matches.subcommand_matches("write").expect("the leaf");
+
+        assert_eq!(
+            write
+                .get_many::<Utf8PathBuf>("paths")
+                .map(|values| values.map(|value| value.as_str()).collect::<Vec<_>>())
+                .unwrap_or_default(),
+            paths,
+            "{argv:?}"
+        );
+        assert_eq!(
+            write
+                .get_one::<Utf8PathBuf>("tree")
+                .map(|value| value.as_str()),
+            tree,
+            "{argv:?}"
+        );
+    }
+}
+
+/// A command line naming no desired tree, and one naming two, are both usage
+/// errors rather than a guess.
+#[test]
+fn write_refuses_a_command_line_that_names_no_tree_or_two() {
+    for argv in [
+        vec!["proiectio", "write"],
+        vec!["proiectio", "write", "--strip", "1"],
+        vec!["proiectio", "write", "deploy.toml", "--tree", "./skeleton"],
+        vec!["proiectio", "write", "deploy.toml", "--strip", "1"],
+    ] {
+        let error = command()
+            .try_get_matches_from(&argv)
+            .expect_err(&format!("a usage error for {argv:?}"));
+
+        assert!(
+            matches!(
+                error.kind(),
+                ErrorKind::MissingRequiredArgument | ErrorKind::ArgumentConflict
+            ),
+            "{argv:?}: {:?}",
+            error.kind()
+        );
+    }
+}
+
+/// Every permission the tour names is a flag on the invocation.
+#[test]
+fn write_carries_every_permission_on_the_invocation() {
+    let matches = command()
+        .try_get_matches_from([
+            "proiectio",
+            "write",
+            "deploy.toml",
+            "--owner",
+            "site",
+            "--dry-run",
+            "--force",
+            "--allow-external-targets",
+        ])
+        .expect("a parsed command line");
+    let write = matches.subcommand_matches("write").expect("the leaf");
+
+    assert_eq!(
+        write.get_one::<String>("owner").map(String::as_str),
+        Some("site")
+    );
+    assert!(write.get_flag("dry-run"));
+    assert!(write.get_flag("force"));
+    assert!(write.get_flag("allow-external-targets"));
+}

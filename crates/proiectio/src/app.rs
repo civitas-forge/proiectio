@@ -1,10 +1,13 @@
 //! App wiring: the composition root naming every command, template and style.
 
 use anyhow::Result;
+use minijinja::Value;
 use standout::cli::App;
+use standout::context::RenderContext;
 use standout::{EmbeddedTemplates, MiniJinjaEngine, embed_styles, embed_templates};
 
 use crate::handlers;
+use crate::views;
 
 pub(crate) fn templates() -> EmbeddedTemplates {
     embed_templates!("src/templates")
@@ -75,6 +78,12 @@ pub(crate) fn build() -> Result<App> {
         .templates(templates())
         .styles(embed_styles!("src/styles"))
         .default_theme("proiectio")
+        .context_fn("write", |context: &RenderContext| {
+            Value::from_serialize(views::write_lines(context.data, context.ambiguous_width()))
+        })
+        .command_with("write", handlers::write__handler, |cfg| {
+            cfg.template("write.jinja")
+        })?
         .command_with("status", handlers::status__handler, |cfg| {
             cfg.template("status.jinja")
         })?

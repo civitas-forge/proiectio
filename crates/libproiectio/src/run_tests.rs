@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -6,8 +6,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree, origins_of};
 use crate::{
-    Action, ApplyOutcome, Desired, Entry, Error, LOCK_FILE_NAME, MANIFEST_FILE_NAME, Origin,
-    PathState, Refusal, RefusalKind, RemovalScope,
+    Action, ApplyOutcome, Desired, Entry, Error, LOCK_FILE_NAME, MANIFEST_FILE_NAME, Manifest,
+    Origin, PathState, Refusal, RefusalKind, RemovalScope,
 };
 
 // A projection over two fixture directories, the state directory outside
@@ -18,6 +18,10 @@ fn projection(dest: &Fixture, state: &Utf8Path) -> Projection {
 
 fn desired(tree: &Tree) -> Desired {
     Desired::from_caller(tree.entries())
+}
+
+fn owners_of(manifest: &Manifest, path: &str) -> BTreeSet<String> {
+    manifest.entries[Utf8Path::new(path)].owners.clone()
 }
 
 // The definition of done: a full begin → plan → apply cycle, with the caller
@@ -274,11 +278,11 @@ fn a_removal_plan_names_no_source() {
     let state = Tree::new().materialize();
     let projection = projection(&dest, state.root());
 
-    let plan = projection
+    let planned = projection
         .plan_removal("harness", RemovalScope::Everything, PlanOptions::default())
         .expect("plan the removal");
 
-    assert!(plan.origins.is_empty());
+    assert!(planned.plan.origins.is_empty());
 }
 
 // The refusals apply raises come from deep inside the walk, so this is what
@@ -379,12 +383,14 @@ fn a_plan_from_a_read_takes_no_lock() {
     let projection = projection(&dest, state.root());
     let tree = Tree::new().file("notes/a.txt", "alpha");
 
-    let plan = projection
+    let planned = projection
         .plan("harness", &desired(&tree), PlanOptions::default())
         .expect("plan");
 
     assert_eq!(
-        plan.actions
+        planned
+            .plan
+            .actions
             .keys()
             .map(|path| path.as_str())
             .collect::<Vec<_>>(),
@@ -393,6 +399,49 @@ fn a_plan_from_a_read_takes_no_lock() {
     // No lock file, no state directory: a read creates neither.
     assert_eq!(fs::read_dir(state.root()).expect("read state").count(), 0);
     projection.begin().expect("a read left no guard behind");
+}
+
+// A read returns the manifest its plan was decided against, so the report
+// the pair renders names the owners recorded when the verdicts were decided.
+#[test]
+fn a_read_returns_the_manifest_its_plan_was_decided_against() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(&dest, state.root());
+    let tree = Tree::new().file("conf", "one");
+
+    let mut run = projection.begin().expect("begin");
+    run.plan("x", &desired(&tree), PlanOptions::default())
+        .expect("plan");
+    run.apply().expect("apply");
+
+    let planned = projection
+        .plan("x", &desired(&tree), PlanOptions::default())
+        .expect("plan");
+
+    let mut run = projection.begin().expect("begin");
+    run.plan("y", &desired(&tree), PlanOptions::default())
+        .expect("plan");
+    run.apply().expect("apply");
+
+    let only_x = BTreeSet::from(["x".to_owned()]);
+    assert_eq!(owners_of(&planned.manifest, "conf"), only_x);
+    assert_eq!(
+        planned
+            .report()
+            .rows
+            .get(Utf8Path::new("conf"))
+            .expect("a row")
+            .facts
+            .as_ref()
+            .expect("facts")
+            .owners,
+        only_x
+    );
+    assert_eq!(
+        owners_of(&projection.manifest().expect("manifest"), "conf"),
+        BTreeSet::from(["x".to_owned(), "y".to_owned()])
+    );
 }
 
 #[test]

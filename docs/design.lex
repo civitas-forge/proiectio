@@ -141,9 +141,9 @@ Proiectio Design
     pub fn status(&self) -> Result<Status>;
     pub fn manifest(&self) -> Result<Manifest>;
     pub fn plan(&self, owner: &str, desired: &Desired,
-    origin: Origin, options: PlanOptions) -> Result<Plan>;
+    origin: Origin, options: PlanOptions) -> Result<Planned>;
     pub fn plan_removal(&self, owner: &str, scope: RemovalScope<'_>,
-    options: PlanOptions) -> Result<Plan>;
+    options: PlanOptions) -> Result<Planned>;
     // The write pass.
     pub fn begin(&self) -> Result<Run>;
     }
