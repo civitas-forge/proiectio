@@ -2236,6 +2236,73 @@ fn two_removals_landing_on_one_node_refuse_the_conflict() {
 }
 
 #[test]
+fn a_write_walks_through_the_location_a_removal_vacates() {
+    // The removal of `logs/x` unlinks `real/x`, so the write beneath it walks
+    // through a location the run leaves empty. Filed under the key instead,
+    // the walk met the old file still standing at `real/x` and refused it as
+    // Foreign, which applying — removals first — does not do.
+    let old = file("old\n", false);
+    let fresh = file("fresh\n", false);
+    let manifest = manifest_of(&[
+        ("logs", recorded(&link("real"), &["other"])),
+        ("logs/x", recorded(&old, &[OWNER])),
+    ]);
+    let observations = observed(&[("logs", on_disk(&link("real"))), ("real/x", on_disk(&old))]);
+
+    let plan = plan(
+        &tree(&[("real/x/child.txt", &fresh)]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "logs/x"),
+        &Action::Remove {
+            expected: Some(signature(&old)),
+        }
+    );
+    assert_eq!(
+        action(&plan, "real/x/child.txt"),
+        &Action::Write {
+            entry: fresh.clone(),
+        }
+    );
+}
+
+#[test]
+fn an_absence_only_removal_claims_no_node() {
+    // Nothing stands where the walk comes out, so the removal only verifies
+    // that and forgets the record: it neither unlinks nor owns the location,
+    // which leaves a desired key free to write there rather than colliding.
+    let old = file("old\n", false);
+    let fresh = file("fresh\n", false);
+    let manifest = manifest_of(&[
+        ("logs", recorded(&link("real"), &["other"])),
+        ("logs/x", recorded(&old, &[OWNER])),
+    ]);
+    let observations = observed(&[
+        ("logs", on_disk(&link("real"))),
+        ("real", Observation::Directory),
+    ]);
+
+    let plan = plan(
+        &tree(&[("real/x", &fresh)]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(action(&plan, "logs/x"), &Action::Remove { expected: None });
+    assert_eq!(
+        action(&plan, "real/x"),
+        &Action::Write {
+            entry: fresh.clone(),
+        }
+    );
+}
+
+#[test]
 fn a_removal_landing_on_its_own_key_conflicts_with_nothing() {
     // The check names collisions, not walks: a removal the walk resolved to
     // the key it was already aimed at claims one node, and so does every

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write;
 
 use camino::Utf8PathBuf;
@@ -8,7 +8,8 @@ use sha2::{Digest, Sha256};
 use camino::Utf8Path;
 use cap_std::fs_utf8::{Dir, MetadataExt};
 
-use crate::{Error, IoRole, MAX_WALK_DEPTH, Manifest, Result};
+use crate::containment::contained_target;
+use crate::{EntryKind, Error, IoRole, MAX_WALK_DEPTH, Manifest, Refusal, Result};
 
 /// Lowercase hex SHA-256 of `bytes` — the hash convention everywhere a hash
 /// is recorded: file contents, a symlink's target string, a block's body.
@@ -204,7 +205,164 @@ pub(crate) fn observe(
             .entry(path.clone())
             .or_insert(Observation::Absent);
     }
+    relocated_regions(dest, manifest, wanted, &mut into)?;
     Ok(into)
+}
+
+/// States the region of every block record whose ancestry walks out through a
+/// recorded link, at the location that walk comes out at.
+///
+/// [`walk`] picks a container to parse by the manifest key standing at the
+/// path it is walking, so a container the key only reaches through a link
+/// observes as an ordinary [`File`](Observation::File) at the location it
+/// actually occupies. Deciding grades a record against that location, and
+/// applying strips the region there, so that is where the region has to be
+/// stated for the two to agree.
+fn relocated_regions(
+    dest: &Dir,
+    manifest: &Manifest,
+    wanted: &BlockMarkers,
+    into: &mut Observations,
+) -> Result<()> {
+    let mut regions: BTreeMap<Utf8PathBuf, Observation> = BTreeMap::new();
+    for (path, recorded) in &manifest.entries {
+        let Some((marker, placement)) = crate::block::block_kind(&recorded.kind) else {
+            continue;
+        };
+        let Ok(Some(landing)) = walked_ancestry(path, manifest, into, &BTreeSet::new(), false)
+        else {
+            continue;
+        };
+        if landing.at == *path {
+            continue;
+        }
+        // A record of its own at the landing already had its region parsed
+        // under its own marker, and only a regular file holds a region at all.
+        if manifest
+            .entries
+            .get(&landing.at)
+            .is_some_and(|recorded| recorded.kind.is_block())
+            || !matches!(
+                into.paths.get(&landing.at),
+                Some(Observation::File { .. } | Observation::Block { .. })
+            )
+        {
+            continue;
+        }
+        let observation = observe_region(
+            dest,
+            landing.at.as_str(),
+            &landing.at,
+            Some((marker, placement)),
+            wanted.get(&landing.at),
+        )?;
+        regions.insert(landing.at, observation);
+    }
+    into.paths.extend(regions);
+    Ok(())
+}
+
+/// Where a no-follow walk to `path` comes out on the destination this run
+/// leaves — `path` itself, unless the walk followed a recorded link — or the
+/// refusal it meets on the way. `Ok(None)` is ancestry that is not there.
+///
+/// The snapshot side of act's `verified_parent`: the same arms in the same
+/// order, read off the observations rather than the disk, so a verdict apply
+/// would reach is one deciding reaches first. `create` marks the walk a write
+/// makes, which builds missing ancestry and refuses a node that is not a
+/// directory rather than stopping short of the leaf. `vacated` names the
+/// locations this run unlinks, which stand in the way of nothing.
+pub(crate) fn walked_ancestry(
+    path: &Utf8Path,
+    manifest: &Manifest,
+    observations: &Observations,
+    vacated: &BTreeSet<Utf8PathBuf>,
+    create: bool,
+) -> std::result::Result<Option<Landing>, Refusal> {
+    let mut components: VecDeque<String> = path
+        .components()
+        .map(|component| component.as_str().to_owned())
+        .collect();
+    let leaf = components
+        .pop_back()
+        .expect("a decided path has a final component");
+    let mut prefix = Utf8PathBuf::new();
+    let mut through: Option<Utf8PathBuf> = None;
+    let mut visited: BTreeSet<Utf8PathBuf> = BTreeSet::new();
+    while let Some(component) = components.pop_front() {
+        let here = prefix.join(&component);
+        let standing = if vacated.contains(&here) {
+            None
+        } else {
+            observations.paths.get(&here)
+        };
+        match standing {
+            None | Some(Observation::Absent) => {
+                if !create {
+                    return Ok(None);
+                }
+            }
+            Some(Observation::Directory) => {}
+            Some(Observation::Symlink { hash, target }) => {
+                let recorded = manifest
+                    .entries
+                    .get(&here)
+                    .filter(|recorded| recorded.kind == EntryKind::Symlink);
+                let Some(recorded) = recorded else {
+                    return Err(through_link(here));
+                };
+                if *hash != recorded.hash {
+                    return Err(Refusal::Drift);
+                }
+                let Some(target) = target else {
+                    return Err(through_link(here));
+                };
+                let Some(resolved) = contained_target(&prefix, target) else {
+                    return Err(through_link(here));
+                };
+                if !visited.insert(here.clone()) {
+                    return Err(through_link(here));
+                }
+                let mut restarted: VecDeque<String> = resolved
+                    .components()
+                    .map(|component| component.as_str().to_owned())
+                    .collect();
+                restarted.append(&mut components);
+                components = restarted;
+                through.get_or_insert(here);
+                prefix = Utf8PathBuf::new();
+                continue;
+            }
+            Some(Observation::File { .. } | Observation::Block { .. } | Observation::Other) => {
+                if !create {
+                    return Ok(None);
+                }
+                return Err(if manifest.entries.contains_key(&here) {
+                    Refusal::Drift
+                } else {
+                    Refusal::Foreign
+                });
+            }
+        }
+        prefix = here;
+    }
+    Ok(Some(Landing {
+        at: prefix.join(leaf),
+        through,
+    }))
+}
+
+/// Where a walk came out, and the first recorded link it followed to get
+/// there — the one that explains a landing the caller did not ask for.
+pub(crate) struct Landing {
+    pub(crate) at: Utf8PathBuf,
+    pub(crate) through: Option<Utf8PathBuf>,
+}
+
+fn through_link(link: Utf8PathBuf) -> Refusal {
+    Refusal::Containment {
+        through: Some(link),
+    }
 }
 
 /// Observes every entry of `dir` — the destination subdirectory at `prefix`,

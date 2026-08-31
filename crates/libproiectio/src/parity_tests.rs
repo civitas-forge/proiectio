@@ -14,12 +14,27 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::test_support::Tree;
 use crate::{
-    ApplyOutcome, Desired, DriftPolicy, Error, PlanOptions, PlannedAction, Projection, Refusal,
-    RemovalScope,
+    ApplyOutcome, Desired, DriftPolicy, Entry, Error, Placement, PlanOptions, PlannedAction,
+    Projection, Refusal, RemovalScope,
 };
 
 // The owner every case projects under.
 const OWNER: &str = "site";
+
+// The marker the block cases splice under.
+const MARKER: &str = "# proiectio";
+
+// A desired tree of one block region at `path`, which no `Tree` declares.
+fn block_at(path: &'static str, body: &'static str) -> BTreeMap<Utf8PathBuf, Entry> {
+    BTreeMap::from([(
+        Utf8PathBuf::from(path),
+        Entry::Block {
+            body: body.as_bytes().to_vec(),
+            marker: MARKER.to_owned(),
+            placement: Placement::Append,
+        },
+    )])
+}
 
 // The run whose dry verdicts and real outcomes have to agree.
 enum Op {
@@ -35,6 +50,8 @@ enum Op {
 enum Setup {
     // One projection pass, which is what puts the paths in the manifest.
     Record(&'static str, Tree),
+    // The same over entries a `Tree` cannot declare, which is the blocks.
+    RecordEntries(&'static str, BTreeMap<Utf8PathBuf, Entry>),
     // A hand edit between two passes, for a manifest no sequence of passes
     // reaches on its own.
     Hand(fn(&Utf8Path)),
@@ -74,6 +91,15 @@ impl Case {
 
     fn recording(mut self, owner: &'static str, tree: Tree) -> Case {
         self.recorded.push(Setup::Record(owner, tree));
+        self
+    }
+
+    fn recording_entries(
+        mut self,
+        owner: &'static str,
+        entries: BTreeMap<Utf8PathBuf, Entry>,
+    ) -> Case {
+        self.recorded.push(Setup::RecordEntries(owner, entries));
         self
     }
 
@@ -140,8 +166,9 @@ fn parity(case: &Case) {
         Projection::new(dest.root(), state_dir).expect("a projection over the fixtures");
 
     for step in &case.recorded {
-        let (owner, tree) = match step {
-            Setup::Record(owner, tree) => (owner, tree),
+        let (owner, entries) = match step {
+            Setup::Record(owner, tree) => (owner, tree.entries()),
+            Setup::RecordEntries(owner, entries) => (owner, entries.clone()),
             Setup::Hand(edit) => {
                 edit(dest.root());
                 continue;
@@ -150,7 +177,7 @@ fn parity(case: &Case) {
         let mut run = projection.begin().expect("begin a recording pass");
         run.plan(
             owner,
-            &Desired::from_caller(tree.entries()),
+            &Desired::from_caller(entries),
             PlanOptions::default(),
         )
         .unwrap_or_else(|error| panic!("{what}: deciding the pass for {owner}: {error}"));
@@ -367,6 +394,69 @@ fn cases() -> Vec<Case> {
                 paths: BTreeSet::from([Utf8PathBuf::from("logs/x.txt")]),
             },
         ),
+        // The landing, not the key, is what the run leaves empty: the write
+        // walks through `real/x`, which the removal of `logs/x` unlinks. Keyed
+        // by `logs/x` instead, the walk met the old file still standing there
+        // and refused it as Foreign, which applying does not do.
+        Case::new(
+            "a write walking through what a removal vacates elsewhere",
+            Op::Write(Tree::new().file("real/x/child.txt", "fresh\n")),
+        )
+        .recording(OWNER, Tree::new().file("logs/x", "old\n"))
+        .then_by_hand(|root| {
+            fs::rename(root.join("logs"), root.join("real")).expect("move the directory aside");
+        })
+        .recording("other", Tree::new().symlink("logs", "real"))
+        .plans("logs/x", PlannedAction::Remove)
+        .plans("real/x/child.txt", PlannedAction::Write),
+        // A removal expecting nothing unlinks nothing, so the location it
+        // verifies empty is free for a desired key to write: forgetting the
+        // record and writing the path are one run, not two claims on one node.
+        Case::new(
+            "a write where an absence-only removal lands",
+            Op::Write(Tree::new().file("real/x", "fresh\n")),
+        )
+        .recording(OWNER, Tree::new().file("logs/x", "old\n"))
+        .then_by_hand(|root| {
+            fs::rename(root.join("logs"), root.join("real")).expect("move the directory aside");
+            fs::remove_file(root.join("real/x")).expect("delete the recorded path by hand");
+        })
+        .recording("other", Tree::new().symlink("logs", "real"))
+        .plans("logs/x", PlannedAction::Forget)
+        .plans("real/x", PlannedAction::Write),
+        // A desired path standing on a directory this run empties from
+        // elsewhere: the only node `real` holds is the one the removal keyed
+        // `logs/x` unlinks, so pruning takes the directory and the write has
+        // the location. Read off the keys, the directory looked held.
+        Case::new(
+            "a write over a directory a removal empties through a link",
+            Op::Write(Tree::new().file("real", "fresh\n")),
+        )
+        .recording(OWNER, Tree::new().file("logs/x", "old\n"))
+        .then_by_hand(|root| {
+            fs::rename(root.join("logs"), root.join("real")).expect("move the directory aside");
+        })
+        .recording("other", Tree::new().symlink("logs", "real"))
+        .plans("logs/x", PlannedAction::Remove)
+        .plans("real", PlannedAction::Write),
+        // A block whose container the walk reaches through a recorded link.
+        // Observation parses a region under the manifest key standing at the
+        // path it walks, so the container reads as an ordinary file where it
+        // actually sits; grading the record against that file made every such
+        // removal drift, while applying strips the region and succeeds.
+        Case::new(
+            "a block removal landing beneath a recorded link",
+            Op::Remove,
+        )
+        .then_by_hand(|root| {
+            Tree::new().file("logs/x", "author\n").write_under(root);
+        })
+        .recording_entries(OWNER, block_at("logs/x", "managed\n"))
+        .then_by_hand(|root| {
+            fs::rename(root.join("logs"), root.join("real")).expect("move the container aside");
+        })
+        .recording("other", Tree::new().symlink("logs", "real"))
+        .plans("logs/x", PlannedAction::Remove),
         // The same walk, landing inside the state subtree. Before deciding
         // graded the landing, the plan aimed a removal at the state file and
         // applying deleted it: act knows no state prefix, so nothing behind

@@ -1,17 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::block;
-use crate::containment::{
-    Hop, contained_normalize, contained_target, contained_target_chain, is_pathname,
-};
+use crate::containment::{Hop, contained_normalize, contained_target_chain, is_pathname};
 use crate::{
     Action, BlockFault, Desired, DriftPolicy, Entry, EntryKind, Error, ExternalTargetPolicy,
     MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations, Origin,
     OverwriteReason, PathFacts, PathShape, PathState, Placement, Plan, PlanOptions, Refusal,
-    Report, Result, Row, Status, sha256_hex,
+    Report, Result, Row, Status, sha256_hex, walked_ancestry,
 };
 
 /// One row per path in the union of the manifest and the observations,
@@ -364,8 +362,8 @@ fn plan_actions(
                         || Action::RemoveDirectory,
                     )
                     .unwrap_or_else(|| orphan_action(recorded, observed, state, options.drift));
-                    let claims = !matches!(action, Action::Refuse { .. });
-                    (action, claims.then_some(at))
+                    let acts = !matches!(action, Action::Refuse { .. });
+                    (action, acts.then_some(at))
                 }
             }
         };
@@ -377,8 +375,13 @@ fn plan_actions(
     // node: apply would carry out the first and refuse the second half-way
     // through the run. Nothing orders them — the reading `docs/design.lex`
     // section 2 gives two desired keys over one location — so both refuse.
+    // A removal expecting nothing claims nothing: apply only re-checks that
+    // the location is empty, which leaves it free for another key's write.
     let mut claimed: BTreeMap<&Utf8Path, BTreeSet<Utf8PathBuf>> = BTreeMap::new();
-    for (path, _, at) in &orphans {
+    for (path, action, at) in &orphans {
+        if matches!(action, Action::Remove { expected: None }) {
+            continue;
+        }
         if let Some(at) = at {
             claimed
                 .entry(at.as_path())
@@ -405,11 +408,20 @@ fn plan_actions(
         })
     };
 
+    // Every location this run leaves empty, which is what the ancestry walks,
+    // the planned symlink targets, and the directory readings below all ask
+    // about — so each is the location a removal acts at, not the key it is
+    // filed under. A removal that strips a block republishes its container,
+    // so only the whole-node removals empty anything.
     let mut vacated: BTreeSet<Utf8PathBuf> = BTreeSet::new();
-    for (path, action, _) in orphans {
+    for (path, action, at) in orphans {
         let action = collided.get(&path).map_or(action, &conflict);
-        if matches!(action, Action::Remove { .. } | Action::RemoveDirectory) {
-            vacated.insert(path.clone());
+        let whole_node = !manifest
+            .entries
+            .get(&path)
+            .is_some_and(|recorded| recorded.kind.is_block());
+        if matches!(action, Action::Remove { .. } | Action::RemoveDirectory) && whole_node {
+            vacated.insert(at.unwrap_or_else(|| path.clone()));
         }
         actions.insert(path, action);
     }
@@ -439,7 +451,7 @@ fn plan_actions(
                 entry,
                 manifest,
                 observations,
-                &actions,
+                &vacated,
                 options.drift,
             )
             .unwrap_or_else(|| {
@@ -472,7 +484,7 @@ fn directory_action(
     entry: &Entry,
     manifest: &Manifest,
     observations: &Observations,
-    actions: &BTreeMap<Utf8PathBuf, Action>,
+    vacated: &BTreeSet<Utf8PathBuf>,
     policy: DriftPolicy,
 ) -> Option<Action> {
     if !matches!(observations.paths.get(path), Some(Observation::Directory))
@@ -493,7 +505,7 @@ fn directory_action(
             },
         ),
         None => Some(
-            match directory_in_the_way(path, manifest, observations, actions) {
+            match directory_in_the_way(path, manifest, observations, vacated) {
                 Some(refusal) => refuse(refusal),
                 None => Action::Write {
                     entry: entry.clone(),
@@ -556,25 +568,12 @@ fn directory_in_the_way(
     path: &Utf8Path,
     manifest: &Manifest,
     observations: &Observations,
-    actions: &BTreeMap<Utf8PathBuf, Action>,
+    vacated: &BTreeSet<Utf8PathBuf>,
 ) -> Option<Refusal> {
-    // A removal that strips a block republishes its container, so only the
-    // whole-node removals leave a location empty for pruning to judge.
-    let vacating: BTreeSet<&Utf8Path> = actions
-        .iter()
-        .filter(|(key, action)| {
-            matches!(action, Action::Remove { .. } | Action::RemoveDirectory)
-                && !manifest
-                    .entries
-                    .get(*key)
-                    .is_some_and(|recorded| recorded.kind.is_block())
-        })
-        .map(|(key, _)| key.as_path())
-        .collect();
     let emptied = |directory: &Utf8Path| {
-        vacating
+        vacated
             .iter()
-            .any(|key| key.starts_with(directory) && *key != directory)
+            .any(|node| node.starts_with(directory) && node != directory)
     };
     let unreadable = unreadable_beneath(path, observations);
     let (held, holding) = holding_beneath(path, manifest, observations, |node, observation| {
@@ -586,8 +585,8 @@ fn directory_in_the_way(
                 // A directory this run removes outright is one
                 // `drifted_directory` already found empty, so it goes whether
                 // or not a deeper removal empties it.
-                Observation::Directory => vacating.contains(node) || emptied(node),
-                _ => vacating.contains(node),
+                Observation::Directory => vacated.contains(node) || emptied(node),
+                _ => vacated.contains(node),
             }
     });
     let blocked = held || !unreadable.is_empty();
@@ -681,109 +680,6 @@ fn overlaps_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
 /// that same path refuses.
 fn in_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
     state_prefix.is_some_and(|prefix| path.starts_with(prefix))
-}
-
-/// Where a no-follow walk to `path` comes out on the destination this run
-/// leaves — `path` itself, unless the walk followed a recorded link — or the
-/// refusal it meets on the way. `Ok(None)` is ancestry that is not there.
-///
-/// The snapshot side of act's `verified_parent`: the same arms in the same
-/// order, read off the observations rather than the disk, so a verdict apply
-/// would reach is one deciding reaches first. `create` marks the walk a write
-/// makes, which builds missing ancestry and refuses a node that is not a
-/// directory rather than stopping short of the leaf. `vacated` names the
-/// paths this run unlinks, which stand in the way of nothing.
-fn walked_ancestry(
-    path: &Utf8Path,
-    manifest: &Manifest,
-    observations: &Observations,
-    vacated: &BTreeSet<Utf8PathBuf>,
-    create: bool,
-) -> std::result::Result<Option<Landing>, Refusal> {
-    let mut components: VecDeque<String> = path
-        .components()
-        .map(|component| component.as_str().to_owned())
-        .collect();
-    let leaf = components
-        .pop_back()
-        .expect("a decided path has a final component");
-    let mut prefix = Utf8PathBuf::new();
-    let mut through: Option<Utf8PathBuf> = None;
-    let mut visited: BTreeSet<Utf8PathBuf> = BTreeSet::new();
-    while let Some(component) = components.pop_front() {
-        let here = prefix.join(&component);
-        let standing = if vacated.contains(&here) {
-            None
-        } else {
-            observations.paths.get(&here)
-        };
-        match standing {
-            None | Some(Observation::Absent) => {
-                if !create {
-                    return Ok(None);
-                }
-            }
-            Some(Observation::Directory) => {}
-            Some(Observation::Symlink { hash, target }) => {
-                let recorded = manifest
-                    .entries
-                    .get(&here)
-                    .filter(|recorded| recorded.kind == EntryKind::Symlink);
-                let Some(recorded) = recorded else {
-                    return Err(through_link(here));
-                };
-                if *hash != recorded.hash {
-                    return Err(Refusal::Drift);
-                }
-                let Some(target) = target else {
-                    return Err(through_link(here));
-                };
-                let Some(resolved) = contained_target(&prefix, target) else {
-                    return Err(through_link(here));
-                };
-                if !visited.insert(here.clone()) {
-                    return Err(through_link(here));
-                }
-                let mut restarted: VecDeque<String> = resolved
-                    .components()
-                    .map(|component| component.as_str().to_owned())
-                    .collect();
-                restarted.append(&mut components);
-                components = restarted;
-                through.get_or_insert(here);
-                prefix = Utf8PathBuf::new();
-                continue;
-            }
-            Some(Observation::File { .. } | Observation::Block { .. } | Observation::Other) => {
-                if !create {
-                    return Ok(None);
-                }
-                return Err(if manifest.entries.contains_key(&here) {
-                    Refusal::Drift
-                } else {
-                    Refusal::Foreign
-                });
-            }
-        }
-        prefix = here;
-    }
-    Ok(Some(Landing {
-        at: prefix.join(leaf),
-        through,
-    }))
-}
-
-/// Where a walk came out, and the first recorded link it followed to get
-/// there — the one that explains a landing the caller did not ask for.
-struct Landing {
-    at: Utf8PathBuf,
-    through: Option<Utf8PathBuf>,
-}
-
-fn through_link(link: Utf8PathBuf) -> Refusal {
-    Refusal::Containment {
-        through: Some(link),
-    }
 }
 
 /// The symlink refusals for an admitted path, judged before its

@@ -555,3 +555,63 @@ fn a_container_swapped_for_another_kind_observes_as_that_kind() {
         Observation::Directory
     );
 }
+
+#[test]
+fn a_region_reached_through_a_recorded_link_is_stated_where_it_stands() {
+    // The container the record names sits at `real/rc`, which the walk reads
+    // as an ordinary file: nothing records a block there. Deciding grades the
+    // record against the location its removal acts at, and applying strips
+    // the region there, so the region is stated at that location too.
+    let contents = "author\n# proiectio\nmanaged\n";
+    let fixture = Tree::new()
+        .file("real/rc", contents)
+        .symlink("logs", "real")
+        .materialize();
+    let mut manifest = block_manifest("logs/rc", "# proiectio", Placement::Append, "managed\n");
+    manifest.entries.insert(
+        Utf8PathBuf::from("logs"),
+        ManifestEntry {
+            kind: EntryKind::Symlink,
+            hash: sha256_hex(b"real"),
+            executable: false,
+            owners: BTreeSet::from(["test".to_owned()]),
+        },
+    );
+
+    let observations = observed(&fixture, &manifest);
+
+    assert_eq!(
+        observations[Utf8Path::new("real/rc")],
+        Observation::Block {
+            hash: Some(sha256_hex(b"managed\n")),
+            newline_terminated: true,
+            occurrences: 1,
+            desired: None,
+        }
+    );
+    // The key itself is still not on disk, and the walk never descended the
+    // link to claim otherwise.
+    assert_eq!(observations[Utf8Path::new("logs/rc")], Observation::Absent);
+}
+
+#[test]
+fn a_region_beneath_a_hand_made_link_is_left_where_the_walk_read_it() {
+    // Nothing records the link, so no walk may follow it: the container stays
+    // an ordinary file, which is the verdict deciding refuses the record on.
+    let contents = "author\n# proiectio\nmanaged\n";
+    let fixture = Tree::new()
+        .file("real/rc", contents)
+        .symlink("logs", "real")
+        .materialize();
+    let manifest = block_manifest("logs/rc", "# proiectio", Placement::Append, "managed\n");
+
+    let observations = observed(&fixture, &manifest);
+
+    assert_eq!(
+        observations[Utf8Path::new("real/rc")],
+        Observation::File {
+            hash: sha256_hex(contents.as_bytes()),
+            executable: false,
+        }
+    );
+}
