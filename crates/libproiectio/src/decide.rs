@@ -466,7 +466,7 @@ fn plan_actions(
     let mut vacated: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, action, at) in orphans {
         // Graded after the collisions above, which are the landings this
-        // plan does act on ([`acts_at_landing`] / [`vacates_node`]).
+        // plan does act on.
         let action = match collided.get(&path) {
             Some(paths) => conflict(paths),
             None if acts_at_landing(&action) => followed

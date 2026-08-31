@@ -352,9 +352,8 @@ pub(crate) struct Landing {
 }
 
 /// The refusal a landing raises where the manifest records it: unlinking
-/// there takes a node the landing's owners hold. Callers grade only the
-/// landings their own plan does not vacate. `None` where the walk followed no
-/// link, or where nothing records where it came out.
+/// there takes a node the landing's owners hold. `None` where the walk
+/// followed no link, or where nothing records where it came out.
 pub(crate) fn recorded_landing(landing: &Landing, manifest: &Manifest) -> Option<Refusal> {
     let through = landing.through.clone()?;
     let recorded = manifest.entries.get(&landing.at)?;

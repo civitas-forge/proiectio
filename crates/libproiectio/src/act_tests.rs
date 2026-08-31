@@ -1577,6 +1577,88 @@ fn a_removal_landing_where_a_block_strip_acts_refuses_rather_than_unlink_the_con
     );
 }
 
+// The landing's own block strip runs first and drops the record from the
+// live manifest; the grade reads the manifest as the run loaded it.
+#[test]
+fn a_removal_landing_on_a_record_another_removal_already_dropped_still_refuses() {
+    let (dest, state) = fixtures();
+    let container = "author\n# proiectio\nmanaged\n";
+    Tree::new()
+        .file("z/x", container)
+        .symlink("a", "z")
+        .write_under(dest.root());
+    let manifest = Manifest {
+        version: MANIFEST_VERSION,
+        entries: BTreeMap::from([
+            (
+                "a".into(),
+                recorded(EntryKind::Symlink, sha256_hex(b"z"), &["own"]),
+            ),
+            (
+                "a/x".into(),
+                recorded(EntryKind::File, sha256_hex(b"author\n"), &["own"]),
+            ),
+            (
+                "z/x".into(),
+                recorded(
+                    block_kind(Placement::Append),
+                    sha256_hex(b"managed\n"),
+                    &["own"],
+                ),
+            ),
+        ]),
+    };
+    let plan = Plan {
+        dropped: BTreeSet::new(),
+        owner: "own".to_owned(),
+        origins: BTreeMap::new(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([
+            (
+                "a/x".into(),
+                Action::Remove {
+                    expected: Some(NodeSignature {
+                        kind: EntryKind::File,
+                        hash: sha256_hex(b"author\n"),
+                        executable: false,
+                    }),
+                },
+            ),
+            (
+                "z/x".into(),
+                Action::Remove {
+                    expected: Some(NodeSignature {
+                        kind: block_kind(Placement::Append),
+                        hash: sha256_hex(b"managed\n"),
+                        executable: false,
+                    }),
+                },
+            ),
+        ]),
+    };
+
+    let error = apply_at(&dest, &state, &manifest, &plan).expect_err("never unlink the container");
+
+    match error {
+        Error::Refused(refused) => assert_eq!(
+            refusals_of(&refused),
+            BTreeMap::from([(
+                Utf8PathBuf::from("a/x"),
+                Refusal::RecordedLanding {
+                    through: Utf8PathBuf::from("a"),
+                    at: Utf8PathBuf::from("z/x"),
+                    owners: BTreeSet::from(["own".to_owned()]),
+                },
+            )])
+        ),
+        other => panic!("expected RecordedLanding, got {other:?}"),
+    }
+    assert_eq!(
+        fs::read_to_string(dest.path("z/x")).expect("the container the strip republished"),
+        "author\n"
+    );
+}
+
 // A forget takes no node; refusing it would strand a record no run can clean.
 #[test]
 fn an_aliased_forget_drops_its_record_and_leaves_the_landing_alone() {

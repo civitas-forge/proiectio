@@ -194,27 +194,6 @@ pub(crate) fn acts_at_landing(action: &Action) -> bool {
     )
 }
 
-/// Whether `action` vacates the whole node standing where it acts — the one
-/// reading of "the plan takes this node" both stages grade by, and the only
-/// thing that stands a landing's refusal down. Narrower than
-/// [`acts_at_landing`]: a block strip republishes the container, so the node
-/// it acts at still stands for its owners.
-pub(crate) fn vacates_node(action: &Action) -> bool {
-    match action {
-        Action::Remove {
-            expected: Some(expected),
-        } => !expected.kind.is_block(),
-        Action::RemoveDirectory | Action::OverwriteDirectory { .. } => true,
-        Action::Remove { expected: None }
-        | Action::Write { .. }
-        | Action::Overwrite { .. }
-        | Action::Skip { .. }
-        | Action::Release
-        | Action::NotRecorded
-        | Action::Refuse { .. } => false,
-    }
-}
-
 /// One planned per-path action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
