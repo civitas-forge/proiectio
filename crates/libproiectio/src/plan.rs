@@ -136,7 +136,11 @@ fn facts_of(
         }),
         Action::Remove {
             expected: Some(expected),
-        } => Some(recorded_shape(&expected.kind, expected.executable)),
+        } => Some(recorded_shape(
+            &expected.kind,
+            expected.executable,
+            expected.target.clone(),
+        )),
         // None of these four names a node of its own, so each row states
         // what the manifest records at the path; apply's row for the same
         // path draws on the same entry, so a dry run and a real run state
@@ -146,7 +150,7 @@ fn facts_of(
         | Action::RemoveDirectory
         | Action::Remove { expected: None } => {
             let recorded = recorded?;
-            Some(recorded_shape(&recorded.kind, recorded.executable))
+            Some(recorded_shape(&recorded.kind, recorded.executable, None))
         }
         Action::Refuse { .. } => None,
     };
@@ -277,8 +281,8 @@ pub enum PlannedAction {
     },
 }
 
-/// The on-disk node an action expects at apply time. Apply re-checks all
-/// three fields and refuses if any changed since the plan.
+/// The on-disk node an action expects at apply time. Apply re-checks `kind`,
+/// `hash`, and `executable` and refuses if any changed since the plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeSignature {
     /// The node's kind. For a [`Block`](EntryKind::Block) it carries the
@@ -289,6 +293,10 @@ pub struct NodeSignature {
     pub hash: String,
     /// The executable bit; always `false` for symlinks and blocks.
     pub executable: bool,
+    /// The link target string `hash` digests, which run rows state; the hash
+    /// re-check covers it. `None` for a non-link node and for a target that
+    /// is not UTF-8.
+    pub target: Option<String>,
 }
 
 #[cfg(test)]

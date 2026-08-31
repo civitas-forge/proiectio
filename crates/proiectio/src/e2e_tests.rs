@@ -78,7 +78,7 @@ const UNCHANGED: &str = "skipped    bin/tool              (exec)\n\
 
 const CLEARED: &str = "removed    bin/tool              (exec)\n\
                        removed    config/settings.toml\n\
-                       removed    current\n\
+                       removed    current               -> releases/1.2.3\n\
                        3 removed\n";
 
 /// The plan once `bin/tool` is edited underneath it and `current` removed,
@@ -354,7 +354,7 @@ fn a_dry_run_of_rm_reports_the_plan_and_removes_nothing() {
         result.stdout(),
         "would remove     bin/tool              (exec)\n\
          would remove     config/settings.toml\n\
-         would remove     current\n"
+         would remove     current               -> releases/1.2.3\n"
     );
     assert!(dest.join("bin/tool").exists());
 }
@@ -403,7 +403,7 @@ fn a_dry_run_of_rm_refuses_the_escaping_keys_the_real_run_refuses() {
          would refuse     ../ESCAPE/x           (containment)\n\
          would remove     bin/tool              (exec)\n\
          would remove     config/settings.toml\n\
-         would remove     current\n"
+         would remove     current               -> releases/1.2.3\n"
     );
 
     let real_verdict = exit::Verdict::default();
@@ -613,7 +613,7 @@ fn a_refused_dry_run_of_rm_renders_the_whole_plan() {
         result.stdout(),
         "would refuse     bin/tool              (drifted)\n\
          would remove     config/settings.toml\n\
-         would remove     current\n\
+         would remove     current               -> releases/1.2.3\n\
          pass --force to touch them anyway, where the projection can still \
          tell what it would replace\n"
     );

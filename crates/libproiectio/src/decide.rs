@@ -91,20 +91,13 @@ pub(crate) fn status(
     report
 }
 
-/// The manifest records a link by the hash of its target, so the target string
-/// comes from the observation: what the walk read at the path, and `None` where
-/// the disk names none — nothing was reached, a non-link stands there, or the
-/// target is not UTF-8.
 fn recorded_facts(recorded: &ManifestEntry, observed: Option<&Observation>) -> PathFacts {
     let shape = match recorded.kind {
         EntryKind::File => PathShape::File {
             executable: recorded.executable,
         },
         EntryKind::Symlink => PathShape::Symlink {
-            target: match observed {
-                Some(Observation::Symlink { target, .. }) => target.clone(),
-                _ => None,
-            },
+            target: observed_target(observed),
         },
         EntryKind::Block { .. } => PathShape::Block,
     };
@@ -889,7 +882,7 @@ fn desired_action(
             } else {
                 Action::Overwrite {
                     entry: entry.clone(),
-                    expected: recorded_signature(recorded),
+                    expected: recorded_signature(recorded, Some(observation)),
                     reason: clean_overwrite_reason(entry, recorded),
                 }
             }
@@ -979,7 +972,7 @@ fn orphan_action(
 ) -> Action {
     match state {
         PathState::Clean => Action::Remove {
-            expected: Some(recorded_signature(recorded)),
+            expected: Some(recorded_signature(recorded, observation)),
         },
         PathState::Missing => Action::Remove { expected: None },
         PathState::Drifted => {
@@ -1034,11 +1027,14 @@ fn clean_overwrite_reason(entry: &Entry, recorded: &ManifestEntry) -> OverwriteR
     }
 }
 
-fn recorded_signature(recorded: &ManifestEntry) -> NodeSignature {
+/// `observed` supplies what the record cannot: the target string a link's
+/// recorded hash digests.
+fn recorded_signature(recorded: &ManifestEntry, observed: Option<&Observation>) -> NodeSignature {
     NodeSignature {
         kind: recorded.kind.clone(),
         hash: recorded.hash.clone(),
         executable: recorded.executable,
+        target: observed_target(observed),
     }
 }
 
@@ -1047,6 +1043,21 @@ fn desired_signature(entry: &Entry) -> NodeSignature {
         kind: entry.kind(),
         hash: desired_hash(entry),
         executable: desired_executable(entry),
+        target: match entry {
+            Entry::Symlink { target } => Some(target.clone()),
+            Entry::File { .. } | Entry::Block { .. } => None,
+        },
+    }
+}
+
+/// The manifest records a link by the hash of its target, so the target
+/// string comes from the observation: what the walk read at the node, and
+/// `None` where the disk names none — nothing was reached, a non-link stands
+/// there, or the target is not UTF-8.
+fn observed_target(observed: Option<&Observation>) -> Option<String> {
+    match observed {
+        Some(Observation::Symlink { target, .. }) => target.clone(),
+        _ => None,
     }
 }
 
@@ -1062,6 +1073,7 @@ fn observed_signature(
             kind: recorded.kind.clone(),
             hash: hash.clone(),
             executable: false,
+            target: None,
         });
     }
     match observation {
@@ -1069,11 +1081,13 @@ fn observed_signature(
             kind: EntryKind::File,
             hash: hash.clone(),
             executable: *executable,
+            target: None,
         }),
-        Observation::Symlink { hash, .. } => Some(NodeSignature {
+        Observation::Symlink { hash, target } => Some(NodeSignature {
             kind: EntryKind::Symlink,
             hash: hash.clone(),
             executable: false,
+            target: target.clone(),
         }),
         Observation::Block { .. }
         | Observation::Absent

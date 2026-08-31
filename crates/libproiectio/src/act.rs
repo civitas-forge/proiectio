@@ -312,7 +312,7 @@ fn run(
             rows.insert(
                 path.clone(),
                 Row {
-                    facts: recorded_facts(recorded.as_ref(), plan.origin_of(path)),
+                    facts: recorded_facts(recorded.as_ref(), None, plan.origin_of(path)),
                     verdict: ApplyOutcome::Removed,
                 },
             );
@@ -327,7 +327,7 @@ fn run(
             rows.insert(
                 path.clone(),
                 Row {
-                    facts: recorded_facts(recorded.as_ref(), plan.origin_of(path)),
+                    facts: recorded_facts(recorded.as_ref(), None, plan.origin_of(path)),
                     verdict: ApplyOutcome::Removed,
                 },
             );
@@ -354,7 +354,11 @@ fn run(
             rows.insert(
                 path.clone(),
                 Row {
-                    facts: recorded_facts(recorded.as_ref(), plan.origin_of(path)),
+                    facts: recorded_facts(
+                        recorded.as_ref(),
+                        expected.as_ref(),
+                        plan.origin_of(path),
+                    ),
                     verdict: if expected.is_some() {
                         ApplyOutcome::Removed
                     } else {
@@ -458,7 +462,11 @@ fn run(
                 rows.insert(
                     path.clone(),
                     Row {
-                        facts: recorded_facts(manifest.entries.get(path), plan.origin_of(path)),
+                        facts: recorded_facts(
+                            manifest.entries.get(path),
+                            None,
+                            plan.origin_of(path),
+                        ),
                         verdict: ApplyOutcome::NotRecorded,
                     },
                 );
@@ -474,7 +482,7 @@ fn run(
                 rows.insert(
                     path.clone(),
                     Row {
-                        facts: recorded_facts(recorded.as_ref(), plan.origin_of(path)),
+                        facts: recorded_facts(recorded.as_ref(), None, plan.origin_of(path)),
                         verdict: ApplyOutcome::Released,
                     },
                 );
@@ -535,9 +543,21 @@ fn entry_row(
     }
 }
 
-fn recorded_facts(recorded: Option<&ManifestEntry>, origin: Origin) -> Option<PathFacts> {
+/// `expected` is the action's signature where it carries one, which the row's
+/// shape draws on — the same source [`Plan::report`] draws on, so a dry run
+/// and a real run state alike.
+fn recorded_facts(
+    recorded: Option<&ManifestEntry>,
+    expected: Option<&NodeSignature>,
+    origin: Origin,
+) -> Option<PathFacts> {
     recorded.map(|recorded| PathFacts {
-        shape: Some(recorded_shape(&recorded.kind, recorded.executable)),
+        shape: Some(match expected {
+            Some(expected) => {
+                recorded_shape(&expected.kind, expected.executable, expected.target.clone())
+            }
+            None => recorded_shape(&recorded.kind, recorded.executable, None),
+        }),
         owners: recorded.owners.clone(),
         origin: Some(origin),
     })

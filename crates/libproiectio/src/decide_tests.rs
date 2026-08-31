@@ -22,6 +22,10 @@ fn signature(entry: &Entry) -> NodeSignature {
         kind: entry.kind(),
         hash: desired_hash(entry),
         executable: desired_executable(entry),
+        target: match entry {
+            Entry::Symlink { target } => Some(target.clone()),
+            Entry::File { .. } | Entry::Block { .. } => None,
+        },
     }
 }
 
@@ -522,6 +526,7 @@ fn an_agreement_skip_carries_the_desired_signature() {
                 kind: EntryKind::File,
                 hash: desired_hash(&agreed),
                 executable: true,
+                target: None,
             },
         }
     );
@@ -630,6 +635,46 @@ fn drift_policy_overwrite_lifts_a_drifted_orphan_to_removal() {
 
     assert_eq!(
         action(&plan, "old.txt"),
+        &Action::Remove {
+            expected: Some(signature(&drifted)),
+        }
+    );
+}
+
+#[test]
+fn a_removed_recorded_link_plans_and_reports_the_observed_target() {
+    let entry = link("themes/dark");
+    let manifest = manifest_of(&[("current", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[("current", on_disk(&entry))]);
+
+    let plan = plan(&tree(&[]), &manifest, &observations, DriftPolicy::Refuse);
+
+    assert_eq!(
+        action(&plan, "current"),
+        &Action::Remove {
+            expected: Some(signature(&entry)),
+        }
+    );
+    let report = plan.report(&manifest);
+    let row = report.rows.get(Utf8Path::new("current")).expect("a row");
+    assert_eq!(
+        row.facts.as_ref().and_then(|facts| facts.shape.as_ref()),
+        Some(&PathShape::Symlink {
+            target: Some("themes/dark".to_owned())
+        })
+    );
+}
+
+#[test]
+fn a_lifted_drifted_link_removal_states_the_target_the_disk_holds() {
+    let drifted = link("themes/light");
+    let manifest = manifest_of(&[("current", recorded(&link("themes/dark"), &[OWNER]))]);
+    let observations = observed(&[("current", on_disk(&drifted))]);
+
+    let plan = plan(&tree(&[]), &manifest, &observations, DriftPolicy::Overwrite);
+
+    assert_eq!(
+        action(&plan, "current"),
         &Action::Remove {
             expected: Some(signature(&drifted)),
         }
@@ -3260,6 +3305,7 @@ fn a_drifted_region_lifts_under_force_and_a_lost_container_does_not() {
                 },
                 hash: sha256_hex(b"edited\n"),
                 executable: false,
+                target: None,
             },
             reason: OverwriteReason::ForcedDrift,
         }
