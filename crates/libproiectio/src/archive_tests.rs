@@ -486,7 +486,7 @@ fn an_expanded_archive_projects_and_its_relative_link_resolves() {
         PlanOptions::default(),
     )
     .expect("decide");
-    apply(&dest_dir, &state_dir, &manifest, &plan).expect("apply the plan");
+    apply(&dest_dir, &state_dir, state.root(), &manifest, &plan).expect("apply the plan");
 
     assert_tree(dest.root(), &declared_tree());
     assert_eq!(

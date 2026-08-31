@@ -32,7 +32,7 @@ impl Projection {
     pub fn begin(&self) -> Result<Run> {
         let dest = self.open_target()?;
         let state = self.open_or_create_state(&dest)?;
-        let lock = StateLock::acquire(&state)?;
+        let lock = StateLock::acquire(&state, self.state_dir())?;
         let manifest = load_manifest(&state, self.state_dir())?;
         Ok(Run {
             projection: self.clone(),
@@ -172,7 +172,13 @@ impl Run {
                 manifest: self.manifest,
             });
         };
-        apply(&self.dest, &self.state, &self.manifest, plan)
+        apply(
+            &self.dest,
+            &self.state,
+            self.projection.state_dir(),
+            &self.manifest,
+            plan,
+        )
     }
 }
 
