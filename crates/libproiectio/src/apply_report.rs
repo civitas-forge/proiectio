@@ -60,7 +60,9 @@ pub struct ApplyReport {
 /// one manifest at the end, so the two can fail independently: an action can
 /// stop the run with the rows before it recorded, and the record can fail
 /// with every action applied. Both failures are kept, because either one
-/// alone describes a destination the run did not leave.
+/// alone describes a destination the run did not leave — so a caller that
+/// wants one error takes the variant apart and says which it is dropping,
+/// rather than asking this type to choose.
 #[derive(Debug)]
 pub enum Stopped {
     /// An action refused or failed, so the actions after it never ran. The
@@ -104,14 +106,6 @@ impl Stopped {
     /// Whether the state directory records what the run applied.
     pub fn recorded(&self) -> bool {
         matches!(self, Stopped::Applying(_))
-    }
-
-    /// What stopped the run, taken whole.
-    pub fn into_error(self) -> Error {
-        match self {
-            Stopped::Applying(error) | Stopped::Recording(error) => error,
-            Stopped::ApplyingAndRecording { applying, .. } => applying,
-        }
     }
 }
 

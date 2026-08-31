@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use libproiectio::{
-    Desired, Entry, Manifest, Origin, PlanOptions, Projection, Refusal, Refused, Status,
+    Desired, Entry, Limits, Manifest, Origin, PlanOptions, Projection, Refusal, Refused, Status,
+    load_source,
 };
 use serde_json::Value as JsonValue;
 use serial_test::serial;
@@ -1606,6 +1607,7 @@ fn mid_run(#[ctx] ctx: &CommandContext) -> Result<Output<views::RunView>> {
             },
         )),
         &Manifest::new(),
+        BTreeSet::new(),
         ctx,
     )
 }
@@ -1656,6 +1658,29 @@ fn unrecorded(#[arg] dest: String, #[ctx] ctx: &CommandContext) -> Result<Output
     handlers::apply(run, ctx)
 }
 
+/// A run whose plan strips an archive and whose first action then refuses,
+/// which is what a hand editing a projected file between the plan and the
+/// apply leaves. The edit is this test's; the expansion, the plan, the apply
+/// and the document are the CLI's own.
+#[handler]
+fn edited_under(
+    #[arg] dest: String,
+    #[arg] tree: Option<Utf8PathBuf>,
+    #[ctx] ctx: &CommandContext,
+) -> Result<Output<views::RunView>> {
+    let dest = Utf8PathBuf::from(dest);
+    let archive = tree.expect("the archive to project");
+    let projection = Projection::new(&dest, None).expect("a projection");
+    let mut run = projection.begin().expect("a run");
+    let desired = load_source(&archive, Some(1), Limits::default())
+        .expect("an archive whose strip erases one member");
+    run.plan("own", &desired, PlanOptions::default())
+        .expect("a plan skipping the member already on disk");
+    std::fs::write(dest.join("top").as_std_path(), b"edited by hand\n")
+        .expect("the projected file is edited under the run");
+    handlers::apply(run, ctx)
+}
+
 /// The app a stand-in handler runs under: this CLI's own templates, styles and
 /// context injection, with `write` bound to the handler named.
 macro_rules! stand_in_app {
@@ -1688,6 +1713,83 @@ fn unrecorded_app(verdict: &exit::Verdict) -> App {
     stand_in_app!(verdict, unrecorded__handler)
 }
 
+fn edited_under_app(verdict: &exit::Verdict) -> App {
+    stand_in_app!(verdict, edited_under__handler)
+}
+
+/// A destination already holding the archive's tree under `own`, beside the
+/// archive itself: the stand-in run plans a skip over what is there, which the
+/// edit turns into a refusal on the run's first and only action.
+fn projected_archive() -> (TempDir, Utf8PathBuf, Utf8PathBuf) {
+    let (dir, dest, _) = tour();
+    let archive = appledouble_tarball(&utf8(&dir));
+    harness(&dir)
+        .run(
+            &app(),
+            cli::command(),
+            write_argv(
+                &["--tree", archive.as_str(), "--strip", "1", "--owner", "own"],
+                &dest,
+            ),
+        )
+        .assert_success();
+    (dir, dest, archive)
+}
+
+/// A refusal met before a run's first action lands still states the archive
+/// members `strip` erased. The archive was expanded and stripped to decide the
+/// plan the refusal cut short, so a document dropping them would say the
+/// archive arrived whole — and nothing was applied, so the document is the
+/// plan-shaped one the deciding stages render.
+#[test]
+#[serial]
+fn a_refusal_before_the_first_action_states_the_members_strip_erased() {
+    let (dir, dest, archive) = projected_archive();
+
+    let verdict = exit::Verdict::default();
+    let refused = harness(&dir).output_mode(OutputMode::Json).run(
+        &edited_under_app(&verdict),
+        cli::command(),
+        write_argv(&["--tree", archive.as_str()], &dest),
+    );
+
+    assert_eq!(leaving(&refused, &verdict), exit::REFUSAL);
+    assert_eq!(refused.error(), None);
+    let value: JsonValue = serde_json::from_str(refused.stdout()).expect("a JSON document");
+    assert_eq!(
+        stated(&value["rows"], "top")["verdict"]["Refuse"]["refusal"],
+        "Drift"
+    );
+    assert_eq!(value["dropped"][0]["member"], "._skeleton-1.2");
+    assert!(value.get("report").is_none());
+    assert!(value.get("aborted").is_none());
+}
+
+/// The same run rendered: the refused row and the dropped member, in the tense
+/// a run that acted on nothing states them in.
+#[test]
+#[serial]
+fn a_refusal_before_the_first_action_prints_the_members_strip_erased() {
+    let (dir, dest, archive) = projected_archive();
+
+    let verdict = exit::Verdict::default();
+    let refused = harness(&dir).run(
+        &edited_under_app(&verdict),
+        cli::command(),
+        write_argv(&["--tree", archive.as_str()], &dest),
+    );
+
+    assert_eq!(leaving(&refused, &verdict), exit::REFUSAL);
+    assert_eq!(
+        refused.stdout(),
+        format!(
+            "would refuse     top             (drifted) (from archive {archive})\n\
+             dropped          ._skeleton-1.2  (no path left after strip 1) \
+             (from archive {archive})\n"
+        )
+    );
+}
+
 /// A failure stops a run on the terms a refusal does: the rows it applied are
 /// rendered rather than replaced by the diagnostic, which reaches the reader
 /// in the document instead — a JSON caller reads what the run left on disk
@@ -1715,25 +1817,27 @@ fn a_run_a_failure_stopped_renders_its_rows_and_the_failure() {
         "Written"
     );
     // The write is on the destination and the state directory does not record
-    // it, which the document says twice: as a flag, and as the sentence the
-    // failure would otherwise have been reported with alone.
+    // it, which the document says as a flag, as the phase that stopped, and as
+    // the sentence the failure would otherwise have been reported with alone.
     assert_eq!(value["recorded"], JsonValue::Bool(false));
+    assert_eq!(value["stopped_at"], "recording");
     let stopped = value["stopped"]
         .as_array()
         .expect("what stopped the run")
         .iter()
         .map(|line| line.as_str().unwrap_or_default().to_owned())
         .collect::<Vec<_>>();
-    assert_eq!(stopped.len(), 2, "{stopped:?}");
+    assert_eq!(stopped.len(), 1, "{stopped:?}");
     assert!(
-        stopped[1].starts_with("the state directory does not record what the run applied"),
+        stopped[0].starts_with("the state directory does not record what the run applied"),
         "{stopped:?}"
     );
     assert!(dest.join("bin/tool").exists());
 }
 
-/// The same run rendered: the row it applied, the count, and the two lines
-/// saying it stopped and left nothing recording the write.
+/// The same run rendered: the row it applied, a count saying the plan is whole
+/// on the destination rather than half applied, and the line saying nothing
+/// records the write.
 #[test]
 #[serial]
 fn a_run_a_failure_stopped_prints_its_rows_and_the_failure() {
@@ -1753,7 +1857,7 @@ fn a_run_a_failure_stopped_prints_its_rows_and_the_failure() {
     let printed = rendered.stdout();
     assert!(printed.starts_with("wrote      bin/tool\n"), "{printed}");
     assert!(
-        printed.contains("1 written, 0 skipped — the run stopped part-way"),
+        printed.contains("1 written, 0 skipped — the run applied its whole plan"),
         "{printed}"
     );
     assert!(

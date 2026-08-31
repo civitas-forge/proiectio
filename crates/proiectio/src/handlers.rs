@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 use camino::{Utf8Path, Utf8PathBuf};
 use clapfig::ConfigAction;
 use libproiectio::{
-    Aborted, Desired, DriftPolicy, Error, ExternalTargetPolicy, Limits, Manifest, Plan,
-    PlanOptions, PlannedAction, Projection, RemovalScope, Report, Run, Status, load_files,
+    Aborted, Desired, DriftPolicy, Dropped, Error, ExternalTargetPolicy, Limits, Manifest, Plan,
+    PlanOptions, PlannedAction, Projection, RemovalScope, Report, Run, Status, Stopped, load_files,
     load_mapping, load_source,
 };
 use standout::cli::{CommandContext, Output};
@@ -178,10 +178,11 @@ pub(crate) fn apply(run: Run, ctx: &CommandContext) -> Result<Output<RunView>, a
 /// applied anything when it stopped.
 ///
 /// One that had not states the refusal the way the planning stages state
-/// theirs — the keys it declined, and nothing acted on — and a failure there
-/// replaces the output with its diagnostic, the run having nothing to report.
-/// A run that applied nothing wrote no manifest either, so there is no record
-/// to have lost.
+/// theirs — the keys it declined, the archive members the plan stripped, and
+/// nothing acted on — and a failure there replaces the output with its
+/// diagnostic, the run having nothing to report. Such a run wrote no manifest
+/// either, which is why only a stop at an action reaches that branch: a stop
+/// naming the record has rows the record was written for.
 ///
 /// One that had renders the rows it applied whatever stopped it, in the tense
 /// it applied them in and under a document marked as stopped: a refusal adds
@@ -192,24 +193,33 @@ pub(crate) fn apply(run: Run, ctx: &CommandContext) -> Result<Output<RunView>, a
 /// claim; dropping the rows for a failure would claim it just as loudly.
 fn stopped(aborted: Box<Aborted>, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
     let Aborted { stopped, applied } = *aborted;
-    if applied.report.is_empty() {
-        return refusal_or_failure(stopped.into_error(), &applied.manifest, ctx);
+    match stopped {
+        Stopped::Applying(error) if applied.report.is_empty() => {
+            refusal_or_failure(error, &applied.manifest, applied.dropped, ctx)
+        }
+        stopped => {
+            let refused = match stopped.error() {
+                Error::Refused(refused) => refused_rows(refused, &applied.manifest),
+                _ => Report::default(),
+            };
+            ctx.app_state
+                .get_required::<exit::Verdict>()?
+                .record(exit::of_error(stopped.error()));
+            Ok(Output::Render(RunView::Aborted(Box::new(AbortedRun::new(
+                applied, refused, &stopped,
+            )))))
+        }
     }
-    let refused = match stopped.error() {
-        Error::Refused(refused) => refused_rows(refused, &applied.manifest),
-        _ => Report::default(),
-    };
-    ctx.app_state
-        .get_required::<exit::Verdict>()?
-        .record(exit::of_error(stopped.error()));
-    Ok(Output::Render(RunView::Aborted(Box::new(AbortedRun::new(
-        applied, refused, &stopped,
-    )))))
 }
 
-/// A refusal a run met without acting on anything states the keys it declined,
-/// on the terms a plan's own refused rows are stated on; every other error
-/// replaces the output with its diagnostic.
+/// A refusal a run met without acting on anything states the keys it declined
+/// and the archive members its plan stripped, on the terms a plan's own rows
+/// are stated on; every other error replaces the output with its diagnostic.
+///
+/// The drops come from the plan the refusal cut short rather than from the
+/// error, which names no archive: a mapping expanding one is stripped to
+/// decide the plan, so a refusal met before the first action lands has drops
+/// to state and a document omitting them would say the archive arrived whole.
 ///
 /// Deciding and applying run back to back over one destination, so no command
 /// line reaches an apply-time refusal on its own — the disk has to move in
@@ -218,11 +228,12 @@ fn stopped(aborted: Box<Aborted>, ctx: &CommandContext) -> Result<Output<RunView
 pub(crate) fn refusal_or_failure(
     error: Error,
     manifest: &Manifest,
+    dropped: BTreeSet<Dropped>,
     ctx: &CommandContext,
 ) -> Result<Output<RunView>, anyhow::Error> {
     match error {
         Error::Refused(refused) => refusal(
-            RunView::Planned(PlannedRun::refused(&refused, manifest)),
+            RunView::Planned(PlannedRun::refused(&refused, manifest, dropped)),
             ctx,
         ),
         failure => Err(exit::failure(failure)),

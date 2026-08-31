@@ -9,8 +9,8 @@ use std::iter;
 
 use camino::Utf8Path;
 use libproiectio::{
-    ApplyReport, BlockFault, Dropped, Manifest, PathFacts, PlannedAction, Refused, Report, Row,
-    Stopped,
+    ApplyReport, BlockFault, Dropped, Error, Manifest, PathFacts, PlannedAction, Refused, Report,
+    Row, Stopped,
 };
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -46,12 +46,19 @@ pub(crate) struct PlannedRun {
 
 impl PlannedRun {
     /// The document a run that acted on nothing renders for a refusal the
-    /// library reported as an error: the refused rows alone. Such a run strips
-    /// no archive, so the document carries no `dropped`.
-    pub(crate) fn refused(refused: &Refused, manifest: &Manifest) -> PlannedRun {
+    /// library reported as an error: the refused rows, and the archive members
+    /// `strip` erased on the way to the desired tree. A refusal the deciding
+    /// stages raise strips nothing, so its document carries no `dropped`; one
+    /// an apply raises before its first action lands does, the archive having
+    /// been expanded to decide the plan that then refused.
+    pub(crate) fn refused(
+        refused: &Refused,
+        manifest: &Manifest,
+        dropped: BTreeSet<Dropped>,
+    ) -> PlannedRun {
         PlannedRun {
             report: refused_rows(refused, manifest),
-            dropped: BTreeSet::new(),
+            dropped,
         }
     }
 }
@@ -87,11 +94,30 @@ pub(crate) fn refused_rows(refused: &Refused, manifest: &Manifest) -> Report<Pla
     }
 }
 
-/// The document a run that stopped part-way renders: what it applied before it
+/// Which half of a run stopped it, as the library's own [`Stopped`] splits
+/// them: an action stopping the run leaves the actions after it unapplied,
+/// while a record stopping it leaves the destination holding the whole plan.
+/// A reader tells the two apart from this rather than from the wording of a
+/// line, and a run that applied everything is never told it stopped part-way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StoppedAt {
+    /// An action refused or failed; the actions after it never ran, and the
+    /// state directory records the rows before it.
+    Applying,
+    /// An action refused or failed and the record of the rows before it failed
+    /// as well.
+    ApplyingAndRecording,
+    /// Every action applied and only the record failed.
+    Recording,
+}
+
+/// The document a run that could not finish renders: what it applied before it
 /// stopped, and what stopped it — the keys a refusal declined, or the sentence
 /// a failure would otherwise have been reported with alone. `aborted` marks it
 /// for a reader that goes no further than the top level: the destination holds
-/// the applied rows, which no plan document of the same shape would say.
+/// the applied rows, which no plan document of the same shape would say, and
+/// `stopped_at` says whether any action is missing from them.
 #[derive(Serialize)]
 pub(crate) struct AbortedRun {
     /// What the run applied, flattened so its rows sit under the `report` key
@@ -102,17 +128,20 @@ pub(crate) struct AbortedRun {
     /// failure rather than a refusal stopped the run.
     #[serde(skip_serializing_if = "Report::is_empty")]
     pub(crate) refused: Report<PlannedAction>,
-    /// Whether the state directory records the applied rows. False where
-    /// writing the manifest failed too: the destination holds writes nothing
-    /// on disk records, and a later run reads them as foreign.
+    /// Whether the state directory records the applied rows, which only a run
+    /// stopped at an action leaves it doing: either other phase failed writing
+    /// the manifest, so the destination holds writes nothing on disk records
+    /// and a later run reads them as foreign.
     pub(crate) recorded: bool,
     /// What stopped the run and what stopped its record, where the rows do
     /// not already say it: the failure a non-refusal stopped with, and the
-    /// failure to write the manifest. Empty for a refusal that recorded what
-    /// it applied, whose refused rows say the whole of it.
+    /// failure to write the manifest — each stated once. Empty for a refusal
+    /// that recorded what it applied, whose refused rows say the whole of it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) stopped: Vec<String>,
-    /// Always true: only a run that stopped part-way renders this document.
+    /// Which half of the run stopped it.
+    pub(crate) stopped_at: StoppedAt,
+    /// Always true: only a run that could not finish renders this document.
     pub(crate) aborted: bool,
 }
 
@@ -122,23 +151,41 @@ impl AbortedRun {
         refused: Report<PlannedAction>,
         stopped: &Stopped,
     ) -> AbortedRun {
-        let mut stated = Vec::new();
-        if !stopped.error().is_refusal() {
-            stated.push(stopped.error().to_string());
-        }
-        if let Some(recording) = stopped.recording() {
-            stated.push(format!(
-                "the state directory does not record what the run applied: {recording}"
-            ));
-        }
+        let (stopped_at, stated) = match stopped {
+            Stopped::Applying(error) => (StoppedAt::Applying, Vec::from_iter(failing(error))),
+            Stopped::ApplyingAndRecording {
+                applying,
+                recording,
+            } => (
+                StoppedAt::ApplyingAndRecording,
+                failing(applying)
+                    .into_iter()
+                    .chain([unrecorded(recording)])
+                    .collect(),
+            ),
+            Stopped::Recording(error) => (StoppedAt::Recording, vec![unrecorded(error)]),
+        };
         AbortedRun {
             applied,
             refused,
             recorded: stopped.recorded(),
             stopped: stated,
+            stopped_at,
             aborted: true,
         }
     }
+}
+
+/// The sentence a failure reaches the reader by, and `None` for a refusal,
+/// whose refused rows state it in the table instead.
+fn failing(error: &Error) -> Option<String> {
+    (!error.is_refusal()).then(|| error.to_string())
+}
+
+/// The sentence a manifest that never reached the state directory reaches the
+/// reader by.
+fn unrecorded(error: &Error) -> String {
+    format!("the state directory does not record what the run applied: {error}")
 }
 
 /// One printed line: the verb in its style, the path, and what qualifies it.
@@ -439,6 +486,11 @@ const DROPPED: &str = "dropped";
 
 /// The lines `run.jinja` prints for one write-pass document.
 pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
+    // Where the rows sit is what tells the tenses apart: a plan flattens its
+    // report into the document, so its rows are at the top level, and both an
+    // apply and a run that stopped nest theirs under `report`. Nothing else in
+    // the document divides them — `dropped` rides the top level of every one of
+    // the three, and is empty in each whenever no archive was stripped.
     let (report, planning) = match document.get("report") {
         Some(applied) => (applied, false),
         None => (document, true),
@@ -554,15 +606,21 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
     }
 }
 
-/// The line a real run closes with: its counts, and — where the run stopped
-/// part-way — that it stopped, so the rows above are read as a destination
-/// left half way through the plan rather than as a finished run.
+/// The line a real run closes with: its counts, and — where the run could not
+/// finish — how far it got, in the split the library's own `Stopped` makes. A
+/// run an action stopped left the plan half applied and the rows above are
+/// what stands of it; a run only the record stopped applied every one of them,
+/// and telling that reader it stopped part-way would send them looking for
+/// actions no destination is missing.
 fn closing(tally: &Tally, document: &JsonValue) -> String {
     let counts = tally.summary();
-    match document.get("aborted").and_then(JsonValue::as_bool) {
-        Some(true) => format!(
+    match document.get("stopped_at").and_then(JsonValue::as_str) {
+        Some("applying" | "applying_and_recording") => format!(
             "{counts} — the run stopped part-way through the plan, and what it applied stands"
         ),
+        Some("recording") => {
+            format!("{counts} — the run applied its whole plan and could not record it")
+        }
         _ => counts,
     }
 }

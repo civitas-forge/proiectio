@@ -83,15 +83,21 @@ fn plan_from(
 }
 
 // Applies a plan against the fixtures, keeping the error a run that stopped
-// stopped with. Tests weighing what such a run had already applied take the
-// whole stop from [`stopping_at`].
+// stopped with. Tests weighing what such a run had already applied, or a run
+// the state directory stopped, take the whole stop from [`stopping`].
 fn apply_at(
     dest: &Fixture,
     state: &Fixture,
     manifest: &Manifest,
     plan: &Plan,
 ) -> Result<ApplyReport> {
-    stopping(dest, state, manifest, plan).map_err(|aborted| aborted.stopped.into_error())
+    stopping(dest, state, manifest, plan).map_err(|aborted| match aborted.stopped {
+        Stopped::Applying(error) => error,
+        // The fixtures hand every run a writable state directory, so only an
+        // action stops one here; a stop naming the record would be lost by an
+        // error alone.
+        stopped => panic!("expected a stop at an action, got {stopped:?}"),
+    })
 }
 
 // The same, keeping the whole stop: the error, and the rows the run applied

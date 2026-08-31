@@ -7,7 +7,7 @@ use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree, origins_of};
 use crate::{
     Action, ApplyOutcome, Desired, Entry, Error, LOCK_FILE_NAME, MANIFEST_FILE_NAME, Manifest,
-    Origin, PathState, Refusal, RefusalKind, RemovalScope,
+    Origin, PathState, Refusal, RefusalKind, RemovalScope, Stopped,
 };
 
 // A projection over two fixture directories, the state directory outside
@@ -366,9 +366,9 @@ fn the_plans_refused_is_the_error_applying_it_raises() {
         .expect_err("a plan carrying a refusal applies nothing");
 
     assert!(!stopped.applied_anything());
-    match stopped.stopped.into_error() {
-        Error::Refused(raised) => assert_eq!(raised, refused),
-        other => panic!("expected a refusal, got {other:?}"),
+    match stopped.stopped {
+        Stopped::Applying(Error::Refused(raised)) => assert_eq!(raised, refused),
+        other => panic!("expected a refusal met while applying, got {other:?}"),
     }
     assert_eq!(refused.kind(), RefusalKind::Foreign);
     assert_eq!(

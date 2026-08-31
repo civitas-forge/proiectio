@@ -745,7 +745,11 @@ fn a_refusal_renders_the_row_shape_a_refused_plan_renders() {
         origin.clone(),
     );
 
-    let document = serialized(PlannedRun::refused(&refused, &Manifest::new()));
+    let document = serialized(PlannedRun::refused(
+        &refused,
+        &Manifest::new(),
+        BTreeSet::new(),
+    ));
 
     assert_eq!(
         document,
@@ -788,7 +792,11 @@ fn a_refusal_of_several_keys_renders_a_row_for_each() {
     ])
     .expect("a refusal over two keys");
 
-    let document = serialized(PlannedRun::refused(&aggregated, &Manifest::new()));
+    let document = serialized(PlannedRun::refused(
+        &aggregated,
+        &Manifest::new(),
+        BTreeSet::new(),
+    ));
 
     assert_eq!(document.get("dropped"), None);
     let rows = lines(&document, AmbiguousWidth::Narrow).rows;
@@ -825,6 +833,7 @@ fn a_refused_row_states_the_owners_the_manifest_records() {
     let document = serialized(PlannedRun::refused(
         &refused,
         &holding("bin/tool", &["site"]),
+        BTreeSet::new(),
     ));
 
     assert_eq!(document["rows"][0]["path"], json!("bin/tool"));
@@ -851,6 +860,7 @@ fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
 
     assert_eq!(document["aborted"], json!(true));
     assert_eq!(document["recorded"], json!(true));
+    assert_eq!(document["stopped_at"], json!("applying"));
     assert_eq!(document.get("stopped"), None);
     let rendered = lines(&document, AmbiguousWidth::Narrow);
     assert_eq!(
@@ -900,7 +910,7 @@ fn a_run_a_failure_stopped_states_its_rows_and_the_failure() {
 /// A run whose manifest never reached the state directory says so in the
 /// document and in `recorded`: the destination holds writes nothing on disk
 /// records, which is the one thing a reader of these rows must not assume
-/// away.
+/// away. The one failure stopped one half of the run, so it is stated once.
 #[test]
 fn a_run_that_could_not_record_what_it_applied_says_so() {
     let document = serialized(AbortedRun::new(
@@ -910,14 +920,31 @@ fn a_run_that_could_not_record_what_it_applied_says_so() {
     ));
 
     assert_eq!(document["recorded"], json!(false));
+    assert_eq!(document["stopped_at"], json!("recording"));
     let rendered = lines(&document, AmbiguousWidth::Narrow);
     assert_eq!(
         rendered.stopped,
         vec![
-            "state lock state.lock is held by another writer",
             "the state directory does not record what the run applied: \
              state lock state.lock is held by another writer",
         ]
+    );
+}
+
+/// Every action of such a run applied, so its summary says that rather than
+/// that it stopped part-way: a reader told a plan is half applied goes looking
+/// for a destination missing the rest of it, and this one is missing nothing.
+#[test]
+fn a_run_that_only_its_record_stopped_is_not_called_part_way() {
+    let document = serialized(AbortedRun::new(
+        wrote(&["bin/tool"]),
+        Report::default(),
+        &Stopped::Recording(held("state.lock")),
+    ));
+
+    assert_eq!(
+        lines(&document, AmbiguousWidth::Narrow).summary.as_deref(),
+        Some("1 written, 0 skipped — the run applied its whole plan and could not record it")
     );
 }
 
@@ -942,8 +969,19 @@ fn a_run_that_refused_and_could_not_record_states_the_rows_and_the_record() {
     ));
 
     assert_eq!(document["recorded"], json!(false));
+    assert_eq!(document["stopped_at"], json!("applying_and_recording"));
     let rendered = lines(&document, AmbiguousWidth::Narrow);
     assert_eq!(rendered.rows.len(), 2);
+    // An action stopped this one, so the plan is half applied and the summary
+    // says so, whatever became of the record.
+    assert!(
+        rendered
+            .summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("stopped part-way through the plan")),
+        "{:?}",
+        rendered.summary
+    );
     assert_eq!(
         rendered.stopped,
         vec![
@@ -951,6 +989,52 @@ fn a_run_that_refused_and_could_not_record_states_the_rows_and_the_record() {
              state lock state.lock is held by another writer"
         ]
     );
+}
+
+/// Where the rows sit is what tells the tenses apart, and nothing else in the
+/// document does: a plan and a run that stopped both state their stripped
+/// archive members at the top level, so a plan carrying drops still reads as a
+/// plan and a stopped run carrying them still reads in the tense it applied
+/// its rows in.
+#[test]
+fn drops_at_the_top_level_leave_each_document_in_its_own_tense() {
+    let erased = Dropped {
+        member: Utf8PathBuf::from("._pkg"),
+        prefix: Utf8PathBuf::new(),
+        strip: 1,
+        origin: Origin::Archive {
+            path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+            via: None,
+        },
+    };
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+    let mut applied = wrote(&["bin/tool"]);
+    applied.dropped = BTreeSet::from([erased.clone()]);
+
+    let plan = serialized(PlannedRun::refused(
+        &refused,
+        &Manifest::new(),
+        BTreeSet::from([erased]),
+    ));
+    let stopped = serialized(AbortedRun::new(
+        applied,
+        Report::default(),
+        &Stopped::Applying(held("lock")),
+    ));
+
+    let verbs = |document: &JsonValue| {
+        lines(document, AmbiguousWidth::Narrow)
+            .rows
+            .into_iter()
+            .map(|row| row.verb)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(verbs(&plan), vec!["would refuse", "dropped"]);
+    assert_eq!(verbs(&stopped), vec!["wrote", "dropped"]);
 }
 
 /// An `ApplyReport` writing the paths named.
