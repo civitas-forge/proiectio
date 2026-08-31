@@ -6,8 +6,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree, origins_of};
 use crate::{
-    Action, ApplyOutcome, Desired, Entry, Error, LOCK_FILE_NAME, MANIFEST_FILE_NAME, Manifest,
-    Origin, PathState, Refusal, RefusalKind, RemovalScope, Stopped,
+    Action, ApplyOutcome, Desired, Entry, Error, IoRole, LOCK_FILE_NAME, MANIFEST_FILE_NAME,
+    Manifest, Origin, PathState, Refusal, RefusalKind, RemovalScope, Stopped,
 };
 
 // A projection over two fixture directories, the state directory outside

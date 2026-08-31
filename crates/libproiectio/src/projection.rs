@@ -172,29 +172,15 @@ impl Projection {
     /// absence also reads as `None`.
     fn open_state(&self, dest: Option<&Dir>) -> Option<Result<StateDir>> {
         let Some(prefix) = self.state_prefix() else {
-            return self
-                .absent_is_none(Dir::open_ambient_dir(&self.state_dir, ambient_authority()));
+            return StateDir::open(&self.state_dir);
         };
         match dest {
-            Some(dest) => self.absent_is_none(dest.open_dir(prefix)),
+            Some(dest) => StateDir::open_under(dest, &self.target, prefix),
             None => match self.open_target() {
-                Ok(dest) => self.absent_is_none(dest.open_dir(prefix)),
+                Ok(dest) => StateDir::open_under(&dest, &self.target, prefix),
                 Err(Error::Io { source, .. }) if source.kind() == NotFound => None,
                 Err(error) => Some(Err(error)),
             },
-        }
-    }
-
-    /// One open of the state directory, with its absence reported as `None`.
-    fn absent_is_none(&self, opened: std::io::Result<Dir>) -> Option<Result<StateDir>> {
-        match opened {
-            Ok(dir) => Some(Ok(StateDir::new(dir, self.state_dir.clone()))),
-            Err(source) if source.kind() == NotFound => None,
-            Err(source) => Some(Err(Error::Io {
-                role: IoRole::StateDirectory,
-                path: self.state_dir.clone(),
-                source,
-            })),
         }
     }
 }
