@@ -179,9 +179,9 @@ fn csv_writes_one_row_per_path_under_a_fixed_header() {
 
     assert_eq!(
         csv,
-        "path,verdict,shape,executable,owners\n\
-         bin/tool,Clean,file,true,\"[\"\"harness\"\",\"\"site\"\"]\"\n\
-         bin_tool,Foreign,,,\n"
+        "path,verdict,shape,executable,target,owners\n\
+         bin/tool,Clean,file,true,,\"[\"\"harness\"\",\"\"site\"\"]\"\n\
+         bin_tool,Foreign,,,,\n"
     );
 }
 
@@ -205,7 +205,7 @@ fn the_verdict_cell_reads_the_name_a_verdict_carrying_fields_states() {
 
     assert_eq!(
         csv,
-        "path,verdict,shape,executable,owners\none,Drifted,,,\n"
+        "path,verdict,shape,executable,target,owners\none,Drifted,,,,\n"
     );
 }
 
@@ -231,13 +231,41 @@ fn owner_names_carrying_a_separator_stay_the_owners_they_are() {
     assert_ne!(cells(json!(["a+b", "c"])), cells(json!(["a", "b+c"])));
     assert_eq!(
         cells(json!(["a+b", "c"])),
-        "path,verdict,shape,executable,owners\n\
-         one,Clean,,,\"[\"\"a+b\"\",\"\"c\"\"]\"\n"
+        "path,verdict,shape,executable,target,owners\n\
+         one,Clean,,,,\"[\"\"a+b\"\",\"\"c\"\"]\"\n"
+    );
+}
+
+/// The target cell reads where the link on disk points.
+#[test]
+fn a_link_row_states_the_target_it_carries() {
+    let document = json!({
+        "rows": [{
+            "path": "current",
+            "verdict": "Clean",
+            "facts": {
+                "shape": { "Symlink": { "target": "releases/1.2.3" } },
+                "owners": ["site"],
+                "origin": null,
+            },
+        }]
+    });
+
+    let csv = csv()
+        .csv_projection()
+        .render(&document)
+        .expect("a CSV projection");
+
+    assert_eq!(
+        csv,
+        "path,verdict,shape,executable,target,owners\n\
+         current,Clean,symlink,,releases/1.2.3,\"[\"\"site\"\"]\"\n"
     );
 }
 
 /// A shape with no executable bit leaves that column empty rather than
-/// claiming a value the row does not state.
+/// claiming a value the row does not state, and a link the row names no
+/// target for leaves the target column empty the same way.
 #[test]
 fn a_link_row_states_its_shape_and_no_executable_bit() {
     let document = json!({
@@ -259,7 +287,7 @@ fn a_link_row_states_its_shape_and_no_executable_bit() {
 
     assert_eq!(
         csv,
-        "path,verdict,shape,executable,owners\n\
-         current,Missing,symlink,,\"[\"\"site\"\"]\"\n"
+        "path,verdict,shape,executable,target,owners\n\
+         current,Missing,symlink,,,\"[\"\"site\"\"]\"\n"
     );
 }

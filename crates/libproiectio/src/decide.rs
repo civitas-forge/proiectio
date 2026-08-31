@@ -33,7 +33,7 @@ pub(crate) fn classify(
         rows.insert(
             path.clone(),
             Row {
-                facts: recorded.map(recorded_facts),
+                facts: recorded.map(|recorded| recorded_facts(recorded, Some(observation))),
                 verdict,
             },
         );
@@ -43,7 +43,7 @@ pub(crate) fn classify(
             continue;
         }
         rows.entry(path.clone()).or_insert_with(|| Row {
-            facts: Some(recorded_facts(recorded)),
+            facts: Some(recorded_facts(recorded, None)),
             verdict: PathState::Missing,
         });
     }
@@ -64,12 +64,21 @@ pub(crate) fn status(
     report
 }
 
-fn recorded_facts(recorded: &ManifestEntry) -> PathFacts {
+/// The manifest records a link by the hash of its target, so the target string
+/// comes from the observation: what the walk read at the path, and `None` where
+/// the disk names none — nothing was reached, a non-link stands there, or the
+/// target is not UTF-8.
+fn recorded_facts(recorded: &ManifestEntry, observed: Option<&Observation>) -> PathFacts {
     let shape = match recorded.kind {
         EntryKind::File => PathShape::File {
             executable: recorded.executable,
         },
-        EntryKind::Symlink => PathShape::Symlink { target: None },
+        EntryKind::Symlink => PathShape::Symlink {
+            target: match observed {
+                Some(Observation::Symlink { target, .. }) => target.clone(),
+                _ => None,
+            },
+        },
         EntryKind::Block { .. } => PathShape::Block,
     };
     PathFacts {

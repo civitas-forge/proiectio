@@ -111,12 +111,11 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> StatusLines 
 /// disagree about the same row. What such a payload said would need a column
 /// of its own.
 ///
-/// The row states two things no column here reads. A status row's facts come
-/// from the manifest, which records what a path is and who holds it, not which
-/// input named it and not where a link points, so `origin` and a link's target
-/// are null in every status row of every destination; a column for either
-/// would promise what the document never carries. A `write` or `rm` row states
-/// both, and its own projection carries them.
+/// The row states one thing no column here reads. A status row's facts say
+/// what a path is and who holds it, not which input named it, so `origin` is
+/// null in every status row of every destination; a column for it would
+/// promise what the document never carries. A `write` or `rm` row states it,
+/// and its own projection carries it.
 pub(crate) fn csv() -> StructuredOutputProjection {
     StructuredOutputProjection::csv(
         CsvProjection::builder("rows")
@@ -129,6 +128,9 @@ pub(crate) fn csv() -> StructuredOutputProjection {
             })
             .derived_column(cells::header("executable"), |row, _| {
                 cells::cell(cells::executable(row))
+            })
+            .derived_column(cells::header("target"), |row, _| {
+                cells::cell(cells::target(row))
             })
             .derived_column(cells::header("owners"), |row, _| {
                 cells::cell(cells::owners(row))

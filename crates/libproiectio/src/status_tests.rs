@@ -127,17 +127,124 @@ fn a_recorded_row_carries_the_manifest_entry_and_a_foreign_one_carries_nothing()
             origin: None,
         })
     );
-    // The manifest records a link's target only as a hash, so no status row
-    // carries one back.
     assert_eq!(
         facts(&report, "current"),
         &Some(PathFacts {
-            shape: Some(PathShape::Symlink { target: None }),
+            shape: Some(PathShape::Symlink {
+                target: Some("bin/tool".to_owned()),
+            }),
             owners: BTreeSet::from(["harness".to_owned(), "site".to_owned()]),
             origin: None,
         })
     );
     assert_eq!(facts(&report, "theirs.txt"), &None);
+}
+
+/// The target is the one on disk, not the one the manifest was written from:
+/// a link edited to point elsewhere reads as drifted and states where it now
+/// points.
+#[test]
+fn a_drifted_link_states_the_target_it_now_carries() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(dest.root(), state.root());
+    project(
+        &projection,
+        "site",
+        Tree::new()
+            .file("bin/tool", "#!/bin/sh\n")
+            .symlink("current", "bin/tool")
+            .entries(),
+    );
+    let link = dest.path("current");
+    fs::remove_file(&link).expect("drop the projected link");
+    std::os::unix::fs::symlink("bin/other", &link).expect("plant a link elsewhere");
+
+    let report = projection.status().expect("status");
+
+    assert_eq!(
+        report.rows[Utf8Path::new("current")].verdict,
+        PathState::Drifted
+    );
+    assert_eq!(
+        facts(&report, "current"),
+        &Some(PathFacts {
+            shape: Some(PathShape::Symlink {
+                target: Some("bin/other".to_owned()),
+            }),
+            owners: BTreeSet::from(["site".to_owned()]),
+            origin: None,
+        })
+    );
+}
+
+/// Nothing on disk names a target for a recorded link the walk cannot read one
+/// at: deleted, or overwritten by a file.
+#[test]
+fn a_link_no_longer_on_disk_names_no_target() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(dest.root(), state.root());
+    project(
+        &projection,
+        "site",
+        Tree::new()
+            .file("bin/tool", "#!/bin/sh\n")
+            .symlink("gone", "bin/tool")
+            .symlink("clobbered", "bin/tool")
+            .entries(),
+    );
+    fs::remove_file(dest.path("gone")).expect("delete the link");
+    fs::remove_file(dest.path("clobbered")).expect("delete the link");
+    fs::write(dest.path("clobbered"), "a file now").expect("plant a file in its place");
+
+    let report = projection.status().expect("status");
+
+    for path in ["gone", "clobbered"] {
+        assert_eq!(
+            facts(&report, path),
+            &Some(PathFacts {
+                shape: Some(PathShape::Symlink { target: None }),
+                owners: BTreeSet::from(["site".to_owned()]),
+                origin: None,
+            }),
+            "{path}"
+        );
+    }
+}
+
+/// A target the walk cannot spell as UTF-8 is no target the row can state, and
+/// the row says so rather than mangling the bytes.
+#[test]
+fn a_link_whose_on_disk_target_is_not_utf8_names_no_target() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(dest.root(), state.root());
+    project(
+        &projection,
+        "site",
+        Tree::new()
+            .file("bin/tool", "#!/bin/sh\n")
+            .symlink("current", "bin/tool")
+            .entries(),
+    );
+    let link = dest.path("current");
+    fs::remove_file(&link).expect("drop the projected link");
+    std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(b"bin/to\xffol"), &link)
+        .expect("plant a link with a non-UTF-8 target");
+
+    let report = projection.status().expect("status");
+
+    assert_eq!(
+        facts(&report, "current"),
+        &Some(PathFacts {
+            shape: Some(PathShape::Symlink { target: None }),
+            owners: BTreeSet::from(["site".to_owned()]),
+            origin: None,
+        })
+    );
 }
 
 #[test]
