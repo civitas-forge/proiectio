@@ -186,19 +186,45 @@ fn verdict_of(action: &Action) -> PlannedAction {
     }
 }
 
-/// Whether `action` vacates the whole node standing where it acts: the two
-/// unlinking removals, and the removal half of [`Action::OverwriteDirectory`].
-/// A removal expecting nothing verifies absence, a release, a skip and a
-/// not-recorded leave the disk alone, and a refusal does nothing — none of
-/// them take the node. This is the one reading of "the plan claims this
-/// location" both stages grade a landing by.
-pub(crate) fn vacates_node(action: &Action) -> bool {
+/// Whether `action` changes the node it comes out at, which decides whether
+/// the landing is graded at all: every removal carrying a signature — a whole
+/// node, or a block region whose strip rewrites the container's bytes right
+/// there — and the two directory removals. A removal expecting nothing
+/// verifies absence and drops its record; a release, a skip, a not-recorded
+/// and a refusal leave the disk alone. A write goes down at its key or
+/// nowhere, so no walk of one ends anywhere to grade. This is the one reading
+/// of "this action reaches the landing" both stages ask by.
+pub(crate) fn acts_at_landing(action: &Action) -> bool {
     matches!(
         action,
         Action::Remove { expected: Some(_) }
             | Action::RemoveDirectory
             | Action::OverwriteDirectory { .. }
     )
+}
+
+/// Whether `action` vacates the whole node standing where it acts, which is
+/// the only thing that stands a landing's refusal down: the whole-node
+/// removal, the directory removal, and the removal half of
+/// [`Action::OverwriteDirectory`]. A removal carrying a block signature
+/// strips one region and republishes the container, so the node it acts at is
+/// still there afterwards and no other removal may unlink it. Everything
+/// [`acts_at_landing`] already rules out leaves the node standing too. This is
+/// the one reading of "the plan takes this node" both stages ask by.
+pub(crate) fn vacates_node(action: &Action) -> bool {
+    match action {
+        Action::Remove {
+            expected: Some(expected),
+        } => !expected.kind.is_block(),
+        Action::RemoveDirectory | Action::OverwriteDirectory { .. } => true,
+        Action::Remove { expected: None }
+        | Action::Write { .. }
+        | Action::Overwrite { .. }
+        | Action::Skip { .. }
+        | Action::Release
+        | Action::NotRecorded
+        | Action::Refuse { .. } => false,
+    }
 }
 
 /// One planned per-path action.

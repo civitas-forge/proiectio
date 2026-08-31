@@ -594,6 +594,59 @@ fn cases() -> Vec<Case> {
         })
         .recording("other", Tree::new().symlink("a", "real"))
         .refuses("a/x.txt", recorded_landing("a", "real/x.txt", &[OWNER])),
+        // The same walk onto a record whose node somebody deleted by hand. The
+        // removal takes no node there: it re-checks that its own location is
+        // empty and drops its record, which is the projection's only way to
+        // clean a stale one, so the landing is no business of its and neither
+        // stage grades it (issue #137).
+        Case::new("an aliased forget over a recorded landing", Op::Remove)
+            .recording(OWNER, Tree::new().file("a/x.txt", "kept\n"))
+            .recording(
+                "other",
+                Tree::new()
+                    .file("real/x.txt", "kept\n")
+                    .file("real/y.txt", "other\n"),
+            )
+            .then_by_hand(|root| {
+                fs::remove_dir_all(root.join("a")).expect("remove the recorded directory");
+            })
+            .recording(
+                "other",
+                Tree::new()
+                    .file("real/x.txt", "kept\n")
+                    .file("real/y.txt", "other\n")
+                    .symlink("a", "real"),
+            )
+            .then_by_hand(|root| {
+                fs::remove_file(root.join("real/x.txt")).expect("delete the landing's node");
+            })
+            .plans("a/x.txt", PlannedAction::Forget),
+        // A block strip landing on a record this plan reaches no verdict
+        // about. Stripping the region rewrites the container that record
+        // stands for, leaving its owner holding a hash for bytes that are
+        // gone, so the strip refuses even though it unlinks nothing.
+        Case::new(
+            "a block strip landing on another owner's record",
+            Op::Remove,
+        )
+        .then_by_hand(|root| {
+            Tree::new().file("a/rc", "author\n").write_under(root);
+        })
+        .recording_entries(OWNER, block_at("a/rc", "managed\n"))
+        .recording(
+            "other",
+            Tree::new().file("real/rc", "author\n# proiectio\nmanaged\n"),
+        )
+        .then_by_hand(|root| {
+            fs::remove_dir_all(root.join("a")).expect("clear the container's directory");
+        })
+        .recording(
+            "other",
+            Tree::new()
+                .file("real/rc", "author\n# proiectio\nmanaged\n")
+                .symlink("a", "real"),
+        )
+        .refuses("a/rc", recorded_landing("a", "real/rc", &["other"])),
         // The same walk, landing inside the state subtree. Before deciding
         // graded the landing, the plan aimed a removal at the state file and
         // applying deleted it: act knows no state prefix, so nothing behind

@@ -25,7 +25,7 @@ use crate::{
     Aborted, Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error,
     ExternalTargetPolicy, MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest,
     ManifestEntry, NodeSignature, Origin, PathFacts, PathShape, Placement, Plan, Refusal, Refused,
-    Report, Result, Row, StateDir, Stopped, sha256_hex, vacates_node,
+    Report, Result, Row, StateDir, Stopped, acts_at_landing, sha256_hex, vacates_node,
 };
 
 /// Loads the manifest from `state`'s [`MANIFEST_FILE_NAME`]; a state
@@ -290,7 +290,9 @@ fn run(
         // removals run before pruning and the writes both.
         if matches!(action, Action::OverwriteDirectory { .. }) {
             let recorded = manifest.entries.get(path).cloned();
-            let vacated = acting_on(plan, path, || remove_directory(dest, manifest, plan, path))?;
+            let vacated = acting_on(plan, path, || {
+                remove_directory(dest, manifest, plan, path, action)
+            })?;
             // The write that replaces the directory is a whole pass away, and
             // anything failing in between ends the run with the directory
             // gone. So the removal is recorded where it lands, and the ancestry
@@ -309,7 +311,9 @@ fn run(
         }
         if matches!(action, Action::RemoveDirectory) {
             let recorded = manifest.entries.get(path).cloned();
-            let vacated = acting_on(plan, path, || remove_directory(dest, manifest, plan, path))?;
+            let vacated = acting_on(plan, path, || {
+                remove_directory(dest, manifest, plan, path, action)
+            })?;
             prune_above(&vacated, &mut removed_dirs_candidates);
             manifest.entries.remove(path);
             rows.insert(
@@ -328,13 +332,13 @@ fn run(
                     .get(path)
                     .is_some_and(|recorded| recorded.kind.is_block())
                 {
-                    remove_block(dest, manifest, path, expected.as_ref())?;
+                    remove_block(dest, manifest, plan, path, action)?;
                 } else {
                     // A hand deletion that took the walk's own ancestry with
                     // it leaves no resolved location to prune upwards from;
                     // the action key names the directories still standing.
-                    let vacated = remove(dest, manifest, plan, path, expected.as_ref())?
-                        .unwrap_or_else(|| path.clone());
+                    let vacated =
+                        remove(dest, manifest, plan, path, action)?.unwrap_or_else(|| path.clone());
                     prune_above(&vacated, &mut removed_dirs_candidates);
                 }
                 Ok(())
@@ -663,15 +667,19 @@ fn remove(
     manifest: &Manifest,
     plan: &Plan,
     path: &Utf8Path,
-    expected: Option<&NodeSignature>,
+    acting: &Action,
 ) -> Result<Option<Utf8PathBuf>> {
+    let Action::Remove { expected } = acting else {
+        unreachable!("dispatched on a removal")
+    };
+    let expected = expected.as_ref();
     let Some(walked) = verified_parent(dest, manifest, path, false)? else {
         return match expected {
             Some(_) => Err(drift(path)),
             None => Ok(None),
         };
     };
-    held_landing(manifest, plan, path, &walked)?;
+    held_landing(manifest, plan, path, &walked.landing(), acting)?;
     let Walked {
         parent,
         leaf,
@@ -701,12 +709,13 @@ fn remove_directory(
     manifest: &Manifest,
     plan: &Plan,
     path: &Utf8Path,
+    acting: &Action,
 ) -> Result<Utf8PathBuf> {
     use std::io::ErrorKind;
     let Some(walked) = verified_parent(dest, manifest, path, false)? else {
         return Err(drift(path));
     };
-    held_landing(manifest, plan, path, &walked)?;
+    held_landing(manifest, plan, path, &walked.landing(), acting)?;
     let Walked {
         parent,
         leaf,
@@ -1032,9 +1041,14 @@ fn overwrite_block(
 fn remove_block(
     dest: &Dir,
     manifest: &Manifest,
+    plan: &Plan,
     path: &Utf8Path,
-    expected: Option<&NodeSignature>,
+    acting: &Action,
 ) -> Result<()> {
+    let Action::Remove { expected } = acting else {
+        unreachable!("dispatched on a removal")
+    };
+    let expected = expected.as_ref();
     let recorded = manifest
         .entries
         .get(path)
@@ -1050,6 +1064,16 @@ fn remove_block(
             Ok(())
         };
     };
+    held_landing(
+        manifest,
+        plan,
+        path,
+        &Landing {
+            at: container.landing.clone(),
+            through: container.through.clone(),
+        },
+        acting,
+    )?;
     if block::occurrence_count(&container.bytes, marker) > 1 {
         return Err(drift(path));
     }
@@ -1316,6 +1340,16 @@ struct Walked {
     through: Option<Utf8PathBuf>,
 }
 
+impl Walked {
+    /// Where the walk came out, in the shape the landing grades read.
+    fn landing(&self) -> Landing {
+        Landing {
+            at: self.resolved_parent.join(&self.leaf),
+            through: self.through.clone(),
+        }
+    }
+}
+
 /// The no-follow ancestor walk: opens each ancestor component of `path` from
 /// the previously verified handle and returns where it came out. Without
 /// `create`, missing ancestry answers `None`.
@@ -1456,21 +1490,28 @@ fn at_action_key(path: &Utf8Path, landing: &Utf8Path, through: Option<&Utf8Path>
     }
 }
 
-/// Holds a removal to a landing this plan vacates: a walk that followed a
+/// Holds `acting` to a landing this plan vacates: a walk that followed a
 /// recorded link onto a path the manifest records refuses unless this plan's
-/// own action there takes that node, rather than unlinking one its owners
-/// still hold. [`vacates_node`] is the claim both stages read; the deciding
-/// side of the same grade is `plan_actions`'s, which reads the landing off
-/// the observations.
-fn held_landing(manifest: &Manifest, plan: &Plan, path: &Utf8Path, walked: &Walked) -> Result<()> {
-    let landing = Landing {
-        at: walked.resolved_parent.join(&walked.leaf),
-        through: walked.through.clone(),
-    };
-    if landing.at == *path || plan.actions.get(&landing.at).is_some_and(vacates_node) {
+/// own action there takes that node, rather than changing one its owners
+/// still hold. [`acts_at_landing`] says whether to grade the landing at all,
+/// and it is the same question `plan_actions` asks of the landing it reads off
+/// the observations. [`vacates_node`] then stands the refusal down where this
+/// plan removes the node itself; deciding meets that case as two keys claiming
+/// one location, which is a tree conflict rather than a landing to grade.
+fn held_landing(
+    manifest: &Manifest,
+    plan: &Plan,
+    path: &Utf8Path,
+    landing: &Landing,
+    acting: &Action,
+) -> Result<()> {
+    if !acts_at_landing(acting)
+        || landing.at == *path
+        || plan.actions.get(&landing.at).is_some_and(vacates_node)
+    {
         return Ok(());
     }
-    match recorded_landing(&landing, manifest) {
+    match recorded_landing(landing, manifest) {
         Some(refusal) => Err(refuse(path, refusal)),
         None => Ok(()),
     }

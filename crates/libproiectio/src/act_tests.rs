@@ -1628,6 +1628,148 @@ fn a_plan_whose_landing_removal_refuses_never_runs() {
     );
 }
 
+// The plan does carry a removal at the landing, and it is a block strip: that
+// takes one marker's region and republishes the container, so the container
+// node is still there for its owners afterwards. A whole-node removal pivoted
+// onto it by the gap would unlink the author's bytes along with everyone's
+// regions, and the block removal behind it would then merely read as drifted
+// (issue #137).
+#[test]
+fn a_removal_landing_where_a_block_strip_acts_refuses_rather_than_unlink_the_container() {
+    let (dest, state) = fixtures();
+    let container = "author\n# proiectio\nmanaged\n";
+    Tree::new()
+        .file("z/x", container)
+        .file("a/x", container)
+        .write_under(dest.root());
+    let manifest = Manifest {
+        version: MANIFEST_VERSION,
+        entries: BTreeMap::from([
+            (
+                "a/x".into(),
+                recorded(
+                    block_kind(Placement::Append),
+                    sha256_hex(b"managed\n"),
+                    &["other"],
+                ),
+            ),
+            (
+                "z".into(),
+                recorded(EntryKind::Symlink, sha256_hex(b"a"), &["other"]),
+            ),
+            (
+                "z/x".into(),
+                recorded(EntryKind::File, sha256_hex(container.as_bytes()), &["own"]),
+            ),
+        ]),
+    };
+    let plan = Plan {
+        dropped: BTreeSet::new(),
+        owner: "own".to_owned(),
+        origins: BTreeMap::new(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([
+            (
+                "a/x".into(),
+                Action::Remove {
+                    expected: Some(NodeSignature {
+                        kind: block_kind(Placement::Append),
+                        hash: sha256_hex(b"managed\n"),
+                        executable: false,
+                    }),
+                },
+            ),
+            (
+                "z/x".into(),
+                Action::Remove {
+                    expected: Some(NodeSignature {
+                        kind: EntryKind::File,
+                        hash: sha256_hex(container.as_bytes()),
+                        executable: false,
+                    }),
+                },
+            ),
+        ]),
+    };
+    fs::remove_dir_all(dest.path("z")).expect("the directory the plan walked through");
+    std::os::unix::fs::symlink("a", dest.path("z")).expect("the link that appears in the gap");
+
+    let error = apply_at(&dest, &state, &manifest, &plan).expect_err("never unlink the container");
+
+    match error {
+        Error::Refused(refused) => assert_eq!(
+            refusals_of(&refused),
+            BTreeMap::from([(
+                Utf8PathBuf::from("z/x"),
+                Refusal::RecordedLanding {
+                    through: Utf8PathBuf::from("z"),
+                    at: Utf8PathBuf::from("a/x"),
+                    owners: BTreeSet::from(["other".to_owned()]),
+                },
+            )])
+        ),
+        other => panic!("expected RecordedLanding, got {other:?}"),
+    }
+    assert_eq!(
+        fs::read_to_string(dest.path("a/x")).expect("the container the strip would have kept"),
+        container
+    );
+}
+
+// The other side of the same question: a removal expecting nothing never
+// reaches the landing at all. It re-checks that its own location is empty and
+// drops its record, so the record standing where the walk comes out is no
+// business of its — refusing here would leave a stale record no run can clean
+// (issue #137).
+#[test]
+fn an_aliased_forget_drops_its_record_and_leaves_the_landing_alone() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new()
+        .symlink("a", "real")
+        .file("real/y.txt", "other\n");
+    tree.write_under(dest.root());
+    let manifest = Manifest {
+        version: MANIFEST_VERSION,
+        entries: BTreeMap::from([
+            (
+                "a".into(),
+                recorded(EntryKind::Symlink, sha256_hex(b"real"), &["other"]),
+            ),
+            (
+                "a/x.txt".into(),
+                recorded(EntryKind::File, sha256_hex(b"kept\n"), &["own"]),
+            ),
+            (
+                "real/x.txt".into(),
+                recorded(EntryKind::File, sha256_hex(b"kept\n"), &["other"]),
+            ),
+        ]),
+    };
+    let plan = Plan {
+        dropped: BTreeSet::new(),
+        owner: "own".to_owned(),
+        origins: BTreeMap::new(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([("a/x.txt".into(), Action::Remove { expected: None })]),
+    };
+
+    let report = apply_at(&dest, &state, &manifest, &plan).expect("the forget carries no landing");
+
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([("a/x.txt".into(), ApplyOutcome::Forgot)])
+    );
+    assert_eq!(
+        persisted(&state)
+            .entries
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![Utf8PathBuf::from("a"), Utf8PathBuf::from("real/x.txt")]
+    );
+    assert_tree(dest.root(), &tree);
+}
+
 // A drop is not an action, so apply performs nothing for it and records
 // nothing in the manifest. It rides the report beside the rows rather than
 // among them, which is what leaves a run whose only news is a dropped member
