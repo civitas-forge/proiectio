@@ -2326,12 +2326,14 @@ fn a_removal_through_an_owned_link_prunes_the_resolved_directory() {
 }
 
 #[test]
-fn deciding_cannot_aim_that_removal_because_the_path_observes_absent() {
-    // The companion to the test above, and the reason `docs/design.lex`
-    // section 2 does not promise the pipeline cleans such a path up: the
-    // walk observes no path beneath a link, so a path recorded under one
-    // classifies Missing and its removal expects nothing — which apply
-    // refuses as drift, having found a node there.
+fn deciding_aims_that_removal_at_the_node_the_walk_resolves_to() {
+    // The companion to the test above, decided rather than hand-built. The
+    // walk observes no path beneath a link, so `logs/x.txt` observes absent
+    // at its own key — but deciding grades the ancestry it is spelled of,
+    // follows the owned link as a removal does
+    // (`docs/implementation.lex` section 3), and re-checks the node standing
+    // at `real/x.txt`. So the removal expects that node instead of nothing,
+    // and applying carries it out rather than refusing drift.
     let (dest, state) = fixtures();
     Tree::new()
         .file("real/x.txt", "bytes")
@@ -2352,17 +2354,24 @@ fn deciding_cannot_aim_that_removal_because_the_path_observes_absent() {
 
     assert_eq!(
         plan.actions.get(Utf8Path::new("logs/x.txt")),
-        Some(&Action::Remove { expected: None })
+        Some(&Action::Remove {
+            expected: Some(NodeSignature {
+                kind: EntryKind::File,
+                hash: sha256_hex(b"bytes"),
+                executable: false,
+            }),
+        })
     );
-    match apply_at(&dest, &state, &loaded, &plan) {
-        Err(Error::Refused(refused)) if refused.kind() == RefusalKind::Drift => {
-            assert_eq!(
-                paths_of(&refused),
-                BTreeSet::from([Utf8PathBuf::from("logs/x.txt")])
-            );
-        }
-        other => panic!("expected Drift, got {other:?}"),
-    }
+    let report = apply_at(&dest, &state, &loaded, &plan).expect("the decided removal applies");
+
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([
+            ("logs".into(), ApplyOutcome::Removed),
+            ("logs/x.txt".into(), ApplyOutcome::Removed),
+        ])
+    );
+    assert_tree(dest.root(), &Tree::new());
 }
 
 #[test]

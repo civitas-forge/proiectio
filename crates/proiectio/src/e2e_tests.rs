@@ -437,6 +437,56 @@ fn a_dry_run_of_rm_refuses_the_escaping_keys_the_real_run_refuses() {
     assert!(dest.join("bin/tool").exists());
 }
 
+/// Issue #116 through the shell. A hand-made symlink standing where recorded
+/// ancestry was puts the recorded path out of reach: observation does not
+/// descend the link, so the path reads absent, and only grading the ancestry
+/// it is spelled of reaches the containment refusal the real run's walk
+/// raises. Both runs refuse it, name the link, and leave the destination as
+/// it stands.
+#[test]
+#[serial]
+fn rm_beneath_a_hand_made_link_refuses_on_the_dry_run_and_the_real_one() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let root = utf8(&dir);
+    let dest = root.join("dest");
+    std::fs::create_dir(&dest).expect("a destination");
+    let mapping = root.join("logs.toml");
+    std::fs::write(
+        mapping.as_std_path(),
+        b"version = 1\n\n[files.\"logs/deep/file.txt\"]\ncontents = \"kept\\n\"\n",
+    )
+    .expect("a mapping projecting one nested file");
+    run(&dir, &["write", mapping.as_str(), "--dest", dest.as_str()]).assert_success();
+    std::fs::remove_dir_all(dest.join("logs").as_std_path()).expect("the recorded directory goes");
+    std::os::unix::fs::symlink("real/missing", dest.join("logs").as_std_path())
+        .expect("a hand-made link stands where it was");
+
+    let dry_verdict = exit::Verdict::default();
+    let dry = run_over(
+        &dir,
+        OutputMode::Text,
+        &dry_verdict,
+        &["rm", "--dest", dest.as_str(), "--dry-run"],
+    );
+    let real_verdict = exit::Verdict::default();
+    let real = run_over(
+        &dir,
+        OutputMode::Text,
+        &real_verdict,
+        &["rm", "--dest", dest.as_str()],
+    );
+
+    assert_eq!(leaving(&dry, &dry_verdict), exit::REFUSAL);
+    assert_eq!(leaving(&real, &real_verdict), exit::REFUSAL);
+    assert_eq!(
+        dry.stdout(),
+        "would refuse     logs/deep/file.txt  (containment) (below the symlink logs)\n"
+    );
+    assert_eq!(real.stdout(), dry.stdout());
+    assert_eq!(real.error(), None);
+    assert!(dest.join("logs").symlink_metadata().is_ok());
+}
+
 /// A path deleted by hand before the removal leaves the destination as the
 /// write found it — the directories it held open included — and the row says
 /// the record was dropped rather than claiming a file was removed.

@@ -1,10 +1,12 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::Infallible;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::block;
-use crate::containment::{Hop, contained_normalize, contained_target_chain, is_pathname};
+use crate::containment::{
+    Hop, contained_normalize, contained_target, contained_target_chain, is_pathname,
+};
 use crate::{
     Action, BlockFault, Desired, DriftPolicy, Entry, EntryKind, Error, ExternalTargetPolicy,
     MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations, Origin,
@@ -26,17 +28,7 @@ pub(crate) fn classify(
         }
         let recorded = manifest.entries.get(path);
         let verdict = match (recorded, observation) {
-            (Some(_), Observation::Absent) => PathState::Missing,
-            (Some(recorded), Observation::Block { hash: None, .. }) if recorded.kind.is_block() => {
-                PathState::Missing
-            }
-            (Some(recorded), observation) => {
-                if observation_matches_recorded(recorded, observation) {
-                    PathState::Clean
-                } else {
-                    PathState::Drifted
-                }
-            }
+            (Some(recorded), observation) => recorded_state(recorded, Some(observation)),
             (None, Observation::Absent) => continue,
             (None, _) => PathState::Foreign,
         };
@@ -335,26 +327,34 @@ fn plan_actions(
             actions.insert(path.clone(), refuse(Refusal::Containment { through: None }));
             continue;
         }
+        // A release walks nothing and reads no disk, so only the branch below
+        // grades ancestry. It grades it with nothing vacated: removals run
+        // deepest-first, so a recorded link above this path is still standing
+        // when apply's own walk reaches it. Following one is what
+        // `docs/implementation.lex` section 3 says a removal does, which puts
+        // the node it re-checks at the location the walk came out at.
         let action = if recorded.owners.len() > 1 {
             Action::Release
         } else {
-            let state = states
-                .rows
-                .get(path)
-                .expect("recorded paths outside the state subtree always classify")
-                .verdict;
-            drifted_directory(
-                owner,
-                path,
-                recorded,
-                manifest,
-                observations,
-                options.drift,
-                || Action::RemoveDirectory,
-            )
-            .unwrap_or_else(|| {
-                orphan_action(recorded, observations.paths.get(path), state, options.drift)
-            })
+            match walked_ancestry(path, manifest, observations, &BTreeSet::new(), false) {
+                Err(refusal) => refuse(refusal),
+                Ok(landing) => {
+                    let landing = landing.map(|landing| landing.at);
+                    let observed = landing.as_ref().and_then(|at| observations.paths.get(at));
+                    let state = recorded_state(recorded, observed);
+                    let at = landing.as_deref().unwrap_or(path);
+                    drifted_directory(
+                        owner,
+                        at,
+                        recorded,
+                        manifest,
+                        observations,
+                        options.drift,
+                        || Action::RemoveDirectory,
+                    )
+                    .unwrap_or_else(|| orphan_action(recorded, observed, state, options.drift))
+                }
+            }
         };
         if matches!(action, Action::Remove { .. } | Action::RemoveDirectory) {
             vacated.insert(path.clone());
@@ -367,7 +367,15 @@ fn plan_actions(
     // whether they empty it is what `directory_in_the_way` reads.
     let mut desired_actions: Vec<(Utf8PathBuf, Action)> = Vec::new();
     for (path, entry) in &admitted {
-        let action = match link_refusal(path, entry, &admitted, observations, &vacated, options) {
+        let action = match link_refusal(
+            path,
+            entry,
+            &admitted,
+            manifest,
+            observations,
+            &vacated,
+            options,
+        ) {
             Some(refusal) => refuse(refusal),
             None => directory_action(
                 owner,
@@ -619,20 +627,130 @@ fn in_state(path: &Utf8Path, state_prefix: Option<&Utf8Path>) -> bool {
     state_prefix.is_some_and(|prefix| path.starts_with(prefix))
 }
 
+/// Where a no-follow walk to `path` comes out on the destination this run
+/// leaves — `path` itself, unless the walk followed a recorded link — or the
+/// refusal it meets on the way. `Ok(None)` is ancestry that is not there.
+///
+/// The snapshot side of act's `verified_parent`: the same arms in the same
+/// order, read off the observations rather than the disk, so a verdict apply
+/// would reach is one deciding reaches first. `create` marks the walk a write
+/// makes, which builds missing ancestry and refuses a node that is not a
+/// directory rather than stopping short of the leaf. `vacated` names the
+/// paths this run unlinks, which stand in the way of nothing.
+fn walked_ancestry(
+    path: &Utf8Path,
+    manifest: &Manifest,
+    observations: &Observations,
+    vacated: &BTreeSet<Utf8PathBuf>,
+    create: bool,
+) -> std::result::Result<Option<Landing>, Refusal> {
+    let mut components: VecDeque<String> = path
+        .components()
+        .map(|component| component.as_str().to_owned())
+        .collect();
+    let leaf = components
+        .pop_back()
+        .expect("a decided path has a final component");
+    let mut prefix = Utf8PathBuf::new();
+    let mut through: Option<Utf8PathBuf> = None;
+    let mut visited: BTreeSet<Utf8PathBuf> = BTreeSet::new();
+    while let Some(component) = components.pop_front() {
+        let here = prefix.join(&component);
+        let standing = if vacated.contains(&here) {
+            None
+        } else {
+            observations.paths.get(&here)
+        };
+        match standing {
+            None | Some(Observation::Absent) => {
+                if !create {
+                    return Ok(None);
+                }
+            }
+            Some(Observation::Directory) => {}
+            Some(Observation::Symlink { hash, target }) => {
+                let recorded = manifest
+                    .entries
+                    .get(&here)
+                    .filter(|recorded| recorded.kind == EntryKind::Symlink);
+                let Some(recorded) = recorded else {
+                    return Err(through_link(here));
+                };
+                if *hash != recorded.hash {
+                    return Err(Refusal::Drift);
+                }
+                let Some(target) = target else {
+                    return Err(through_link(here));
+                };
+                let Some(resolved) = contained_target(&prefix, target) else {
+                    return Err(through_link(here));
+                };
+                if !visited.insert(here.clone()) {
+                    return Err(through_link(here));
+                }
+                let mut restarted: VecDeque<String> = resolved
+                    .components()
+                    .map(|component| component.as_str().to_owned())
+                    .collect();
+                restarted.append(&mut components);
+                components = restarted;
+                through.get_or_insert(here);
+                prefix = Utf8PathBuf::new();
+                continue;
+            }
+            Some(Observation::File { .. } | Observation::Block { .. } | Observation::Other) => {
+                if !create {
+                    return Ok(None);
+                }
+                return Err(if manifest.entries.contains_key(&here) {
+                    Refusal::Drift
+                } else {
+                    Refusal::Foreign
+                });
+            }
+        }
+        prefix = here;
+    }
+    Ok(Some(Landing {
+        at: prefix.join(leaf),
+        through,
+    }))
+}
+
+/// Where a walk came out, and the first recorded link it followed to get
+/// there — the one that explains a landing the caller did not ask for.
+struct Landing {
+    at: Utf8PathBuf,
+    through: Option<Utf8PathBuf>,
+}
+
+fn through_link(link: Utf8PathBuf) -> Refusal {
+    Refusal::Containment {
+        through: Some(link),
+    }
+}
+
 /// The symlink refusals for an admitted path, judged before its
 /// classification; `None` admits it to the ordinary action table.
 fn link_refusal(
     path: &Utf8Path,
     entry: &Entry,
     admitted: &BTreeMap<Utf8PathBuf, &Entry>,
+    manifest: &Manifest,
     observations: &Observations,
     vacated: &BTreeSet<Utf8PathBuf>,
     options: PlanOptions,
 ) -> Option<Refusal> {
-    if let Some(link) = resolves_through_link(path, observations, vacated) {
-        return Some(Refusal::Containment {
-            through: Some(link),
-        });
+    match walked_ancestry(path, manifest, observations, vacated, true) {
+        Err(refusal) => return Some(refusal),
+        // A write goes down at its action key or nowhere, so a walk that
+        // followed a recorded link out to somewhere else refuses.
+        Ok(Some(landing)) if landing.at != *path => {
+            return Some(Refusal::Containment {
+                through: landing.through,
+            });
+        }
+        Ok(_) => {}
     }
     let Entry::Symlink { target } = entry else {
         return None;
@@ -650,28 +768,6 @@ fn link_refusal(
         });
     }
     None
-}
-
-/// The ancestor of `path` observed as a symlink that no action in this plan
-/// removes — `vacated` naming the paths the run unlinks — and `None` where
-/// every ancestor is an ordinary directory. The nearest such ancestor, which
-/// is the one a walk to `path` meets.
-fn resolves_through_link(
-    path: &Utf8Path,
-    observations: &Observations,
-    vacated: &BTreeSet<Utf8PathBuf>,
-) -> Option<Utf8PathBuf> {
-    path.ancestors()
-        .skip(1)
-        .find(|ancestor| {
-            !ancestor.as_str().is_empty()
-                && matches!(
-                    observations.paths.get(*ancestor),
-                    Some(Observation::Symlink { .. })
-                )
-                && !vacated.contains(*ancestor)
-        })
-        .map(Utf8Path::to_owned)
 }
 
 /// `true` where a desired symlink's target, resolved from the link's parent
@@ -992,6 +1088,25 @@ fn observed_signature(
         | Observation::Absent
         | Observation::Directory
         | Observation::Other => None,
+    }
+}
+
+/// The state of a recorded path, given what stands at the location a walk to
+/// it comes out at. `None` is a location the walk never reached, which reads
+/// exactly as [`Observation::Absent`] does.
+fn recorded_state(recorded: &ManifestEntry, observation: Option<&Observation>) -> PathState {
+    match observation {
+        None | Some(Observation::Absent) => PathState::Missing,
+        Some(Observation::Block { hash: None, .. }) if recorded.kind.is_block() => {
+            PathState::Missing
+        }
+        Some(observation) => {
+            if observation_matches_recorded(recorded, observation) {
+                PathState::Clean
+            } else {
+                PathState::Drifted
+            }
+        }
     }
 }
 

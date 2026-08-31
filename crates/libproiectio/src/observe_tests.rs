@@ -192,7 +192,9 @@ fn symlinked_directory_is_never_entered() {
 fn recorded_path_beneath_a_symlinked_ancestor_observes_absent() {
     // Following `logs` would find `real/x.txt` — exactly what the walk must
     // never do: a recorded path is only real if every ancestor is a real
-    // directory.
+    // directory. Recording the link is not descending it, and the hop it
+    // states — kind, hash and target string — is what lets deciding reach the
+    // verdict apply's own ancestor walk reaches.
     let fixture = Tree::new()
         .file("real/x.txt", "x")
         .symlink("logs", "real")
@@ -205,9 +207,45 @@ fn recorded_path_beneath_a_symlinked_ancestor_observes_absent() {
         paths.get(Utf8Path::new("logs/x.txt")),
         Some(&Observation::Absent)
     );
+    assert_eq!(
+        paths.get(Utf8Path::new("logs")),
+        Some(&Observation::Symlink {
+            hash: sha256_hex(b"real"),
+            target: Some("real".to_owned()),
+        })
+    );
+}
+
+#[test]
+fn every_hop_on_the_way_to_a_recorded_path_is_observed() {
+    // The walk descends every real directory, so the first node on the way to
+    // a recorded path that is not one is always in the snapshot, however deep
+    // it lies — and so is every node the link resolves to, which the walk
+    // reaches through directories of its own.
+    let fixture = Tree::new()
+        .file("real/deep/x.txt", "x")
+        .symlink("a/b", "../real/deep")
+        .materialize();
+    let manifest = manifest_of(&[("a/b/x.txt", EntryKind::File, sha256_hex(b"x"))]);
+
+    let paths = observed(&fixture, &manifest);
+
+    assert_eq!(paths[Utf8Path::new("a")], Observation::Directory);
+    assert_eq!(
+        paths[Utf8Path::new("a/b")],
+        Observation::Symlink {
+            hash: sha256_hex(b"../real/deep"),
+            target: Some("../real/deep".to_owned()),
+        }
+    );
+    assert_eq!(
+        paths.get(Utf8Path::new("a/b/x.txt")),
+        Some(&Observation::Absent)
+    );
+    assert_eq!(paths[Utf8Path::new("real/deep")], Observation::Directory);
     assert!(matches!(
-        paths[Utf8Path::new("logs")],
-        Observation::Symlink { .. }
+        paths[Utf8Path::new("real/deep/x.txt")],
+        Observation::File { .. }
     ));
 }
 
