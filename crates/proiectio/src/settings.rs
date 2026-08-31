@@ -50,15 +50,10 @@ pub(crate) struct Edit {
     pub(crate) present: bool,
 }
 
-/// Resolves the file a `set` or `unset` is about to edit, so that a platform
-/// path this CLI cannot spell refuses the run before clapfig writes rather
-/// than after. Clapfig persists through a `PathBuf`, which carries paths the
-/// report cannot; reading one back afterwards would fail a run whose edit had
-/// already reached the disk.
-///
-/// A `--scope` naming anything else reaches clapfig unexamined, which refuses
-/// it by name — resolving the user scope's path first would answer a wrong
-/// scope with a complaint about a file it never meant.
+/// Resolves the file a `set` or `unset` is about to edit, so a platform path
+/// this CLI cannot spell refuses the run before clapfig writes rather than
+/// after the edit has reached the disk. A `--scope` naming anything but the
+/// user scope reaches clapfig unexamined, which refuses it by name.
 pub(crate) fn check_edit_path(action: &ConfigAction) -> Result<(), Error> {
     if edits_the_user_scope(action) {
         user_config_path().map(drop)
@@ -67,10 +62,6 @@ pub(crate) fn check_edit_path(action: &ConfigAction) -> Result<(), Error> {
     }
 }
 
-/// Whether `action` is an edit landing in the file this CLI resolves: one of
-/// the two editing actions, naming the one registered scope or no scope at
-/// all. Every other action either edits nothing or names a scope clapfig
-/// refuses.
 fn edits_the_user_scope(action: &ConfigAction) -> bool {
     let scope = match action {
         ConfigAction::Set { scope, .. } | ConfigAction::Unset { scope, .. } => scope,
@@ -80,11 +71,8 @@ fn edits_the_user_scope(action: &ConfigAction) -> bool {
 }
 
 /// The file a `set` or `unset` through the `user` scope persisted to, and
-/// whether one is there now. Clapfig reports neither: `ConfigResult::ValueSet`
-/// and `ValueUnset` carry no path, and `unset_value` returns the same
-/// `ValueUnset` whether it rewrote a file or found none to read. So the file a
-/// set wrote is known from the set having succeeded, and the one an unset
-/// wrote is read back here.
+/// whether one is there now — read back here because clapfig's
+/// `ConfigResult` reports neither.
 pub(crate) fn persisted_edit() -> Result<Edit, Error> {
     let path = user_config_path()?;
     Ok(Edit {
@@ -117,18 +105,12 @@ fn user_config_path() -> Result<Utf8PathBuf, Error> {
     })
 }
 
-/// The key [`OWNER_RULE`] belongs to, as the schema spells it.
 const OWNER_KEY: &str = "owner";
 
-/// The owner a run records under, refused where the layer it came from left
-/// no name — the file, or `PROIECTIO__OWNER`, whose values reach the run
-/// already parsed. The flag parses through [`crate::cli`], which refuses the
-/// same values at the command line, and libproiectio refuses them again where
-/// a plan is decided; this is the layer that names the configuration as the
-/// place the bad value came from.
-///
-/// `config list` and `config get` do not take this route: an operator whose
-/// file carries a blank owner needs to be able to read it back.
+/// Refuses a configured owner that names no owner; this is the layer that
+/// names the configuration as where the bad value came from. `config list`
+/// and `config get` do not take this route: an operator whose file carries a
+/// blank owner needs to be able to read it back.
 pub(crate) fn require_owner(owner: String) -> Result<String, anyhow::Error> {
     match names_an_owner(&owner) {
         true => Ok(owner),
@@ -138,10 +120,8 @@ pub(crate) fn require_owner(owner: String) -> Result<String, anyhow::Error> {
     }
 }
 
-/// What `config set` will write, refused where it is not a value. Clapfig
-/// persists the string it is handed, so a key whose type does not parse is
-/// its own error; an empty string parses as a `String` and would land in the
-/// file, which is what this catches.
+/// Refuses a value `config set` must not write: an empty string parses as a
+/// `String` and would land in the file, which is what this catches.
 pub(crate) fn require_value(key: &str, value: &str) -> Result<(), anyhow::Error> {
     let complaint = match key {
         OWNER_KEY => (!names_an_owner(value)).then_some(OWNER_RULE),
@@ -166,8 +146,7 @@ pub(crate) fn require_key(key: &str) -> Result<(), ClapfigError> {
     })
 }
 
-/// The keys the schema declares, in the order it declares them. The `config`
-/// help names them in prose, and this is what that prose is checked against.
+/// What the `config` help's prose list of keys is checked against.
 #[cfg(test)]
 pub(crate) fn declared_keys() -> Vec<String> {
     match ProiectioConfig::shape() {
@@ -181,11 +160,9 @@ pub(crate) fn leaf_type(key: &str) -> Option<LeafType> {
     leaf_type_in(&ProiectioConfig::shape(), &segments)
 }
 
-/// Walks `shape` the way clapfig's own `doc_for_shape` walks it, so the schema
-/// answers for every key a listing can carry: a map's first segment is the
-/// entry key the writer chose, and the rest name fields of the item shape. A
-/// segment that lands on an array or a tagged union has no single leaf type,
-/// and the value keeps clapfig's spelling.
+/// Walks `shape` the way clapfig's own `doc_for_shape` walks it. A segment
+/// that lands on an array or a tagged union has no single leaf type, and the
+/// value keeps clapfig's spelling.
 fn leaf_type_in(shape: &Shape, segments: &[&str]) -> Option<LeafType> {
     match shape {
         Shape::Leaf(leaf) if segments.is_empty() => Some(leaf.ty.clone()),

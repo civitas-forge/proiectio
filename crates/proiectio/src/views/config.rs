@@ -57,13 +57,8 @@ pub(crate) enum ConfigView {
 
 impl ConfigView {
     /// `edit` reports what the invocation did to the file its scope persists
-    /// to. Only the two results that edited one ask for it, so a read costs no
-    /// platform lookup and succeeds where none resolves.
-    ///
-    /// The written-file variants name a path of clapfig's own, and a path this
-    /// CLI cannot render is the one thing clapfig can hand back that no output
-    /// mode can carry. Reading `--file` as UTF-8 refuses such a path at the
-    /// command line, so what is left here is a path clapfig chose itself.
+    /// to; only the two results that edited one ask for it, so a read costs
+    /// no platform lookup and succeeds where none resolves.
     pub(crate) fn of(
         result: ConfigResult,
         edit: impl FnOnce() -> Result<Edit, Error>,
@@ -96,7 +91,7 @@ impl ConfigView {
             },
             // Clapfig's set creates the file it persists to, so a `ValueSet`
             // in hand is the write itself; only an unset can come back from a
-            // file that was never there, and that is read off the path.
+            // file that was never there.
             ConfigResult::ValueSet { key, value, .. } => Self::ValueSet {
                 rendered: assignment(&key, &value),
                 key,
@@ -135,16 +130,11 @@ fn assignment(key: &str, value: &str) -> String {
     format!("{} = {}", dotted(key), spelled(key, value))
 }
 
-/// The value as a document spells it. The schema names the type for a key it
-/// declares. A scoped listing reads the file rather than the schema, so it
-/// also carries keys the schema does not declare, and clapfig has already
-/// stringified those: what is left to ask is whether the spelling stands as a
-/// value at all. One that parses keeps its spelling; one that does not is the
-/// string it can only have been.
-///
-/// A string that reads as another type — `"true"`, `"12"` — is the one thing
-/// this cannot recover for an undeclared key, because clapfig stringified it
-/// before the view saw it.
+/// The value as a document spells it. A scoped listing carries keys the
+/// schema does not declare, which clapfig has already stringified; one that
+/// parses as a value keeps its spelling, one that does not is the string it
+/// can only have been. A string that reads as another type — `"true"` — is
+/// unrecoverable for an undeclared key.
 fn spelled(key: &str, value: &str) -> String {
     let quoted = || toml::Value::from(value).to_string();
     match settings::leaf_type(key) {
@@ -160,8 +150,7 @@ fn parses_as_value(value: &str) -> bool {
 }
 
 /// The key as a document spells it: one segment per dot, each quoted where a
-/// bare TOML key cannot carry it. A scoped listing reads the file itself, so
-/// the keys reaching here are the writer's rather than the schema's.
+/// bare TOML key cannot carry it.
 fn dotted(key: &str) -> String {
     key.split('.')
         .map(|segment| {

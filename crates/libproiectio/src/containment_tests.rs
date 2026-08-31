@@ -33,8 +33,6 @@ fn accepted_paths_join_lexically_normalized() {
         ("com0", "com0"),
         ("lpt10", "lpt10"),
         ("aux2.c", "aux2.c"),
-        // The state-dir default name is an ordinary component here; keeping
-        // desired paths out of the state dir is plan's job, not this one's.
         (".proiectio/manifest.json", ".proiectio/manifest.json"),
     ];
 

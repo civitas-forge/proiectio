@@ -63,20 +63,11 @@ pub(crate) fn write(
     apply(run, ctx)
 }
 
-/// Removes what the manifest records, and says on stderr where the manifest it
-/// read was the empty one a `--state-dir` that is not there stands in for.
-///
-/// An empty manifest holds nothing to remove, so the run reports `nothing to
-/// do` and leaves with 0 — the same report a destination whose owner holds
-/// nothing prints. The warning names which one this is.
-///
-/// The fact is read before the run rather than after it: a real removal opens
-/// the state directory for writing and creates the one it was told to use, so
-/// afterwards every named directory is there.
-///
-/// The warning is written after the run, so a removal that could not open the
-/// destination fails as an operational failure alone rather than warning about
-/// a directory nothing went on to read.
+/// Removes what the manifest records, warning on stderr where the manifest
+/// read empty because a named `--state-dir` is not there. The absence is read
+/// before the run (a real removal creates the directory it was told to use)
+/// and the warning written after it (a removal that could not open the
+/// destination fails as an operational failure alone).
 #[handler]
 pub(crate) fn rm(
     #[arg] dest: String,
@@ -118,9 +109,8 @@ pub(crate) fn rm(
 }
 
 /// Whether the command line named a state directory the filesystem does not
-/// have. The default one's absence is not this: a destination nothing has been
-/// projected onto has no state directory yet, and no invocation claimed
-/// otherwise.
+/// have. The default one's absence is not this: a destination nothing has
+/// been projected onto has no state directory yet.
 fn named_state_dir_is_absent(
     projection: &Projection,
     state_dir: Option<&str>,
@@ -131,9 +121,6 @@ fn named_state_dir_is_absent(
     }
 }
 
-/// Says on stderr that the manifest read empty because the directory holding
-/// it is not there — the one thing a report over an empty manifest cannot say,
-/// since a destination nobody recorded reads the same.
 fn warn_absent_state_dir(projection: &Projection) {
     standout::warnings::push_warning(format!(
         "state dir {} does not exist; treating manifest as empty",
@@ -141,7 +128,6 @@ fn warn_absent_state_dir(projection: &Projection) {
     ));
 }
 
-/// The owner the invocation names, and otherwise the configured one.
 fn owner_or_configured(owner: Option<String>) -> Result<String, anyhow::Error> {
     match owner {
         Some(named) => Ok(named),
@@ -149,9 +135,8 @@ fn owner_or_configured(owner: Option<String>) -> Result<String, anyhow::Error> {
     }
 }
 
-/// The two settings a write layers a flag over: `--owner` above `owner`, and
-/// `--max-source-size` above `max_source_size`. One load answers both, and a
-/// run whose flags name both never reads the configuration at all.
+/// The two settings a write layers a flag over; a run whose flags name both
+/// never reads the configuration at all.
 fn write_settings(
     owner: Option<String>,
     max_source_size: Option<u64>,
@@ -185,11 +170,8 @@ fn projection(dest: &str, state_dir: Option<&str>) -> Result<Projection, anyhow:
     Projection::new(Utf8Path::new(dest), state_dir.map(Utf8Path::new)).map_err(exit::failure)
 }
 
-/// A run reports the whole plan, refused rows and all — a dry run because the
-/// rows are what it is for, a real one because a plan that refuses acts on
-/// nothing and has only the plan to report. Either way a refusal records the
-/// status the run leaves with rather than replacing the report with a
-/// diagnostic.
+/// Reports the whole plan, refused rows and all; a refusal records the exit
+/// status rather than replacing the report with a diagnostic.
 fn planned_report(
     plan: &Plan,
     report: Report<PlannedAction>,
@@ -205,10 +187,8 @@ fn planned_report(
     Ok(Output::Render(RunView::Planned(stated)))
 }
 
-/// A real run acts unless something refuses. A plan carrying refusals writes
-/// nothing and reports itself, which is the document a dry run of the same
-/// invocation reports; what a run that started applying reports is
-/// [`stopped`]'s to say.
+/// A real run acts unless something refuses: a plan carrying refusals writes
+/// nothing and reports itself, as a dry run of the same invocation would.
 pub(crate) fn apply(run: Run, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
     if let Some(plan) = run
         .planned()
@@ -222,23 +202,12 @@ pub(crate) fn apply(run: Run, ctx: &CommandContext) -> Result<Output<RunView>, a
     }
 }
 
-/// What a run that could not finish reports, which turns on whether it had
-/// applied anything when it stopped.
-///
-/// One that had not states the refusal the way the planning stages state
-/// theirs — the keys it declined, the archive members the plan stripped, and
-/// nothing acted on — and a failure there replaces the output with its
-/// diagnostic, the run having nothing to report. Such a run wrote no manifest
-/// either, which is why only a stop at an action reaches that branch: a stop
-/// naming the record has rows the record was written for.
-///
-/// One that had renders the rows it applied whatever stopped it, in the tense
-/// it applied them in and under a document marked as stopped: a refusal adds
-/// the keys it declined, a failure the diagnostic that would otherwise have
-/// replaced the rows, and either adds what the state directory does not
-/// record. A run part-way through a plan reading as a plan would claim a
-/// destination nobody touched, which is the one thing this output must never
-/// claim; dropping the rows for a failure would claim it just as loudly.
+/// What a run that could not finish reports. One that applied nothing states
+/// a refusal as the planning stages state theirs, and a failure replaces the
+/// output with its diagnostic. One that applied rows renders them whatever
+/// stopped it, under a document marked as stopped: this output must never
+/// claim a destination nobody touched, and dropping applied rows for a
+/// failure would claim it just as loudly.
 fn stopped(aborted: Box<Aborted>, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
     let Aborted { stopped, applied } = *aborted;
     match stopped {
@@ -260,19 +229,13 @@ fn stopped(aborted: Box<Aborted>, ctx: &CommandContext) -> Result<Output<RunView
     }
 }
 
-/// A refusal a run met without acting on anything states the keys it declined
-/// and the archive members its plan stripped, on the terms a plan's own rows
-/// are stated on; every other error replaces the output with its diagnostic.
-///
-/// The drops come from the plan the refusal cut short rather than from the
-/// error, which names no archive: a mapping expanding one is stripped to
-/// decide the plan, so a refusal met before the first action lands has drops
-/// to state and a document omitting them would say the archive arrived whole.
-///
-/// Deciding and applying run back to back over one destination, so no command
-/// line reaches an apply-time refusal on its own — the disk has to move in
-/// between — and that half of the contract is driven from `app_tests` over
-/// this function, which is what it is visible past this module for.
+/// A refusal a run met without acting on anything states the keys it
+/// declined on the terms a plan's own rows are stated on; every other error
+/// replaces the output with its diagnostic. The drops come from the plan the
+/// refusal cut short rather than from the error, which names no archive.
+/// Visible past this module because no command line reaches an apply-time
+/// refusal on its own — the disk has to move between plan and apply — so
+/// `app_tests` drives that half of the contract through this function.
 pub(crate) fn refusal_or_failure(
     error: Error,
     manifest: &Manifest,
@@ -288,8 +251,8 @@ pub(crate) fn refusal_or_failure(
     }
 }
 
-/// Renders the rows a refusal leaves the run with, recording the refusal so
-/// the process leaves with 2 though the run rendered rather than failed.
+/// Renders the refusal's rows, recording exit status 2 though the run
+/// rendered rather than failed.
 fn refusal(stated: RunView, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
     ctx.app_state
         .get_required::<exit::Verdict>()?
@@ -297,8 +260,6 @@ fn refusal(stated: RunView, ctx: &CommandContext) -> Result<Output<RunView>, any
     Ok(Output::Render(stated))
 }
 
-/// `--tree` names the tree, one positional a mapping file, two or more the
-/// files to project under their own basenames.
 fn desired(
     paths: &[Utf8PathBuf],
     tree: Option<&Utf8Path>,
@@ -312,23 +273,10 @@ fn desired(
     }
 }
 
-/// Classifies the destination, and under `--check` records the status the
-/// process leaves with.
-///
-/// A `--state-dir` that is not there reads as the empty manifest, and an empty
-/// manifest classifies every path on disk as foreign — a report a misspelled
-/// path and a destination full of files nobody recorded produce alike. The
-/// warning names which one this is. The default state directory's absence
-/// warns about nothing: a destination nothing has been projected onto has no
-/// state directory yet, and that is not a mistake.
-///
-/// `--check` spends the refusal status on both, so a gate fails on a
-/// destination that drifted and on the command line that misspelled where to
-/// look for it.
-///
-/// The classification runs first so a destination that cannot be opened fails
-/// as an operational failure alone, rather than warning about a state
-/// directory nothing was going to read.
+/// Classifies the destination, and under `--check` records the exit status.
+/// A named `--state-dir` that is not there reads as the empty manifest and
+/// warns; `--check` spends the refusal status on it too, so a gate fails on
+/// a misspelled state directory as it fails on drift.
 #[handler]
 pub(crate) fn status(
     #[arg] dest: String,

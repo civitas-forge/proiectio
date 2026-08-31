@@ -92,7 +92,6 @@ impl Member {
     }
 }
 
-// Writes one member's header and body into a tar stream.
 fn write_member(out: &mut impl Write, member: &Member) {
     let size = member.declared.unwrap_or(member.body.len() as u64);
     write_header(
@@ -108,7 +107,6 @@ fn write_member(out: &mut impl Write, member: &Member) {
     out.write_all(&vec![0u8; padding]).expect("pad member body");
 }
 
-// Writes one 512-byte ustar header.
 fn write_header(out: &mut impl Write, name: &[u8], kind: u8, mode: u32, link: &str, size: u64) {
     let mut header = [0u8; 512];
     let (prefix, name) = split_name(name);
@@ -150,7 +148,6 @@ fn split_name(name: &[u8]) -> (&[u8], &[u8]) {
     (&name[..split], &name[split + 1..])
 }
 
-// Writes `value` as a NUL-terminated octal string of `digits` digits.
 fn put_octal(field: &mut [u8], value: u64, digits: usize) {
     let text = format!("{value:0digits$o}");
     field[..digits].copy_from_slice(text.as_bytes());
@@ -162,7 +159,6 @@ fn write_end(out: &mut impl Write) {
     out.write_all(&[0u8; 1024]).expect("write end-of-archive");
 }
 
-// A whole tar archive in memory.
 fn tar(members: &[Member]) -> Vec<u8> {
     let mut bytes = Vec::new();
     for member in members {
@@ -182,7 +178,6 @@ fn zstd_compress(bytes: &[u8]) -> Vec<u8> {
     zstd::stream::encode_all(bytes, 1).expect("zstd the archive")
 }
 
-// One zip member.
 enum ZipMember {
     File {
         name: String,
@@ -355,9 +350,6 @@ fn a_zip_expands_to_the_same_tree() {
     );
 }
 
-// Directories carry no entry of their own, exactly as in a source tree: an
-// `empty/` member is judged and then contributes nothing, so nothing is
-// created at the destination for it.
 #[test]
 fn a_directory_member_projects_nothing() {
     let tree = expand_bytes("only-dirs.tar", &tar(&[Member::dir("empty/")]), 0).unwrap();
@@ -464,9 +456,6 @@ fn a_zips_leading_dot_normalizes_too() {
     );
 }
 
-// The definition of done for the happy path: an archive projects, and the
-// relative link inside it still resolves at the destination because the
-// layout came along.
 #[test]
 fn an_expanded_archive_projects_and_its_relative_link_resolves() {
     let desired = expand_bytes("skeleton.tar.gz", &gzip(&tar(&tar_members())), 0).unwrap();
@@ -494,8 +483,6 @@ fn an_expanded_archive_projects_and_its_relative_link_resolves() {
         b"release\n",
     );
 
-    // Nothing downstream remembers an archive existed: the manifest records
-    // one ordinary entry per member.
     let manifest = load_manifest(&state_dir).expect("reload manifest");
     let recorded: Vec<&str> = manifest.entries.keys().map(|path| path.as_str()).collect();
     assert_eq!(
@@ -548,10 +535,6 @@ fn strip_drops_a_zips_wrapper_directory_too() {
     );
 }
 
-// `strip` erasing a *file* drops that member and keeps the archive, the way
-// GNU tar's `--strip-components` does — stock macOS `tar` writes an
-// AppleDouble `._pkg` beside every `pkg`, and one of those must not cost the
-// whole load. The drop is named rather than silent.
 #[test]
 fn a_file_member_strip_erases_is_dropped_and_the_rest_loads() {
     let members = vec![
@@ -583,8 +566,6 @@ fn a_file_member_strip_erases_is_dropped_and_the_rest_loads() {
     );
 }
 
-// The boundary: `strip` that leaves exactly one component leaves a member
-// whole, and nothing is dropped.
 #[test]
 fn strip_leaving_one_component_drops_nothing() {
     let members = vec![Member::dir("pkg/"), Member::file("pkg/README", "read me\n")];
@@ -599,7 +580,6 @@ fn strip_leaving_one_component_drops_nothing() {
     );
 }
 
-// A symlink `strip` erases is dropped on the same terms as a file.
 #[test]
 fn a_symlink_member_strip_erases_is_dropped() {
     let members = vec![
@@ -610,8 +590,6 @@ fn a_symlink_member_strip_erases_is_dropped() {
     assert_eq!(dropped_members(&expanded), vec!["current"]);
 }
 
-// A zip goes through the same admission, so its members drop on the same
-// terms.
 #[test]
 fn a_zip_member_strip_erases_is_dropped_and_the_rest_loads() {
     let members = vec![
@@ -633,10 +611,6 @@ fn a_zip_member_strip_erases_is_dropped_and_the_rest_loads() {
     let _ = fixture;
 }
 
-// Dropping a member among survivors is the point; dropping every one of
-// them means `strip` is deeper than the archive. That has to fail rather
-// than expand to nothing: an empty desired tree plans a removal, so a
-// mistyped `strip` would clear whatever the owner holds.
 #[test]
 fn an_archive_strip_erases_entirely_fails_the_load() {
     let members = vec![
@@ -649,13 +623,6 @@ fn an_archive_strip_erases_entirely_fails_the_load() {
     ));
 }
 
-// Two members of one archive may carry the same name — tar imposes no rule
-// against it, and two raw names can normalize onto one path. Both are erased,
-// and the two halves of the drop disagree on purpose: the report states one
-// record, because "._pkg had no path left" is one fact however many members
-// spelled it, while the diagnostic counts two, because two members are what
-// the strip actually consumed. A survivor keeps the load alive, so the count
-// is observed through a later drop rather than through the error.
 #[test]
 fn one_name_on_two_dropped_members_is_one_record_and_two_drops() {
     let members = vec![
@@ -667,8 +634,6 @@ fn one_name_on_two_dropped_members_is_one_record_and_two_drops() {
 
     assert_eq!(dropped_members(&expanded), vec!["._pkg"]);
 
-    // The same pair with no survivor: the error counts members, not names,
-    // so it says two rather than the one the record set holds.
     let members = vec![
         Member::file("._pkg", "first\n"),
         Member::file("._pkg", "second\n"),
@@ -679,8 +644,6 @@ fn one_name_on_two_dropped_members_is_one_record_and_two_drops() {
     ));
 }
 
-// Two members that survive and claim one projected path are refused, so a
-// repeated name only ever reaches the drop set — never the tree.
 #[test]
 fn one_name_on_two_surviving_members_is_refused_rather_than_recorded_once() {
     let members = vec![
@@ -693,9 +656,6 @@ fn one_name_on_two_surviving_members_is_refused_rather_than_recorded_once() {
     ));
 }
 
-// The rule reads the drops, not the emptiness: an archive that carried
-// nothing to begin with expands to an empty tree as it always has, and only
-// an archive `strip` emptied is refused.
 #[test]
 fn an_archive_that_was_always_empty_still_expands_to_nothing() {
     let expanded = expand_bytes("empty.tar", &tar(&[]), 1).unwrap();
@@ -704,9 +664,6 @@ fn an_archive_that_was_always_empty_still_expands_to_nothing() {
     assert!(expanded.dropped().is_empty());
 }
 
-// Directories carry no entry, so an archive of nothing but directories
-// projects nothing whatever `strip` does to it — the tour says so — and it
-// drops nothing either, which is what keeps it outside the rule.
 #[test]
 fn an_archive_of_directories_alone_projects_nothing_without_failing() {
     let members = vec![Member::dir("pkg/"), Member::dir("pkg/sub/")];
@@ -716,10 +673,6 @@ fn an_archive_of_directories_alone_projects_nothing_without_failing() {
     assert!(expanded.dropped().is_empty());
 }
 
-// A directory surviving the strip is not something projected: it carries no
-// entry, so the expansion still has nothing to show for itself while a real
-// file was erased. That is the wrong-strip case the rule is for, and it
-// refuses — the surviving directory does not excuse the dropped file.
 #[test]
 fn a_surviving_directory_does_not_save_an_expansion_that_projects_nothing() {
     let members = vec![
@@ -732,9 +685,6 @@ fn a_surviving_directory_does_not_save_an_expansion_that_projects_nothing() {
     ));
 }
 
-// A dropped member is still a member: it costs a place against the cap on
-// how many one archive may carry, so an archive cannot buy headroom by
-// filling itself with members `strip` erases.
 #[test]
 fn members_strip_erases_still_count_against_the_member_cap() {
     let fixture = Tree::new().materialize();
@@ -762,9 +712,6 @@ fn members_strip_erases_still_count_against_the_member_cap() {
     ));
 }
 
-// A mode contributes the executable bit and nothing else: setuid, group,
-// and other bits are dropped, and a member with no execute bit is not
-// executable however permissive the rest is.
 #[test]
 fn a_member_mode_contributes_only_the_executable_bit() {
     let members = vec![
@@ -793,15 +740,12 @@ fn a_member_mode_contributes_only_the_executable_bit() {
 
 #[test]
 fn the_extension_picks_the_decoder_and_the_bytes_are_never_sniffed() {
-    // Real zip bytes under a name that says gzipped tar: the decoder the
-    // name picked is the decoder that runs, and it fails.
     let bytes = zip(&zip_members());
     assert!(matches!(
         expand_bytes("vendor.tar.gz", &bytes, 0).unwrap_err(),
         Error::ArchiveDecode { format, .. } if format == ArchiveFormat::TarGz
     ));
 
-    // And the other way round.
     let bytes = gzip(&tar(&tar_members()));
     assert!(matches!(
         expand_bytes("vendor.zip", &bytes, 0).unwrap_err(),
@@ -941,11 +885,6 @@ fn a_zstd_frame_whose_window_fits_the_bound_is_not_refused_for_its_window() {
     assert!(!error.to_string().contains("too much memory"), "{error}");
 }
 
-// The cap is taken off what the load has left, not off the bound it opened
-// at. A mapping expands its archives against one budget, so a last archive
-// asking for a window the earlier sources already spent would allocate the
-// bound a second time — the decoder holds that buffer whatever the reader
-// beyond it goes on to meter.
 #[test]
 fn a_spent_budget_narrows_the_window_a_later_archive_may_ask_for() {
     // A frame header asking for a 512 KiB window: 2^(10 + 9), no mantissa.
@@ -960,12 +899,9 @@ fn a_spent_budget_narrows_the_window_a_later_archive_may_ask_for() {
             .to_string()
     };
 
-    // Against the whole 1 MiB bound the window is inside what the load may
-    // hold, and the frame fails on the nothing behind its header instead.
     let fresh = Rc::new(Budget::new(limits));
     assert!(!expand_with(&fresh).contains("too much memory"));
 
-    // The same frame reached with 256 KiB left is refused at the window.
     let spent = Rc::new(Budget::new(limits));
     assert!(spent.spend((1 << 20) - (1 << 18)));
     assert!(expand_with(&spent).contains("too much memory"));
@@ -992,8 +928,6 @@ fn a_tar_split_across_zstd_frames_expands_whole() {
 // The malicious corpus
 // ---------------------------------------------------------------------------
 
-// Every member the containment gateway refuses comes back named exactly as
-// the archive spells it, and the whole archive is reported at once.
 #[test]
 fn hostile_member_names_are_refused_and_named() {
     let members = vec![
@@ -1062,11 +996,6 @@ fn a_zip_member_whose_name_and_mode_disagree_is_refused() {
     ));
 }
 
-// The disagreement is judged before the name reaches `strip`, which can
-// erase it: a symlink named `wrapper/` under `--strip 1` strips to nothing,
-// and a member that strips to nothing and calls itself a directory is
-// dropped on purpose. Judged after, the symlink would vanish with no error
-// at all.
 #[test]
 fn a_zip_member_strip_would_erase_is_still_judged_for_its_kind() {
     let members = vec![zip_symlink("wrapper/", "/etc")];
@@ -1106,10 +1035,6 @@ fn a_hardlink_member_is_refused_by_name() {
     ));
 }
 
-// A kind is judged before `strip` can erase the name carrying it, on the
-// tar path as on the zip one. Judged after, a fifo the caller stripped down
-// to nothing would come back as "nothing left after strip" — true, and not
-// the problem.
 #[test]
 fn a_member_strip_would_erase_is_still_refused_for_its_kind() {
     assert!(matches!(
@@ -1249,8 +1174,6 @@ fn a_zip_hides_byte_identical_duplicate_names_from_the_expansion() {
     assert_eq!(tree.len(), 1);
 }
 
-// `strip` can collapse two distinct members onto one path, which is the
-// same double claim.
 #[test]
 fn members_strip_collapses_onto_one_path_are_refused() {
     let members = vec![
@@ -1289,8 +1212,6 @@ fn a_symlink_member_target_that_is_not_utf8_fails_the_load() {
     ));
 }
 
-// The archive's depth bound is the source-tree walk's, so a tarball of a
-// directory tree expands to the tree that directory would have loaded as.
 #[test]
 fn a_member_nesting_past_the_depth_limit_fails_the_load() {
     let deepest = format!("{}f", "d/".repeat(MAX_MEMBER_DEPTH));
@@ -1467,9 +1388,6 @@ fn a_zip_larger_than_the_bound_is_refused_before_its_directory_is_parsed() {
         ),
         "{error}"
     );
-    // The one refusal weighing a file rather than what it expands to says so,
-    // and names both numbers: the operator can see that raising the bound
-    // past the file is what answers it.
     let message = error.to_string();
     assert!(
         message.contains(&format!("is {} bytes on disk", bytes.len())),
@@ -1492,9 +1410,6 @@ fn a_zip_larger_than_the_bound_is_refused_before_its_directory_is_parsed() {
 // The prefix form
 // ---------------------------------------------------------------------------
 
-// `expand` under a prefix places every member below it — the
-// `[archives."prefix/"]` shape — and the member paths are otherwise the
-// same ones `load_archive` produces.
 #[test]
 fn a_prefix_places_every_member_beneath_it() {
     let fixture = Tree::new()
@@ -1520,10 +1435,6 @@ fn a_prefix_places_every_member_beneath_it() {
     );
 }
 
-// A member is judged before the prefix is joined, so a prefix confines a
-// member rather than absorbing it: joining first would turn `../escape`
-// under `vendor/` into `escape`, a contained path outside the prefix the
-// mapping wrote, refused by nothing.
 #[test]
 fn a_prefix_never_absorbs_a_climbing_member() {
     let fixture = Tree::new()
@@ -1549,9 +1460,6 @@ fn a_prefix_never_absorbs_a_climbing_member() {
     );
 }
 
-// A relative target is carried verbatim under a prefix; the link's parent
-// moved, so where it resolves is `decide`'s to grade, and nothing here
-// rewrites the string to compensate.
 #[test]
 fn a_prefix_leaves_a_symlink_target_verbatim() {
     let fixture = Tree::new()

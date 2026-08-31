@@ -1,3 +1,29 @@
+//! The deciding stage: pure planning, `(desired, manifest, observations) ->
+//! Plan`, with no filesystem access. The written contracts live in
+//! `docs/design.lex` (the classification and action tables) and
+//! `docs/implementation.lex` §3 (what a removal walks and re-checks); this
+//! module implements them.
+//!
+//! The shape of a plan decision:
+//!
+//! - Desired keys are normalized to the location they claim; two keys
+//!   claiming one location, or one lying beneath another, refuse both sides
+//!   as [`Refusal::TreeConflict`] — nothing orders them.
+//! - Orphans (paths recorded under the owner that the desired tree no longer
+//!   names) are judged first: their removals vacate locations, and every
+//!   later question — what holds a directory up, where a symlink target
+//!   lands, whether ancestry still stands — is asked against the destination
+//!   as those removals leave it.
+//! - One physical node gets one action. A removal that follows a recorded
+//!   link acts where the walk comes out, not at its key, so distinct keys
+//!   reaching one node collide the same way desired keys do.
+//! - A block owns a marker's region inside a container, not the container:
+//!   two block removals at one container conflict only over the same marker,
+//!   and a whole-node claim conflicts with every region claim.
+//! - Symlink targets are graded against the destination as it will stand
+//!   after the run — desired entries first, then vacated locations, then the
+//!   observation snapshot.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 
@@ -88,8 +114,6 @@ fn recorded_facts(recorded: &ManifestEntry, observed: Option<&Observation>) -> P
     }
 }
 
-/// The deciding stage: `(desired, manifest, observations) -> Plan`, with no
-/// filesystem access.
 pub(crate) fn decide(
     owner: &str,
     desired: &Desired,
@@ -319,11 +343,8 @@ fn plan_actions(
         }
     }
 
-    // Recorded paths the desired tree no longer names, judged before the
-    // admitted paths: a removal vacates its path, and act runs removals first.
-    // Each carries the location it acts at, which is its key unless the walk
-    // below came out somewhere else; an action that touches no node carries
-    // none.
+    // Orphans first (see the module doc); each carries the location it acts
+    // at, `None` for an action that touches no node.
     let mut orphans: Vec<(Utf8PathBuf, Action, Option<Utf8PathBuf>)> = Vec::new();
     for (path, recorded) in &manifest.entries {
         if named.contains(path)
@@ -337,15 +358,9 @@ fn plan_actions(
             actions.insert(path.clone(), refuse(Refusal::Containment { through: None }));
             continue;
         }
-        // A release walks nothing and reads no disk, so only the branch below
-        // grades ancestry. It grades it with nothing vacated: removals run
-        // deepest-first, so a recorded link above this path is still standing
-        // when apply's own walk reaches it. Following one is what
-        // `docs/implementation.lex` section 3 says a removal does, which puts
-        // the node it re-checks at the location the walk came out at — and
-        // that location answers to containment as the key does, since the
-        // state subtree is out of the projection's reach however a walk
-        // arrives at it.
+        // Ancestry is graded with nothing vacated: removals run deepest
+        // first, so a recorded link above this path still stands when
+        // apply's walk reaches it.
         let (action, at) = if recorded.owners.len() > 1 {
             (Action::Release, None)
         } else {
@@ -359,10 +374,8 @@ fn plan_actions(
                 ),
                 Ok(landing) => {
                     let at = landing.map_or_else(|| path.clone(), |landing| landing.at);
-                    // A block owns a region of the container, not the
-                    // container, and two keys can reach one container: the
-                    // region parsed under this record's own marker is stated
-                    // under this record's key, wherever the container sits.
+                    // A block's region is observed under this record's key,
+                    // wherever the container sits.
                     let observed = if recorded.kind.is_block() {
                         observations.paths.get(path)
                     } else {
@@ -387,17 +400,9 @@ fn plan_actions(
         orphans.push((path.clone(), action, at));
     }
 
-    // One physical node, one action. A removal that followed a recorded link
-    // acts where it came out rather than at its key, so two keys can name one
-    // node: apply would carry out the first and refuse the second half-way
-    // through the run. Nothing orders them — the reading `docs/design.lex`
-    // section 2 gives two desired keys over one location — so both refuse.
-    // A removal expecting nothing claims nothing: apply only re-checks that
-    // the location is empty, which leaves it free for another key's write.
-    // A block removal claims one marker's region and republishes the
-    // container, so two of them at one container conflict only where they
-    // strip the same marker; every other claim is on the whole node and
-    // conflicts with all of them.
+    // One physical node, one action (module doc). A removal expecting
+    // nothing claims nothing: apply only re-checks that the location is
+    // empty, which leaves it free for another key's write.
     let mut claimed: BTreeMap<&Utf8Path, Vec<(Option<&str>, &Utf8Path)>> = BTreeMap::new();
     for (path, action, at) in &orphans {
         if matches!(action, Action::Remove { expected: None }) {
@@ -443,11 +448,9 @@ fn plan_actions(
         })
     };
 
-    // Every location this run leaves empty, which is what the ancestry walks,
-    // the planned symlink targets, and the directory readings below all ask
-    // about — so each is the location a removal acts at, not the key it is
-    // filed under. A removal that strips a block republishes its container,
-    // so only the whole-node removals empty anything.
+    // Every location this run leaves empty — the location a removal acts at,
+    // not the key it is filed under. A block removal republishes its
+    // container, so only whole-node removals empty anything.
     let mut vacated: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, action, at) in orphans {
         let action = collided.get(&path).map_or(action, &conflict);
@@ -461,9 +464,6 @@ fn plan_actions(
         actions.insert(path, action);
     }
 
-    // Decided against the removals above rather than inserted among them: a
-    // directory standing at a desired path is cleared by those removals, and
-    // whether they empty it is what `directory_in_the_way` reads.
     let mut desired_actions: Vec<(Utf8PathBuf, Action)> = Vec::new();
     for (path, entry) in &admitted {
         if let Some(paths) = collided.get(path) {
@@ -508,11 +508,10 @@ fn plan_actions(
 }
 
 /// The action for a desired path standing on a directory: the write that
-/// clears the projection's own scaffolding out of the way, the overwrite that
-/// replaces an empty directory the record drifted into, or the refusal naming
-/// what holds the directory in place. `None` leaves the path to
-/// [`desired_action`] — nothing stands there, what stands there is not a
-/// directory, a block is involved, or the record is not this owner's alone.
+/// clears the projection's own scaffolding out of the way, the overwrite
+/// that replaces an empty directory the record drifted into, or the refusal
+/// naming what holds the directory in place. `None` leaves the path to
+/// [`desired_action`].
 fn directory_action(
     owner: &str,
     path: &Utf8Path,
@@ -552,12 +551,10 @@ fn directory_action(
 
 /// The action for a recorded path whose on-disk node is a directory: the
 /// record drifted into a kind no signature describes, so only an empty
-/// directory goes, and only where `policy` lifts the drift. Anything the
-/// directory holds is unrecorded at that location, so no policy clears it.
-/// `None` where the path is not a directory on disk, or is a block, or is a
-/// record `owner` does not hold alone: a kind swap is no way past the owner
-/// boundary, so a shared or another owner's record goes on to
-/// [`desired_action`] and its [`Refusal::OwnerConflict`].
+/// directory goes, and only where `policy` lifts the drift. `None` where the
+/// path is not a directory on disk, is a block, or is a record `owner` does
+/// not hold alone — a shared record goes on to [`desired_action`] and its
+/// [`Refusal::OwnerConflict`].
 fn drifted_directory(
     owner: &str,
     path: &Utf8Path,
@@ -574,8 +571,8 @@ fn drifted_directory(
     {
         return None;
     }
-    // Nothing beneath a drifted directory is recorded at that location, so no
-    // removal reaches any of it: everything standing there holds it.
+    // Nothing beneath a drifted directory is recorded at that location, so
+    // everything standing there holds it.
     let unreadable = unreadable_beneath(path, observations);
     let (held, holding) = holding_beneath(path, manifest, observations, |node, _| {
         unreadable.contains(node)
@@ -593,12 +590,9 @@ fn drifted_directory(
 }
 
 /// What keeps the unrecorded directory at `path` standing after this run's
-/// removals: every node on disk beneath it that no removal vacates, every
-/// directory beneath it that no removal empties, and every directory beneath
-/// it holding a name observation cannot represent. `None` where the run
-/// empties the directory and pruning takes it; the refusal carries an empty
-/// `holding` where the directory holds nothing at all, which makes it
-/// somebody else's rather than this projection's scaffolding.
+/// removals. `None` where the run empties the directory and pruning takes
+/// it; the refusal carries an empty `holding` where the directory holds
+/// nothing at all — somebody else's, not this projection's scaffolding.
 fn directory_in_the_way(
     path: &Utf8Path,
     manifest: &Manifest,
@@ -612,14 +606,8 @@ fn directory_in_the_way(
     };
     let unreadable = unreadable_beneath(path, observations);
     let (held, holding) = holding_beneath(path, manifest, observations, |node, observation| {
-        // What this run removes from a directory holding an unrepresentable
-        // name never adds up to an empty one, and `unreadable` already names
-        // it with the reason it stays.
         unreadable.contains(node)
             || match observation {
-                // A directory this run removes outright is one
-                // `drifted_directory` already found empty, so it goes whether
-                // or not a deeper removal empties it.
                 Observation::Directory => vacated.contains(node) || emptied(node),
                 _ => vacated.contains(node),
             }
@@ -631,12 +619,9 @@ fn directory_in_the_way(
     })
 }
 
-/// What stands beneath `path` that `cleared` does not account for, and whether
-/// anything does. Both rules that refuse a directory name the same thing by
-/// it: a directory still standing because of what it holds is not itself worth
-/// naming, since whatever holds it up is named below it, so the map carries
-/// the leaves. One holding nothing has nothing below it to name, so it is
-/// named here.
+/// What stands beneath `path` that `cleared` does not account for, and
+/// whether anything does. The map carries the leaves: a directory held up by
+/// what it holds is explained by the nodes below it, not named itself.
 fn holding_beneath(
     path: &Utf8Path,
     manifest: &Manifest,
@@ -694,10 +679,9 @@ fn owners_of(manifest: &Manifest, path: &Utf8Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// Whether a manifest key is one the projection may act at: the same
-/// containment contract a desired key passes, re-run against the recorded
-/// side so a forged manifest decides the verdict apply would reach rather
-/// than a removal apply then refuses.
+/// Whether a manifest key is one the projection may act at — the containment
+/// contract a desired key passes, re-run against the recorded side so a
+/// forged manifest is refused here rather than by apply mid-run.
 fn contained(path: &Utf8Path) -> bool {
     contained_normalize(path).is_some_and(|normalized| normalized == *path)
 }
@@ -730,8 +714,7 @@ fn link_refusal(
 ) -> Option<Refusal> {
     match walked_ancestry(path, manifest, observations, vacated, true) {
         Err(refusal) => return Some(refusal),
-        // A write goes down at its action key or nowhere, so a walk that
-        // followed a recorded link out to somewhere else refuses.
+        // A write goes down at its action key or nowhere.
         Ok(Some(landing)) if landing.at != *path => {
             return Some(Refusal::Containment {
                 through: landing.through,
@@ -837,8 +820,8 @@ fn desired_action(
         };
     };
     if *state == PathState::Foreign {
-        // A block owns the region, not the container: an unrecorded regular
-        // file plans a write, and apply's read of the bytes settles the rest.
+        // A block owns the region, not the container, so an unrecorded
+        // regular file plans a write.
         if matches!(entry, Entry::Block { .. })
             && matches!(
                 observation,

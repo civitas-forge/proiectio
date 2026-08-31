@@ -25,7 +25,6 @@ use crate::views::pad;
 pub(crate) struct StateView {
     pub(crate) style: &'static str,
     pub(crate) state: String,
-    /// Spaces aligning the path column.
     pub(crate) state_pad: String,
     pub(crate) path: String,
 }
@@ -36,12 +35,9 @@ pub(crate) struct StatusLines {
     pub(crate) rows: Vec<StateView>,
 }
 
-/// The classification column: the widest word a state the library declares
-/// reads as, which is the least the column is ever wide. A verdict this CLI
-/// has no word for reads as its own name, and a name longer than this widens
-/// the column for every row rather than spilling one path out of line. The
-/// tests drive every state the library declares through `spelling` and check
-/// the word still fits the constant.
+/// The least the classification column is ever wide; an unknown verdict's own
+/// name can widen it. The tests drive every state the library declares
+/// through `spelling` and check the word still fits the constant.
 const STATES: usize = "drifted".len();
 
 /// The style and the word one classification reads as; a verdict this CLI does
@@ -56,10 +52,8 @@ fn spelling(verdict: &str) -> (&'static str, String) {
     }
 }
 
-/// A verdict is a name, or a name carrying fields; a row reads both, the way
-/// `run.rs` reads its own verdicts, so a verdict that ever grows a payload
-/// keeps its line instead of dropping out of the listing. A row stating no
-/// verdict is a row all the same, and reads as the empty name — unknown.
+/// A verdict is a bare name, or a name carrying fields; this reads both, so
+/// a verdict that ever grows a payload keeps its line.
 fn verdict_name(verdict: Option<&JsonValue>) -> &str {
     match verdict {
         Some(JsonValue::String(name)) => name,
@@ -68,7 +62,6 @@ fn verdict_name(verdict: Option<&JsonValue>) -> &str {
     }
 }
 
-/// The lines `status.jinja` prints for one status document.
 pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> StatusLines {
     let Some(rows) = document.get("rows").and_then(JsonValue::as_array) else {
         return StatusLines::default();
@@ -102,20 +95,9 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> StatusLines 
     StatusLines { rows: lines }
 }
 
-/// The columns `--output csv` writes, one row per classified path: the same
-/// header line for every destination, whatever its rows carry.
-///
-/// The verdict cell is the name the printed line reads, not the raw field: a
-/// verdict that ever carried fields would otherwise arrive as a JSON object in
-/// a column every other row spells as a word, and the two outputs would
-/// disagree about the same row. What such a payload said would need a column
-/// of its own.
-///
-/// The row states one thing no column here reads. A status row's facts say
-/// what a path is and who holds it, not which input named it, so `origin` is
-/// null in every status row of every destination; a column for it would
-/// promise what the document never carries. A `write` or `rm` row states it,
-/// and its own projection carries it.
+/// The columns `--output csv` writes, one row per classified path under a
+/// header that does not move. The verdict cell is the variant's bare name;
+/// there is no `origin` column because a status row never carries one.
 pub(crate) fn csv() -> StructuredOutputProjection {
     StructuredOutputProjection::csv(
         CsvProjection::builder("rows")

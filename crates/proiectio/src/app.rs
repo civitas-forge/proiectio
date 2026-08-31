@@ -15,24 +15,17 @@ use crate::exit::Verdict;
 use crate::handlers;
 use crate::views;
 
-/// Whether the invocation carried `--force`.
+/// Whether the invocation carried `--force`, which suppresses the drift hint.
 ///
 /// The hint lines need it and the document cannot carry it: what a run
-/// serializes is the library's own report, and the drift policy is the command
-/// line's, not the report's. So it reaches rendering the way [`Verdict`] does —
-/// a cell this composition root owns, the handler records into, and the `run`
+/// serializes is the library's own report, and the drift policy is the
+/// command line's. So it reaches rendering the way [`Verdict`] does — a cell
+/// this composition root owns, the handler records into, and the `run`
 /// context function reads back.
-///
-/// It suppresses the drift hint rather than rewording it. The hint names the
-/// flag that lifts drift; a reader who passed that flag and was refused anyway
-/// has met the drift no policy lifts, and repeating the flag at them is advice
-/// they have already taken.
 #[derive(Clone, Default)]
 pub(crate) struct Forced(Rc<Cell<bool>>);
 
 impl Forced {
-    /// Records what the command line carried, before the run it describes is
-    /// rendered.
     pub(crate) fn record(&self, forced: bool) {
         self.0.set(forced);
     }
@@ -104,14 +97,8 @@ pub(crate) fn engine() -> MiniJinjaEngine {
     engine
 }
 
-/// How `write` and `rm` present one write pass: the template that lays their
-/// rows out, the projection that writes the same rows as CSV records, and the
-/// stderr channel a stopped run's run-level facts take.
-///
-/// Both commands render one [`views::RunView`], so both are configured here
-/// rather than at each call: a channel added to one of them and forgotten at
-/// the other is a difference no reader of either command's output could
-/// explain.
+/// How `write` and `rm` present one write pass. Both render one
+/// [`views::RunView`], so both are configured here rather than at each call.
 pub(crate) fn run_command<H>(config: CommandConfig<H>) -> CommandConfig<H> {
     config
         .template("run.jinja")
@@ -119,13 +106,9 @@ pub(crate) fn run_command<H>(config: CommandConfig<H>) -> CommandConfig<H> {
         .post_dispatch(stated_on_stderr)
 }
 
-/// Writes what a stopped run's records cannot carry — how far the run got,
-/// what stopped it, and whether the state directory records what it applied —
-/// as warnings, which `main` drains to stderr after the run's own output.
-///
-/// Only for the modes that serialize the document: the template already lays
-/// these sentences out for a reader of the rendered output, and saying them
-/// twice would have that reader looking for two failures.
+/// Pushes a stopped run's run-level facts as warnings, which `main` drains to
+/// stderr — only for the modes that serialize the document; the template
+/// already lays these sentences out for rendered output.
 fn stated_on_stderr(
     matches: &ArgMatches,
     _ctx: &CommandContext,
@@ -139,13 +122,10 @@ fn stated_on_stderr(
     Ok(document)
 }
 
-/// Whether `--output` named a mode that serializes the document rather than
-/// rendering the template.
-///
-/// The mode is the framework's own argument, read back off the parsed command
-/// line because a handler and its hooks are handed no other way to it. The
-/// tests over an aborted run under `--output json` and `--output csv` are what
-/// hold this to the name Standout parses the flag under.
+/// Whether `--output` named a mode that serializes the document. Read back
+/// off the parsed command line because a handler and its hooks are handed no
+/// other way to Standout's own argument; the aborted-run tests under
+/// `--output json`/`csv` hold this to the name Standout parses it under.
 fn serializing(matches: &ArgMatches) -> bool {
     matches
         .try_get_one::<String>(OUTPUT_MODE)

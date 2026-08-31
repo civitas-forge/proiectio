@@ -10,8 +10,6 @@ use crate::{
     Manifest, Origin, PathState, Refusal, RefusalKind, RemovalScope, Stopped,
 };
 
-// A projection over two fixture directories, the state directory outside
-// the destination.
 fn projection(dest: &Fixture, state: &Utf8Path) -> Projection {
     Projection::new(dest.root(), Some(state)).expect("a projection")
 }
@@ -23,9 +21,6 @@ fn desired(tree: &Tree) -> Desired {
 fn owners_of(manifest: &Manifest, path: &str) -> BTreeSet<String> {
     manifest.entries[Utf8Path::new(path)].owners.clone()
 }
-
-// The definition of done: a full begin → plan → apply cycle, with the caller
-// opening nothing.
 
 #[test]
 fn a_run_projects_a_tree_and_records_it() {
@@ -87,8 +82,6 @@ fn beginning_creates_the_state_directory_a_first_run_has_not_got() {
     assert!(run.manifest().entries.is_empty());
 }
 
-// The guard covers the whole run, load included: while one lives, no other
-// writer starts.
 #[test]
 fn a_second_run_meets_lock_held_while_the_first_lives() {
     let dest = Tree::new().materialize();
@@ -102,8 +95,6 @@ fn a_second_run_meets_lock_held_while_the_first_lives() {
         .expect("contender thread")
         .expect_err("the lock is held");
 
-    // Absolute: the operator has to go look at the lock, and the bare name
-    // does not say which state directory holds it.
     match &error {
         Error::LockHeld { path } => assert_eq!(*path, state.path(LOCK_FILE_NAME)),
         other => panic!("expected LockHeld, got {other:?}"),
@@ -127,7 +118,6 @@ fn a_run_that_decided_no_plan_writes_nothing() {
     assert!(report.report.is_empty());
     assert!(report.manifest.entries.is_empty());
     assert_tree(dest.root(), &Tree::new().file("theirs.txt", "not ours"));
-    // `begin` created the lock file; nothing else was written.
     assert_tree(state.root(), &Tree::new().file(LOCK_FILE_NAME, ""));
 }
 
@@ -164,9 +154,6 @@ fn deciding_again_replaces_the_kept_plan() {
     assert_tree(dest.root(), &Tree::new().file("second.txt", "two"));
 }
 
-// The in-dest state directory is created through the destination handle,
-// which has to reach a prefix with directories above it as the ambient
-// create did.
 #[test]
 fn beginning_creates_a_nested_in_dest_state_directory() {
     let dest = Tree::new().materialize();
@@ -180,7 +167,6 @@ fn beginning_creates_a_nested_in_dest_state_directory() {
     run.apply().expect("apply");
 
     assert!(state.join(MANIFEST_FILE_NAME).is_file());
-    // The state subtree itself never classifies.
     assert_eq!(
         projection
             .status()
@@ -192,11 +178,6 @@ fn beginning_creates_a_nested_in_dest_state_directory() {
     );
 }
 
-// A state directory inside the destination is reached through the
-// destination handle, so a prefix component that is a symlink out of the
-// target is refused rather than followed — the handle and the prefix
-// `state_prefix` excludes from classification name one directory or there
-// is no run.
 #[test]
 fn an_in_dest_state_directory_symlinked_out_of_the_target_refuses() {
     let elsewhere = Tree::new().materialize();
@@ -219,7 +200,6 @@ fn an_in_dest_state_directory_symlinked_out_of_the_target_refuses() {
         "got {error:?}"
     );
 
-    // Nothing was written through the link, and the read agrees.
     assert_tree(elsewhere.root(), &Tree::new());
     assert!(
         projection.status().is_err(),
@@ -248,10 +228,6 @@ fn a_removal_run_clears_what_the_owner_holds() {
     assert!(projection.manifest().expect("manifest").entries.is_empty());
 }
 
-// Deciding discards the kept plan before it decides, so a decision that
-// fails leaves the run with nothing to apply rather than with the plan the
-// caller was replacing — which `apply` would otherwise execute in place of
-// the decision that never happened.
 #[test]
 fn a_decision_that_fails_leaves_no_plan_behind() {
     let dest = Tree::new().materialize();
@@ -266,8 +242,6 @@ fn a_decision_that_fails_leaves_no_plan_behind() {
     )
     .expect("first plan");
 
-    // Nesting the destination past the walk's limit fails the observation
-    // every later decision starts from.
     fs::create_dir_all(dest.path(["d"; crate::MAX_WALK_DEPTH + 1].join("/"))).expect("nest");
     let error = run
         .plan(
@@ -284,8 +258,6 @@ fn a_decision_that_fails_leaves_no_plan_behind() {
     assert!(!dest.path("first.txt").exists(), "nothing was projected");
 }
 
-// A removal is decided from the manifest, so its plan has no source tree to
-// name.
 #[test]
 fn a_removal_plan_names_no_source() {
     let dest = Tree::new().materialize();
@@ -299,8 +271,6 @@ fn a_removal_plan_names_no_source() {
     assert!(planned.plan.origins.is_empty());
 }
 
-// The refusals apply raises come from deep inside the walk, so this is what
-// proves the plan's origin reaches them.
 #[test]
 fn a_refusal_raised_by_applying_names_the_plans_origin() {
     let dest = Tree::new().materialize();
@@ -347,7 +317,6 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
         }
         other => panic!("expected Containment, got {other:?}"),
     }
-    // Nothing was applied, so the stop says only what the refusal says.
     assert!(!stopped.applied_anything());
     assert_eq!(
         stopped.to_string(),
@@ -357,8 +326,6 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
     assert_tree(dest.root(), &Tree::new());
 }
 
-// A dry run reports what a real run would fail with: the same aggregated
-// error, off the plan alone.
 #[test]
 fn the_plans_refused_is_the_error_applying_it_raises() {
     let dest = Tree::new().file("theirs.txt", "not ours").materialize();
@@ -391,8 +358,6 @@ fn the_plans_refused_is_the_error_applying_it_raises() {
     );
 }
 
-// The plan a read returns is a report: it says what applying would do and
-// carries no lock, so a run can start while a caller still holds one.
 #[test]
 fn a_plan_from_a_read_takes_no_lock() {
     let dest = Tree::new().materialize();
@@ -413,13 +378,10 @@ fn a_plan_from_a_read_takes_no_lock() {
             .collect::<Vec<_>>(),
         vec!["notes/a.txt"]
     );
-    // No lock file, no state directory: a read creates neither.
     assert_eq!(fs::read_dir(state.root()).expect("read state").count(), 0);
     projection.begin().expect("a read left no guard behind");
 }
 
-// A read returns the manifest its plan was decided against, so the report
-// the pair renders names the owners recorded when the verdicts were decided.
 #[test]
 fn a_read_returns_the_manifest_its_plan_was_decided_against() {
     let dest = Tree::new().materialize();
@@ -479,10 +441,6 @@ fn applying_persists_the_manifest_the_next_run_loads() {
     assert_eq!(next.projection(), &projection);
 }
 
-/// The rule an owner keeps is the library's, not the CLI's: a name that is
-/// empty or nothing but whitespace is refused at every entry point that
-/// decides a plan, so a consumer reaching the crate directly cannot record a
-/// holder no reader of the manifest can see and no removal can spell back.
 #[test]
 fn no_entry_point_that_decides_a_plan_takes_a_name_that_is_not_an_owner() {
     let dest = Tree::new().materialize();
@@ -523,9 +481,6 @@ fn no_entry_point_that_decides_a_plan_takes_a_name_that_is_not_an_owner() {
     assert_eq!(projection.manifest().expect("manifest"), Manifest::new());
 }
 
-/// Deciding discards the kept plan before it reads the owner, so a run whose
-/// name is refused is a run with nothing left to apply — the same state a
-/// decision failing anywhere else leaves it in.
 #[test]
 fn a_name_that_is_not_an_owner_leaves_the_run_with_no_plan() {
     let dest = Tree::new().materialize();
@@ -542,8 +497,6 @@ fn a_name_that_is_not_an_owner_leaves_the_run_with_no_plan() {
     assert!(run.planned().is_none());
 }
 
-/// The name is read before the destination is opened, so the refusal is the
-/// owner's own rather than whatever the filesystem says about the target.
 #[test]
 fn the_name_is_refused_before_the_destination_is_opened() {
     let dest = Tree::new().materialize();

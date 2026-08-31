@@ -10,15 +10,12 @@ use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree, plant};
 use crate::{BlockMarkers, EntryKind, ManifestEntry, Placement};
 
-// Opens the destination handle observe takes, rooted at the fixture.
-// Ambient authority is the test's to spend; the library itself never
-// opens ambient paths.
+// Ambient authority is the test's to spend; the library never opens ambient paths.
 fn dest(fixture: &Fixture) -> Dir {
     Dir::open_ambient_dir(fixture.root(), cap_std::ambient_authority())
         .expect("open fixture root as a Dir")
 }
 
-// A manifest recording the given `(path, kind, hash)` rows under one owner.
 fn manifest_of(rows: &[(&str, EntryKind, String)]) -> Manifest {
     let mut manifest = Manifest::new();
     for (path, kind, hash) in rows {
@@ -69,7 +66,6 @@ fn observes_the_union_of_disk_and_manifest() {
         .symlink("latest", "notes/a.txt")
         .dir("empty");
     let fixture = tree.materialize();
-    // `notes/a.txt` is recorded and on disk; `gone.txt` is recorded and not.
     let manifest = manifest_of(&[
         ("notes/a.txt", EntryKind::File, sha256_hex(b"alpha")),
         ("gone.txt", EntryKind::File, sha256_hex(b"bye")),
@@ -187,7 +183,6 @@ fn symlinked_directory_is_never_entered() {
 
     let paths = observed(&fixture, &Manifest::new());
 
-    // `alias` itself is observed; nothing beneath it is.
     assert!(matches!(
         paths[Utf8Path::new("alias")],
         Observation::Symlink { .. }
@@ -198,11 +193,6 @@ fn symlinked_directory_is_never_entered() {
 
 #[test]
 fn recorded_path_beneath_a_symlinked_ancestor_observes_absent() {
-    // Following `logs` would find `real/x.txt` — exactly what the walk must
-    // never do: a recorded path is only real if every ancestor is a real
-    // directory. Recording the link is not descending it, and the hop it
-    // states — kind, hash and target string — is what lets deciding reach the
-    // verdict apply's own ancestor walk reaches.
     let fixture = Tree::new()
         .file("real/x.txt", "x")
         .symlink("logs", "real")
@@ -226,10 +216,6 @@ fn recorded_path_beneath_a_symlinked_ancestor_observes_absent() {
 
 #[test]
 fn every_hop_on_the_way_to_a_recorded_path_is_observed() {
-    // The walk descends every real directory, so the first node on the way to
-    // a recorded path that is not one is always in the snapshot, however deep
-    // it lies — and so is every node the link resolves to, which the walk
-    // reaches through directories of its own.
     let fixture = Tree::new()
         .file("real/deep/x.txt", "x")
         .symlink("a/b", "../real/deep")
@@ -274,8 +260,6 @@ fn external_target_is_returned_verbatim_and_not_followed() {
         },
     )]
     .into();
-    // The link is a pointer, observed as such — `secret.txt` appears
-    // nowhere, under `out/` or otherwise.
     assert_eq!(paths, expected);
 }
 
@@ -316,19 +300,14 @@ fn non_utf8_entry_name_is_skipped_and_names_its_directory_unreadable() {
     ]
     .into();
     assert_eq!(observations.paths, expected);
-    // No key names the skipped entry, so the directory says the inventory
-    // above is not the whole of what stands in it.
     assert_eq!(
         observations.unreadable,
         BTreeSet::from([Utf8PathBuf::from("scaffolding")])
     );
 }
 
-// Nests `depth` directories under `root` and returns the deepest one's
-// path relative to `root`. `create_dir_all` spells the whole chain in one
-// path, which stays well inside the host's path limit at these depths — the
-// walk itself is bound by no such limit, which is the point of
-// `MAX_WALK_DEPTH`.
+// Nests `depth` directories and returns the deepest one's relative path;
+// the chain stays inside the host's path limit at these depths.
 fn nest(root: &Utf8Path, depth: usize) -> Utf8PathBuf {
     let rel = Utf8PathBuf::from(vec!["d"; depth].join("/"));
     fs::create_dir_all(root.join(&rel)).expect("nest directories");
@@ -337,10 +316,7 @@ fn nest(root: &Utf8Path, depth: usize) -> Utf8PathBuf {
 
 #[test]
 fn a_destination_at_the_depth_limit_observes_and_one_past_it_is_named() {
-    // The walk spends a stack frame per level and the destination picks the
-    // depth — foreign content and mount loops included — so a destination
-    // nested past the limit has to come back as an error a caller can
-    // report, not as a stack the walk runs off the end of.
+    // The walk spends a stack frame per level; past the limit it must error, not overflow.
     let fixture = Tree::new().materialize();
     let deepest = nest(fixture.root(), MAX_WALK_DEPTH);
     fs::write(fixture.root().join(&deepest).join("marker"), "deep").expect("write a deep file");
@@ -373,8 +349,6 @@ fn non_utf8_link_target_observes_as_hash_only() {
 
     let paths = observed(&fixture, &Manifest::new());
 
-    // The hash covers the raw bytes, which no recorded UTF-8 target string
-    // can hash to — so a recorded link edited this way compares as drifted.
     let expected: BTreeMap<Utf8PathBuf, Observation> = [(
         "weird".into(),
         Observation::Symlink {
@@ -417,8 +391,6 @@ fn observe_writes_nothing() {
         &manifest_of(&[("gone.txt", EntryKind::File, sha256_hex(b"bye"))]),
     );
 
-    // The zero-writes discipline: after a full observation the tree is
-    // byte-for-byte what was declared — nothing created, changed, or removed.
     assert_tree(fixture.root(), &tree);
 }
 
@@ -460,8 +432,6 @@ fn a_recorded_block_observes_its_region_and_not_the_container() {
 
 #[test]
 fn an_edit_outside_the_region_leaves_its_hash_alone() {
-    // The whole point: the container's other bytes enter no comparison, so
-    // the region hashes the same before and after the author's edit.
     let before = Tree::new()
         .file("rc", "author\n# proiectio\nmanaged\n")
         .materialize();
@@ -498,8 +468,6 @@ fn a_container_with_no_marker_line_observes_no_region() {
 
 #[test]
 fn newline_termination_is_about_the_author_side_alone() {
-    // Under `Prepend` the author's side follows the region, so whether it
-    // ends with a newline is a fact about the container's last bytes.
     let terminated = Tree::new()
         .file("rc", "managed\n# proiectio\nauthor\n")
         .materialize();
@@ -523,9 +491,6 @@ fn newline_termination_is_about_the_author_side_alone() {
 
 #[test]
 fn an_unrecorded_container_observes_as_an_ordinary_file() {
-    // Observation takes the marker off the manifest, so a container nothing
-    // records is a file like any other — foreignness is decided later, over
-    // the region.
     let contents = "author\n# proiectio\nmanaged\n";
     let fixture = Tree::new().file("rc", contents).materialize();
 
@@ -549,8 +514,6 @@ fn a_container_swapped_for_another_kind_observes_as_that_kind() {
         .materialize();
     let as_dir = Tree::new().dir("rc").materialize();
 
-    // A symlink is observed as itself and never opened through — the read
-    // refuses to follow a final link rather than resolving it.
     assert_eq!(
         observed(&as_link, &manifest)[Utf8Path::new("rc")],
         Observation::Symlink {
@@ -566,10 +529,6 @@ fn a_container_swapped_for_another_kind_observes_as_that_kind() {
 
 #[test]
 fn a_region_reached_through_a_recorded_link_is_stated_under_its_own_key() {
-    // The container the record names sits at `real/rc`, which the walk reads
-    // as an ordinary file: nothing records a block there. The region is read
-    // out of that container — the one applying strips it from — and stated
-    // under `logs/rc`, whose marker and placement parsed it.
     let contents = "author\n# proiectio\nmanaged\n";
     let fixture = Tree::new()
         .file("real/rc", contents)
@@ -597,8 +556,6 @@ fn a_region_reached_through_a_recorded_link_is_stated_under_its_own_key() {
             desired: None,
         }
     );
-    // The container is nobody's node: no record stands at `real/rc`, so it
-    // reads as the ordinary file the walk found.
     assert_eq!(
         observations[Utf8Path::new("real/rc")],
         Observation::File {
@@ -610,8 +567,6 @@ fn a_region_reached_through_a_recorded_link_is_stated_under_its_own_key() {
 
 #[test]
 fn a_region_beneath_a_hand_made_link_is_left_where_the_walk_read_it() {
-    // Nothing records the link, so no walk may follow it: the container stays
-    // an ordinary file, which is the verdict deciding refuses the record on.
     let contents = "author\n# proiectio\nmanaged\n";
     let fixture = Tree::new()
         .file("real/rc", contents)
@@ -645,11 +600,6 @@ fn recorded_link(manifest: &mut Manifest, at: &str, target: &str) {
 
 #[test]
 fn a_relocated_region_reads_the_desired_text_under_its_own_key() {
-    // The desired marker is spelled against `logs/rc`, the key the caller
-    // named, and the region it would splice is read out of the container that
-    // key comes out at. Asked for under the landing instead, the desired text
-    // went unstated and the container's author side — which already carries
-    // the marker this desired tree migrates to — read as clean.
     let contents = "author\n# renamed\n# proiectio\nmanaged\n";
     let fixture = Tree::new()
         .file("real/rc", contents)
@@ -681,10 +631,6 @@ fn a_relocated_region_reads_the_desired_text_under_its_own_key() {
 
 #[test]
 fn two_records_reaching_one_container_each_state_their_own_region() {
-    // `a/rc` appends and `b/rc` prepends, so the one file holds a region for
-    // each. Stated at the landing they shared, the second parse replaced the
-    // first and whichever record lost read drifted against the survivor's
-    // body.
     let contents = "beta\n# beta\nauthor\n# alpha\nalpha\n";
     let fixture = Tree::new()
         .file("real/rc", contents)

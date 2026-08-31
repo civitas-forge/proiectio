@@ -183,8 +183,6 @@ fn a_report_carries_one_verdict_per_planned_path() {
     );
 }
 
-// The owners are the manifest's, so a row names every owner holding the
-// path, not just the one the plan would record.
 #[test]
 fn write_and_overwrite_rows_take_their_facts_from_the_entry() {
     let report = one_of_each().report(&recorded());
@@ -201,7 +199,6 @@ fn write_and_overwrite_rows_take_their_facts_from_the_entry() {
     );
 }
 
-// A path the manifest does not record is the one case that reports no owner.
 #[test]
 fn an_unrecorded_path_reports_no_owners() {
     let report = one_of_each().report(&recorded());
@@ -228,8 +225,6 @@ fn a_planned_symlink_carries_its_target() {
     );
 }
 
-// A skip states what the desired entry says, so a skipped link names its
-// target as a written one does: the row reads the same on both runs.
 #[test]
 fn skip_rows_take_their_facts_from_the_desired_entry() {
     let report = one_of_each().report(&recorded());
@@ -260,9 +255,6 @@ fn a_remove_row_takes_its_facts_from_the_expected_signature() {
     );
 }
 
-// A release writes nothing, so its row states what the manifest records: the
-// shape and the owners an apply report gives a released path, including the
-// owner the release drops.
 #[test]
 fn a_release_row_takes_its_facts_from_the_manifest_entry() {
     let report = one_of_each().report(&recorded());
@@ -277,7 +269,6 @@ fn a_release_row_takes_its_facts_from_the_manifest_entry() {
     );
 }
 
-// Nothing on disk is expected at this path, so there is nothing to state.
 #[test]
 fn a_row_without_an_entry_or_a_signature_carries_no_facts() {
     let report = one_of_each().report(&recorded());
@@ -285,8 +276,6 @@ fn a_row_without_an_entry_or_a_signature_carries_no_facts() {
     assert_eq!(facts(&report, "gone.txt"), None);
 }
 
-// A refusal decides no node, so its row states the source that named the
-// path — what the refusal diagnostic names — and no shape.
 #[test]
 fn a_refused_row_carries_the_source_that_named_the_path() {
     let report = one_of_each().report(&recorded());
@@ -377,8 +366,6 @@ fn a_plan_that_refuses_nothing_is_not_refused() {
     );
 }
 
-// Several kinds refused, one error: the least kind by declaration, carrying
-// every path refused for it.
 #[test]
 fn refused_reduces_the_plans_refusals_to_one_kind() {
     let mut plan = one_of_each();
@@ -419,8 +406,6 @@ fn external_target_policy_defaults_to_refuse() {
 
 #[test]
 fn plan_options_default_to_the_strict_projection() {
-    // Both policies lift a rule, so the default has to refuse both: a
-    // caller that names neither gets the strict projection.
     assert_eq!(
         PlanOptions::default(),
         PlanOptions {

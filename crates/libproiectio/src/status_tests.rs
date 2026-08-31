@@ -11,8 +11,6 @@ fn projection(dest: &Utf8Path, state: &Utf8Path) -> Projection {
     Projection::new(dest, Some(state)).expect("a projection")
 }
 
-// One full plan → apply pass, so a status test has something recorded to
-// classify.
 fn project(projection: &Projection, owner: &str, desired: BTreeMap<Utf8PathBuf, Entry>) {
     let mut run = projection.begin().expect("begin");
     run.plan(
@@ -40,8 +38,6 @@ fn a_destination_with_no_manifest_reports_nothing() {
     let dest = Tree::new().materialize();
     let state = Tree::new().materialize();
 
-    // The state directory exists and holds no manifest file: nothing has
-    // been projected yet.
     assert_eq!(fs::read_dir(state.root()).expect("read state").count(), 0);
     assert_eq!(
         projection(dest.root(), state.root())
@@ -140,9 +136,6 @@ fn a_recorded_row_carries_the_manifest_entry_and_a_foreign_one_carries_nothing()
     assert_eq!(facts(&report, "theirs.txt"), &None);
 }
 
-/// The target is the one on disk, not the one the manifest was written from:
-/// a link edited to point elsewhere reads as drifted and states where it now
-/// points.
 #[test]
 fn a_drifted_link_states_the_target_it_now_carries() {
     let dest = Tree::new().materialize();
@@ -178,8 +171,6 @@ fn a_drifted_link_states_the_target_it_now_carries() {
     );
 }
 
-/// Nothing on disk names a target for a recorded link the walk cannot read one
-/// at: deleted, or overwritten by a file.
 #[test]
 fn a_link_no_longer_on_disk_names_no_target() {
     let dest = Tree::new().materialize();
@@ -213,8 +204,6 @@ fn a_link_no_longer_on_disk_names_no_target() {
     }
 }
 
-/// A target the walk cannot spell as UTF-8 is no target the row can state, and
-/// the row says so rather than mangling the bytes.
 #[test]
 fn a_link_whose_on_disk_target_is_not_utf8_names_no_target() {
     use std::os::unix::ffi::OsStrExt;
@@ -410,8 +399,6 @@ fn a_report_is_clean_only_where_every_row_is() {
     }
 }
 
-/// A report of no rows is clean: an empty manifest and an empty destination
-/// agree, and nothing in either says whether anything was ever projected.
 #[test]
 fn a_report_of_no_rows_is_clean() {
     assert!(Status::default().is_clean());

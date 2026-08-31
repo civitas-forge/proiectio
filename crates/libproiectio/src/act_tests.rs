@@ -15,21 +15,16 @@ use crate::{
     observe,
 };
 
-// Opens a capability handle at a fixture root. Ambient authority is the
-// test's to spend; the library itself never opens ambient paths.
+// Ambient authority is the test's to spend; the library never opens ambient paths.
 fn dir_at(root: &Utf8Path) -> Dir {
     Dir::open_ambient_dir(root, cap_std::ambient_authority()).expect("open fixture root as a Dir")
 }
 
-// A fresh destination and a fresh state directory, both empty.
 fn fixtures() -> (Fixture, Fixture) {
     (Tree::new().materialize(), Tree::new().materialize())
 }
 
-// The observe → decide half of a run: the manifest as loaded from `state`
-// and the plan decided against it — split out so tests can mutate the disk
-// in the plan-to-apply gap. `policy` rides the default (refusing)
-// external-target policy; [`plan_for_with`] takes the options whole.
+// Observe → decide split out so tests can mutate the disk in the plan-to-apply gap.
 fn plan_for(
     dest: &Fixture,
     state: &Fixture,
@@ -49,7 +44,6 @@ fn plan_for(
     )
 }
 
-// [`plan_for`] under options the test chooses whole.
 fn plan_for_with(
     dest: &Fixture,
     state: &Fixture,
@@ -67,8 +61,6 @@ fn plan_for_with(
     (manifest, plan)
 }
 
-// [`plan_for`] under an origin the test names, for the refusals that have
-// to say where the offending value came from.
 fn plan_from(
     dest: &Fixture,
     state: &Fixture,
@@ -84,9 +76,7 @@ fn plan_from(
     (manifest, plan)
 }
 
-// Applies a plan against the fixtures, keeping the error a run that stopped
-// stopped with. Tests weighing what such a run had already applied, or a run
-// the state directory stopped, take the whole stop from [`stopping`].
+// Applies a plan, keeping the error a stopped run stopped with.
 fn apply_at(
     dest: &Fixture,
     state: &Fixture,
@@ -95,15 +85,10 @@ fn apply_at(
 ) -> Result<ApplyReport> {
     stopping(dest, state, manifest, plan).map_err(|aborted| match aborted.stopped {
         Stopped::Applying(error) => error,
-        // The fixtures hand every run a writable state directory, so only an
-        // action stops one here; a stop naming the record would be lost by an
-        // error alone.
         stopped => panic!("expected a stop at an action, got {stopped:?}"),
     })
 }
 
-// The same, keeping the whole stop: the error, and the rows the run applied
-// before it met that error.
 fn stopping(
     dest: &Fixture,
     state: &Fixture,
@@ -118,12 +103,10 @@ fn stopping(
     )
 }
 
-// The stop a run that cannot finish leaves.
 fn stopping_at(dest: &Fixture, state: &Fixture, manifest: &Manifest, plan: &Plan) -> Box<Aborted> {
     stopping(dest, state, manifest, plan).expect_err("a run that stops part-way")
 }
 
-// One full observe → decide → apply run.
 fn pipeline(
     dest: &Fixture,
     state: &Fixture,
@@ -135,7 +118,6 @@ fn pipeline(
     apply_at(dest, state, &manifest, &plan)
 }
 
-// [`pipeline`] under options the test chooses whole.
 fn pipeline_with(
     dest: &Fixture,
     state: &Fixture,
@@ -147,12 +129,10 @@ fn pipeline_with(
     apply_at(dest, state, &manifest, &plan)
 }
 
-// The manifest as persisted in the state fixture.
 fn persisted(state: &Fixture) -> Manifest {
     load_manifest(&state_at(state.root())).expect("load persisted manifest")
 }
 
-// A hand-built manifest entry under the given owners.
 fn recorded(kind: EntryKind, hash: String, owners: &[&str]) -> ManifestEntry {
     ManifestEntry {
         kind,
@@ -162,8 +142,6 @@ fn recorded(kind: EntryKind, hash: String, owners: &[&str]) -> ManifestEntry {
     }
 }
 
-// The report's verdicts alone, for the tests that assert what a run did
-// rather than what it recorded.
 fn verdicts(report: &ApplyReport) -> BTreeMap<Utf8PathBuf, ApplyOutcome> {
     report
         .report
@@ -173,8 +151,6 @@ fn verdicts(report: &ApplyReport) -> BTreeMap<Utf8PathBuf, ApplyOutcome> {
         .collect()
 }
 
-// The facts every row of a report carries, whatever its verdict type: what
-// a plan's rows and an apply's rows are compared on.
 fn stated_facts<V>(
     rows: &BTreeMap<Utf8PathBuf, Row<V>>,
 ) -> BTreeMap<Utf8PathBuf, Option<PathFacts>> {
@@ -183,7 +159,6 @@ fn stated_facts<V>(
         .collect()
 }
 
-// The facts a report carries for one path.
 fn facts_at<'a>(report: &'a ApplyReport, path: &str) -> &'a PathFacts {
     report.report.rows[Utf8Path::new(path)]
         .facts
@@ -191,7 +166,6 @@ fn facts_at<'a>(report: &'a ApplyReport, path: &str) -> &'a PathFacts {
         .expect("the row carries facts")
 }
 
-// The names in a fixture directory, sorted.
 fn names_in(fixture: &Fixture) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(fixture.root())
         .expect("read fixture dir")
@@ -231,8 +205,6 @@ fn projects_a_fresh_tree_and_persists_the_manifest() {
         facts_at(&report, "notes/a.txt").shape,
         Some(PathShape::File { executable: false })
     );
-    // The report's manifest is the persisted one, atomically written with
-    // no tempfile left beside it.
     assert_eq!(persisted(&state), report.manifest);
     assert_eq!(names_in(&state), vec![MANIFEST_FILE_NAME.to_owned()]);
     let entry = &report.manifest.entries[Utf8Path::new("bin/run")];
@@ -293,11 +265,8 @@ fn a_mid_run_failure_persists_the_applied_entries_and_a_rerun_heals() {
     let error = pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse)
         .expect_err("the read-only directory fails the middle write");
 
-    // An OS failure, not a refusal — and the destination holds exactly the
-    // one file applied before it: no z.txt, no tempfile litter.
     assert!(!error.is_refusal(), "expected an I/O error, got {error:?}");
     assert_tree(dest.root(), &Tree::new().file("a.txt", "alpha").dir("ro"));
-    // The manifest records reality: a.txt applied, nothing else.
     let manifest = persisted(&state);
     assert_eq!(
         manifest.entries.keys().collect::<Vec<_>>(),
@@ -338,7 +307,6 @@ fn drift_in_the_plan_to_apply_gap_is_refused_with_the_path() {
         }
         other => panic!("expected Drift, got {other:?}"),
     }
-    // The edit survives, and nothing else was written or littered.
     assert_tree(dest.root(), &Tree::new().file("m.txt", "tampered"));
     assert_eq!(persisted(&state), manifest);
 }
@@ -357,9 +325,6 @@ fn an_unrecorded_symlinked_ancestor_is_refused() {
             .expect_err("no write through an unowned link");
 
         match error {
-            // The link, not the key: `logs/x.txt` is spelled entirely of
-            // ordinary components, so a message that only said "containment"
-            // would read as an accusation against the spelling.
             Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
                 assert_eq!(paths_of(&refused), BTreeSet::from(["logs/x.txt".into()]));
                 assert_eq!(
@@ -377,9 +342,6 @@ fn an_unrecorded_symlinked_ancestor_is_refused() {
     }
 }
 
-// The same fact met on the other side of the plan: a directory the plan
-// walked through, replaced by a link before apply reached it. The walk knows
-// which component it met the link at, and says so.
 #[test]
 fn a_directory_swapped_for_a_link_after_the_plan_names_the_link_it_met() {
     let (dest, state) = fixtures();
@@ -417,8 +379,6 @@ fn a_directory_swapped_for_a_link_after_the_plan_names_the_link_it_met() {
     );
 }
 
-// A leftover tempfile fails this test: assert_tree reports any entry it
-// was not given.
 #[test]
 fn foreign_files_are_never_touched() {
     let (dest, state) = fixtures();
@@ -437,8 +397,6 @@ fn foreign_files_are_never_touched() {
     )
     .expect("apply");
 
-    // The union, exactly: foreign files byte-identical, ours placed, no
-    // litter anywhere.
     assert_tree(
         dest.root(),
         &Tree::new()
@@ -447,8 +405,6 @@ fn foreign_files_are_never_touched() {
             .file("data/mine.txt", "projected"),
     );
 
-    // Removing the projection leaves the foreign files and their
-    // directories alone.
     pipeline(&dest, &state, "own", &BTreeMap::new(), DriftPolicy::Refuse).expect("removal");
     assert_tree(dest.root(), &foreign);
 }
@@ -486,8 +442,6 @@ fn pruning_keeps_directories_still_holding_anything() {
     assert_tree(dest.root(), &Tree::new().file("a/b/theirs.txt", "foreign"));
 }
 
-// One observe → [`decide_removal`] → apply run over `scope`: the whole
-// owner, or the paths named.
 fn removal_pipeline(
     dest: &Fixture,
     state: &Fixture,
@@ -499,8 +453,6 @@ fn removal_pipeline(
     apply_at(dest, state, &manifest, &plan)
 }
 
-// The observe → decide half of a removal, split out so tests can read the
-// plan a dry run would print before applying the same plan.
 fn removal_plan_for(
     dest: &Fixture,
     state: &Fixture,
@@ -546,14 +498,12 @@ fn removing_a_drifted_file_refuses_with_the_path() {
         &error,
         Error::Refused(refused) if refused.kind() == RefusalKind::Drift && paths_of(refused) == BTreeSet::from([Utf8PathBuf::from("a/b.txt")])
     ));
-    // The refusal is up front: nothing was removed, the manifest is whole.
     assert_tree(dest.root(), &edited);
     assert_eq!(
         persisted(&state).entries.keys().collect::<Vec<_>>(),
         vec![Utf8Path::new("a/b.txt"), Utf8Path::new("c.txt")]
     );
 
-    // The same removal under --force takes the edited file with it.
     removal_pipeline(
         &dest,
         &state,
@@ -606,10 +556,6 @@ fn removal_prunes_the_dirs_a_hand_deleted_path_left_empty() {
     )
     .expect("removal");
 
-    // The record is dropped and nothing was unlinked, so the row says
-    // `Forgot` rather than claiming a removal; the directories the path
-    // held open go all the same, leaving the destination as the write
-    // found it.
     assert_eq!(
         verdicts(&report),
         BTreeMap::from([("only/deep/file.txt".into(), ApplyOutcome::Forgot)])
@@ -634,10 +580,6 @@ fn removal_prunes_the_dirs_left_standing_above_a_hand_deleted_one() {
     )
     .expect("removal");
 
-    // The hand deletion took the walk's own ancestry with it, so the
-    // removal has no resolved location to prune upwards from. `only/` is
-    // empty all the same, and the destination the write found had no such
-    // directory.
     assert_eq!(
         verdicts(&report),
         BTreeMap::from([("only/deep/file.txt".into(), ApplyOutcome::Forgot)])
@@ -670,17 +612,12 @@ fn a_named_path_the_owner_does_not_hold_is_reported_and_nothing_else() {
             ("typo.txt".into(), ApplyOutcome::NotRecorded),
         ])
     );
-    // Naming a path is not a licence to touch it: the foreign file the
-    // manifest never recorded is still there, byte for byte.
     assert_tree(dest.root(), &Tree::new().file("foreign.txt", "theirs"));
     assert!(persisted(&state).entries.is_empty());
 }
 
 // --- a directory standing where a file or a link belongs ---
 
-// The mirror the projection has always managed: a recorded file the next tree
-// wants as a directory. It reconciles because the file is recorded and the
-// directories above the new path are implied.
 #[test]
 fn a_recorded_file_becomes_a_directory_in_one_run() {
     let (dest, state) = fixtures();
@@ -694,9 +631,6 @@ fn a_recorded_file_becomes_a_directory_in_one_run() {
     assert_tree(dest.root(), &nested);
 }
 
-// The other direction, which used to refuse as foreign: the directory is the
-// projection's own, its only child is orphaned by this same plan, and the run
-// removes, prunes, and writes without a force in sight.
 #[test]
 fn a_directory_the_projection_wrote_becomes_a_file_in_one_run() {
     let (dest, state) = fixtures();
@@ -721,9 +655,6 @@ fn a_directory_the_projection_wrote_becomes_a_file_in_one_run() {
     );
 }
 
-// The record standing for the directory was deleted by hand, so nothing is
-// unlinked — but forgetting it still prunes the ancestry it held open, which
-// is what frees the location for the write.
 #[test]
 fn a_directory_left_empty_by_a_hand_deletion_becomes_the_desired_file() {
     let (dest, state) = fixtures();
@@ -767,16 +698,12 @@ fn a_node_nothing_records_holds_the_directory_and_the_run_names_it() {
         );
         assert!(error.to_string().contains("build.sh/notes.md"), "{error}");
     }
-    // Refused whole: the orphan the same plan would have removed is still
-    // where the projection wrote it.
     assert_tree(
         dest.root(),
         &nested.clone().file("build.sh/notes.md", "mine"),
     );
 }
 
-// The empty directory nested in the projection's own scaffolding: pruning
-// leaves it standing, so planning refuses rather than meeting it mid-run.
 #[test]
 fn an_empty_directory_nested_in_the_scaffolding_holds_it() {
     let (dest, state) = fixtures();
@@ -805,10 +732,6 @@ fn an_empty_directory_nested_in_the_scaffolding_holds_it() {
     assert_tree(dest.root(), &nested.clone().dir("build.sh/scratch"));
 }
 
-// A name the walk cannot represent is one no plan may reason about: pruning
-// would keep the directory, the write would meet it after the removal landed,
-// and the manifest would be saved having forgotten a file still on disk. So
-// the refusal comes first and nothing moves.
 #[test]
 fn a_name_the_walk_cannot_read_holds_the_directory_and_nothing_is_written() {
     let (dest, state) = fixtures();
@@ -838,8 +761,6 @@ fn a_name_the_walk_cannot_read_holds_the_directory_and_nothing_is_written() {
         assert!(error.to_string().contains("not UTF-8"), "{error}");
     }
 
-    // Neither side moved: the orphan the plan would have removed is still on
-    // disk, and the manifest still records it.
     assert_eq!(
         fs::read_to_string(dest.path("build.sh/main.sh")).expect("the orphan is still there"),
         "#!/bin/sh\n"
@@ -850,9 +771,6 @@ fn a_name_the_walk_cannot_read_holds_the_directory_and_nothing_is_written() {
     );
 }
 
-// A recorded path replaced by hand with an empty directory: no signature
-// describes it, so forcing re-checks it by removing it and writes in its
-// place.
 #[test]
 fn a_recorded_path_drifted_to_an_empty_directory_is_forced_over() {
     let (dest, state) = fixtures();
@@ -887,18 +805,11 @@ fn a_recorded_path_drifted_to_an_empty_directory_is_forced_over() {
     assert_tree(dest.root(), &tree);
 }
 
-// The `rmdir` half of an `OverwriteDirectory` lands in the removal pass and
-// the write half in the write pass, so an action failing between them ends a
-// run with the directory gone. What the run then states about that path is
-// what the next run has to work from, so the removal is recorded where it
-// lands rather than at the end.
 #[test]
 fn a_directory_overwrite_interrupted_before_its_write_states_the_removal() {
     let (dest, state) = fixtures();
     let tree = Tree::new().file("b.txt", "projected\n").file("z", "one\n");
     pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
-    // `z` drifts into an empty directory and `b.txt` is edited, so forcing
-    // plans `OverwriteDirectory` at `z` and `Overwrite` at `b.txt`.
     fs::remove_file(dest.path("z")).expect("remove the file");
     fs::create_dir(dest.path("z")).expect("put a directory there");
     fs::write(dest.path("b.txt"), "edited\n").expect("edit in place");
@@ -911,9 +822,7 @@ fn a_directory_overwrite_interrupted_before_its_write_states_the_removal() {
         &next.entries(),
         DriftPolicy::Overwrite,
     );
-    // The gap: `b.txt` changes again, so its re-check fails. `b.txt` sorts
-    // before `z`, so the write pass gives up before `z`'s write — after the
-    // removal pass already took `z`'s directory.
+    // The gap: `b.txt` changes again, failing its re-check after the removal pass took `z`.
     fs::write(dest.path("b.txt"), "tampered\n").expect("tamper in the gap");
 
     let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the re-check refuses");
@@ -922,16 +831,12 @@ fn a_directory_overwrite_interrupted_before_its_write_states_the_removal() {
         "{error}"
     );
 
-    // The directory is gone whatever the run says, so the run must say so:
-    // the record that stood for it is dropped, which is what the removal did.
     assert!(!dest.path("z").exists(), "the directory was removed");
     assert_eq!(
         persisted(&state).entries.keys().collect::<Vec<_>>(),
         [Utf8Path::new("b.txt")]
     );
 
-    // And the state it left reconciles: nothing records `z`, nothing stands
-    // there, so the next run writes it as the fresh path it now is.
     fs::write(dest.path("b.txt"), "wanted\n").expect("settle the drift by hand");
     let report = pipeline(&dest, &state, "own", &next.entries(), DriftPolicy::Refuse)
         .expect("the next run reconciles");
@@ -945,10 +850,6 @@ fn a_directory_overwrite_interrupted_before_its_write_states_the_removal() {
     assert_tree(dest.root(), &next);
 }
 
-// The same interruption one directory down. Removing the drifted directory
-// empties the directory above it, which nothing records once the removal is
-// recorded, so the run prunes it rather than leaving an empty directory of
-// its own making that the next run would meet as somebody else's.
 #[test]
 fn a_directory_overwrite_interrupted_before_its_write_leaves_no_empty_ancestor() {
     let (dest, state) = fixtures();
@@ -974,14 +875,12 @@ fn a_directory_overwrite_interrupted_before_its_write_leaves_no_empty_ancestor()
 
     apply_at(&dest, &state, &manifest, &plan).expect_err("the re-check refuses");
 
-    // `only` held nothing but the directory that was removed, so it goes too.
     assert!(!dest.path("only").exists(), "no empty ancestor is left");
     assert_eq!(
         persisted(&state).entries.keys().collect::<Vec<_>>(),
         [Utf8Path::new("b.txt")]
     );
 
-    // The write recreates the ancestry it needs, so the next run reconciles.
     fs::write(dest.path("b.txt"), "wanted\n").expect("settle the drift by hand");
     pipeline(&dest, &state, "own", &next.entries(), DriftPolicy::Refuse)
         .expect("the next run reconciles");
@@ -1009,14 +908,10 @@ fn a_removal_clears_a_path_drifted_to_an_empty_directory_under_force() {
         verdicts(&report),
         BTreeMap::from([("only/g.txt".into(), ApplyOutcome::Removed)])
     );
-    // The directory above it is pruned as any removal's ancestry is.
     assert_tree(dest.root(), &Tree::new());
     assert!(persisted(&state).entries.is_empty());
 }
 
-// What a drifted directory holds was never this projection's, so `--force`
-// reaches none of it, and the message says so rather than sending the caller
-// back for another flag.
 #[test]
 fn a_path_drifted_to_a_directory_holding_anything_refuses_however_it_is_run() {
     let (dest, state) = fixtures();
@@ -1052,11 +947,6 @@ fn a_path_drifted_to_a_directory_holding_anything_refuses_however_it_is_run() {
     assert_tree(dest.root(), &Tree::new().file("g.txt/note.md", "theirs"));
 }
 
-// The no-alias rule is what lets a removal prune from its action key when
-// the walk dies on missing ancestry: no manifest this library writes holds a
-// recorded link above a recorded key, so the ancestry above a removal is
-// physical and the key names it. Both orders that would build that shape
-// refuse instead.
 #[test]
 fn no_write_records_a_key_beneath_an_owned_link() {
     let linked = Tree::new().symlink("logs", "real/missing");
@@ -1083,10 +973,6 @@ fn no_write_records_a_key_beneath_an_owned_link() {
         "{error}"
     );
 
-    // The other order, where the link would have to go down over the
-    // directory a recorded key stands in. Clearing that directory would
-    // orphan the record beneath it, which the refusal names; forcing lifts
-    // the drift policy, not this.
     let (dest, state) = fixtures();
     pipeline(
         &dest,
@@ -1160,11 +1046,6 @@ fn a_removal_states_the_same_facts_whether_it_is_planned_or_applied() {
             ("typo.txt".into(), ApplyOutcome::NotRecorded),
         ])
     );
-    // The rows a dry run prints state what the rows of the run itself state,
-    // path for path: a caller diffing one report against the other sees the
-    // verdicts change and nothing else. A row saying the owner does not hold
-    // the path still names whoever does, and one saying the record was
-    // dropped still names the shape it recorded.
     assert_eq!(
         stated_facts(&planned.rows),
         stated_facts(&applied.report.rows)
@@ -1202,7 +1083,6 @@ fn a_subset_removal_clears_the_named_paths_and_leaves_the_rest() {
         verdicts(&report),
         BTreeMap::from([("a/b/gone.txt".into(), ApplyOutcome::Removed)])
     );
-    // The emptied `a/b` is pruned; `a` still holds kept.txt and survives.
     assert_tree(
         dest.root(),
         &Tree::new()
@@ -1234,7 +1114,6 @@ fn a_subset_removal_refuses_a_path_that_violates_containment() {
         &error,
         Error::Refused(refused) if refused.kind() == RefusalKind::Containment && paths_of(refused) == BTreeSet::from([Utf8PathBuf::from("../escape")])
     ));
-    // Up front, so the admitted path in the same request is untouched.
     assert_tree(dest.root(), &tree);
 }
 
@@ -1306,7 +1185,6 @@ fn removing_a_recorded_symlink_unlinks_it_and_leaves_the_target() {
         verdicts(&report),
         BTreeMap::from([("latest".into(), ApplyOutcome::Removed)])
     );
-    // A removal reports the record it erased.
     assert_eq!(
         facts_at(&report, "latest"),
         &PathFacts {
@@ -1334,13 +1212,11 @@ fn a_skip_records_the_joining_owner_and_release_drops_it() {
         report.manifest.entries[Utf8Path::new("shared.txt")].owners,
         BTreeSet::from(["one".to_owned(), "two".to_owned()])
     );
-    // The row's owners are the entry as it stands after the join.
     assert_eq!(
         facts_at(&report, "shared.txt").owners,
         BTreeSet::from(["one".to_owned(), "two".to_owned()])
     );
 
-    // Owner two departs: released, disk untouched, owner one still holds.
     let report =
         pipeline(&dest, &state, "two", &BTreeMap::new(), DriftPolicy::Refuse).expect("release");
     assert_eq!(
@@ -1351,14 +1227,12 @@ fn a_skip_records_the_joining_owner_and_release_drops_it() {
         report.manifest.entries[Utf8Path::new("shared.txt")].owners,
         BTreeSet::from(["one".to_owned()])
     );
-    // A release reports the entry as it was, this owner still on it.
     assert_eq!(
         facts_at(&report, "shared.txt").owners,
         BTreeSet::from(["one".to_owned(), "two".to_owned()])
     );
     assert_tree(dest.root(), &tree);
 
-    // The last owner out removes the file.
     pipeline(&dest, &state, "one", &BTreeMap::new(), DriftPolicy::Refuse).expect("removal");
     assert_tree(dest.root(), &Tree::new());
 }
@@ -1388,7 +1262,6 @@ fn a_plan_carrying_refusals_fails_up_front_and_writes_nothing() {
         }
         other => panic!("expected Drift, got {other:?}"),
     }
-    // Up front means up front: the writable half of the plan did not run.
     assert_tree(dest.root(), &Tree::new().file("keep.txt", "edited"));
     assert_eq!(
         persisted(&state).entries.keys().collect::<Vec<_>>(),
@@ -1414,10 +1287,6 @@ fn a_write_target_appearing_in_the_gap_refuses_as_foreign() {
     assert_tree(dest.root(), &Tree::new().file("a.txt", "squatter"));
 }
 
-// A drop is not an action, so apply performs nothing for it and records
-// nothing in the manifest. It rides the report beside the rows rather than
-// among them, which is what leaves a run whose only news is a dropped member
-// with something to say.
 #[test]
 fn applying_a_plan_carries_its_drops_onto_the_report() {
     let (dest, state) = fixtures();
@@ -1445,10 +1314,6 @@ fn applying_a_plan_carries_its_drops_onto_the_report() {
     assert!(applied.manifest.entries.is_empty());
 }
 
-// A plan carrying two kinds of refusal reports the least `RefusalKind`;
-// `refusal_tests` pins the whole order, this pins that applying goes
-// through it. The drifted path sorts first, so map order
-// is not what decides.
 #[test]
 fn applying_a_plan_with_two_refusal_kinds_reports_the_one_precedence_ranks_first() {
     let (dest, state) = fixtures();
@@ -1533,13 +1398,6 @@ fn a_hand_built_plan_with_unnormalized_keys_refuses_containment() {
     assert_tree(dest.root(), &Tree::new());
 }
 
-// A path at the depth observe walks is written; one past it is named and
-// nothing is written at all. `load_tree` cannot produce the second — its
-// own walk stops at the same limit — but `load_mapping` can, since it
-// judges keys for containment and never for depth, so this check is what
-// the deep mapping key and the hand-built plan both meet. It is what keeps
-// the projection from creating a destination its own next run could not
-// observe.
 #[test]
 fn a_plan_writing_past_the_walk_depth_is_named_and_writes_nothing() {
     let (dest, state) = fixtures();
@@ -1590,11 +1448,6 @@ fn a_plan_writing_past_the_walk_depth_is_named_and_writes_nothing() {
     assert_tree(dest.root(), &Tree::new());
 }
 
-// A key two directories long that lands 65 deep. Following an owned link
-// restarts the walk at the link's target, so the depth the plan spells is
-// not the depth the walk reaches — and it is the walk's depth that decides
-// whether the next observation can read the node back. The check on the
-// key cannot see this one; the walk names the directory it stopped at.
 #[test]
 fn a_plan_removing_past_the_walk_depth_is_named_and_removes_nothing() {
     let (dest, state) = fixtures();
@@ -1742,7 +1595,6 @@ fn a_forged_skip_of_an_unrecorded_path_refuses_instead_of_adopting() {
         }
         other => panic!("expected Foreign, got {other:?}"),
     }
-    // Never adopted: the state dir records nothing.
     assert_eq!(persisted(&state), Manifest::new());
 }
 
@@ -1815,7 +1667,6 @@ fn a_hand_built_plan_replacing_a_region_with_a_whole_file_fails_up_front() {
         ),
         other => panic!("expected Block, got {other:?}"),
     }
-    // Up front means up front: the removal half of the plan did not run.
     assert_tree(
         dest.root(),
         &Tree::new()
@@ -1824,10 +1675,6 @@ fn a_hand_built_plan_replacing_a_region_with_a_whole_file_fails_up_front() {
     );
 }
 
-// A block record stands for a region inside a container, never for a whole
-// node, so nothing deciding builds points a directory removal at one. The
-// check is here because forged plans are what `validate` is for: without it
-// the action would reach `rmdir` and fail as drift, naming the wrong thing.
 #[test]
 fn a_hand_built_directory_removal_of_a_block_record_fails_up_front() {
     let (dest, state) = fixtures();
@@ -1909,11 +1756,6 @@ fn a_recorded_link_whose_matching_target_is_not_utf8_refuses_containment() {
     }
 }
 
-// No write goes down anywhere but its action key. The walk follows an owned
-// in-dest link, but a file that landed at the resolved location would leave
-// the bytes at `real/x.txt` while the manifest recorded `logs/x.txt` — a
-// path no later observation descends to, so every run after it plans the
-// write again and deciding refuses it under the no-alias rule.
 #[test]
 fn a_file_write_the_walk_would_relocate_through_an_owned_link_refuses() {
     let (dest, state) = fixtures();
@@ -1924,9 +1766,6 @@ fn a_file_write_the_walk_would_relocate_through_an_owned_link_refuses() {
         "logs".into(),
         recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own"]),
     );
-    // Deciding never plans a write beneath a surviving link (its no-alias
-    // rule), so a write reaches the followed arm only from a hand-built
-    // plan — or from a link that appeared in the plan-to-apply gap.
     let plan = Plan {
         dropped: BTreeSet::new(),
         owner: "own".to_owned(),
@@ -1947,8 +1786,6 @@ fn a_file_write_the_walk_would_relocate_through_an_owned_link_refuses() {
         apply_at(&dest, &state, &manifest, &plan).expect_err("a file is never written off its key");
 
     match error {
-        // `logs/x.txt` is spelled entirely of ordinary components, so the
-        // message says which ancestor is the link that put it out of reach.
         Error::Refused(refused) if refused.kind() == RefusalKind::Containment => assert_eq!(
             refused.to_string(),
             "refusing paths that violate containment: logs/x.txt (below the symlink logs)"
@@ -1963,9 +1800,6 @@ fn a_file_write_the_walk_would_relocate_through_an_owned_link_refuses() {
     );
 }
 
-// A block's container is held to the key the same way: splicing into the
-// container the walk resolved to would record a region at `logs/rc` whose
-// bytes live in `real/rc`.
 #[test]
 fn a_block_whose_container_the_walk_relocates_refuses() {
     let (dest, state) = fixtures();
@@ -2004,13 +1838,6 @@ fn a_block_whose_container_the_walk_relocates_refuses() {
     assert_tree(dest.root(), &linked);
 }
 
-// A link two owners share is
-// released — the disk untouched, this owner dropped — and reappears matching
-// its recorded signature before apply reaches the path beneath it. Release
-// checks no disk (and could not: the link matches its record), the walk finds
-// the link still recorded by the owner who stayed, and follows it. The write
-// is what refuses; without that refusal `pivot/x.txt` would be recorded while
-// the bytes sat at `real/x.txt`, unwritable and unremovable thereafter.
 #[test]
 fn a_link_released_and_reappearing_in_the_gap_does_not_relocate_the_write() {
     let (dest, state) = fixtures();
@@ -2022,8 +1849,6 @@ fn a_link_released_and_reappearing_in_the_gap_does_not_relocate_the_write() {
     );
     save_manifest(&state_at(state.root()), &seeded).expect("seed the state dir");
 
-    // The link is not on disk at plan time, so the no-alias rule sees no
-    // ancestor link and the write under it is planned.
     let desired = BTreeMap::from([(
         Utf8PathBuf::from("pivot/x.txt"),
         Entry::File {
@@ -2037,7 +1862,6 @@ fn a_link_released_and_reappearing_in_the_gap_does_not_relocate_the_write() {
         Some(&Action::Release)
     );
 
-    // The other owner's run puts the link back, exactly as recorded.
     std::os::unix::fs::symlink("real", dest.path("pivot")).expect("the link reappears");
 
     let stopped = stopping_at(&dest, &state, &manifest, &plan);
@@ -2048,9 +1872,6 @@ fn a_link_released_and_reappearing_in_the_gap_does_not_relocate_the_write() {
         }
         other => panic!("expected Containment, got {other:?}"),
     }
-    // The stop carries the release the run had already applied, so a caller
-    // reporting it reports a destination the run changed rather than one it
-    // left alone.
     assert!(stopped.applied_anything());
     assert_eq!(
         stopped.applied.report.rows[Utf8Path::new("pivot")].verdict,
@@ -2064,10 +1885,6 @@ fn a_link_released_and_reappearing_in_the_gap_does_not_relocate_the_write() {
         dest.root(),
         &Tree::new().dir("real").symlink("pivot", "real"),
     );
-    // The release landed and was persisted with the partial run: the owner
-    // who stayed still holds the link, and nothing records the aliased path.
-    // The stop says the record landed, which is what makes the rows above
-    // safe to read as the state of the destination.
     assert!(stopped.stopped.recorded());
     assert!(matches!(stopped.stopped, Stopped::Applying(_)));
     let after = persisted(&state);
@@ -2078,12 +1895,6 @@ fn a_link_released_and_reappearing_in_the_gap_does_not_relocate_the_write() {
     assert!(!after.entries.contains_key(Utf8Path::new("pivot/x.txt")));
 }
 
-// A run whose every action applied and whose manifest never reached the state
-// directory is not a run that stopped part-way, and does not report as one:
-// the destination is whole and unrecorded. The rule that leaves is the one
-// this pins — with nothing recording the write, the next run reads it as
-// foreign rather than healing it — so a caller has to be told, not left to
-// discover it a run later.
 #[test]
 fn a_run_that_could_not_record_what_it_applied_leaves_foreign_paths() {
     let (dest, state) = fixtures();
@@ -2096,10 +1907,6 @@ fn a_run_that_could_not_record_what_it_applied_leaves_foreign_paths() {
     )]);
     let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
     let (dest_dir, state_dir) = (dir_at(dest.root()), state_at(state.root()));
-    // The state directory goes out from under the run, so every action applies
-    // and the manifest recording them cannot be written. The handle stays open
-    // and stays useless, which is what a state directory a run cannot write to
-    // looks like from inside the run.
     std::fs::remove_dir_all(state.root()).expect("the state directory goes");
 
     let stopped =
@@ -2107,8 +1914,6 @@ fn a_run_that_could_not_record_what_it_applied_leaves_foreign_paths() {
 
     assert!(matches!(stopped.stopped, Stopped::Recording(_)));
     assert!(!stopped.stopped.recorded());
-    // Absolute: the operator has to go to the manifest the run could not
-    // write, and the bare name does not say which state directory holds it.
     match stopped.stopped.recording() {
         Some(Error::Io { path, .. }) => assert_eq!(*path, state.path(MANIFEST_FILE_NAME)),
         other => panic!("expected an I/O error naming the manifest, got {other:?}"),
@@ -2128,8 +1933,6 @@ fn a_run_that_could_not_record_what_it_applied_leaves_foreign_paths() {
         &Tree::new().dir("bin").file("bin/tool", "tool"),
     );
 
-    // The write is on the destination and no manifest records it, so the next
-    // run classifies it as foreign.
     std::fs::create_dir_all(state.root()).expect("a state directory again");
     let (_, next) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
     assert_eq!(
@@ -2140,10 +1943,6 @@ fn a_run_that_could_not_record_what_it_applied_leaves_foreign_paths() {
     );
 }
 
-// A run can lose both halves at once: an action stops it, and the manifest
-// recording the rows before that action cannot be written either. The stop
-// keeps both errors, because the refusal alone would leave a caller believing
-// the state directory records what the destination holds.
 #[test]
 fn a_run_that_stopped_part_way_and_could_not_record_it_keeps_both_errors() {
     let (dest, state) = fixtures();
@@ -2193,10 +1992,6 @@ fn a_run_that_stopped_part_way_and_could_not_record_it_keeps_both_errors() {
     );
 }
 
-// Release is the one action that re-checks nothing, and this is what that
-// buys: an owner departs a shared path whatever the disk holds. Refusing
-// here would trap the departing owner behind an edit that is not theirs to
-// fix, and the owner who stays keeps the record either way.
 #[test]
 fn a_release_drops_the_owner_over_a_drifted_node_without_touching_it() {
     let (dest, state) = fixtures();
@@ -2209,7 +2004,6 @@ fn a_release_drops_the_owner_over_a_drifted_node_without_touching_it() {
         plan.actions.get(Utf8Path::new("shared.txt")),
         Some(&Action::Release)
     );
-    // An edit in the plan-to-apply gap: a signature check would refuse here.
     let edited = Tree::new().file("shared.txt", "edited by somebody");
     edited.write_under(dest.root());
 
@@ -2226,12 +2020,6 @@ fn a_release_drops_the_owner_over_a_drifted_node_without_touching_it() {
     assert_tree(dest.root(), &edited);
 }
 
-// A symlink carries a second reason: settling's wait-for set names what the
-// run will still publish by action key. Without this refusal the plan below
-// escapes: `a` is graded and published while nothing stands at `real/x`,
-// then `pivot/x` goes down at `real/x` — a path no chain waited for, since
-// the set names `pivot/x` — and `dest/a` resolves to the destination's
-// grandparent.
 #[test]
 fn a_link_the_walk_would_relocate_through_an_owned_link_refuses() {
     let (dest, state) = fixtures();
@@ -2279,8 +2067,6 @@ fn a_link_the_walk_would_relocate_through_an_owned_link_refuses() {
         ),
         other => panic!("expected Containment, got {other:?}"),
     }
-    // `a` landed — `real/x` is nothing, so it points at `escape` inside the
-    // destination — and the link that would have moved it never went down.
     assert_tree(
         dest.root(),
         &Tree::new()
@@ -2329,21 +2115,11 @@ fn a_removal_through_an_owned_link_prunes_the_resolved_directory() {
         verdicts(&report),
         BTreeMap::from([("logs/x.txt".into(), ApplyOutcome::Removed)])
     );
-    // The directory that actually lost the child — the resolved side, not
-    // the action key's ancestry — is pruned; the owned link survives (a
-    // dangling target is allowed).
     assert_tree(dest.root(), &Tree::new().symlink("logs", "real"));
 }
 
 #[test]
 fn deciding_aims_that_removal_at_the_node_the_walk_resolves_to() {
-    // The companion to the test above, decided rather than hand-built. The
-    // walk observes no path beneath a link, so `logs/x.txt` observes absent
-    // at its own key — but deciding grades the ancestry it is spelled of,
-    // follows the owned link as a removal does
-    // (`docs/implementation.lex` section 3), and re-checks the node standing
-    // at `real/x.txt`. So the removal expects that node instead of nothing,
-    // and applying carries it out rather than refusing drift.
     let (dest, state) = fixtures();
     Tree::new()
         .file("real/x.txt", "bytes")
@@ -2517,8 +2293,6 @@ fn projects_links_with_their_targets_verbatim_dangling_included() {
     let report = pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse)
         .expect("in-dest targets need no permission");
 
-    // Every target reached disk byte for byte, the dangling one included:
-    // a link is a pointer, and nothing resolves it.
     assert_tree(dest.root(), &tree);
     assert_eq!(
         report.report.rows[Utf8Path::new("latest")].verdict,
@@ -2537,7 +2311,6 @@ fn projects_links_with_their_targets_verbatim_dangling_included() {
     let entry = &report.manifest.entries[Utf8Path::new("nested/up")];
     assert_eq!(entry.kind, EntryKind::Symlink);
     assert!(!entry.executable);
-    // The manifest hashes the target string, not what it points at.
     assert_eq!(entry.hash, sha256_hex(b"../notes/a.txt"));
 }
 
@@ -2552,7 +2325,6 @@ fn re_applying_an_unchanged_link_reports_the_target_it_left_in_place() {
     let report =
         pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("second apply");
 
-    // A skip touches nothing, and still reports the target the link holds.
     assert_eq!(
         verdicts(&report),
         BTreeMap::from([
@@ -2602,8 +2374,6 @@ fn a_sourced_key_reports_its_source_at_the_path_the_action_lands_on() {
 
     let report = apply(&dest_dir, &state_dir, &manifest, &plan).expect("apply");
 
-    // The key normalizes, so the action — and the row — is at `b.txt`; the
-    // origin has to follow it there rather than stay at the spelling.
     assert_eq!(
         verdicts(&report),
         BTreeMap::from([("b.txt".into(), ApplyOutcome::Written)])
@@ -2613,9 +2383,6 @@ fn a_sourced_key_reports_its_source_at_the_path_the_action_lands_on() {
 
 #[test]
 fn a_target_that_is_not_a_pathname_fails_up_front_and_writes_nothing() {
-    // Deciding refuses such a target, so this is the hand-built half: the
-    // whole-plan check catches it before any action runs, rather than
-    // letting the OS reject it partway through the sorted order.
     let (dest, state) = fixtures();
     let plan = Plan {
         dropped: BTreeSet::new(),
@@ -2661,7 +2428,6 @@ fn a_target_that_is_not_a_pathname_fails_up_front_and_writes_nothing() {
         ),
         other => panic!("expected InvalidTarget, got {other:?}"),
     }
-    // Nothing ran, the file sorted before the link included.
     assert_tree(dest.root(), &Tree::new());
 }
 
@@ -2714,7 +2480,7 @@ fn a_file_becomes_a_link_and_a_link_becomes_a_file() {
         EntryKind::Symlink
     );
 
-    // link → file, and the link's former target keeps its bytes
+    // link → file
     let report =
         pipeline(&dest, &state, "own", &files.entries(), DriftPolicy::Refuse).expect("link → file");
     assert_eq!(
@@ -2792,7 +2558,6 @@ fn external_targets_refuse_without_the_policy_and_land_verbatim_with_it() {
         ),
         other => panic!("expected ExternalTarget, got {other:?}"),
     }
-    // Refused up front: the unrelated half of the plan did not run either.
     assert_tree(dest.root(), &Tree::new());
 
     let report = pipeline_with(
@@ -2807,7 +2572,6 @@ fn external_targets_refuse_without_the_policy_and_land_verbatim_with_it() {
     )
     .expect("permitted external targets land");
 
-    // Byte-exact, both of them: proiectio never rewrites a target.
     assert_tree(dest.root(), &tree);
     assert_eq!(
         report.manifest.entries[Utf8Path::new("absolute")].hash,
@@ -2825,9 +2589,6 @@ fn nothing_is_written_through_a_permitted_external_link() {
     let link = Tree::new().symlink("out", "../outside");
     pipeline_with(&dest, &state, "own", &link.entries(), allowing).expect("plant the pointer");
 
-    // A tree naming a path beneath the link is refused, permitted target or
-    // not: the pointer stays a pointer. (The scaffolding will not declare a
-    // node under a link either, so the desired map is built by hand.)
     let mut desired = link.entries();
     desired.insert(
         "out/x.txt".into(),
@@ -2878,9 +2639,6 @@ fn a_target_escaping_through_a_pivot_link_refuses_without_the_permission() {
     }
     assert_tree(dest.root(), &pivot);
 
-    // With the permission the target lands verbatim — and the apply-time
-    // re-grade stands down, since a caller who permitted external targets
-    // permitted them whatever the destination holds.
     let landed = Tree::new()
         .symlink("pivot", "/etc")
         .symlink("evil", "pivot/passwd");
@@ -2920,9 +2678,6 @@ fn an_ordinary_in_dest_chain_lands_without_the_permission() {
     );
 }
 
-// The changed-since-plan re-check for a link's target: the plan graded the
-// pointer against a pivot that pointed inside, and the pivot moved before
-// apply reached the link.
 #[test]
 fn a_pivot_swapped_after_the_plan_refuses_instead_of_publishing_the_pointer() {
     let (dest, state) = fixtures();
@@ -2966,9 +2721,6 @@ fn a_pivot_swapped_after_the_plan_refuses_instead_of_publishing_the_pointer() {
     );
 }
 
-// Two links a tree projects together are a chain like any other: read one
-// at a time both land in-dest, and together they point at the destination's
-// parent, because "b/.." pops the directory "b" resolved to.
 #[test]
 fn a_pointer_escaping_through_a_link_the_same_tree_projects_refuses() {
     let (dest, state) = fixtures();
@@ -2995,15 +2747,9 @@ fn a_pointer_escaping_through_a_link_the_same_tree_projects_refuses() {
         ),
         other => panic!("expected ExternalTarget, got {other:?}"),
     }
-    // A refusal in the plan applies nothing, so neither link is on disk.
     assert_tree(dest.root(), &Tree::new());
 }
 
-// The other side of grading against the destination the run leaves: a
-// pointer through a pivot this run replaces is graded as the link the pivot
-// becomes. Apply publishes "evil" before it reaches "pivot", so re-grading
-// against the half-written destination alone would refuse a run whose
-// finished destination holds nothing external.
 #[test]
 fn a_pointer_through_a_pivot_this_run_replaces_lands_without_the_permission() {
     let (dest, state) = fixtures();
@@ -3035,10 +2781,6 @@ fn a_pointer_through_a_pivot_this_run_replaces_lands_without_the_permission() {
     );
 }
 
-// The plan answers for its own ancestors too. "d" is a link on disk and a
-// file in the tree, so nothing lives beneath it once the run finishes and
-// the chain ends there — which the re-grade has to read off the plan, since
-// apply reaches "a" before it has replaced "d".
 #[test]
 fn a_pointer_under_a_link_this_run_replaces_with_a_file_lands_without_the_permission() {
     let (dest, state) = fixtures();
@@ -3070,9 +2812,6 @@ fn a_pointer_under_a_link_this_run_replaces_with_a_file_lands_without_the_permis
     );
 }
 
-// A run that fails partway leaves no pointer out of the destination
-// behind: "evil" waits for the pivot it resolves through, the pivot's
-// overwrite refuses, and the pointer is never published.
 #[test]
 fn a_held_link_is_not_published_when_the_pivot_it_waits_for_refuses() {
     let (dest, state) = fixtures();
@@ -3094,8 +2833,7 @@ fn a_held_link_is_not_published_when_the_pivot_it_waits_for_refuses() {
         .entries();
     let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
 
-    // The gap between the two calls: the pivot is edited, so its overwrite
-    // will refuse the signature the plan expects.
+    // The gap: the pivot is edited, so its overwrite refuses.
     Tree::new()
         .symlink("pivot", "/tmp")
         .write_under(dest.root());
@@ -3111,8 +2849,6 @@ fn a_held_link_is_not_published_when_the_pivot_it_waits_for_refuses() {
     assert_tree(dest.root(), &Tree::new().symlink("pivot", "/tmp"));
 }
 
-// The destination for the two tests below: "dir" is an ordinary directory,
-// and the run owns "b -> dir" and "c/c -> .." from an earlier projection.
 fn pivot_chain_fixtures() -> (Fixture, Fixture) {
     let (dest, state) = fixtures();
     Tree::new().dir("dir").write_under(dest.root());
@@ -3130,12 +2866,6 @@ fn pivot_chain_fixtures() -> (Fixture, Fixture) {
     (dest, state)
 }
 
-// Grading a link in-dest at the moment it is published is not enough:
-// publishing a later link can move where an earlier one lands. Here "a"
-// grades in-dest through the old "b -> dir", and republishing "b" at "c/c"
-// — still pointing at the destination root — would put "a" outside without
-// either grading ever saying so. So a link also waits for every path its own
-// resolution walked through that the run is still going to publish at.
 #[test]
 fn a_link_waits_for_every_link_the_run_will_still_publish_under_it() {
     let (dest, state) = pivot_chain_fixtures();
@@ -3168,8 +2898,7 @@ fn a_link_waiting_on_a_pivot_that_refuses_is_never_published() {
         .entries();
     let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
 
-    // The gap between the two calls: the pivot at the bottom of the chain
-    // is edited, so its overwrite refuses the signature the plan expects.
+    // The gap: the bottom pivot is edited, so its overwrite refuses.
     Tree::new()
         .symlink("c/c", "../elsewhere")
         .write_under(dest.root());
@@ -3182,7 +2911,6 @@ fn a_link_waiting_on_a_pivot_that_refuses_is_never_published() {
         ),
         other => panic!("expected Drift, got {other:?}"),
     }
-    // Neither link above it moved, so nothing points out of the destination.
     assert_tree(
         dest.root(),
         &Tree::new()
@@ -3192,9 +2920,6 @@ fn a_link_waiting_on_a_pivot_that_refuses_is_never_published() {
     );
 }
 
-// A link the run leaves in place is held to its plan-time verdict too: the
-// run publishes nothing for a skip, but the pivot under it moved, and a
-// fresh plan over the same disk would refuse.
 #[test]
 fn a_skipped_link_whose_pivot_was_swapped_refuses() {
     let (dest, state) = fixtures();
@@ -3207,7 +2932,6 @@ fn a_skipped_link_whose_pivot_was_swapped_refuses() {
     pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
         .expect("the chain lands in dest, so the link is written");
 
-    // The same tree again: "rc" is clean, so the plan skips it.
     let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
     assert!(
         matches!(plan.actions[Utf8Path::new("rc")], Action::Skip { .. }),
@@ -3238,8 +2962,6 @@ fn a_skipped_link_whose_pivot_was_swapped_refuses() {
     }
 }
 
-// An ancestor the walk finds changed is refused under its own key, which no
-// source names; the refusal is attributed to the planned key being acted on.
 #[test]
 fn a_refused_ancestor_is_attributed_to_the_planned_key_beneath_it() {
     let mapping = Origin::Mapping {
@@ -3252,8 +2974,7 @@ fn a_refused_ancestor_is_attributed_to_the_planned_key_beneath_it() {
         plan.actions[Utf8Path::new("dir/file")],
         Action::Write { .. }
     ));
-    // Between planning and applying, `dir` appears as a file nobody
-    // recorded.
+    // The gap: `dir` appears as a file nobody recorded.
     Tree::new().file("dir", "squatter").write_under(dest.root());
 
     let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the ancestor is foreign");
@@ -3275,17 +2996,12 @@ fn a_refused_ancestor_is_attributed_to_the_planned_key_beneath_it() {
     assert_tree(dest.root(), &Tree::new().file("dir", "squatter"));
 }
 
-// An apply-time refusal names the source the plan records for its key,
-// whether the plan writes the link or only skips it: in both pivot-swap
-// scenarios above the mapping is the file that named `rc`, so the message
-// says which file to edit.
 #[test]
 fn an_apply_time_refusal_names_the_plans_source_for_its_key() {
     let mapping = || Origin::Mapping {
         path: "/maps/deploy.toml".into(),
     };
 
-    // The tree chose "pivot/rc": the message says which file to edit.
     let (dest, state) = fixtures();
     Tree::new()
         .dir("real")
@@ -3320,8 +3036,6 @@ fn an_apply_time_refusal_names_the_plans_source_for_its_key() {
          write them"
     );
 
-    // The link is already on disk and the plan only skips it; the key is
-    // still the mapping's, and the refusal says so.
     let (dest, state) = fixtures();
     Tree::new()
         .dir("real")
@@ -3362,8 +3076,6 @@ fn an_apply_time_refusal_names_the_plans_source_for_its_key() {
     );
 }
 
-// The no-alias rule end to end: a path resolving through a link the plan
-// leaves standing is refused, so nothing lands where the plan does not name.
 #[test]
 fn a_path_beneath_another_owners_link_refuses_containment() {
     let (dest, state) = fixtures();
@@ -3409,8 +3121,6 @@ fn a_path_beneath_a_link_this_run_removes_is_written_as_an_ordinary_path() {
     );
     save_manifest(&state_at(state.root()), &manifest).expect("seed the state dir");
 
-    // The desired tree drops the link and names a path under its name: act
-    // removes the link first, so the write lands in a real directory.
     let replaced = Tree::new().dir("real").file("logs/x.txt", "a real file");
     let report = pipeline(
         &dest,
@@ -3433,7 +3143,6 @@ fn a_path_beneath_a_link_this_run_removes_is_written_as_an_ordinary_path() {
 
 // --- blocks: splicing a region into somebody else's file ---
 
-// The marker every block test uses.
 const MARKER: &str = "# proiectio";
 
 fn block_kind(placement: Placement) -> EntryKind {
@@ -3443,7 +3152,6 @@ fn block_kind(placement: Placement) -> EntryKind {
     }
 }
 
-// A desired block entry under [`MARKER`].
 fn block(body: &str, placement: Placement) -> Entry {
     Entry::Block {
         body: body.as_bytes().to_vec(),
@@ -3452,12 +3160,10 @@ fn block(body: &str, placement: Placement) -> Entry {
     }
 }
 
-// A desired tree of one block at `path`.
 fn block_tree(path: &str, body: &str, placement: Placement) -> BTreeMap<Utf8PathBuf, Entry> {
     BTreeMap::from([(Utf8PathBuf::from(path), block(body, placement))])
 }
 
-// The container's bytes as they stand on disk.
 fn container(dest: &Fixture, path: &str) -> String {
     fs::read_to_string(dest.path(path)).expect("read the container")
 }
@@ -3486,7 +3192,6 @@ fn a_block_splices_a_region_into_a_container_it_does_not_own() {
         container(&dest, "rc"),
         "author line\nsecond\n# proiectio\nmanaged\n"
     );
-    // The manifest records the region's body, never the container's bytes.
     assert_eq!(
         report.manifest.entries[Utf8Path::new("rc")],
         recorded(
@@ -3534,8 +3239,6 @@ fn re_applying_a_block_is_a_no_op() {
         verdicts(&report),
         BTreeMap::from([("rc".into(), ApplyOutcome::Skipped)])
     );
-    // The marker is what makes this idempotent: without one the second run
-    // could not tell its own bytes from the author's, and would append again.
     assert_eq!(container(&dest, "rc"), after_first);
 }
 
@@ -3546,7 +3249,6 @@ fn an_edit_outside_the_region_is_not_drift_and_an_edit_inside_it_is() {
     let desired = block_tree("rc", "managed\n", Placement::Append);
     pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
 
-    // The author edits their own side and re-runs: nothing to do.
     fs::write(dest.path("rc"), "author\nand more\n# proiectio\nmanaged\n").expect("edit outside");
     let report = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
         .expect("outside is not drift");
@@ -3559,7 +3261,6 @@ fn an_edit_outside_the_region_is_not_drift_and_an_edit_inside_it_is() {
         "author\nand more\n# proiectio\nmanaged\n"
     );
 
-    // The author edits inside the region: that is drift, and it refuses.
     fs::write(dest.path("rc"), "author\nand more\n# proiectio\nedited\n").expect("edit inside");
     let error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
         .expect_err("inside the region is drift");
@@ -3573,9 +3274,6 @@ fn an_edit_outside_the_region_is_not_drift_and_an_edit_inside_it_is() {
 
 #[test]
 fn an_edit_past_the_regions_outer_edge_is_drift() {
-    // The region runs to the file's edge, so an author appending past an
-    // appended region has written inside it. This is the cost `Prepend`
-    // avoids, and it is why `EntryKind::Block` says so.
     let (dest, state) = fixtures();
     Tree::new().file("rc", "author\n").write_under(dest.root());
     let desired = block_tree("rc", "managed\n", Placement::Append);
@@ -3656,15 +3354,11 @@ fn a_changed_marker_migrates_the_region_in_one_publish() {
         verdicts(&report),
         BTreeMap::from([("rc".into(), ApplyOutcome::Overwritten)])
     );
-    // One publish: the old region is gone, not left beside the new one.
     assert_eq!(container(&dest, "rc"), "author\n# renamed\nmanaged\n");
 }
 
 #[test]
 fn a_migration_into_a_marker_the_author_already_wrote_refuses() {
-    // Publishing would put the new marker on a second whole line, and the
-    // container would identify no region on the very next run — a refusal the
-    // projection would have written into somebody else's file itself.
     let (dest, state) = fixtures();
     let author = "author\n# renamed\n";
     Tree::new().file("rc", author).write_under(dest.root());
@@ -3741,8 +3435,6 @@ fn removing_a_block_leaves_the_container_byte_identical_apart_from_the_region() 
             verdicts(&report),
             BTreeMap::from([("rc".into(), ApplyOutcome::Removed)])
         );
-        // The container stays, and every byte outside the region is where it
-        // was: a block never deletes a file it does not own whole.
         assert_eq!(container(&dest, "rc"), author, "{placement:?}");
         assert_eq!(report.manifest, Manifest::new());
     }
@@ -3750,8 +3442,6 @@ fn removing_a_block_leaves_the_container_byte_identical_apart_from_the_region() 
 
 #[test]
 fn a_region_whose_body_already_matches_is_adopted() {
-    // Refusing a destination that is already in the desired state would be
-    // the alternative; the region is recorded and nothing is written.
     let (dest, state) = fixtures();
     Tree::new()
         .file("rc", "author\n# proiectio\nmanaged\n")
@@ -3783,10 +3473,6 @@ fn a_region_whose_body_already_matches_is_adopted() {
 
 #[test]
 fn an_ambiguous_container_is_not_adopted() {
-    // Two whole-line marker occurrences identify no region, so the extreme
-    // one's body matching what this run would write is not evidence the
-    // projection wrote it. Adopting would record a region nothing in the
-    // manifest can locate again, and every later run over that path refuses.
     let (dest, state) = fixtures();
     let author = "# proiectio\nmanaged\n# proiectio\nmanaged\n";
     Tree::new().file("rc", author).write_under(dest.root());
@@ -3810,28 +3496,17 @@ fn an_ambiguous_container_is_not_adopted() {
     assert_eq!(persisted(&state), Manifest::new());
 }
 
-// A container carrying the projection's region twice: the extreme
-// occurrence still hashes to the recorded body, so only counting the
-// occurrences tells the picture from an ordinary one.
 const DOUBLED: &str = "# proiectio\nmanaged\nauthor\n# proiectio\nmanaged\n";
 
 #[test]
 fn a_duplicate_marker_in_the_gap_refuses_every_action_on_the_region() {
-    // Each apply-time block path, given a container whose extreme occurrence
-    // hashes exactly to what the plan expects. Acting would strip or replace
-    // a range nothing says is the recorded one and leave the other region
-    // standing with the manifest no longer naming it.
     let desired = block_tree("rc", "managed\n", Placement::Append);
     let plans: [(&str, BTreeMap<Utf8PathBuf, Entry>); 4] = [
-        // The removal's re-check.
         ("remove", BTreeMap::new()),
-        // The overwrite's.
         (
             "overwrite",
             block_tree("rc", "different\n", Placement::Append),
         ),
-        // The overwrite's again, migrating to a marker the duplicate is not
-        // an occurrence of, so only counting the *recorded* marker sees it.
         (
             "migration",
             BTreeMap::from([(
@@ -3843,7 +3518,6 @@ fn a_duplicate_marker_in_the_gap_refuses_every_action_on_the_region() {
                 },
             )]),
         ),
-        // The skip's — which writes nothing, but would re-record the path.
         ("skip", desired.clone()),
     ];
     for (name, second) in plans {
@@ -3863,8 +3537,6 @@ fn a_duplicate_marker_in_the_gap_refuses_every_action_on_the_region() {
             }
             other => panic!("{name}: expected Drift, got {other:?}"),
         }
-        // Both regions are where the gap left them, and the manifest still
-        // records the one it recorded.
         assert_eq!(container(&dest, "rc"), DOUBLED, "{name}");
         assert_eq!(persisted(&state), manifest, "{name}");
     }
@@ -3872,17 +3544,11 @@ fn a_duplicate_marker_in_the_gap_refuses_every_action_on_the_region() {
 
 #[test]
 fn a_recorded_region_back_in_the_gap_refuses_even_where_it_matches() {
-    // The plan reached a write by finding the recorded region gone. One back
-    // under the recorded marker is a change since the plan, and an ordinary
-    // write refuses a node that appeared the same way — bytes matching the
-    // desired ones do not make the disk the plan's disk.
     let (dest, state) = fixtures();
     Tree::new().file("rc", "author\n").write_under(dest.root());
     let desired = block_tree("rc", "managed\n", Placement::Append);
     pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
 
-    // The author strips the region, so the region is Missing and the plan is
-    // a write that heals it.
     fs::write(dest.path("rc"), "author\n").expect("strip the region");
     let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
     // The gap: it comes back, byte for byte.
@@ -3954,7 +3620,6 @@ fn a_block_never_creates_its_container_or_a_directory_for_one() {
         ),
         other => panic!("expected Block, got {other:?}"),
     }
-    // No stranded directory either: the walk runs with `create = false`.
     assert_tree(dest.root(), &Tree::new());
 }
 
@@ -4000,7 +3665,6 @@ fn a_symlink_at_the_container_path_is_foreign_unrecorded_and_drift_recorded() {
         .write_under(dest.root());
     let desired = block_tree("rc", "managed\n", Placement::Append);
 
-    // Unrecorded: the projection never wrote the link, so it is foreign.
     let unrecorded = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
         .expect_err("a link is not a container");
     match unrecorded {
@@ -4010,8 +3674,6 @@ fn a_symlink_at_the_container_path_is_foreign_unrecorded_and_drift_recorded() {
         other => panic!("expected Foreign, got {other:?}"),
     }
 
-    // Recorded as a region, and swapped for a link since: drift of kind,
-    // which `--force` does not lift because no signature expresses it.
     let mut manifest = Manifest::new();
     manifest.entries.insert(
         "rc".into(),
@@ -4030,7 +3692,6 @@ fn a_symlink_at_the_container_path_is_foreign_unrecorded_and_drift_recorded() {
         }
         other => panic!("expected Drift, got {other:?}"),
     }
-    // Nothing was written through the link.
     assert_eq!(container(&dest, "real"), "author\n");
 }
 
@@ -4081,8 +3742,6 @@ fn force_overwrites_an_edited_region_and_leaves_the_author_alone() {
         verdicts(&report),
         BTreeMap::from([("rc".into(), ApplyOutcome::Overwritten)])
     );
-    // The author's edit outside the region survives; theirs inside it does
-    // not, which is what the placement tradeoff is about.
     assert_eq!(container(&dest, "rc"), "author edited\n# proiectio\nv2\n");
 }
 
@@ -4093,7 +3752,6 @@ fn a_deleted_region_is_spliced_back_and_a_deleted_container_refuses() {
     let desired = block_tree("rc", "managed\n", Placement::Append);
     pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project");
 
-    // The author deletes the region but keeps the file: write heals.
     fs::write(dest.path("rc"), "author\n").expect("delete the region");
     let healed =
         pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("write heals");
@@ -4103,7 +3761,6 @@ fn a_deleted_region_is_spliced_back_and_a_deleted_container_refuses() {
     );
     assert_eq!(container(&dest, "rc"), "author\n# proiectio\nmanaged\n");
 
-    // The author deletes the whole file: a block never creates one.
     fs::remove_file(dest.path("rc")).expect("delete the container");
     let error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse)
         .expect_err("a block never creates its container");
@@ -4143,8 +3800,6 @@ fn the_containers_mode_is_the_authors_and_survives_the_rename() {
         .mode()
         & 0o777;
     assert_eq!(mode, 0o755);
-    // And the manifest says nothing about it: `executable` is always false
-    // for a block.
     assert!(!persisted(&state).entries[Utf8Path::new("rc")].executable);
 }
 
@@ -4177,11 +3832,8 @@ fn a_containers_setuid_bits_do_not_survive_the_rename() {
 
 #[test]
 fn the_bytes_outside_a_region_are_never_interpreted() {
-    // conda substitutes its block for a literal sentinel and expands it back,
-    // so an rc file containing that string is corrupted. A byte-range splice
-    // has nothing to substitute: the author's side here carries the marker
-    // text indented, a would-be placeholder, and a stray CR, and comes back
-    // exactly as written.
+    // conda substitutes its block for a literal sentinel and corrupts rc files
+    // containing that string; a byte-range splice has nothing to substitute.
     let (dest, state) = fixtures();
     let author = "  # proiectio\n__CONDA_REPLACE_ME_123__\n{{ handlebars }}\r\n";
     Tree::new().file("rc", author).write_under(dest.root());
@@ -4215,8 +3867,6 @@ fn the_bytes_outside_a_region_are_never_interpreted() {
 
 #[test]
 fn a_marker_terminated_by_end_of_file_still_reads_and_strips() {
-    // The projection writes `\n` after the marker, but a line-ending
-    // conversion or a hand edit can leave one at the very end of the file.
     let (dest, state) = fixtures();
     Tree::new()
         .file("rc", "author\n# proiectio")
@@ -4244,7 +3894,6 @@ fn two_owners_share_a_region_only_while_agreeing_on_the_marker() {
     let desired = block_tree("rc", "managed\n", Placement::Append);
     pipeline(&dest, &state, "own", &desired, DriftPolicy::Refuse).expect("project as own");
 
-    // Same marker, same body: the second owner joins the entry.
     let joined = pipeline(&dest, &state, "other", &desired, DriftPolicy::Refuse)
         .expect("identical entries share a path");
     assert_eq!(
@@ -4252,7 +3901,6 @@ fn two_owners_share_a_region_only_while_agreeing_on_the_marker() {
         BTreeSet::from(["other".to_owned(), "own".to_owned()])
     );
 
-    // A different marker is a different kind, so it conflicts.
     let renamed = BTreeMap::from([(
         Utf8PathBuf::from("rc"),
         Entry::Block {
@@ -4278,13 +3926,6 @@ fn two_owners_share_a_region_only_while_agreeing_on_the_marker() {
 
 #[test]
 fn a_second_marker_line_past_the_edge_refuses_and_strands_nothing() {
-    // The last occurrence is the projection's only while every other one is
-    // a line outside the region. A second bare marker line leaves two, and
-    // stripping the last would republish the container with the first region
-    // still in it and the manifest recording only the new one — a stranded
-    // body nothing owns. The second region's body decides nothing: a copy of
-    // the recorded one would otherwise read clean and be overwritten in
-    // place, which is the same stranding by a quieter route.
     for theirs in ["theirs\n", "managed\n"] {
         let (dest, state) = fixtures();
         Tree::new().file("rc", "author\n").write_under(dest.root());
@@ -4293,8 +3934,6 @@ fn a_second_marker_line_past_the_edge_refuses_and_strands_nothing() {
         let edited = format!("author\n# proiectio\nmanaged\n# proiectio\n{theirs}");
         fs::write(dest.path("rc"), &edited).expect("append a second marker line past the edge");
 
-        // Nothing has a region it can name: not the ordinary overwrite, not
-        // the forced one, and not the forced removal.
         let mut errors = vec![
             pipeline(
                 &dest,
@@ -4348,10 +3987,6 @@ fn a_second_marker_line_past_the_edge_refuses_and_strands_nothing() {
 
 #[test]
 fn a_hand_built_plan_expecting_another_marker_fails_up_front() {
-    // The marker is what tells the projection's bytes from the author's, so
-    // an expectation naming a line the author wrote would point the strip at
-    // the author's own tail. The record's marker is the only one an
-    // expectation may name.
     let (dest, state) = fixtures();
     let author = "author\n# theirs\ntheir tail\n";
     Tree::new().file("rc", author).write_under(dest.root());
@@ -4399,7 +4034,6 @@ fn a_hand_built_plan_expecting_another_marker_fails_up_front() {
         ),
         other => panic!("expected Block, got {other:?}"),
     }
-    // Nothing of the author's was stripped.
     assert_eq!(container(&dest, "rc"), author);
 }
 
@@ -4417,8 +4051,6 @@ fn a_recorded_region_back_under_the_old_marker_refuses_rather_than_stranding_it(
     )
     .expect("project under the first marker");
 
-    // The region goes missing, so changing the marker plans a write rather
-    // than the overwrite that would have migrated it.
     fs::write(dest.path("rc"), author).expect("strip the region by hand");
     let renamed = BTreeMap::from([(
         Utf8PathBuf::from("rc"),
@@ -4434,9 +4066,6 @@ fn a_recorded_region_back_under_the_old_marker_refuses_rather_than_stranding_it(
         Action::Write { .. }
     ));
 
-    // And it comes back in the gap. Splicing under the new marker would
-    // leave this one standing with nothing recording it — one stranded body
-    // per marker change.
     let restored = "author\n# proiectio\nmanaged\n";
     fs::write(dest.path("rc"), restored).expect("restore the old region");
 
@@ -4458,7 +4087,6 @@ fn drift_policy_overwrite_lifts_the_refusal_but_still_guards_the_gap() {
     pipeline(&dest, &state, "own", &v1.entries(), DriftPolicy::Refuse).expect("project");
     fs::write(dest.path("m.txt"), "user edit").expect("drift the file");
 
-    // Lifted: the plan expects the drifted node it observed, and applies.
     let v2 = Tree::new().file("m.txt", "forced");
     let report = pipeline(&dest, &state, "own", &v2.entries(), DriftPolicy::Overwrite)
         .expect("--force overwrites the edit");
@@ -4468,8 +4096,6 @@ fn drift_policy_overwrite_lifts_the_refusal_but_still_guards_the_gap() {
     );
     assert_tree(dest.root(), &v2);
 
-    // But the lift is for the node the plan saw: a second edit in the gap
-    // still refuses.
     fs::write(dest.path("m.txt"), "another edit").expect("drift again");
     let (manifest, plan) = plan_for(&dest, &state, "own", &v1.entries(), DriftPolicy::Overwrite);
     fs::write(dest.path("m.txt"), "yet another edit").expect("edit in the gap");
@@ -4493,8 +4119,6 @@ fn load_manifest_reports_format_and_version_defects() {
     let (_, state) = fixtures();
     fs::write(state.path(MANIFEST_FILE_NAME), "not json").expect("write garbage");
     match load_manifest(&state_at(state.root())) {
-        // Absolute: the operator has to open the file, and the bare name
-        // does not say which state directory holds it.
         Err(Error::ManifestFormat { path, .. }) => {
             assert_eq!(path, state.path(MANIFEST_FILE_NAME))
         }

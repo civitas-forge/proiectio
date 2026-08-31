@@ -188,7 +188,6 @@ fn the_root_carries_no_name_to_project_under() {
     ));
 }
 
-// Loose files spend one budget between them, the same as a walked tree's.
 #[test]
 fn loose_files_outweighing_the_bound_fail_the_load() {
     let source = Tree::new()
@@ -207,10 +206,6 @@ fn loose_files_outweighing_the_bound_fail_the_load() {
     load_files(&paths, Limits::default()).expect("load under the default bound");
 }
 
-// And they spend it on the same things a walk does. A loose empty file
-// carries no bytes and still costs the basename it is keyed by; a loose
-// symlink costs its target too. Without that, a zero-byte bound would load
-// any number of them.
 #[test]
 fn loose_files_spend_the_bound_on_what_they_hold_besides_bytes() {
     let source = Tree::new()

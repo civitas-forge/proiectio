@@ -99,9 +99,8 @@ fn config_gen_writes_through_the_renamed_flag() {
     );
 }
 
-/// Clapfig writes the file before it names the path, so a path this CLI could
-/// not render has to be refused at the command line rather than after the
-/// write. Both leaves that take one read it as UTF-8.
+/// Clapfig writes the file before it names the path, so a path this CLI
+/// could not render is refused at the command line, before the write.
 #[cfg(unix)]
 #[test]
 fn a_config_file_path_that_is_not_utf8_is_refused_at_the_command_line() {
@@ -230,12 +229,8 @@ fn write_carries_every_permission_on_the_invocation() {
     assert!(write.get_flag("allow-external-targets"));
 }
 
-/// An unset shell variable interpolates to an empty argument, and no argument
-/// carrying a path or a name reads one as a value: `--dest ""` is not the
-/// working directory, `--owner ""` is not an owner, and `config get ""` names
-/// no key. Every one of them is a usage error at the command line, before a
-/// run reaches the destination or clapfig is asked for anything. The last six
-/// are clapfig's own arguments, which [`command`] patches.
+/// An unset shell variable interpolates to an empty argument, and no
+/// argument carrying a path or a name reads one as a value.
 #[test]
 fn no_argument_reads_an_empty_string_as_a_value() {
     for argv in [
@@ -269,10 +264,6 @@ fn no_argument_reads_an_empty_string_as_a_value() {
     }
 }
 
-/// An owner is refused blank as well as empty: it is a name the manifest
-/// records and a listing prints, so a blank one is an owner no reader of that
-/// file can see. A path is left to the filesystem, which answers for a blank
-/// name itself.
 #[test]
 fn an_owner_that_is_nothing_but_whitespace_is_refused() {
     for argv in [
@@ -329,10 +320,8 @@ fn a_value_with_a_space_in_it_is_a_value() {
     );
 }
 
-// The `config` help names its keys in prose, and prose does not follow a
-// schema that gains one — the count in front of them least of all. This is
-// the pair that keeps the two together: every key the schema declares is
-// named in the help, and the number promised is the number there are.
+// The `config` help names its keys in prose; this pair keeps every
+// declared key named there and the promised count true.
 #[test]
 fn the_config_help_names_every_key_the_schema_declares() {
     let keys = crate::settings::declared_keys();
