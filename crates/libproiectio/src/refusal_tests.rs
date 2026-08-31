@@ -179,7 +179,7 @@ fn messages_open_with_the_kind_and_name_each_path_with_its_detail() {
              write them — for a block, the marker region rather than the container \
              holding it",
             "refusing paths that violate containment: containment",
-            "refusing desired paths that claim overlapping locations: tree (with tree/below)",
+            "refusing paths that claim overlapping locations: tree (with tree/below)",
             "refusing paths whose desired entries conflict with another owner's: \
              owner (held by site)",
             "refusing symlinks with targets outside the destination: external -> /opt; \
@@ -317,7 +317,7 @@ fn messages_name_each_path_own_source_after_its_detail() {
     .expect("refusals");
     assert_eq!(
         refused.to_string(),
-        "refusing desired paths that claim overlapping locations: \
+        "refusing paths that claim overlapping locations: \
          a (with a/b) (from mapping /etc/harness/skills.toml), a/b (with a)"
     );
 }

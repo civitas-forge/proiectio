@@ -23,11 +23,13 @@ pub enum Refusal {
         /// that refused knows no link.
         through: Option<Utf8PathBuf>,
     },
-    /// The desired tree claims one on-disk location more than once: this key
-    /// shares a normalized path with another desired key, or its path lies
-    /// beneath another desired path. Both sides of a conflict are refused.
+    /// One plan claims a single on-disk location more than once: this key
+    /// shares a normalized path with another desired key, its path lies
+    /// beneath another desired path, or it is a removal that — following a
+    /// recorded link — acts where another action acts. Both sides of a
+    /// conflict are refused.
     TreeConflict {
-        /// The other desired keys, verbatim, claiming the same or an
+        /// The other keys, verbatim, whose claims land on the same or an
         /// overlapping location.
         paths: BTreeSet<Utf8PathBuf>,
     },
@@ -241,7 +243,7 @@ impl RefusalKind {
                 "refusing directories the plan can neither replace nor remove"
             }
             RefusalKind::Containment => "refusing paths that violate containment",
-            RefusalKind::TreeConflict => "refusing desired paths that claim overlapping locations",
+            RefusalKind::TreeConflict => "refusing paths that claim overlapping locations",
             RefusalKind::OwnerConflict => {
                 "refusing paths whose desired entries conflict with another owner's"
             }

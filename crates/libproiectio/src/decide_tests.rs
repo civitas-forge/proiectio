@@ -113,12 +113,25 @@ fn manifest_of(entries: &[(&str, ManifestEntry)]) -> Manifest {
     }
 }
 
+// The walk descends every directory it meets, so a nested path it observed
+// was reached through directories: an ancestor no case declares is one, and
+// a case that means something else there declares it.
 fn observed(paths: &[(&str, Observation)]) -> Observations {
+    let mut observed: BTreeMap<Utf8PathBuf, Observation> = paths
+        .iter()
+        .map(|(path, observation)| (Utf8PathBuf::from(*path), observation.clone()))
+        .collect();
+    for (path, _) in paths {
+        for ancestor in Utf8Path::new(path).ancestors().skip(1) {
+            if !ancestor.as_str().is_empty() {
+                observed
+                    .entry(ancestor.to_owned())
+                    .or_insert(Observation::Directory);
+            }
+        }
+    }
     Observations {
-        paths: paths
-            .iter()
-            .map(|(path, observation)| (Utf8PathBuf::from(*path), observation.clone()))
-            .collect(),
+        paths: observed,
         ..Observations::default()
     }
 }
@@ -1244,6 +1257,7 @@ fn a_path_the_state_dir_sits_beneath_still_classifies() {
     let manifest = manifest_of(&[(".local", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[
         (".local", Observation::Directory),
+        (".local/share", Observation::Directory),
         (".local/share/rc", on_disk(&entry)),
         (".local/state", Observation::Directory),
         (".local/state/proiectio", Observation::Directory),
@@ -1263,6 +1277,7 @@ fn a_path_the_state_dir_sits_beneath_still_classifies() {
         BTreeMap::from([
             // Recorded as a file, a directory on disk: drift of kind.
             (".local".into(), PathState::Drifted),
+            (".local/share".into(), PathState::Foreign),
             (".local/share/rc".into(), PathState::Foreign),
             (".local/state".into(), PathState::Foreign),
         ])
@@ -1927,6 +1942,393 @@ fn a_desired_path_beneath_a_link_the_plan_only_releases_still_refuses() {
             },
         }
     );
+}
+
+// --- grading recorded ancestry: the arms act's no-follow walk grades, read
+// off the snapshot so a dry run reaches them too (issue #129) ---
+
+#[test]
+fn a_removal_beneath_a_hand_made_link_refuses_containment() {
+    // Issue #116: observation does not descend the link, so the recorded path
+    // reads absent and its removal would forget it — while apply's walk meets
+    // the unrecorded link and refuses. Grading the ancestry is what makes the
+    // two agree.
+    let manifest = manifest_of(&[(
+        "logs/deep/file.txt",
+        recorded(&file("kept\n", false), &[OWNER]),
+    )]);
+    let observations = observed(&[("logs", on_disk(&link("real/missing")))]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "logs/deep/file.txt"),
+        &Action::Refuse {
+            refusal: Refusal::Containment {
+                through: Some(Utf8PathBuf::from("logs")),
+            },
+        }
+    );
+}
+
+#[test]
+fn a_removal_beneath_a_recorded_link_whose_target_moved_refuses_drift() {
+    let manifest = manifest_of(&[
+        ("logs", recorded(&link("real"), &["other"])),
+        ("logs/x.txt", recorded(&file("kept\n", false), &[OWNER])),
+    ]);
+    let observations = observed(&[
+        ("logs", on_disk(&link("elsewhere"))),
+        ("elsewhere", Observation::Directory),
+    ]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "logs/x.txt"),
+        &Action::Refuse {
+            refusal: Refusal::Drift,
+        }
+    );
+}
+
+#[test]
+fn a_removal_beneath_a_recorded_link_expects_the_node_the_walk_resolves_to() {
+    // A removal follows an owned link (`docs/implementation.lex` section 3),
+    // so the node it re-checks stands at the resolved location — not at the
+    // action key, which observation reads as absent.
+    let kept = file("kept\n", false);
+    let manifest = manifest_of(&[
+        ("logs", recorded(&link("real"), &["other"])),
+        ("logs/x.txt", recorded(&kept, &[OWNER])),
+    ]);
+    let observations = observed(&[
+        ("logs", on_disk(&link("real"))),
+        ("real/x.txt", on_disk(&kept)),
+    ]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "logs/x.txt"),
+        &Action::Remove {
+            expected: Some(signature(&kept)),
+        }
+    );
+}
+
+#[test]
+fn a_removal_whose_ancestry_is_gone_still_forgets_the_path() {
+    // Nothing stands in the way of a removal whose directories a hand already
+    // deleted: the walk stops short, which is not a refusal.
+    let manifest = manifest_of(&[("gone/x.txt", recorded(&file("kept\n", false), &[OWNER]))]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observed(&[]),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "gone/x.txt"),
+        &Action::Remove { expected: None }
+    );
+}
+
+#[test]
+fn a_release_beneath_a_link_walks_nothing_and_is_not_refused() {
+    // A release reads no disk at all — it drops one owner from a manifest
+    // entry — so the link over its path grades nothing.
+    let manifest = manifest_of(&[(
+        "logs/x.txt",
+        recorded(&file("kept\n", false), &[OWNER, "other"]),
+    )]);
+    let observations = observed(&[("logs", on_disk(&link("real/missing")))]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(action(&plan, "logs/x.txt"), &Action::Release);
+}
+
+#[test]
+fn a_recorded_link_the_walk_meets_twice_refuses_containment() {
+    // The visited set ends a resolution that revisits a hop, the way it ends
+    // one for a link target (`docs/security.lex` section 3).
+    let looping = link("a");
+    let manifest = manifest_of(&[
+        ("a", recorded(&looping, &["other"])),
+        ("a/x.txt", recorded(&file("kept\n", false), &[OWNER])),
+    ]);
+    let observations = observed(&[("a", on_disk(&looping))]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "a/x.txt"),
+        &Action::Refuse {
+            refusal: Refusal::Containment {
+                through: Some(Utf8PathBuf::from("a")),
+            },
+        }
+    );
+}
+
+#[test]
+fn a_desired_path_beneath_a_node_that_is_not_a_directory_refuses() {
+    // A creating walk cannot make a directory where a node already stands, so
+    // it refuses it as what the manifest says it is: another owner's record
+    // drifted, nobody's record foreign.
+    let entry = file("settings\n", false);
+    let theirs = manifest_of(&[("conf", recorded(&file("theirs\n", false), &["other"]))]);
+    let observations = observed(&[("conf", on_disk(&file("theirs\n", false)))]);
+
+    for (manifest, expected) in [
+        (&theirs, Refusal::Drift),
+        (&Manifest::new(), Refusal::Foreign),
+    ] {
+        let plan = plan(
+            &tree(&[("conf/rc", &entry)]),
+            manifest,
+            &observations,
+            DriftPolicy::Refuse,
+        );
+
+        assert_eq!(
+            action(&plan, "conf/rc"),
+            &Action::Refuse { refusal: expected }
+        );
+    }
+}
+
+#[test]
+fn a_removal_whose_link_lands_in_the_state_subtree_refuses_containment() {
+    // The state subtree is out of reach however a walk arrives at it: a
+    // recorded link into it plus a record beneath that link would otherwise
+    // aim the removal at a node `Projection` promises no run touches.
+    let secret = file("secret\n", false);
+    let manifest = manifest_of(&[
+        ("logs", recorded(&link(".proiectio"), &["other"])),
+        ("logs/private-state", recorded(&secret, &[OWNER])),
+    ]);
+    let observations = observed(&[
+        ("logs", on_disk(&link(".proiectio"))),
+        (".proiectio/private-state", on_disk(&secret)),
+    ]);
+
+    let plan = decide_removal(
+        OWNER,
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        Some(Utf8Path::new(".proiectio")),
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "logs/private-state"),
+        &Action::Refuse {
+            refusal: Refusal::Containment {
+                through: Some(Utf8PathBuf::from("logs")),
+            },
+        }
+    );
+}
+
+#[test]
+fn a_removal_landing_where_a_desired_path_stands_refuses_both() {
+    // Two keys, one node: applying would unlink it through the link and then
+    // meet the skip's signature check over a path it had just deleted. Which
+    // key owns the node is answered by nothing, so both refuse.
+    let kept = file("kept\n", false);
+    let manifest = manifest_of(&[
+        ("logs", recorded(&link("real"), &["other"])),
+        ("logs/x.txt", recorded(&kept, &[OWNER])),
+        ("real/x.txt", recorded(&kept, &[OWNER])),
+    ]);
+    let observations = observed(&[
+        ("logs", on_disk(&link("real"))),
+        ("real/x.txt", on_disk(&kept)),
+    ]);
+
+    let plan = plan(
+        &tree(&[("real/x.txt", &kept)]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "logs/x.txt"),
+        &Action::Refuse {
+            refusal: Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("real/x.txt")]),
+            },
+        }
+    );
+    assert_eq!(
+        action(&plan, "real/x.txt"),
+        &Action::Refuse {
+            refusal: Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("logs/x.txt")]),
+            },
+        }
+    );
+}
+
+#[test]
+fn two_removals_landing_on_one_node_refuse_the_conflict() {
+    // The same collision between two removals: the second would meet the
+    // node the first unlinked and refuse half-way through the run.
+    let kept = file("kept\n", false);
+    let manifest = manifest_of(&[
+        ("logs", recorded(&link("real"), &["other"])),
+        ("logs/x.txt", recorded(&kept, &[OWNER])),
+        ("real/x.txt", recorded(&kept, &[OWNER])),
+    ]);
+    let observations = observed(&[
+        ("logs", on_disk(&link("real"))),
+        ("real/x.txt", on_disk(&kept)),
+    ]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    for (path, other) in [("logs/x.txt", "real/x.txt"), ("real/x.txt", "logs/x.txt")] {
+        assert_eq!(
+            action(&plan, path),
+            &Action::Refuse {
+                refusal: Refusal::TreeConflict {
+                    paths: BTreeSet::from([Utf8PathBuf::from(other)]),
+                },
+            }
+        );
+    }
+}
+
+#[test]
+fn a_write_walks_through_the_location_a_removal_vacates() {
+    // The removal of `logs/x` unlinks `real/x`, so the write beneath it walks
+    // through a location the run leaves empty. Filed under the key instead,
+    // the walk met the old file still standing at `real/x` and refused it as
+    // Foreign, which applying — removals first — does not do.
+    let old = file("old\n", false);
+    let fresh = file("fresh\n", false);
+    let manifest = manifest_of(&[
+        ("logs", recorded(&link("real"), &["other"])),
+        ("logs/x", recorded(&old, &[OWNER])),
+    ]);
+    let observations = observed(&[("logs", on_disk(&link("real"))), ("real/x", on_disk(&old))]);
+
+    let plan = plan(
+        &tree(&[("real/x/child.txt", &fresh)]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "logs/x"),
+        &Action::Remove {
+            expected: Some(signature(&old)),
+        }
+    );
+    assert_eq!(
+        action(&plan, "real/x/child.txt"),
+        &Action::Write {
+            entry: fresh.clone(),
+        }
+    );
+}
+
+#[test]
+fn an_absence_only_removal_claims_no_node() {
+    // Nothing stands where the walk comes out, so the removal only verifies
+    // that and forgets the record: it neither unlinks nor owns the location,
+    // which leaves a desired key free to write there rather than colliding.
+    let old = file("old\n", false);
+    let fresh = file("fresh\n", false);
+    let manifest = manifest_of(&[
+        ("logs", recorded(&link("real"), &["other"])),
+        ("logs/x", recorded(&old, &[OWNER])),
+    ]);
+    let observations = observed(&[
+        ("logs", on_disk(&link("real"))),
+        ("real", Observation::Directory),
+    ]);
+
+    let plan = plan(
+        &tree(&[("real/x", &fresh)]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(action(&plan, "logs/x"), &Action::Remove { expected: None });
+    assert_eq!(
+        action(&plan, "real/x"),
+        &Action::Write {
+            entry: fresh.clone(),
+        }
+    );
+}
+
+#[test]
+fn a_removal_landing_on_its_own_key_conflicts_with_nothing() {
+    // The check names collisions, not walks: a removal the walk resolved to
+    // the key it was already aimed at claims one node, and so does every
+    // removal beside it.
+    let kept = file("kept\n", false);
+    let manifest = manifest_of(&[
+        ("a.txt", recorded(&kept, &[OWNER])),
+        ("deep/b.txt", recorded(&kept, &[OWNER])),
+    ]);
+    let observations = observed(&[("a.txt", on_disk(&kept)), ("deep/b.txt", on_disk(&kept))]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    for path in ["a.txt", "deep/b.txt"] {
+        assert_eq!(
+            action(&plan, path),
+            &Action::Remove {
+                expected: Some(signature(&kept)),
+            }
+        );
+    }
 }
 
 // The two tests below are why deciding may grade a target from the lexical

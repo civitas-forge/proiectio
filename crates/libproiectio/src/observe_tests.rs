@@ -36,7 +36,15 @@ fn manifest_of(rows: &[(&str, EntryKind, String)]) -> Manifest {
 }
 
 fn observed(fixture: &Fixture, manifest: &Manifest) -> BTreeMap<Utf8PathBuf, Observation> {
-    observe(&dest(fixture), manifest, &BlockMarkers::new())
+    observed_wanting(fixture, manifest, &BlockMarkers::new())
+}
+
+fn observed_wanting(
+    fixture: &Fixture,
+    manifest: &Manifest,
+    wanted: &BlockMarkers,
+) -> BTreeMap<Utf8PathBuf, Observation> {
+    observe(&dest(fixture), manifest, wanted)
         .expect("observe succeeds")
         .paths
 }
@@ -192,7 +200,9 @@ fn symlinked_directory_is_never_entered() {
 fn recorded_path_beneath_a_symlinked_ancestor_observes_absent() {
     // Following `logs` would find `real/x.txt` — exactly what the walk must
     // never do: a recorded path is only real if every ancestor is a real
-    // directory.
+    // directory. Recording the link is not descending it, and the hop it
+    // states — kind, hash and target string — is what lets deciding reach the
+    // verdict apply's own ancestor walk reaches.
     let fixture = Tree::new()
         .file("real/x.txt", "x")
         .symlink("logs", "real")
@@ -205,9 +215,45 @@ fn recorded_path_beneath_a_symlinked_ancestor_observes_absent() {
         paths.get(Utf8Path::new("logs/x.txt")),
         Some(&Observation::Absent)
     );
+    assert_eq!(
+        paths.get(Utf8Path::new("logs")),
+        Some(&Observation::Symlink {
+            hash: sha256_hex(b"real"),
+            target: Some("real".to_owned()),
+        })
+    );
+}
+
+#[test]
+fn every_hop_on_the_way_to_a_recorded_path_is_observed() {
+    // The walk descends every real directory, so the first node on the way to
+    // a recorded path that is not one is always in the snapshot, however deep
+    // it lies — and so is every node the link resolves to, which the walk
+    // reaches through directories of its own.
+    let fixture = Tree::new()
+        .file("real/deep/x.txt", "x")
+        .symlink("a/b", "../real/deep")
+        .materialize();
+    let manifest = manifest_of(&[("a/b/x.txt", EntryKind::File, sha256_hex(b"x"))]);
+
+    let paths = observed(&fixture, &manifest);
+
+    assert_eq!(paths[Utf8Path::new("a")], Observation::Directory);
+    assert_eq!(
+        paths[Utf8Path::new("a/b")],
+        Observation::Symlink {
+            hash: sha256_hex(b"../real/deep"),
+            target: Some("../real/deep".to_owned()),
+        }
+    );
+    assert_eq!(
+        paths.get(Utf8Path::new("a/b/x.txt")),
+        Some(&Observation::Absent)
+    );
+    assert_eq!(paths[Utf8Path::new("real/deep")], Observation::Directory);
     assert!(matches!(
-        paths[Utf8Path::new("logs")],
-        Observation::Symlink { .. }
+        paths[Utf8Path::new("real/deep/x.txt")],
+        Observation::File { .. }
     ));
 }
 
@@ -515,5 +561,175 @@ fn a_container_swapped_for_another_kind_observes_as_that_kind() {
     assert_eq!(
         observed(&as_dir, &manifest)[Utf8Path::new("rc")],
         Observation::Directory
+    );
+}
+
+#[test]
+fn a_region_reached_through_a_recorded_link_is_stated_under_its_own_key() {
+    // The container the record names sits at `real/rc`, which the walk reads
+    // as an ordinary file: nothing records a block there. The region is read
+    // out of that container — the one applying strips it from — and stated
+    // under `logs/rc`, whose marker and placement parsed it.
+    let contents = "author\n# proiectio\nmanaged\n";
+    let fixture = Tree::new()
+        .file("real/rc", contents)
+        .symlink("logs", "real")
+        .materialize();
+    let mut manifest = block_manifest("logs/rc", "# proiectio", Placement::Append, "managed\n");
+    manifest.entries.insert(
+        Utf8PathBuf::from("logs"),
+        ManifestEntry {
+            kind: EntryKind::Symlink,
+            hash: sha256_hex(b"real"),
+            executable: false,
+            owners: BTreeSet::from(["test".to_owned()]),
+        },
+    );
+
+    let observations = observed(&fixture, &manifest);
+
+    assert_eq!(
+        observations[Utf8Path::new("logs/rc")],
+        Observation::Block {
+            hash: Some(sha256_hex(b"managed\n")),
+            newline_terminated: true,
+            occurrences: 1,
+            desired: None,
+        }
+    );
+    // The container is nobody's node: no record stands at `real/rc`, so it
+    // reads as the ordinary file the walk found.
+    assert_eq!(
+        observations[Utf8Path::new("real/rc")],
+        Observation::File {
+            hash: sha256_hex(contents.as_bytes()),
+            executable: false,
+        }
+    );
+}
+
+#[test]
+fn a_region_beneath_a_hand_made_link_is_left_where_the_walk_read_it() {
+    // Nothing records the link, so no walk may follow it: the container stays
+    // an ordinary file, which is the verdict deciding refuses the record on.
+    let contents = "author\n# proiectio\nmanaged\n";
+    let fixture = Tree::new()
+        .file("real/rc", contents)
+        .symlink("logs", "real")
+        .materialize();
+    let manifest = block_manifest("logs/rc", "# proiectio", Placement::Append, "managed\n");
+
+    let observations = observed(&fixture, &manifest);
+
+    assert_eq!(
+        observations[Utf8Path::new("real/rc")],
+        Observation::File {
+            hash: sha256_hex(contents.as_bytes()),
+            executable: false,
+        }
+    );
+}
+
+// The recorded link every relocating test walks out through.
+fn recorded_link(manifest: &mut Manifest, at: &str, target: &str) {
+    manifest.entries.insert(
+        Utf8PathBuf::from(at),
+        ManifestEntry {
+            kind: EntryKind::Symlink,
+            hash: sha256_hex(target.as_bytes()),
+            executable: false,
+            owners: BTreeSet::from(["test".to_owned()]),
+        },
+    );
+}
+
+#[test]
+fn a_relocated_region_reads_the_desired_text_under_its_own_key() {
+    // The desired marker is spelled against `logs/rc`, the key the caller
+    // named, and the region it would splice is read out of the container that
+    // key comes out at. Asked for under the landing instead, the desired text
+    // went unstated and the container's author side — which already carries
+    // the marker this desired tree migrates to — read as clean.
+    let contents = "author\n# renamed\n# proiectio\nmanaged\n";
+    let fixture = Tree::new()
+        .file("real/rc", contents)
+        .symlink("logs", "real")
+        .materialize();
+    let mut manifest = block_manifest("logs/rc", "# proiectio", Placement::Append, "managed\n");
+    recorded_link(&mut manifest, "logs", "real");
+    let wanted = BlockMarkers::from([(
+        Utf8PathBuf::from("logs/rc"),
+        ("# renamed".to_owned(), Placement::Append),
+    )]);
+
+    let observations = observed_wanting(&fixture, &manifest, &wanted);
+
+    assert_eq!(
+        observations[Utf8Path::new("logs/rc")],
+        Observation::Block {
+            hash: Some(sha256_hex(b"managed\n")),
+            newline_terminated: true,
+            occurrences: 1,
+            desired: Some(DesiredRegion {
+                occurrences: 1,
+                hash: Some(sha256_hex(b"# proiectio\nmanaged\n")),
+                author_newline_terminated: true,
+            }),
+        }
+    );
+}
+
+#[test]
+fn two_records_reaching_one_container_each_state_their_own_region() {
+    // `a/rc` appends and `b/rc` prepends, so the one file holds a region for
+    // each. Stated at the landing they shared, the second parse replaced the
+    // first and whichever record lost read drifted against the survivor's
+    // body.
+    let contents = "beta\n# beta\nauthor\n# alpha\nalpha\n";
+    let fixture = Tree::new()
+        .file("real/rc", contents)
+        .symlink("a", "real")
+        .symlink("b", "real")
+        .materialize();
+    let mut manifest = manifest_of(&[
+        (
+            "a/rc",
+            EntryKind::Block {
+                marker: "# alpha".to_owned(),
+                placement: Placement::Append,
+            },
+            sha256_hex(b"alpha\n"),
+        ),
+        (
+            "b/rc",
+            EntryKind::Block {
+                marker: "# beta".to_owned(),
+                placement: Placement::Prepend,
+            },
+            sha256_hex(b"beta\n"),
+        ),
+    ]);
+    recorded_link(&mut manifest, "a", "real");
+    recorded_link(&mut manifest, "b", "real");
+
+    let observations = observed(&fixture, &manifest);
+
+    assert_eq!(
+        observations[Utf8Path::new("a/rc")],
+        Observation::Block {
+            hash: Some(sha256_hex(b"alpha\n")),
+            newline_terminated: true,
+            occurrences: 1,
+            desired: None,
+        }
+    );
+    assert_eq!(
+        observations[Utf8Path::new("b/rc")],
+        Observation::Block {
+            hash: Some(sha256_hex(b"beta\n")),
+            newline_terminated: true,
+            occurrences: 1,
+            desired: None,
+        }
     );
 }

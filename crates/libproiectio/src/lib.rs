@@ -42,6 +42,9 @@ mod manifest;
 mod mapping;
 mod observe;
 mod origin;
+#[cfg(test)]
+#[path = "parity_tests.rs"]
+mod parity_tests;
 mod plan;
 mod projection;
 mod refusal;
