@@ -73,7 +73,7 @@ pub(crate) fn refused_rows(refused: &Refused, manifest: &Manifest) -> Report<Pla
         rows: refused
             .paths()
             .iter()
-            .map(|(path, refused)| {
+            .map(|(path, declined)| {
                 let row = Row {
                     facts: Some(PathFacts {
                         shape: None,
@@ -82,10 +82,10 @@ pub(crate) fn refused_rows(refused: &Refused, manifest: &Manifest) -> Report<Pla
                             .get(path)
                             .map(|recorded| recorded.owners.clone())
                             .unwrap_or_default(),
-                        origin: Some(refused.origin.clone()),
+                        origin: Some(declined.origin.clone()),
                     }),
                     verdict: PlannedAction::Refuse {
-                        refusal: refused.refusal.clone(),
+                        refusal: declined.refusal.clone(),
                     },
                 };
                 (path.clone(), row)
