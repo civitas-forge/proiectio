@@ -59,13 +59,13 @@ Implementation Guidelines
 
     Every untrusted path enters through one gateway:
 
-    contained_join(dest, rel) -> Result<Utf8PathBuf>
+    contained_normalize(rel) -> Option<Utf8PathBuf>
 
     :: rust ::
 
-    with a normalize-only half, contained_normalize, applying the
-    same rules without the join — decide admits desired keys through
-    it, since a Plan keys actions relative to the destination.
+    which normalizes lexically and answers None for a spelling the
+    contract refuses — decide admits desired keys through it, since a
+    Plan keys actions relative to the destination.
     [./security.lex] section 2 owns the refusal list. Two constraints
     bound the implementation:
 
@@ -280,7 +280,7 @@ Notes
 
     :: notes ::
 
-    1. Candidates for the lexical side of contained_join — the one
+    1. Candidates for the lexical side, contained_normalize — the one
         side the cap-std adoption above does not cover:
         path-absolutize and normpath (dot-component cleanup without
         canonicalizing); relative-path (portable, strictly relative

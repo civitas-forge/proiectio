@@ -11,9 +11,9 @@ use crate::Origin;
 /// aggregates.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum Refusal {
-    /// The projection may not write the path — it is refused by
-    /// [`contained_join`](crate::contained_join), it lies beneath a symlink
-    /// that outlives the plan, or it overlaps the state directory.
+    /// The projection may not write the path — its spelling normalizes to
+    /// nowhere inside the destination, it lies beneath a symlink that
+    /// outlives the plan, or it overlaps the state directory.
     Containment {
         /// The ancestor symlink that put the path out of reach, where one
         /// did; `None` where the spelling itself is what containment
@@ -341,7 +341,7 @@ impl Refused {
     /// built where only the key was known: the origin the plan records for
     /// the key, or for `acting_on` — the planned key being acted on when
     /// the refusal was met — where the plan records none for the key.
-    pub fn sourced_by(mut self, plan: &crate::Plan, acting_on: &Utf8Path) -> Refused {
+    pub(crate) fn sourced_by(mut self, plan: &crate::Plan, acting_on: &Utf8Path) -> Refused {
         for (path, refused) in &mut self.paths {
             refused.origin = plan
                 .origins

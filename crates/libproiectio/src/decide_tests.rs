@@ -902,7 +902,7 @@ fn an_empty_desired_tree_plans_removal_and_release() {
 // --- containment and the state directory ---
 
 #[test]
-fn desired_paths_enter_through_contained_join() {
+fn desired_paths_enter_through_containment_normalization() {
     let entry = file("x\n", false);
 
     let plan = plan(
