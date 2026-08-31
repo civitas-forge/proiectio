@@ -60,7 +60,7 @@ mod tree;
 pub(crate) use act::*;
 pub use apply_report::*;
 pub use archive::*;
-pub use containment::*;
+pub(crate) use containment::*;
 pub use decide::*;
 pub use desired::*;
 pub use entry::*;

@@ -3,21 +3,7 @@ use std::convert::Infallible;
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 
-use crate::{Error, Origin, Refusal, Refused, Result};
-
-/// Normalizes `rel` lexically and joins it onto `dest`, refusing as
-/// [`Refusal::Containment`] any path that would land outside the destination.
-pub fn contained_join(dest: &Utf8Path, rel: &Utf8Path) -> Result<Utf8PathBuf> {
-    match contained_normalize(rel) {
-        Some(normalized) => Ok(dest.join(normalized)),
-        None => Err(Refused::one(
-            rel.to_owned(),
-            Refusal::Containment { through: None },
-            Origin::Caller,
-        )
-        .into()),
-    }
-}
+use crate::{Error, Result};
 
 /// `rel` normalized lexically under the containment contract, or `None`
 /// where it is refused.
@@ -43,7 +29,7 @@ pub(crate) fn contained_normalize(rel: &Utf8Path) -> Option<Utf8PathBuf> {
     Some(Utf8PathBuf::from(kept.join("/")))
 }
 
-pub fn absolutize(path: &Utf8Path) -> Result<Utf8PathBuf> {
+pub(crate) fn absolutize(path: &Utf8Path) -> Result<Utf8PathBuf> {
     if path.is_absolute() {
         return Ok(collapse(path));
     }

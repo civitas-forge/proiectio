@@ -54,7 +54,7 @@ impl Projection {
     /// The state directory's path relative to the target where it lies
     /// inside it — the subtree excluded from classification — and `None`
     /// where it lies outside.
-    pub fn state_prefix(&self) -> Option<&Utf8Path> {
+    pub(crate) fn state_prefix(&self) -> Option<&Utf8Path> {
         match self.state_dir.strip_prefix(&self.target) {
             Ok(prefix) if !prefix.as_str().is_empty() => Some(prefix),
             _ => None,

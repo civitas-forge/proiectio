@@ -1,19 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
-use crate::test_support::paths_of;
-use crate::{Error, RefusalKind};
-
-const DEST: &str = "/projects/dest";
-
-fn dest() -> &'static Utf8Path {
-    Utf8Path::new(DEST)
-}
 
 #[test]
-fn accepted_paths_join_lexically_normalized() {
+fn accepted_paths_normalize_lexically() {
     let cases: &[(&str, &str)] = &[
         // Plain paths pass through.
         ("x", "x"),
@@ -36,19 +28,15 @@ fn accepted_paths_join_lexically_normalized() {
         (".proiectio/manifest.json", ".proiectio/manifest.json"),
     ];
 
-    for (rel, joined) in cases {
-        let got = contained_join(dest(), Utf8Path::new(rel))
-            .unwrap_or_else(|error| panic!("{rel}: expected acceptance, got {error}"));
-        // Built by pushing components, exactly as the join does, so the
-        // expectation holds under Windows separators too.
-        let mut want = Utf8PathBuf::from(DEST);
-        want.extend(joined.split('/'));
-        assert_eq!(got, want, "{rel}");
+    for (rel, normalized) in cases {
+        let got = contained_normalize(Utf8Path::new(rel))
+            .unwrap_or_else(|| panic!("{rel}: expected acceptance"));
+        assert_eq!(got, Utf8PathBuf::from(*normalized), "{rel}");
     }
 }
 
 #[test]
-fn escaping_paths_are_refused_with_the_path_verbatim() {
+fn escaping_paths_normalize_to_nothing() {
     let cases: &[&str] = &[
         // Absolute.
         "/",
@@ -128,19 +116,11 @@ fn escaping_paths_are_refused_with_the_path_verbatim() {
     ];
 
     for rel in cases {
-        let error = contained_join(dest(), Utf8Path::new(rel))
-            .expect_err(&format!("{rel:?}: expected refusal"));
-        assert!(error.is_refusal(), "{rel:?}");
-        match error {
-            Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
-                assert_eq!(
-                    paths_of(&refused),
-                    BTreeSet::from([Utf8PathBuf::from(*rel)]),
-                    "{rel:?}"
-                );
-            }
-            other => panic!("{rel:?}: expected Containment, got {other}"),
-        }
+        assert_eq!(
+            contained_normalize(Utf8Path::new(rel)),
+            None,
+            "{rel:?}: expected refusal"
+        );
     }
 }
 
