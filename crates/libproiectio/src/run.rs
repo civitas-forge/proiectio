@@ -1,24 +1,23 @@
 use std::collections::BTreeSet;
 
-use cap_std::ambient_authority;
 use cap_std::fs_utf8::Dir;
 
 use crate::{
-    Aborted, ApplyReport, BlockMarkers, Desired, DriftPolicy, Error, IoRole, Manifest, Plan,
-    PlanOptions, Projection, RemovalScope, Report, Result, StateLock, apply, block_markers, decide,
+    Aborted, ApplyReport, BlockMarkers, Desired, DriftPolicy, Manifest, Plan, PlanOptions,
+    Projection, RemovalScope, Report, Result, StateDir, StateLock, apply, block_markers, decide,
     decide_removal, load_manifest, observe, require_owner,
 };
 
 /// One write pass over a projection, holding the single-writer guard from
 /// [`Projection::begin`] until it is dropped — other runs meet
-/// [`Error::LockHeld`] meanwhile. [`apply`](Run::apply) takes no plan, so a
-/// run executes only what [`plan`](Run::plan) or
-/// [`plan_removal`](Run::plan_removal) decided here.
+/// [`Error::LockHeld`](crate::Error::LockHeld) meanwhile.
+/// [`apply`](Run::apply) takes no plan, so a run executes only what
+/// [`plan`](Run::plan) or [`plan_removal`](Run::plan_removal) decided here.
 #[derive(Debug)]
 pub struct Run {
     projection: Projection,
     dest: Dir,
-    state: Dir,
+    state: StateDir,
     _lock: StateLock,
     manifest: Manifest,
     plan: Option<Plan>,
@@ -27,13 +26,14 @@ pub struct Run {
 impl Projection {
     /// Starts a write pass: opens the destination, which must already exist,
     /// creates and opens the state directory, takes the single-writer lock,
-    /// and loads the manifest. Fails with [`Error::LockHeld`] where another
-    /// writer holds the lock; acquisition never blocks.
+    /// and loads the manifest. Fails with
+    /// [`Error::LockHeld`](crate::Error::LockHeld) where another writer holds
+    /// the lock; acquisition never blocks.
     pub fn begin(&self) -> Result<Run> {
         let dest = self.open_target()?;
         let state = self.open_or_create_state(&dest)?;
-        let lock = StateLock::acquire(&state, self.state_dir())?;
-        let manifest = load_manifest(&state, self.state_dir())?;
+        let lock = StateLock::acquire(&state)?;
+        let manifest = load_manifest(&state)?;
         Ok(Run {
             projection: self.clone(),
             dest,
@@ -48,21 +48,10 @@ impl Projection {
     /// above it — where a first run finds none. An in-dest state directory
     /// is created and opened through `dest` rather than against ambient
     /// authority.
-    fn open_or_create_state(&self, dest: &Dir) -> Result<Dir> {
-        let io = |source| Error::Io {
-            role: IoRole::StateDirectory,
-            path: self.state_dir().to_owned(),
-            source,
-        };
+    fn open_or_create_state(&self, dest: &Dir) -> Result<StateDir> {
         match self.state_prefix() {
-            Some(prefix) => {
-                dest.create_dir_all(prefix).map_err(io)?;
-                dest.open_dir(prefix).map_err(io)
-            }
-            None => {
-                std::fs::create_dir_all(self.state_dir()).map_err(io)?;
-                Dir::open_ambient_dir(self.state_dir(), ambient_authority()).map_err(io)
-            }
+            Some(prefix) => StateDir::open_or_create_under(dest, self.target(), prefix),
+            None => StateDir::open_or_create(self.state_dir()),
         }
     }
 }
@@ -83,7 +72,8 @@ impl Run {
     /// every refusal. Deciding again discards the kept plan first, so a
     /// decision that fails partway leaves the run with no plan. A name that is
     /// not an owner ([`OWNER_RULE`](crate::OWNER_RULE)) fails with
-    /// [`Error::OwnerNotNamed`], the kept plan already discarded.
+    /// [`Error::OwnerNotNamed`](crate::Error::OwnerNotNamed), the kept plan
+    /// already discarded.
     pub fn plan(&mut self, owner: &str, desired: &Desired, options: PlanOptions) -> Result<&Plan> {
         self.plan = None;
         require_owner(owner)?;
@@ -172,13 +162,7 @@ impl Run {
                 manifest: self.manifest,
             });
         };
-        apply(
-            &self.dest,
-            &self.state,
-            self.projection.state_dir(),
-            &self.manifest,
-            plan,
-        )
+        apply(&self.dest, &self.state, &self.manifest, plan)
     }
 }
 

@@ -51,6 +51,7 @@ mod refusal;
 mod report;
 mod run;
 mod source;
+mod state_dir;
 mod status;
 #[cfg(test)]
 mod test_support;
@@ -77,5 +78,6 @@ pub use refusal::*;
 pub use report::*;
 pub use run::*;
 pub use source::*;
+pub(crate) use state_dir::*;
 pub use status::*;
 pub use tree::*;
