@@ -180,7 +180,7 @@ const ARCHIVE: &[u8] = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03\xff\x00\xfe\x0
 
 #[test]
 fn an_archive_inside_the_tree_is_a_file_copied_byte_for_byte() {
-    // Extraction happens only where it is asked for (`docs/cli-tour.lex`
+    // Extraction happens only where it is asked for (`docs/dev/cli-tour.lex`
     // section 5); an archive met while walking is content like any other.
     let declared = Tree::new().file("vendor/bundle.tar.gz", ARCHIVE);
     let source = declared.materialize();

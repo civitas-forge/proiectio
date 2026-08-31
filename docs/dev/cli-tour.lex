@@ -1,8 +1,7 @@
 The CLI
 
-    Proiectio ships as a Rust library and a CLI with feature parity;
-    every command is a thin wrapper over the plan/apply/status API
-    ([./design.lex]). The split that shapes every invocation: the
+    Proiectio ships as a Rust library and a CLI; every command is a
+    thin wrapper over the plan/apply/status API ([./design.lex]). The split that shapes every invocation: the
     mapping or tree says *what* is projected, the invocation says
     *where* and *how much* — destination, owner, and every
     permission-granting flag live on the command line, never in the
@@ -129,8 +128,8 @@ The CLI
     :: shell ::
 
     Plain status always exits 0 — the report is the product. --check
-    is the gate: it exits 2 when any row is not clean, the same 2 a
-    dry run spends on the same finding, so CI can gate on either. A
+    is the gate: it exits 2 when any row is not clean, so CI can gate
+    on it; a dry run spends the same 2 on its own refusals. A
     named --state-dir that does not exist warns on stderr, and under
     --check fails, so a typo cannot read as healthy.
 
@@ -235,5 +234,21 @@ The CLI
         | --check                  | status only: exit 2 when anything is not clean |
         | --tree <path>            | project a directory or archive                 |
         | --strip <n>              | drop n leading components (archive trees)      |
+        | --max-source-size <b>    | most bytes one write may read from sources     |
 
     :: table header=0 ::
+
+7. Configuration
+
+    config reads, writes and documents the configuration: list, get,
+    set, unset, plus gen (a commented sample file) and schema (a JSON
+    Schema of the config struct). Two keys exist: owner and
+    max_source_size, the defaults behind --owner and
+    --max-source-size; the flags always win.
+
+    Values resolve as compiled defaults, then config files, then
+    PROIECTIO__* environment variables — a doubled underscore
+    separates key segments, keys are case-insensitive, so
+    PROIECTIO__OWNER sets owner. The user scope is the platform
+    config directory, which is also the search path; set and unset
+    with no --scope write there.

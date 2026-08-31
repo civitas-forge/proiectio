@@ -1,7 +1,7 @@
 //! The deciding stage: pure planning, `(desired, manifest, observations) ->
 //! Plan`, with no filesystem access. The written contracts live in
-//! `docs/design.lex` (the classification and action tables) and
-//! `docs/implementation.lex` §3 (what a removal walks and re-checks); this
+//! `docs/dev/design.lex` (the classification and action tables) and
+//! `docs/dev/implementation.lex` §3 (what a removal walks and re-checks); this
 //! module implements them.
 //!
 //! The shape of a plan decision:

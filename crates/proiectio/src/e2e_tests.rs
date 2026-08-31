@@ -1,5 +1,5 @@
 //! The whole life of a destination through the shell, and the transcripts
-//! `docs/cli-tour.lex` sections 3 and 4 print.
+//! `docs/dev/cli-tour.lex` sections 3 and 4 print.
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde_json::Value as JsonValue;
@@ -82,7 +82,7 @@ const CLEARED: &str = "removed    bin/tool              (exec)\n\
                        3 removed\n";
 
 /// The plan once `bin/tool` is edited underneath it and `current` removed,
-/// as `docs/cli-tour.lex` section 2 prints it.
+/// as `docs/dev/cli-tour.lex` section 2 prints it.
 fn refused_plan(deploy: &Utf8Path) -> String {
     format!(
         "would refuse     bin/tool              (drifted) (from mapping {deploy})\n\
@@ -163,7 +163,7 @@ fn a_destination_is_projected_re_projected_refused_forced_and_cleared() {
     assert!(manifest_of(&dest).entries.is_empty());
 }
 
-/// The transcript `docs/cli-tour.lex` section 4 prints for a whole owner.
+/// The transcript `docs/dev/cli-tour.lex` section 4 prints for a whole owner.
 #[test]
 #[serial]
 fn rm_clears_everything_the_named_owner_holds() {
@@ -227,7 +227,7 @@ fn rm_leaves_the_paths_another_owner_holds() {
     );
 }
 
-/// The transcript `docs/cli-tour.lex` section 4 prints for a subset.
+/// The transcript `docs/dev/cli-tour.lex` section 4 prints for a subset.
 #[test]
 #[serial]
 fn rm_of_a_path_subset_leaves_the_rest() {

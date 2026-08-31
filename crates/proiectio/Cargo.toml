@@ -5,6 +5,7 @@ categories = ["command-line-utilities", "filesystem"]
 edition.workspace = true
 keywords = ["cli", "files", "manifest", "projection"]
 license.workspace = true
+readme.workspace = true
 repository.workspace = true
 # Above the workspace's: standout and clapfig both require 1.96, and the
 # library alone holds the workspace floor.

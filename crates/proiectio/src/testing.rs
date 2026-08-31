@@ -100,7 +100,7 @@ pub(crate) fn classified(dest: &Utf8Path) {
     std::fs::remove_file(dest.join("current")).expect("a removed file");
 }
 
-/// The mapping `docs/cli-tour.lex` section 1 writes: an inline file, an
+/// The mapping `docs/dev/cli-tour.lex` section 1 writes: an inline file, an
 /// executable file from a source beside the mapping, and a link.
 pub(crate) fn mapping(dir: &Utf8Path) -> Utf8PathBuf {
     let assets = dir.join("assets");

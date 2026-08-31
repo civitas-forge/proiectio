@@ -181,7 +181,7 @@ Implementation Guidelines
 
     Corollary: the library comes first, and the CLI is tackled after,
     as adapters. Read the standout skill
-    ([../.agents/skills/standout/SKILL.md]) before writing that
+    ([../../.agents/skills/standout/SKILL.md]) before writing that
     layer.
 
     To make the adapter layer trivial, the library's error type is a
