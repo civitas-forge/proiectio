@@ -7,7 +7,7 @@
 // check, `verified_parent`'s no-follow ancestor walk, and `check_expected`'s
 // signature re-check — with the scenario of issue #116 as its first row.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -31,16 +31,27 @@ enum Op {
     RemovePaths(&'static [&'static str]),
 }
 
+// One step of the setup a case records before the run under test.
+enum Setup {
+    // One projection pass, which is what puts the paths in the manifest.
+    Record(&'static str, Tree),
+    // A hand edit between two passes, for a manifest no sequence of passes
+    // reaches on its own.
+    Hand(fn(&Utf8Path)),
+}
+
 // One parity case.
 struct Case {
     // What the case is about, named by every assertion it fails.
     what: &'static str,
-    // Projected before the run under test, one pass per owner, which is what
-    // puts the paths in the manifest.
-    recorded: Vec<(&'static str, Tree)>,
-    // Run against the destination after those passes: the hand edit whose
+    // Run before the run under test, in order.
+    recorded: Vec<Setup>,
+    // Run against the destination after those steps: the hand edit whose
     // effect on the two verdicts the case is about.
     by_hand: fn(&Utf8Path),
+    // Whether the state directory lies inside the destination, which is what
+    // gives the projection a state prefix to refuse paths against.
+    state_in_dest: bool,
     op: Op,
     drift: DriftPolicy,
     // Every path the plan states, with the verdict it reaches. The apply
@@ -54,6 +65,7 @@ impl Case {
             what,
             recorded: Vec::new(),
             by_hand: |_| {},
+            state_in_dest: false,
             op,
             drift: DriftPolicy::Refuse,
             plans: Vec::new(),
@@ -61,7 +73,17 @@ impl Case {
     }
 
     fn recording(mut self, owner: &'static str, tree: Tree) -> Case {
-        self.recorded.push((owner, tree));
+        self.recorded.push(Setup::Record(owner, tree));
+        self
+    }
+
+    fn then_by_hand(mut self, edit: fn(&Utf8Path)) -> Case {
+        self.recorded.push(Setup::Hand(edit));
+        self
+    }
+
+    fn with_state_in_dest(mut self) -> Case {
+        self.state_in_dest = true;
         self
     }
 
@@ -113,10 +135,18 @@ fn parity(case: &Case) {
     let what = case.what;
     let dest = Tree::new().materialize();
     let state = Tree::new().materialize();
+    let state_dir = (!case.state_in_dest).then(|| state.root());
     let projection =
-        Projection::new(dest.root(), Some(state.root())).expect("a projection over the fixtures");
+        Projection::new(dest.root(), state_dir).expect("a projection over the fixtures");
 
-    for (owner, tree) in &case.recorded {
+    for step in &case.recorded {
+        let (owner, tree) = match step {
+            Setup::Record(owner, tree) => (owner, tree),
+            Setup::Hand(edit) => {
+                edit(dest.root());
+                continue;
+            }
+        };
         let mut run = projection.begin().expect("begin a recording pass");
         run.plan(
             owner,
@@ -307,6 +337,50 @@ fn cases() -> Vec<Case> {
         .recording(OWNER, Tree::new().file("conf", "mine\n"))
         .plans("conf", PlannedAction::Remove)
         .plans("conf/rc", PlannedAction::Write),
+        // A recorded link the walk follows out to a node another action of
+        // the same plan claims. Applying runs the removal first, so the skip
+        // would meet a path the run had just deleted; both keys refuse
+        // instead (issue #129).
+        Case::new(
+            "a removal landing where a desired path stands",
+            Op::Write(Tree::new().file("real/x.txt", "kept\n")),
+        )
+        .recording(
+            OWNER,
+            Tree::new()
+                .file("logs/x.txt", "kept\n")
+                .file("real/x.txt", "kept\n"),
+        )
+        .then_by_hand(|root| {
+            fs::remove_dir_all(root.join("logs")).expect("remove the recorded directory");
+        })
+        .recording("other", Tree::new().symlink("logs", "real"))
+        .refuses(
+            "logs/x.txt",
+            Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("real/x.txt")]),
+            },
+        )
+        .refuses(
+            "real/x.txt",
+            Refusal::TreeConflict {
+                paths: BTreeSet::from([Utf8PathBuf::from("logs/x.txt")]),
+            },
+        ),
+        // The same walk, landing inside the state subtree. Before deciding
+        // graded the landing, the plan aimed a removal at the state file and
+        // applying deleted it: act knows no state prefix, so nothing behind
+        // deciding would have stopped it (issue #129).
+        Case::new("a removal landing inside the state subtree", Op::Remove)
+            .with_state_in_dest()
+            .recording(OWNER, Tree::new().file("logs/private-state", "secret\n"))
+            .then_by_hand(|root| {
+                fs::remove_dir_all(root.join("logs")).expect("remove the recorded directory");
+                fs::write(root.join(".proiectio/private-state"), "secret\n")
+                    .expect("plant the state file the link points at");
+            })
+            .recording("other", Tree::new().symlink("logs", ".proiectio"))
+            .refuses("logs/private-state", containment("logs")),
         // --- act's signature re-check (`check_expected`) ---
         //
         // Nothing moved between the plan and the apply, so every re-check

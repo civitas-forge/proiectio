@@ -314,7 +314,10 @@ fn plan_actions(
 
     // Recorded paths the desired tree no longer names, judged before the
     // admitted paths: a removal vacates its path, and act runs removals first.
-    let mut vacated: BTreeSet<Utf8PathBuf> = BTreeSet::new();
+    // Each carries the location it acts at, which is its key unless the walk
+    // below came out somewhere else; an action that touches no node carries
+    // none.
+    let mut orphans: Vec<(Utf8PathBuf, Action, Option<Utf8PathBuf>)> = Vec::new();
     for (path, recorded) in &manifest.entries {
         if named.contains(path)
             || in_state(path, state_prefix)
@@ -332,34 +335,83 @@ fn plan_actions(
         // deepest-first, so a recorded link above this path is still standing
         // when apply's own walk reaches it. Following one is what
         // `docs/implementation.lex` section 3 says a removal does, which puts
-        // the node it re-checks at the location the walk came out at.
-        let action = if recorded.owners.len() > 1 {
-            Action::Release
+        // the node it re-checks at the location the walk came out at — and
+        // that location answers to containment as the key does, since the
+        // state subtree is out of the projection's reach however a walk
+        // arrives at it.
+        let (action, at) = if recorded.owners.len() > 1 {
+            (Action::Release, None)
         } else {
             match walked_ancestry(path, manifest, observations, &BTreeSet::new(), false) {
-                Err(refusal) => refuse(refusal),
+                Err(refusal) => (refuse(refusal), None),
+                Ok(Some(landing)) if overlaps_state(&landing.at, state_prefix) => (
+                    refuse(Refusal::Containment {
+                        through: landing.through,
+                    }),
+                    None,
+                ),
                 Ok(landing) => {
-                    let landing = landing.map(|landing| landing.at);
-                    let observed = landing.as_ref().and_then(|at| observations.paths.get(at));
+                    let at = landing.map_or_else(|| path.clone(), |landing| landing.at);
+                    let observed = observations.paths.get(&at);
                     let state = recorded_state(recorded, observed);
-                    let at = landing.as_deref().unwrap_or(path);
-                    drifted_directory(
+                    let action = drifted_directory(
                         owner,
-                        at,
+                        &at,
                         recorded,
                         manifest,
                         observations,
                         options.drift,
                         || Action::RemoveDirectory,
                     )
-                    .unwrap_or_else(|| orphan_action(recorded, observed, state, options.drift))
+                    .unwrap_or_else(|| orphan_action(recorded, observed, state, options.drift));
+                    let claims = !matches!(action, Action::Refuse { .. });
+                    (action, claims.then_some(at))
                 }
             }
         };
+        orphans.push((path.clone(), action, at));
+    }
+
+    // One physical node, one action. A removal that followed a recorded link
+    // acts where it came out rather than at its key, so two keys can name one
+    // node: apply would carry out the first and refuse the second half-way
+    // through the run. Nothing orders them — the reading `docs/design.lex`
+    // section 2 gives two desired keys over one location — so both refuse.
+    let mut claimed: BTreeMap<&Utf8Path, BTreeSet<Utf8PathBuf>> = BTreeMap::new();
+    for (path, _, at) in &orphans {
+        if let Some(at) = at {
+            claimed
+                .entry(at.as_path())
+                .or_default()
+                .insert(path.clone());
+        }
+    }
+    for path in admitted.keys() {
+        claimed
+            .entry(path.as_path())
+            .or_default()
+            .insert(path.clone());
+    }
+    let mut collided: BTreeMap<Utf8PathBuf, BTreeSet<Utf8PathBuf>> = BTreeMap::new();
+    for keys in claimed.into_values().filter(|keys| keys.len() > 1) {
+        for key in &keys {
+            let others = keys.iter().filter(|&other| other != key).cloned().collect();
+            collided.insert(key.clone(), others);
+        }
+    }
+    let conflict = |paths: &BTreeSet<Utf8PathBuf>| {
+        refuse(Refusal::TreeConflict {
+            paths: paths.clone(),
+        })
+    };
+
+    let mut vacated: BTreeSet<Utf8PathBuf> = BTreeSet::new();
+    for (path, action, _) in orphans {
+        let action = collided.get(&path).map_or(action, &conflict);
         if matches!(action, Action::Remove { .. } | Action::RemoveDirectory) {
             vacated.insert(path.clone());
         }
-        actions.insert(path.clone(), action);
+        actions.insert(path, action);
     }
 
     // Decided against the removals above rather than inserted among them: a
@@ -367,6 +419,10 @@ fn plan_actions(
     // whether they empty it is what `directory_in_the_way` reads.
     let mut desired_actions: Vec<(Utf8PathBuf, Action)> = Vec::new();
     for (path, entry) in &admitted {
+        if let Some(paths) = collided.get(path) {
+            desired_actions.push((path.clone(), conflict(paths)));
+            continue;
+        }
         let action = match link_refusal(
             path,
             entry,
