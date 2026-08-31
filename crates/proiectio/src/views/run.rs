@@ -1,41 +1,51 @@
-//! The document a write pass renders — `write`'s and `rm`'s alike — and the
-//! lines its template lays out.
+//! The document a write pass renders — `write`'s and `rm`'s alike — the lines
+//! its template lays out, and the columns `--output csv` writes.
 //!
 //! The lines reach the template through Standout's context injection, which
-//! structured modes skip, so `--output json` stays the library's own report.
+//! structured modes skip, so `--output json` stays the library's own rows.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::iter;
 
-use camino::Utf8Path;
+use camino::Utf8PathBuf;
 use libproiectio::{
-    ApplyReport, BlockFault, Dropped, Error, Manifest, PathFacts, PlannedAction, RefusalKind,
-    Refused, Report, Row, Stopped,
+    ApplyOutcome, ApplyReport, BlockFault, Dropped, Error, Manifest, PathFacts, PlannedAction,
+    RefusalKind, Refused, Report, Row, Stopped,
 };
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use standout::AmbiguousWidth;
 use standout::tabular::visible_width_with_policy;
+use standout::{CsvProjection, StructuredOutputProjection};
 
 use crate::app::verbatim;
+use crate::views::cells;
 use crate::views::pad;
 
 /// Rows a run states without having acted on them, what apply did, or — where
-/// a run stopped part-way — both at once; untagged, so structured output is
-/// the library's own either way.
+/// a run stopped part-way — both at once.
+///
+/// One shape for the three: `phase` names the tense, and every arm states its
+/// rows at `rows` — every path the pass has a verdict for, refusals included.
+/// A reader branches on the field rather than on which keys the document
+/// happens to carry, and one CSV projection selects the rows of all three. The
+/// verdict vocabularies stay per-tense — a plan says `Write` where a run says
+/// `Written` — which is what `phase` is there to tell apart.
 #[derive(Serialize)]
-#[serde(untagged)]
+#[serde(tag = "phase", rename_all = "snake_case")]
 pub(crate) enum RunView {
     Planned(PlannedRun),
-    Applied(Box<ApplyReport>),
+    Applied(Box<AppliedRun>),
     Aborted(Box<AbortedRun>),
 }
 
+/// The tense [`RunView::Planned`] names itself by, which is the one tense whose
+/// rows nothing has acted on.
+const PLANNED: &str = "planned";
+
 /// The rows a pass states rather than performs — a dry run's whole plan, or
 /// the paths a refusal declined — and the archive members `strip` erased on
-/// the way to the desired tree. Apply pairs the same two on [`ApplyReport`];
-/// a plan has no such struct to sit on, so the rows flatten into this one and
-/// both documents carry `dropped` at their top level.
+/// the way to the desired tree.
 #[derive(Serialize)]
 pub(crate) struct PlannedRun {
     #[serde(flatten)]
@@ -59,6 +69,38 @@ impl PlannedRun {
         PlannedRun {
             report: refused_rows(refused, manifest),
             dropped,
+        }
+    }
+}
+
+/// What a run applied: the rows, the archive members `strip` erased, and the
+/// manifest the run decided on. [`ApplyReport`] nests its rows a level down,
+/// under `report`; here they flatten, so an applied document states its rows
+/// where a planned one states them.
+#[derive(Serialize)]
+pub(crate) struct AppliedRun {
+    #[serde(flatten)]
+    pub(crate) report: Report<ApplyOutcome>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) dropped: BTreeSet<Dropped>,
+    pub(crate) manifest: Manifest,
+}
+
+/// The one place an [`ApplyReport`] becomes a CLI document, for the applied
+/// tense and the stopped one alike: it destructures the library's report whole,
+/// so a field the library adds fails to compile here rather than going missing
+/// from both documents.
+impl From<ApplyReport> for AppliedRun {
+    fn from(applied: ApplyReport) -> AppliedRun {
+        let ApplyReport {
+            report,
+            dropped,
+            manifest,
+        } = applied;
+        AppliedRun {
+            report,
+            dropped,
+            manifest,
         }
     }
 }
@@ -112,26 +154,46 @@ pub(crate) enum StoppedAt {
     Recording,
 }
 
-/// The document a run that could not finish renders: what it applied before it
-/// stopped, and what stopped it — the keys a refusal declined, or the sentence
-/// a failure would otherwise have been reported with alone. `aborted` marks it
-/// for a reader that goes no further than the top level: the destination holds
-/// the applied rows, which no plan document of the same shape would say, and
-/// `stopped_at` says whether any action is missing from them.
+/// One verdict of a run that could not finish: what an action did to the path,
+/// or — for a key the run declined — the refusal, in the words the planning
+/// stages state a refusal in, so one refusal reads alike whichever stage met
+/// it.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(crate) enum StoppedVerdict {
+    Applied(ApplyOutcome),
+    Refused(PlannedAction),
+}
+
+/// The document a run that could not finish renders: every path it has a
+/// verdict for — what it applied, and the keys a refusal declined — and, past
+/// the rows, what stopped it. The `aborted` phase says the destination holds
+/// the applied rows, and `stopped_at` says whether any action is missing from
+/// them.
+///
+/// The refused keys are rows of this one sequence rather than a second one
+/// beside it: a reader of any format, `--output csv` included, reads the whole
+/// per-path story of the run from `rows` alone. What stopped the run is not a
+/// path, so `stopped`, `recorded` and `stopped_at` stay beside the rows and out
+/// of the CSV; a structured caller reads those from the stderr sentences
+/// [`warnings`] states them in, and the exit code says which verdict the run
+/// left with.
 #[derive(Serialize)]
 pub(crate) struct AbortedRun {
-    /// What the run applied, flattened so its rows sit under the `report` key
-    /// a finished run's rows sit under.
+    /// Every path the run has a verdict for, in path order: the actions that
+    /// landed, and the keys the run refused and acted on none of.
     #[serde(flatten)]
-    pub(crate) applied: ApplyReport,
-    /// The keys the run refused; it acted on none of them. Empty where a
-    /// failure rather than a refusal stopped the run.
-    #[serde(skip_serializing_if = "Report::is_empty")]
-    pub(crate) refused: Report<PlannedAction>,
+    pub(crate) report: Report<StoppedVerdict>,
+    /// The archive members `strip` erased, which reached no path and so are no
+    /// rows.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) dropped: BTreeSet<Dropped>,
+    /// The manifest the run decided on.
+    pub(crate) manifest: Manifest,
     /// Whether the state directory records the applied rows, which only a run
     /// stopped at an action leaves it doing: either other phase failed writing
-    /// the manifest, so the destination holds writes nothing on disk records
-    /// and a later run reads them as foreign.
+    /// the manifest, so what the destination holds went unrecorded and a later
+    /// run judges it against the record that stood before this one.
     pub(crate) recorded: bool,
     /// What stopped the run and what stopped its record, where the rows do
     /// not already say it: the failure a non-refusal stopped with, and the
@@ -141,8 +203,6 @@ pub(crate) struct AbortedRun {
     pub(crate) stopped: Vec<String>,
     /// Which half of the run stopped it.
     pub(crate) stopped_at: StoppedAt,
-    /// Always true: only a run that could not finish renders this document.
-    pub(crate) aborted: bool,
 }
 
 impl AbortedRun {
@@ -165,15 +225,54 @@ impl AbortedRun {
             ),
             Stopped::Recording(error) => (StoppedAt::Recording, vec![unrecorded(error)]),
         };
+        let AppliedRun {
+            report,
+            dropped,
+            manifest,
+        } = AppliedRun::from(applied);
         AbortedRun {
-            applied,
-            refused,
+            report: Report {
+                rows: ran(report, refused),
+            },
+            dropped,
+            manifest,
             recorded: stopped.recorded(),
             stopped: stated,
             stopped_at,
-            aborted: true,
         }
     }
+}
+
+/// The two halves of a stopped run's per-path story as one sequence: the rows
+/// its actions landed, and the rows it refused, each keeping the verdict its
+/// own stage stated. The two name disjoint paths — a run acts on nothing it
+/// refuses — and a key that reached both stages reads as the refusal, which is
+/// what the run left the path at.
+fn ran(
+    applied: Report<ApplyOutcome>,
+    refused: Report<PlannedAction>,
+) -> BTreeMap<Utf8PathBuf, Row<StoppedVerdict>> {
+    let mut rows: BTreeMap<Utf8PathBuf, Row<StoppedVerdict>> =
+        carried(applied, StoppedVerdict::Applied).collect();
+    rows.extend(carried(refused, StoppedVerdict::Refused));
+    rows
+}
+
+/// One stage's rows under the [`StoppedVerdict`] arm that stage's verdicts
+/// state themselves in.
+fn carried<V>(
+    report: Report<V>,
+    stated: fn(V) -> StoppedVerdict,
+) -> impl Iterator<Item = (Utf8PathBuf, Row<StoppedVerdict>)> {
+    report.rows.into_iter().map(move |(path, row)| {
+        (
+            path,
+            Row {
+                verdict: stated(row.verdict),
+                facts: row.facts,
+            },
+        )
+    })
 }
 
 /// The sentence a failure reaches the reader by, and `None` for a refusal,
@@ -561,40 +660,22 @@ const DROPPED: &str = "dropped";
 
 /// The lines `run.jinja` prints for one write-pass document.
 pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth, forced: bool) -> RunLines {
-    // Where the rows sit is what tells the tenses apart: a plan flattens its
-    // report into the document, so its rows are at the top level, and both an
-    // apply and a run that stopped nest theirs under `report`. Nothing else in
-    // the document divides them — `dropped` rides the top level of every one of
-    // the three, and is empty in each whenever no archive was stripped.
-    let (report, planning) = match document.get("report") {
-        Some(applied) => (applied, false),
-        None => (document, true),
-    };
-    let Some(rows) = report.get("rows").and_then(JsonValue::as_array) else {
+    // The document names its own tense, and every tense states its rows at
+    // `rows`: a plan says `Write` where a run says `Written`, and nothing about
+    // where a key sits says which of the two this is.
+    let planning = document.get("phase").and_then(JsonValue::as_str) == Some(PLANNED);
+    let Some(rows) = document.get("rows").and_then(JsonValue::as_array) else {
         return RunLines::default();
     };
-    // A run that stopped part-way states the keys it refused beside the rows
-    // it applied. Both groups are rows of the same shape, so they lay out as
-    // one table in path order, the way every other report is laid out; only
-    // the tense tells the two apart.
-    let refused = document
-        .get("refused")
-        .and_then(|refused| refused.get("rows"))
-        .and_then(JsonValue::as_array);
-
-    let mut merged: Vec<&JsonValue> = rows.iter().chain(refused.into_iter().flatten()).collect();
-    // Ordered as the library orders the rows of each sequence, which is by
-    // path rather than by the string spelling it: `/etc/passwd` sorts before
-    // `../ESCAPE/x` as paths and after it as strings. A document carrying one
-    // sequence is already in this order, and sorting leaves it alone.
-    merged.sort_by(|one, other| keyed(one).cmp(keyed(other)));
-    let paths: Vec<(String, &JsonValue)> = merged
-        .into_iter()
+    // The keys a stopped run refused are rows of that one sequence, in the
+    // path order the library states every report in, so they lay out in the
+    // same table as the rows it applied; only the tense tells the two apart.
+    let paths: Vec<(String, &JsonValue)> = rows
+        .iter()
         .filter_map(|row| Some((verbatim(row.get("path")?.as_str()?), row)))
         .collect();
-    // A plan flattens its rows into the document that carries `dropped`, and
-    // an apply nests its rows under `report` beside it, so drops read from
-    // the top level in both tenses.
+    // A dropped member reached no path, so it is no row of the report; it
+    // rides beside the rows in every tense.
     let dropped: Vec<(String, String)> = document
         .get("dropped")
         .and_then(JsonValue::as_array)
@@ -699,44 +780,82 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth, forced: bool) -
 /// actions no destination is missing.
 fn closing(tally: &Tally, document: &JsonValue) -> String {
     let counts = tally.summary();
-    match document.get("stopped_at").and_then(JsonValue::as_str) {
-        Some("applying" | "applying_and_recording") => format!(
-            "{counts} — the run stopped part-way through the plan, and what it applied stands"
-        ),
-        Some("recording") => {
-            format!("{counts} — the run applied its whole plan and could not record it")
-        }
-        _ => counts,
+    match reached(document) {
+        Some(stage) => format!("{counts} — {stage}"),
+        None => counts,
     }
 }
 
-/// The path a row states, which orders the rows of a document carrying more
-/// than one sequence of them. A row stating none sorts first and renders as
-/// the empty path it is, rather than dropping out of the table.
-fn keyed(row: &JsonValue) -> &Utf8Path {
-    Utf8Path::new(
-        row.get("path")
-            .and_then(JsonValue::as_str)
-            .unwrap_or_default(),
-    )
+/// How far a run that could not finish got, in the split the library's own
+/// `Stopped` makes; `None` for a document stating no stage, which is every
+/// document but a stopped run's.
+fn reached(document: &JsonValue) -> Option<&'static str> {
+    match document.get("stopped_at").and_then(JsonValue::as_str)? {
+        "applying" | "applying_and_recording" => Some(PART_WAY),
+        "recording" => Some(WHOLE_PLAN),
+        _ => None,
+    }
+}
+
+const PART_WAY: &str = "the run stopped part-way through the plan, and what it applied stands";
+const WHOLE_PLAN: &str = "the run applied its whole plan and could not record it";
+
+/// What a run whose manifest never reached the state directory leaves behind,
+/// which no row of the report says: the record in the state directory is the
+/// one the run found there, so it says nothing of what this run applied, and
+/// that older record is what the next run judges the destination against.
+///
+/// Which classification each path then reads as is not stated here. The save
+/// replaces the manifest whole, so a path this run overwrote, skipped or
+/// removed can be recorded already and read as clean, drifted or missing; only
+/// a path nothing recorded before reads as foreign. Deriving the per-path
+/// answer would mean keeping the pre-run manifest to replay the next run's
+/// deciding against, which is recovery machinery this CLI does not carry.
+const UNRECORDED: &str = "nothing in the state directory records what this run applied, \
+     so the next run over this destination judges it against the record that stood \
+     before the run";
+
+/// The run-level facts a stopped run states on stderr rather than in the rows:
+/// how far it got, what stopped it, and — where the manifest never landed —
+/// what the destination is left holding. Empty for every document that is not
+/// a stopped run's.
+///
+/// These are the facts the records cannot carry. A CSV record is one path and
+/// these are about the run, and the exit code separates a failure from a
+/// refusal without saying which half of the run met it; a caller reading only
+/// stdout would take a run that wrote its plan and lost the manifest for one
+/// that finished.
+pub(crate) fn warnings(document: &JsonValue) -> Vec<String> {
+    if document.get("stopped_at").is_none() {
+        return Vec::new();
+    }
+    let mut stated: Vec<String> = reached(document).map(str::to_owned).into_iter().collect();
+    stated.extend(stopped(document).map(str::to_owned));
+    if document.get("recorded").and_then(JsonValue::as_bool) == Some(false) {
+        stated.push(UNRECORDED.to_owned());
+    }
+    stated
 }
 
 /// What a run that stopped says past its counts: the failure that stopped it
 /// where no refused row states it, and what the state directory does not
-/// record. These reach the reader here because a rendered document leaves no
-/// diagnostic on stderr for them to reach it by.
+/// record. These reach a reader of the rendered output here, in the body,
+/// rather than on the stderr channel [`warnings`] states them on: only a
+/// structured mode leaves the body unable to carry them.
 fn stopping(document: &JsonValue) -> Vec<String> {
+    stopped(document).map(verbatim).collect()
+}
+
+/// The sentences a stopped run states past its rows, as the document spells
+/// them: the failure that stopped it, and the record it could not write.
+fn stopped(document: &JsonValue) -> impl Iterator<Item = &str> {
     document
         .get("stopped")
         .and_then(JsonValue::as_array)
-        .map(|stated| {
-            stated
-                .iter()
-                .filter_map(JsonValue::as_str)
-                .map(verbatim)
-                .collect()
-        })
+        .map(Vec::as_slice)
         .unwrap_or_default()
+        .iter()
+        .filter_map(JsonValue::as_str)
 }
 
 /// What one dropped member's row says: the `strip` count that left it with no
@@ -777,6 +896,95 @@ fn named(verdict: Option<&JsonValue>) -> (&str, Option<&JsonValue>) {
             .next()
             .map_or(("", None), |(name, body)| (name.as_str(), Some(body))),
         _ => ("", None),
+    }
+}
+
+/// The columns `--output csv` writes for a write pass, one record per path
+/// under a header that does not move: the rows sit at `rows` in every tense, so
+/// one projection selects a plan's, an apply's and a stopped run's alike — and
+/// a stopped run states the keys it refused among those rows, so the CSV names
+/// the paths the run failed on rather than only the ones it got through.
+///
+/// The verdict cell is the variant name, and `detail` is what that variant
+/// carries — `Overwrite` its reason, `Refuse` its refusal — which has no cell
+/// of its own. It is empty for the verdicts that carry nothing.
+///
+/// The last cell is the one run-level fact every record carries: `phase`, the
+/// tense the document names itself by, the same word in every record of one
+/// run. It is here because it is what reads the verdict cell: the vocabularies
+/// are per-tense and both of them spell `NotRecorded`, so a dry run's record
+/// and an applied run's can otherwise be the same bytes.
+///
+/// The rest of what a document states that is not about one path takes no
+/// record here. A dropped archive member reached no path in the destination, so
+/// it has no path cell to fill. `manifest` states the destination rather than
+/// this run. And `stopped`, `recorded` and `stopped_at` are diagnostics of the
+/// run, which reach a structured caller on stderr, in the sentences
+/// [`warnings`] states — beside the exit code, 1 for a failure and 2 for a
+/// refusal whatever the output mode.
+pub(crate) fn csv() -> StructuredOutputProjection {
+    StructuredOutputProjection::csv(
+        CsvProjection::builder("rows")
+            .column(cells::column("path"))
+            .derived_column(cells::header("verdict"), |row, _| {
+                cells::cell(Some(named(row.get("verdict")).0.to_owned()))
+            })
+            .derived_column(cells::header("detail"), |row, _| cells::cell(detail(row)))
+            .derived_column(cells::header("shape"), |row, _| {
+                cells::cell(cells::shape(row))
+            })
+            .derived_column(cells::header("executable"), |row, _| {
+                cells::cell(cells::executable(row))
+            })
+            .derived_column(cells::header("target"), |row, _| cells::cell(target(row)))
+            .derived_column(cells::header("owners"), |row, _| {
+                cells::cell(cells::owners(row))
+            })
+            .derived_column(cells::header("origin"), |row, _| cells::cell(origin(row)))
+            .derived_column(cells::header("phase"), |_, document| {
+                cells::cell(
+                    document
+                        .get("phase")
+                        .and_then(JsonValue::as_str)
+                        .map(str::to_owned),
+                )
+            })
+            .build(),
+    )
+}
+
+/// What the row's verdict carries past its name; nothing for a verdict that is
+/// a name alone.
+fn detail(row: &JsonValue) -> Option<String> {
+    flat(named(row.get("verdict")).1?)
+}
+
+/// Where the row's link points, for a row stating a link that names one.
+fn target(row: &JsonValue) -> Option<String> {
+    Some(
+        row.get("facts")?
+            .get("shape")?
+            .get("Symlink")?
+            .get("target")?
+            .as_str()?
+            .to_owned(),
+    )
+}
+
+/// Which source named the path; nothing for a row stating none.
+fn origin(row: &JsonValue) -> Option<String> {
+    flat(row.get("facts")?.get("origin")?)
+}
+
+/// One structured value in one cell: a bare name as the name, and anything
+/// carrying fields as the JSON it is stated in. Nothing spells the fields out,
+/// because what a payload carries differs by variant and a column cannot hold
+/// one shape per variant; the JSON keeps every one of them readable back.
+fn flat(value: &JsonValue) -> Option<String> {
+    match value {
+        JsonValue::Null => None,
+        JsonValue::String(name) => Some(name.clone()),
+        carried => serde_json::to_string(carried).ok(),
     }
 }
 

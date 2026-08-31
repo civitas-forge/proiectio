@@ -60,6 +60,16 @@ pub(crate) fn stated<'a>(rows: &'a JsonValue, path: &str) -> &'a JsonValue {
     row(rows, path).unwrap_or_else(|| panic!("a row for {path}"))
 }
 
+/// The document a write pass publishes over the fields one of its tenses
+/// states: the same fields, under the `phase` naming that tense.
+pub(crate) fn published(phase: &str, mut fields: JsonValue) -> JsonValue {
+    fields
+        .as_object_mut()
+        .expect("the fields a tense states")
+        .insert("phase".to_owned(), JsonValue::String(phase.to_owned()));
+    fields
+}
+
 pub(crate) fn modified(path: &Utf8Path) -> std::time::SystemTime {
     std::fs::metadata(path)
         .expect("a projected path")

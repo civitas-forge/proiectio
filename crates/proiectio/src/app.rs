@@ -4,10 +4,12 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use anyhow::Result;
+use clap::ArgMatches;
 use minijinja::Value;
-use standout::cli::App;
+use serde_json::Value as JsonValue;
+use standout::cli::{App, CommandConfig, CommandContext, HookError};
 use standout::context::RenderContext;
-use standout::{EmbeddedTemplates, MiniJinjaEngine, embed_styles, embed_templates};
+use standout::{EmbeddedTemplates, MiniJinjaEngine, OutputMode, embed_styles, embed_templates};
 
 use crate::exit::Verdict;
 use crate::handlers;
@@ -102,6 +104,72 @@ pub(crate) fn engine() -> MiniJinjaEngine {
     engine
 }
 
+/// How `write` and `rm` present one write pass: the template that lays their
+/// rows out, the projection that writes the same rows as CSV records, and the
+/// stderr channel a stopped run's run-level facts take.
+///
+/// Both commands render one [`views::RunView`], so both are configured here
+/// rather than at each call: a channel added to one of them and forgotten at
+/// the other is a difference no reader of either command's output could
+/// explain.
+pub(crate) fn run_command<H>(config: CommandConfig<H>) -> CommandConfig<H> {
+    config
+        .template("run.jinja")
+        .structured_output_projection(views::run_csv())
+        .post_dispatch(stated_on_stderr)
+}
+
+/// Writes what a stopped run's records cannot carry — how far the run got,
+/// what stopped it, and whether the state directory records what it applied —
+/// as warnings, which `main` drains to stderr after the run's own output.
+///
+/// Only for the modes that serialize the document: the template already lays
+/// these sentences out for a reader of the rendered output, and saying them
+/// twice would have that reader looking for two failures.
+fn stated_on_stderr(
+    matches: &ArgMatches,
+    _ctx: &CommandContext,
+    document: JsonValue,
+) -> Result<JsonValue, HookError> {
+    if serializing(matches) {
+        for stated in views::run_warnings(&document) {
+            standout::warnings::push_warning(stated);
+        }
+    }
+    Ok(document)
+}
+
+/// Whether `--output` named a mode that serializes the document rather than
+/// rendering the template.
+///
+/// The mode is the framework's own argument, read back off the parsed command
+/// line because a handler and its hooks are handed no other way to it. The
+/// tests over an aborted run under `--output json` and `--output csv` are what
+/// hold this to the name Standout parses the flag under.
+fn serializing(matches: &ArgMatches) -> bool {
+    matches
+        .try_get_one::<String>(OUTPUT_MODE)
+        .ok()
+        .flatten()
+        .is_some_and(|named| mode(named).is_structured())
+}
+
+/// The argument Standout parses `--output` into.
+const OUTPUT_MODE: &str = "_output_mode";
+
+fn mode(named: &str) -> OutputMode {
+    match named {
+        "term" => OutputMode::Term,
+        "text" => OutputMode::Text,
+        "term-debug" => OutputMode::TermDebug,
+        "json" => OutputMode::Json,
+        "yaml" => OutputMode::Yaml,
+        "xml" => OutputMode::Xml,
+        "csv" => OutputMode::Csv,
+        _ => OutputMode::Auto,
+    }
+}
+
 pub(crate) fn build(verdict: Verdict) -> Result<App> {
     let forced = Forced::default();
     let hints = forced.clone();
@@ -123,10 +191,8 @@ pub(crate) fn build(verdict: Verdict) -> Result<App> {
         .context_fn("status", |context: &RenderContext| {
             Value::from_serialize(views::status_lines(context.data, context.ambiguous_width()))
         })
-        .command_with("write", handlers::write__handler, |cfg| {
-            cfg.template("run.jinja")
-        })?
-        .command_with("rm", handlers::rm__handler, |cfg| cfg.template("run.jinja"))?
+        .command_with("write", handlers::write__handler, run_command)?
+        .command_with("rm", handlers::rm__handler, run_command)?
         .command_with("status", handlers::status__handler, |cfg| {
             cfg.template("status.jinja")
                 .structured_output_projection(views::status_csv())

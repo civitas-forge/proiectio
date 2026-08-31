@@ -28,7 +28,7 @@ fn records(rows: JsonValue) -> JsonValue {
 
 fn planned(rows: JsonValue) -> RunLines {
     lines(
-        &json!({ "rows": records(rows) }),
+        &json!({ "phase": "planned", "rows": records(rows) }),
         AmbiguousWidth::Narrow,
         false,
     )
@@ -36,7 +36,7 @@ fn planned(rows: JsonValue) -> RunLines {
 
 fn applied(rows: JsonValue) -> RunLines {
     lines(
-        &json!({ "report": { "rows": records(rows) } }),
+        &json!({ "phase": "applied", "rows": records(rows) }),
         AmbiguousWidth::Narrow,
         false,
     )
@@ -71,6 +71,17 @@ fn refused_by(refusal: &JsonValue, origin: &Origin) -> RunLines {
 /// A library value as the context provider hands it over.
 fn serialized(value: impl Serialize) -> JsonValue {
     serde_json::to_value(value).expect("a serializable library value")
+}
+
+/// The document a plan publishes, as the renderer and a structured mode read
+/// it: the arm's own fields under the phase the arm names.
+fn published_plan(planned: PlannedRun) -> JsonValue {
+    serialized(RunView::Planned(planned))
+}
+
+/// The same for a run that could not finish.
+fn published_abort(aborted: AbortedRun) -> JsonValue {
+    serialized(RunView::Aborted(Box::new(aborted)))
 }
 
 fn only(document: RunLines) -> RowView {
@@ -684,8 +695,7 @@ fn a_document_that_names_no_rows_prints_nothing() {
 /// carried it and the strip count that erased it. The path column is the
 /// member as the archive spells it, not a location in the destination.
 ///
-/// A plan flattens its rows beside `dropped` and an apply nests them under
-/// `report`, so the drop reads from the top level in both tenses.
+/// The drop rides beside the rows in every tense, so both documents print it.
 #[test]
 fn a_dropped_member_prints_a_row_naming_the_archive() {
     let dropped = json!([serialized(Dropped {
@@ -698,8 +708,8 @@ fn a_dropped_member_prints_a_row_naming_the_archive() {
         },
     })]);
     for document in [
-        json!({ "rows": [], "dropped": dropped }),
-        json!({ "report": { "rows": [] }, "dropped": dropped }),
+        json!({ "phase": "planned", "rows": [], "dropped": dropped }),
+        json!({ "phase": "applied", "rows": [], "dropped": dropped }),
     ] {
         let row = only(lines(&document, AmbiguousWidth::Narrow, false));
         assert_eq!(row.style, "skipped");
@@ -729,6 +739,7 @@ fn two_archives_dropping_the_same_member_print_both_rows() {
         })
     };
     let document = json!({
+        "phase": "planned",
         "rows": [],
         "dropped": [carried_by("/assets/plugins.tar.gz"), carried_by("/assets/vendor.tar.gz")],
     });
@@ -768,6 +779,7 @@ fn one_archive_under_two_prefixes_prints_a_row_per_entry() {
         })
     };
     let document = json!({
+        "phase": "planned",
         "rows": [],
         "dropped": [asked_by("backup", 2), asked_by("vendor", 1)],
     });
@@ -795,6 +807,7 @@ fn one_archive_under_two_prefixes_prints_a_row_per_entry() {
 #[test]
 fn dropped_members_share_the_path_column_with_the_rows() {
     let document = json!({
+        "phase": "planned",
         "rows": records(json!({ "a/very/long/path": file(json!("Write")) })),
         "dropped": [serialized(Dropped {
             member: Utf8PathBuf::from("._pkg"),
@@ -833,7 +846,7 @@ fn a_refusal_renders_the_row_shape_a_refused_plan_renders() {
         origin.clone(),
     );
 
-    let document = serialized(PlannedRun::refused(
+    let document = published_plan(PlannedRun::refused(
         &refused,
         &Manifest::new(),
         BTreeSet::new(),
@@ -842,6 +855,7 @@ fn a_refusal_renders_the_row_shape_a_refused_plan_renders() {
     assert_eq!(
         document,
         json!({
+            "phase": "planned",
             "rows": [{
                 "path": "bin/tool",
                 "verdict": { "Refuse": { "refusal": "Drift" } },
@@ -880,7 +894,7 @@ fn a_refusal_of_several_keys_renders_a_row_for_each() {
     ])
     .expect("a refusal over two keys");
 
-    let document = serialized(PlannedRun::refused(
+    let document = published_plan(PlannedRun::refused(
         &aggregated,
         &Manifest::new(),
         BTreeSet::new(),
@@ -918,7 +932,7 @@ fn a_refused_row_states_the_owners_the_manifest_records() {
         Origin::Caller,
     );
 
-    let document = serialized(PlannedRun::refused(
+    let document = published_plan(PlannedRun::refused(
         &refused,
         &holding("bin/tool", &["site"]),
         BTreeSet::new(),
@@ -928,10 +942,12 @@ fn a_refused_row_states_the_owners_the_manifest_records() {
     assert_eq!(document["rows"][0]["facts"]["owners"], json!(["site"]));
 }
 
-/// A run that stopped part-way renders both halves at once, in one table laid
-/// out in path order: a refused key sorting before an applied one prints
-/// before it, as it would in any other report. Each row reads in the tense of
-/// what happened to it, and the summary says the run stopped.
+/// A run that stopped part-way states both halves as one sequence of rows, in
+/// path order: a refused key sorting before an applied one comes before it, as
+/// it would in any other report, and a reader of `rows` alone reads every path
+/// the run has a verdict for. A refused row states its refusal in the words a
+/// plan states one in. Each row renders in the tense of what happened to it,
+/// and the summary says the run stopped.
 #[test]
 fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
     let refused = Refused::one(
@@ -940,16 +956,32 @@ fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
         Origin::Caller,
     );
 
-    let document = serialized(AbortedRun::new(
+    let document = published_abort(AbortedRun::new(
         wrote(&["config/settings.toml"]),
         refused_rows(&refused, &Manifest::new()),
         &Stopped::Applying(Error::Refused(refused.clone())),
     ));
 
-    assert_eq!(document["aborted"], json!(true));
+    assert_eq!(document["phase"], json!("aborted"));
     assert_eq!(document["recorded"], json!(true));
     assert_eq!(document["stopped_at"], json!("applying"));
     assert_eq!(document.get("stopped"), None);
+    assert_eq!(document.get("refused"), None);
+    assert_eq!(
+        document["rows"]
+            .as_array()
+            .expect("the rows")
+            .iter()
+            .map(|row| (row["path"].clone(), row["verdict"].clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                json!("bin/tool"),
+                json!({ "Refuse": { "refusal": "Drift" } })
+            ),
+            (json!("config/settings.toml"), json!("Written")),
+        ]
+    );
     let rendered = lines(&document, AmbiguousWidth::Narrow, false);
     assert_eq!(
         rendered
@@ -978,15 +1010,16 @@ fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
 /// stderr.
 #[test]
 fn a_run_a_failure_stopped_states_its_rows_and_the_failure() {
-    let document = serialized(AbortedRun::new(
+    let document = published_abort(AbortedRun::new(
         wrote(&["bin/tool"]),
         Report::default(),
         &Stopped::Applying(held("lock")),
     ));
 
-    assert_eq!(document["aborted"], json!(true));
+    assert_eq!(document["phase"], json!("aborted"));
     assert_eq!(document["recorded"], json!(true));
-    assert_eq!(document.get("refused"), None);
+    // Nothing was refused, so the rows are the applied ones alone.
+    assert_eq!(document["rows"][0]["verdict"], json!("Written"));
     let rendered = lines(&document, AmbiguousWidth::Narrow, false);
     assert_eq!(rendered.rows.len(), 1);
     assert_eq!(
@@ -1001,7 +1034,7 @@ fn a_run_a_failure_stopped_states_its_rows_and_the_failure() {
 /// away. The one failure stopped one half of the run, so it is stated once.
 #[test]
 fn a_run_that_could_not_record_what_it_applied_says_so() {
-    let document = serialized(AbortedRun::new(
+    let document = published_abort(AbortedRun::new(
         wrote(&["bin/tool"]),
         Report::default(),
         &Stopped::Recording(held("state.lock")),
@@ -1024,7 +1057,7 @@ fn a_run_that_could_not_record_what_it_applied_says_so() {
 /// for a destination missing the rest of it, and this one is missing nothing.
 #[test]
 fn a_run_that_only_its_record_stopped_is_not_called_part_way() {
-    let document = serialized(AbortedRun::new(
+    let document = published_abort(AbortedRun::new(
         wrote(&["bin/tool"]),
         Report::default(),
         &Stopped::Recording(held("state.lock")),
@@ -1049,7 +1082,7 @@ fn a_run_that_refused_and_could_not_record_states_the_rows_and_the_record() {
         Origin::Caller,
     );
 
-    let document = serialized(AbortedRun::new(
+    let document = published_abort(AbortedRun::new(
         wrote(&["config/settings.toml"]),
         refused_rows(&refused, &Manifest::new()),
         &Stopped::ApplyingAndRecording {
@@ -1081,6 +1114,105 @@ fn a_run_that_refused_and_could_not_record_states_the_rows_and_the_record() {
     );
 }
 
+/// The sentences a stopped run states past its records: how far it got, what
+/// stopped it, and — where the manifest never landed — what the destination is
+/// left holding. A record is one path and none of these is about a path, so a
+/// caller reading the records alone would take a run that lost half its plan,
+/// or lost the manifest for the whole of it, for one that finished.
+#[test]
+fn a_stopped_run_states_past_its_records_how_far_it_got_and_what_that_left() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+    let unrecorded = "the state directory does not record what the run applied: \
+                      state lock state.lock is held by another writer";
+
+    // A refusal an action met, whose keys the records do carry: only how far
+    // the run got is left to say.
+    assert_eq!(
+        warnings(&published_abort(AbortedRun::new(
+            wrote(&["config/settings.toml"]),
+            refused_rows(&refused, &Manifest::new()),
+            &Stopped::Applying(Error::Refused(refused.clone())),
+        ))),
+        vec!["the run stopped part-way through the plan, and what it applied stands"]
+    );
+
+    // A failure the records carry nothing of, which is stated once past them.
+    assert_eq!(
+        warnings(&published_abort(AbortedRun::new(
+            wrote(&["bin/tool"]),
+            Report::default(),
+            &Stopped::Applying(held("lock")),
+        ))),
+        vec![
+            "the run stopped part-way through the plan, and what it applied stands",
+            "state lock lock is held by another writer",
+        ]
+    );
+
+    // Every action applied and the manifest did not, so the run is not called
+    // part-way and the reader is told what the next run will make of the paths.
+    assert_eq!(
+        warnings(&published_abort(AbortedRun::new(
+            wrote(&["bin/tool"]),
+            Report::default(),
+            &Stopped::Recording(held("state.lock")),
+        ))),
+        vec![
+            "the run applied its whole plan and could not record it",
+            unrecorded,
+            "nothing in the state directory records what this run applied, so the \
+             next run over this destination judges it against the record that stood \
+             before the run",
+        ]
+    );
+
+    // Both halves lost: the stage an action stopped, the record that failed
+    // with it, and what the destination is left holding.
+    assert_eq!(
+        warnings(&published_abort(AbortedRun::new(
+            wrote(&["config/settings.toml"]),
+            refused_rows(&refused, &Manifest::new()),
+            &Stopped::ApplyingAndRecording {
+                applying: Error::Refused(refused.clone()),
+                recording: held("state.lock"),
+            },
+        ))),
+        vec![
+            "the run stopped part-way through the plan, and what it applied stands",
+            unrecorded,
+            "nothing in the state directory records what this run applied, so the \
+             next run over this destination judges it against the record that stood \
+             before the run",
+        ]
+    );
+}
+
+/// A run that finished has no such sentence, and neither has a plan: the
+/// channel opens on the one tense whose rows do not say the whole of what
+/// happened.
+#[test]
+fn a_plan_and_a_run_that_finished_state_nothing_past_their_rows() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+    for document in [
+        published_plan(PlannedRun::refused(
+            &refused,
+            &Manifest::new(),
+            BTreeSet::new(),
+        )),
+        serialized(RunView::Applied(Box::new(wrote(&["bin/tool"]).into()))),
+    ] {
+        assert!(warnings(&document).is_empty(), "{document}");
+    }
+}
+
 /// Where the rows sit is what tells the tenses apart, and nothing else in the
 /// document does: a plan and a run that stopped both state their stripped
 /// archive members at the top level, so a plan carrying drops still reads as a
@@ -1105,12 +1237,12 @@ fn drops_at_the_top_level_leave_each_document_in_its_own_tense() {
     let mut applied = wrote(&["bin/tool"]);
     applied.dropped = BTreeSet::from([erased.clone()]);
 
-    let plan = serialized(PlannedRun::refused(
+    let plan = published_plan(PlannedRun::refused(
         &refused,
         &Manifest::new(),
         BTreeSet::from([erased]),
     ));
-    let stopped = serialized(AbortedRun::new(
+    let stopped = published_abort(AbortedRun::new(
         applied,
         Report::default(),
         &Stopped::Applying(held("lock")),
@@ -1125,6 +1257,278 @@ fn drops_at_the_top_level_leave_each_document_in_its_own_tense() {
     };
     assert_eq!(verbs(&plan), vec!["would refuse", "dropped"]);
     assert_eq!(verbs(&stopped), vec!["wrote", "dropped"]);
+}
+
+/// Each of the three tenses names itself and states its rows at `rows`: what a
+/// reader branches on is the phase, and where the rows sit never moves. The
+/// keys past those two are what the tense has to state — a plan has none, an
+/// apply the manifest it wrote, and a stopped run what stopped it.
+#[test]
+fn every_tense_names_its_phase_and_states_its_rows_at_the_same_key() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+    let documents = [
+        published_plan(PlannedRun::refused(
+            &refused,
+            &Manifest::new(),
+            BTreeSet::new(),
+        )),
+        serialized(RunView::Applied(Box::new(wrote(&["bin/tool"]).into()))),
+        published_abort(AbortedRun::new(
+            wrote(&["bin/tool"]),
+            refused_rows(&refused, &Manifest::new()),
+            &Stopped::Applying(Error::Refused(refused.clone())),
+        )),
+    ];
+
+    let keys = |document: &JsonValue| {
+        document
+            .as_object()
+            .expect("a document")
+            .keys()
+            .map(String::as_str)
+            .map(str::to_owned)
+            .collect::<Vec<String>>()
+    };
+    assert_eq!(keys(&documents[0]), ["phase", "rows"]);
+    assert_eq!(keys(&documents[1]), ["phase", "rows", "manifest"]);
+    assert_eq!(
+        keys(&documents[2]),
+        ["phase", "rows", "manifest", "recorded", "stopped_at"]
+    );
+    for (document, phase) in documents.iter().zip(["planned", "applied", "aborted"]) {
+        assert_eq!(document["phase"], json!(phase));
+        assert_eq!(
+            document["rows"][0]["path"],
+            json!("bin/tool"),
+            "{phase} states its rows at rows"
+        );
+    }
+}
+
+/// The CSV columns over the rows of a plan and of the run that applied it: one
+/// record per path under a header that does not move, in either tense. The
+/// verdict vocabulary is the tense's own — `Write` against `Written` — and the
+/// last cell names the tense, so a reader of the records alone tells the two
+/// apart rather than inferring them from a vocabulary they share verdicts with.
+#[test]
+fn csv_writes_one_record_per_path_under_one_header_in_either_tense() {
+    let planned = published_plan(PlannedRun {
+        report: Report {
+            rows: BTreeMap::from([(
+                Utf8PathBuf::from("bin/tool"),
+                Row {
+                    facts: Some(PathFacts {
+                        shape: Some(libproiectio::PathShape::File { executable: true }),
+                        owners: BTreeSet::from(["site".to_owned()]),
+                        origin: Some(Origin::Tree {
+                            path: Utf8PathBuf::from("/srv/skeleton"),
+                        }),
+                    }),
+                    verdict: PlannedAction::Write,
+                },
+            )]),
+        },
+        dropped: BTreeSet::new(),
+    });
+    let applied = serialized(RunView::Applied(Box::new(wrote(&["bin/tool"]).into())));
+
+    assert_eq!(
+        projected(&planned),
+        "path,verdict,detail,shape,executable,target,owners,origin,phase\n\
+         bin/tool,Write,,file,true,,\"[\"\"site\"\"]\",\
+         \"{\"\"Tree\"\":{\"\"path\"\":\"\"/srv/skeleton\"\"}}\",planned\n"
+    );
+    assert_eq!(
+        projected(&applied),
+        "path,verdict,detail,shape,executable,target,owners,origin,phase\n\
+         bin/tool,Written,,,,,,,applied\n"
+    );
+}
+
+/// The two tenses that spell one verdict alike, which is what the phase cell is
+/// there for: a dry run and a real one both state `NotRecorded` at a path no
+/// manifest records, and both rows carry the same facts. Without the last cell
+/// the two records are the same bytes, and a reader of a CSV alone could not
+/// say whether the removal happened.
+#[test]
+fn the_phase_cell_parts_the_two_tenses_that_spell_a_verdict_alike() {
+    let record = |phase: &str, verdict: JsonValue| {
+        projected(&json!({
+            "phase": phase,
+            "rows": [{ "path": "bin/tool", "verdict": verdict, "facts": null }],
+        }))
+        .lines()
+        .nth(1)
+        .expect("one record")
+        .to_owned()
+    };
+
+    assert_eq!(
+        record("planned", serialized(PlannedAction::NotRecorded)),
+        "bin/tool,NotRecorded,,,,,,,planned"
+    );
+    assert_eq!(
+        record("applied", serialized(ApplyOutcome::NotRecorded)),
+        "bin/tool,NotRecorded,,,,,,,applied"
+    );
+}
+
+/// A stopped run's CSV names the keys it refused beside the rows it applied,
+/// each with the refusal in `detail`: a reader of the CSV alone learns which
+/// paths the run failed on and why, which is the half of the run that matters
+/// most and the half the rows were once missing.
+#[test]
+fn csv_over_a_stopped_run_states_the_keys_it_refused() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::OwnerConflict {
+            owners: BTreeSet::from(["site".to_owned()]),
+        },
+        Origin::Caller,
+    );
+
+    let document = published_abort(AbortedRun::new(
+        wrote(&["config/settings.toml"]),
+        refused_rows(&refused, &holding("bin/tool", &["site"])),
+        &Stopped::Applying(Error::Refused(refused)),
+    ));
+
+    assert_eq!(
+        projected(&document),
+        "path,verdict,detail,shape,executable,target,owners,origin,phase\n\
+         bin/tool,Refuse,\"{\"\"refusal\"\":{\"\"OwnerConflict\"\":{\"\"owners\"\":\
+         [\"\"site\"\"]}}}\",,,,\"[\"\"site\"\"]\",Caller,aborted\n\
+         config/settings.toml,Written,,,,,,,aborted\n"
+    );
+}
+
+/// The renderer tells the planning tense from the acting ones by matching
+/// `phase` against [`PLANNED`], and serde spells that field from the variant
+/// name: renaming the variant would part the two without a word, and every
+/// plan would then be laid out as an apply. Each arm is serialized here and
+/// checked against the constant the renderer matches on.
+#[test]
+fn the_phase_the_renderer_matches_on_is_the_one_serde_writes() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+    let planned = published_plan(PlannedRun::refused(
+        &refused,
+        &Manifest::new(),
+        BTreeSet::new(),
+    ));
+    let acting = [
+        serialized(RunView::Applied(Box::new(wrote(&["bin/tool"]).into()))),
+        published_abort(AbortedRun::new(
+            wrote(&["bin/tool"]),
+            Report::default(),
+            &Stopped::Applying(held("lock")),
+        )),
+    ];
+
+    assert_eq!(planned["phase"], json!(PLANNED));
+    for document in &acting {
+        assert_ne!(document["phase"], json!(PLANNED), "{document}");
+    }
+}
+
+/// A verdict carrying a payload fills two cells: its own name, and what it
+/// carries. Neither `Overwrite`'s reason nor `Refuse`'s refusal has a column of
+/// its own — a refusal carries a different payload per kind — so `detail` holds
+/// the JSON, and a verdict carrying nothing leaves it empty.
+#[test]
+fn a_verdict_carrying_a_payload_names_itself_and_states_what_it_carries() {
+    let detailed = |verdict: JsonValue| {
+        let document =
+            json!({ "phase": "planned", "rows": [{ "path": "one", "verdict": verdict }] });
+        projected(&document)
+            .lines()
+            .nth(1)
+            .expect("one record")
+            .to_owned()
+    };
+
+    assert_eq!(detailed(json!("Write")), "one,Write,,,,,,,planned");
+    assert_eq!(
+        detailed(serialized(PlannedAction::Overwrite {
+            reason: OverwriteReason::ContentChanged,
+        })),
+        "one,Overwrite,\"{\"\"reason\"\":\"\"ContentChanged\"\"}\",,,,,,planned"
+    );
+    assert_eq!(
+        detailed(serialized(PlannedAction::Refuse {
+            refusal: Refusal::OwnerConflict {
+                owners: BTreeSet::from(["site".to_owned()]),
+            },
+        })),
+        "one,Refuse,\"{\"\"refusal\"\":{\"\"OwnerConflict\"\":{\"\"owners\"\":[\"\"site\"\"]}}}\",\
+         ,,,,,planned"
+    );
+}
+
+/// A link row states where it points, which a status row never does: a run
+/// decides the target, and the manifest records only that the node is a link.
+#[test]
+fn a_link_row_states_the_target_it_writes() {
+    let document = json!({
+        "phase": "planned",
+        "rows": records(json!({ "current": link(json!("Write"), "releases/1.2.3") })),
+    });
+
+    assert_eq!(
+        projected(&document),
+        "path,verdict,detail,shape,executable,target,owners,origin,phase\n\
+         current,Write,,symlink,,releases/1.2.3,,,planned\n"
+    );
+}
+
+/// A dropped archive member takes no record: it reached no path in the
+/// destination, so it has no path cell to fill and is no row of the report.
+/// Neither the manifest nor what stopped a run is a row either.
+///
+/// A document whose rows are empty is a header and nothing else, in every
+/// tense: the phase cell rides on records the rows mint, and a run that
+/// reached no path mints none. Naming the tense in a record of its own would
+/// be a record standing for no path, which is the shape the path column
+/// promises against.
+#[test]
+fn a_dropped_member_takes_no_csv_record() {
+    let document = published_plan(PlannedRun {
+        report: Report::default(),
+        dropped: BTreeSet::from([Dropped {
+            member: Utf8PathBuf::from("._pkg"),
+            prefix: Utf8PathBuf::new(),
+            strip: 1,
+            origin: Origin::Archive {
+                path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+                via: None,
+            },
+        }]),
+    });
+
+    let header = "path,verdict,detail,shape,executable,target,owners,origin,phase\n";
+    assert_eq!(projected(&document), header);
+
+    let stopped = published_abort(AbortedRun::new(
+        wrote(&[]),
+        Report::default(),
+        &Stopped::Recording(held("state.lock")),
+    ));
+    assert_eq!(projected(&stopped), header);
+}
+
+/// The CSV a write pass writes for one document.
+fn projected(document: &JsonValue) -> String {
+    csv()
+        .csv_projection()
+        .render(document)
+        .expect("a CSV projection")
 }
 
 /// An `ApplyReport` writing the paths named.
@@ -1238,7 +1642,7 @@ fn a_run_that_already_passed_force_is_not_told_to_pass_force() {
     });
     let document = |forced: bool| {
         lines(
-            &json!({ "rows": records(rows.clone()) }),
+            &json!({ "phase": "planned", "rows": records(rows.clone()) }),
             AmbiguousWidth::Narrow,
             forced,
         )
