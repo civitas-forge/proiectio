@@ -235,5 +235,6 @@ The CLI
         | --check                  | status only: exit 2 when anything is not clean |
         | --tree <path>            | project a directory or archive                 |
         | --strip <n>              | drop n leading components (archive trees)      |
+        | --max-source-size <b>    | most bytes one write may read from sources     |
 
     :: table header=0 ::
