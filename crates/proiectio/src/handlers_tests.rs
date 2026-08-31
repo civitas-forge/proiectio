@@ -6,13 +6,15 @@ use libproiectio::PathState;
 use standout_dispatch::Extensions;
 use tempfile::TempDir;
 
-use crate::testing::{classified, projected, utf8};
+use crate::testing::{OWNER, classified, projected, utf8};
 
-/// A context carrying the verdict cell the shell reads the exit status back
-/// from, so a typed call can be asked what status the run leaves with.
+/// A context carrying the two cells a run writes to: the verdict the shell
+/// reads the exit status back from, so a typed call can be asked what status
+/// the run leaves with, and the `--force` a rendered run reads its hint off.
 fn context(verdict: &exit::Verdict) -> CommandContext {
     let mut state = Extensions::new();
     state.insert(verdict.clone());
+    state.insert(Forced::default());
     CommandContext::new(vec!["status".to_owned()], Rc::new(state))
 }
 
@@ -187,6 +189,95 @@ fn the_default_state_directory_being_absent_is_neither_a_warning_nor_a_refusal()
 
     assert_eq!(checking, exit::OK);
     assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+/// One removal of everything the owner holds, through the typed call, and the
+/// warnings it wrote about the run. Naming the owner keeps the run off the
+/// machine's configuration.
+fn removal(dest: &Utf8Path, state_dir: Option<&Utf8Path>, dry_run: bool) -> Vec<String> {
+    let _ = standout::warnings::drain_warnings();
+    rm(
+        dest.to_string(),
+        state_dir.map(Utf8Path::to_string),
+        Vec::new(),
+        Some(OWNER.to_owned()),
+        dry_run,
+        false,
+        &context(&exit::Verdict::default()),
+    )
+    .expect("a removal");
+    standout::warnings::drain_warnings()
+}
+
+/// A `--state-dir` the filesystem does not have reads as the empty manifest,
+/// which records nothing to remove, so the removal unlinks nothing and says on
+/// stderr why. A real run creates the state directory it was told to use, so
+/// the fact is read before the run rather than after it, and the dry run and
+/// the real one warn alike.
+#[test]
+fn rm_warns_about_a_named_state_directory_that_is_not_there() {
+    for dry_run in [false, true] {
+        let dir = TempDir::new().expect("a temporary directory");
+        let dest = utf8(&dir);
+        projected(&dest);
+        let absent = dest.join("no-such-state");
+
+        let warnings = removal(&dest, Some(&absent), dry_run);
+
+        assert_eq!(
+            warnings,
+            vec![format!(
+                "state dir {absent} does not exist; treating manifest as empty"
+            )],
+            "a {} removal",
+            if dry_run { "dry" } else { "real" }
+        );
+        assert!(dest.join("bin/tool").exists(), "dry_run: {dry_run}");
+    }
+}
+
+/// The default state directory is absent until something is projected, so a
+/// removal over a destination nothing has been projected onto has nothing to
+/// report about it.
+#[test]
+fn rm_over_the_default_state_directory_warns_about_nothing() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let dest = utf8(&dir);
+
+    let warnings = removal(&dest, None, false);
+
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+/// A destination the removal cannot open is an operational failure and the
+/// whole report: nothing warns about a state directory the run never went on
+/// to read.
+#[test]
+fn a_removal_that_cannot_open_the_destination_warns_about_no_state_directory() {
+    let _ = standout::warnings::drain_warnings();
+    let dir = TempDir::new().expect("a temporary directory");
+    let absent = utf8(&dir).join("absent");
+
+    let Err(error) = rm(
+        absent.to_string(),
+        Some(absent.join("no-such-state").to_string()),
+        Vec::new(),
+        Some(OWNER.to_owned()),
+        false,
+        false,
+        &context(&exit::Verdict::default()),
+    ) else {
+        panic!("a removal over a destination that is not there reported a run");
+    };
+    let external = error
+        .downcast::<standout::cli::ExternalFailure>()
+        .expect("an external failure");
+
+    assert_eq!(external.exit_status().code(), exit::FAILURE);
+    assert!(
+        standout::warnings::drain_warnings().is_empty(),
+        "a removal that opened nothing warned about the state directory"
+    );
 }
 
 /// A destination the projection cannot open is an operational failure, and it
