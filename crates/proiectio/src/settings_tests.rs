@@ -224,3 +224,65 @@ fn a_key_the_schema_declares_without_a_doc_comment_is_still_a_key() {
         Some(Vec::new())
     );
 }
+
+/// The key the owner rule is stated for is one the schema declares: the rule
+/// is matched by name in [`require_value`], and a schema that renamed the key
+/// would leave the match on a key nothing sets.
+#[test]
+fn the_owner_rule_names_a_key_the_schema_declares() {
+    assert!(declared_keys().iter().any(|key| key == OWNER_KEY));
+}
+
+/// `config set` is the layer that puts a value in the file, so it is where a
+/// value that is not one is refused. Every key refuses an empty string;
+/// `owner` refuses a blank one too.
+#[test]
+fn config_set_refuses_a_value_that_names_nothing() {
+    for (key, value) in [
+        ("owner", ""),
+        ("owner", " "),
+        ("owner", "\t\n"),
+        ("max_source_size", ""),
+    ] {
+        let error = require_value(key, value)
+            .expect_err(&format!("a refusal for {key} = {value:?}"))
+            .to_string();
+
+        assert!(error.contains(key), "{key} = {value:?}: {error}");
+        assert!(
+            error.contains(&format!("{value:?}")),
+            "{key} = {value:?}: {error}"
+        );
+    }
+}
+
+/// A value with something in it is a value, spaces included: the rule is about
+/// a name with nothing in it, not about how the name is spelled.
+#[test]
+fn config_set_takes_a_value_that_names_something() {
+    for (key, value) in [("owner", "site"), ("owner", "my site"), ("owner", "0")] {
+        require_value(key, value).unwrap_or_else(|error| panic!("{key} = {value:?}: {error}"));
+    }
+}
+
+/// The owner a file or `PROIECTIO__OWNER` resolved reaches the run already
+/// parsed, so the rule is kept again where the run reads it.
+#[test]
+fn a_configured_owner_that_names_nothing_is_refused_where_a_run_reads_it() {
+    for configured in ["", " ", "   "] {
+        let error = require_owner(configured.to_owned())
+            .expect_err(&format!("a refusal for {configured:?}"))
+            .to_string();
+
+        assert!(error.contains(OWNER_RULE), "{configured:?}: {error}");
+        assert!(
+            error.contains(&format!("{configured:?}")),
+            "{configured:?}: {error}"
+        );
+    }
+
+    assert_eq!(
+        require_owner("site".to_owned()).expect("a configured owner"),
+        "site"
+    );
+}

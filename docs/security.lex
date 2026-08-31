@@ -182,6 +182,7 @@ Security Model
     The manifest itself is written atomically, after every other
     write — and on a failed apply still persisted, recording what
     was actually written, so a partial run heals on re-run instead
-    of wedging behind the Foreign rule. It lives with the
+    of wedging behind the Foreign rule ([./design.lex] carries the
+    one exception, a save that itself fails). It lives with the
     destination (<dest>/.proiectio by default) — implicitly a
     proiectio-owned path.

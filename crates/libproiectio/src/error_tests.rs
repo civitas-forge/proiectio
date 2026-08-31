@@ -176,6 +176,9 @@ fn every_variant() -> Vec<Error> {
         Error::StripOnDirectory {
             path: Utf8PathBuf::from("/srv/skeleton"),
         },
+        Error::OwnerNotNamed {
+            owner: "  ".to_owned(),
+        },
     ]);
     every
 }
@@ -188,7 +191,7 @@ fn every_variant() -> Vec<Error> {
 //
 // The eight refusals all serialize as `refused`, so this is one tag shorter
 // than the list is long.
-const EVERY_KIND: [&str; 33] = [
+const EVERY_KIND: [&str; 34] = [
     "refused",
     "io",
     "manifest_format",
@@ -222,6 +225,7 @@ const EVERY_KIND: [&str; 33] = [
     "files_node_kind",
     "files_duplicate",
     "strip_on_directory",
+    "owner_not_named",
 ];
 
 // What keeps `EVERY_KIND` honest in the other direction: this match names
@@ -262,7 +266,8 @@ fn is_named_above(error: &Error) -> bool {
         | Error::DestinationTooDeep { .. }
         | Error::FilesNodeKind { .. }
         | Error::FilesDuplicate { .. }
-        | Error::StripOnDirectory { .. } => true,
+        | Error::StripOnDirectory { .. }
+        | Error::OwnerNotNamed { .. } => true,
     }
 }
 

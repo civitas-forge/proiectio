@@ -7,7 +7,7 @@ use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree, origins_of};
 use crate::{
     Action, ApplyOutcome, Desired, Entry, Error, LOCK_FILE_NAME, MANIFEST_FILE_NAME, Manifest,
-    Origin, PathState, Refusal, RefusalKind, RemovalScope,
+    Origin, PathState, Refusal, RefusalKind, RemovalScope, Stopped,
 };
 
 // A projection over two fixture directories, the state directory outside
@@ -317,11 +317,11 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
         })
     );
 
-    let error = run
+    let stopped = run
         .apply()
         .expect_err("a plan carrying a refusal applies nothing");
 
-    match &error {
+    match stopped.stopped.error() {
         Error::Refused(refused) => {
             assert_eq!(
                 origins_of(refused),
@@ -333,8 +333,10 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
         }
         other => panic!("expected Containment, got {other:?}"),
     }
+    // Nothing was applied, so the stop says only what the refusal says.
+    assert!(!stopped.applied_anything());
     assert_eq!(
-        error.to_string(),
+        stopped.to_string(),
         "refusing paths that violate containment: \
          ../escape (from mapping /etc/harness/skills.toml)"
     );
@@ -359,13 +361,14 @@ fn the_plans_refused_is_the_error_applying_it_raises() {
         .refused()
         .expect("the foreign path is refused");
 
-    let error = run
+    let stopped = run
         .apply()
         .expect_err("a plan carrying a refusal applies nothing");
 
-    match error {
-        Error::Refused(raised) => assert_eq!(raised, refused),
-        other => panic!("expected a refusal, got {other:?}"),
+    assert!(!stopped.applied_anything());
+    match stopped.stopped {
+        Stopped::Applying(Error::Refused(raised)) => assert_eq!(raised, refused),
+        other => panic!("expected a refusal met while applying, got {other:?}"),
     }
     assert_eq!(refused.kind(), RefusalKind::Foreign);
     assert_eq!(
@@ -460,4 +463,83 @@ fn applying_persists_the_manifest_the_next_run_loads() {
     let next = projection.begin().expect("begin the second run");
     assert_eq!(*next.manifest(), report.manifest);
     assert_eq!(next.projection(), &projection);
+}
+
+/// The rule an owner keeps is the library's, not the CLI's: a name that is
+/// empty or nothing but whitespace is refused at every entry point that
+/// decides a plan, so a consumer reaching the crate directly cannot record a
+/// holder no reader of the manifest can see and no removal can spell back.
+#[test]
+fn no_entry_point_that_decides_a_plan_takes_a_name_that_is_not_an_owner() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(&dest, state.root());
+    let tree = Tree::new().file("notes/a.txt", "alpha");
+
+    for name in ["", " ", "\t", "\n  "] {
+        let refused = |error: Error| {
+            assert!(
+                matches!(&error, Error::OwnerNotNamed { owner } if owner == name),
+                "{name:?}: {error}"
+            );
+        };
+
+        refused(
+            projection
+                .plan(name, &desired(&tree), PlanOptions::default())
+                .expect_err("a refused owner"),
+        );
+        refused(
+            projection
+                .plan_removal(name, RemovalScope::Everything, DriftPolicy::Refuse)
+                .expect_err("a refused owner"),
+        );
+
+        let mut run = projection.begin().expect("begin");
+        refused(
+            run.plan(name, &desired(&tree), PlanOptions::default())
+                .expect_err("a refused owner"),
+        );
+        refused(
+            run.plan_removal(name, RemovalScope::Everything, DriftPolicy::Refuse)
+                .expect_err("a refused owner"),
+        );
+    }
+
+    assert_eq!(projection.manifest().expect("manifest"), Manifest::new());
+}
+
+/// Deciding discards the kept plan before it reads the owner, so a run whose
+/// name is refused is a run with nothing left to apply — the same state a
+/// decision failing anywhere else leaves it in.
+#[test]
+fn a_name_that_is_not_an_owner_leaves_the_run_with_no_plan() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(&dest, state.root());
+    let tree = Tree::new().file("notes/a.txt", "alpha");
+
+    let mut run = projection.begin().expect("begin");
+    run.plan("harness", &desired(&tree), PlanOptions::default())
+        .expect("plan");
+    run.plan("  ", &desired(&tree), PlanOptions::default())
+        .expect_err("a refused owner");
+
+    assert!(run.planned().is_none());
+}
+
+/// The name is read before the destination is opened, so the refusal is the
+/// owner's own rather than whatever the filesystem says about the target.
+#[test]
+fn the_name_is_refused_before_the_destination_is_opened() {
+    let dest = Tree::new().materialize();
+    let missing = dest.root().join("no-such-directory");
+    let projection = Projection::new(&missing, Some(dest.root())).expect("a projection");
+
+    assert!(matches!(
+        projection
+            .plan("", &Desired::new(), PlanOptions::default())
+            .expect_err("a refused owner"),
+        Error::OwnerNotNamed { owner } if owner.is_empty()
+    ));
 }

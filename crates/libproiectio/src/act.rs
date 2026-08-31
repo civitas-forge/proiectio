@@ -21,10 +21,10 @@ use crate::containment::{
 use crate::observe::{Container, io_error, read_container, sha256_hex_of_reader};
 use crate::report::recorded_shape;
 use crate::{
-    Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error, ExternalTargetPolicy,
-    MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature,
-    Origin, PathFacts, PathShape, Placement, Plan, Refusal, Refused, Report, Result, Row,
-    sha256_hex,
+    Aborted, Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error,
+    ExternalTargetPolicy, MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest,
+    ManifestEntry, NodeSignature, Origin, PathFacts, PathShape, Placement, Plan, Refusal, Refused,
+    Report, Result, Row, Stopped, sha256_hex,
 };
 
 /// Loads the manifest from `state`'s [`MANIFEST_FILE_NAME`]; a state
@@ -76,31 +76,53 @@ pub(crate) fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 ///
 /// A block over a container the manifest does not record is the exception:
 /// what that container holds is unknown until this stage reads it, so its
-/// refusals arrive mid-run, after whatever the plan already applied.
+/// refusals arrive mid-run, after whatever the plan already applied. The
+/// disk moving under a run does the same, no lock reaching past this
+/// projection. Either way [`Aborted`] carries the rows the run applied
+/// before the error, beside the error itself.
 pub(crate) fn apply(
     dest: &Dir,
     state: &Dir,
     manifest: &Manifest,
     plan: &Plan,
-) -> Result<ApplyReport> {
-    validate(manifest, plan)?;
+) -> std::result::Result<ApplyReport, Box<Aborted>> {
+    if let Err(error) = validate(manifest, plan) {
+        return Err(Box::new(Aborted {
+            stopped: Stopped::Applying(error),
+            applied: ApplyReport {
+                report: Report::default(),
+                dropped: plan.dropped.clone(),
+                manifest: manifest.clone(),
+            },
+        }));
+    }
     let mut manifest = manifest.clone();
     let mut rows = BTreeMap::new();
-    match run(dest, &mut manifest, plan, &mut rows) {
-        Ok(()) => {
-            save_manifest(state, &manifest)?;
-            Ok(ApplyReport {
-                report: Report { rows },
-                dropped: plan.dropped.clone(),
-                manifest,
-            })
-        }
-        Err(error) => {
-            if !rows.is_empty() {
-                let _ = save_manifest(state, &manifest);
-            }
-            Err(error)
-        }
+    let stopped = match run(dest, &mut manifest, plan, &mut rows) {
+        // Every action applied, so only the record can still stop the run.
+        Ok(()) => save_manifest(state, &manifest)
+            .err()
+            .map(Stopped::Recording),
+        // The rows before the error are on the destination whether or not the
+        // manifest saying so reaches the state directory, and a run that
+        // wrote nothing has nothing to record.
+        Err(applying) if rows.is_empty() => Some(Stopped::Applying(applying)),
+        Err(applying) => Some(match save_manifest(state, &manifest) {
+            Ok(()) => Stopped::Applying(applying),
+            Err(recording) => Stopped::ApplyingAndRecording {
+                applying,
+                recording,
+            },
+        }),
+    };
+    let applied = ApplyReport {
+        report: Report { rows },
+        dropped: plan.dropped.clone(),
+        manifest,
+    };
+    match stopped {
+        Some(stopped) => Err(Box::new(Aborted { stopped, applied })),
+        None => Ok(applied),
     }
 }
 

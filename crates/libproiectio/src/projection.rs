@@ -8,7 +8,7 @@ use cap_std::fs_utf8::Dir;
 use crate::{
     BlockMarkers, Desired, DriftPolicy, Error, Manifest, Plan, PlanOptions, PlannedAction,
     RemovalScope, Report, Result, Status, absolutize, block_markers, decide, decide_removal,
-    load_manifest, observe, status,
+    load_manifest, observe, require_owner, status,
 };
 
 const DEFAULT_STATE_DIR: &str = ".proiectio";
@@ -74,6 +74,21 @@ impl Projection {
         Ok(status(&manifest, &observations, self.state_prefix()))
     }
 
+    /// Whether the directory holding the manifest is there.
+    ///
+    /// Every read treats an absent state directory as the empty
+    /// [`Manifest`], which is right for a destination nothing has been
+    /// projected onto and wrong for a caller who named the directory and
+    /// misspelled it. The two reports are identical, so this states the fact
+    /// and leaves the caller — who knows which of the two it named — to
+    /// decide what the fact means.
+    pub fn state_dir_exists(&self) -> Result<bool> {
+        match self.open_state(None) {
+            Some(state) => state.map(|_| true),
+            None => Ok(false),
+        }
+    }
+
     /// The recorded state: what the projection wrote, per path, with its
     /// owners. A missing state directory or manifest file reads as the empty
     /// [`Manifest`].
@@ -100,8 +115,10 @@ impl Projection {
     /// `owner` would perform, decided outside the single-writer guard and so
     /// not applicable, with the manifest it was decided against. An empty
     /// tree plans a removal; `origin` is named by every refusal the plan
-    /// carries.
+    /// carries. A name that is not an owner ([`OWNER_RULE`](crate::OWNER_RULE))
+    /// fails with [`Error::OwnerNotNamed`] before the destination is opened.
     pub fn plan(&self, owner: &str, desired: &Desired, options: PlanOptions) -> Result<Planned> {
+        require_owner(owner)?;
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
         let observations = observe(&dest, &manifest, &block_markers(desired))?;
@@ -125,6 +142,7 @@ impl Projection {
         scope: RemovalScope<'_>,
         drift: DriftPolicy,
     ) -> Result<Planned> {
+        require_owner(owner)?;
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
         let observations = observe(&dest, &manifest, &BlockMarkers::new())?;

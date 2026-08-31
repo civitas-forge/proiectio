@@ -67,9 +67,8 @@ pub(crate) fn modified(path: &Utf8Path) -> std::time::SystemTime {
         .expect("a modification time")
 }
 
-/// Projects three files, then edits one and removes another, so a status of
-/// `dest` reads one drifted, one clean and one missing path.
-pub(crate) fn classified(dest: &Utf8Path) {
+/// Projects three files, so a status of `dest` reads all three clean.
+pub(crate) fn projected(dest: &Utf8Path) {
     project(
         dest,
         &Desired::from_caller(BTreeMap::from([
@@ -81,6 +80,12 @@ pub(crate) fn classified(dest: &Utf8Path) {
             (Utf8PathBuf::from("current"), file(b"releases/1.2.3\n")),
         ])),
     );
+}
+
+/// The same three files, then one edited and another removed, so a status of
+/// `dest` reads one drifted, one clean and one missing path.
+pub(crate) fn classified(dest: &Utf8Path) {
+    projected(dest);
     std::fs::write(dest.join("bin/tool"), b"#!/bin/sh\necho edited\n").expect("an edited file");
     std::fs::remove_file(dest.join("current")).expect("a removed file");
 }

@@ -7,15 +7,16 @@ use std::collections::BTreeSet;
 use camino::{Utf8Path, Utf8PathBuf};
 use clapfig::ConfigAction;
 use libproiectio::{
-    Desired, DriftPolicy, Error, ExternalTargetPolicy, Limits, Plan, PlanOptions, PlannedAction,
-    Projection, RemovalScope, Report, Status, load_files, load_mapping, load_source,
+    Aborted, Desired, DriftPolicy, Dropped, Error, ExternalTargetPolicy, Limits, Manifest, Plan,
+    PlanOptions, PlannedAction, Projection, RemovalScope, Report, Run, Status, Stopped, load_files,
+    load_mapping, load_source,
 };
 use standout::cli::{CommandContext, Output};
 use standout::handler;
 
 use crate::exit;
 use crate::settings;
-use crate::views::{ConfigView, PlannedRun, RunView};
+use crate::views::{AbortedRun, ConfigView, PlannedRun, RunView, refused_rows};
 
 #[handler]
 #[expect(
@@ -54,11 +55,10 @@ pub(crate) fn write(
         return planned_report(&planned.plan, planned.report(), ctx);
     }
     let mut run = projection.begin().map_err(exit::failure)?;
-    let plan = run.plan(&owner, &desired, options).map_err(exit::failure)?;
-    refusals(plan)?;
-    run.apply()
-        .map(|applied| Output::Render(RunView::Applied(Box::new(applied))))
-        .map_err(exit::failure)
+    run.plan(&owner, &desired, options)
+        .map(|_| ())
+        .map_err(exit::failure)?;
+    apply(run, ctx)
 }
 
 #[handler]
@@ -88,20 +88,17 @@ pub(crate) fn rm(
         return planned_report(&planned.plan, planned.report(), ctx);
     }
     let mut run = projection.begin().map_err(exit::failure)?;
-    let plan = run
-        .plan_removal(&owner, scope, drift)
+    run.plan_removal(&owner, scope, drift)
+        .map(|_| ())
         .map_err(exit::failure)?;
-    refusals(plan)?;
-    run.apply()
-        .map(|applied| Output::Render(RunView::Applied(Box::new(applied))))
-        .map_err(exit::failure)
+    apply(run, ctx)
 }
 
 /// The owner the invocation names, and otherwise the configured one.
 fn owner_or_configured(owner: Option<String>) -> Result<String, anyhow::Error> {
     match owner {
         Some(named) => Ok(named),
-        None => Ok(settings::builder().load()?.owner),
+        None => settings::require_owner(settings::builder().load()?.owner),
     }
 }
 
@@ -116,10 +113,11 @@ fn write_settings(
         (Some(owner), Some(bytes)) => (owner, bytes),
         (owner, max_source_size) => {
             let configured = settings::builder().load()?;
-            (
-                owner.unwrap_or(configured.owner),
-                max_source_size.unwrap_or(configured.max_source_size),
-            )
+            let owner = match owner {
+                Some(named) => named,
+                None => settings::require_owner(configured.owner)?,
+            };
+            (owner, max_source_size.unwrap_or(configured.max_source_size))
         }
     };
     Ok((
@@ -140,33 +138,116 @@ fn projection(dest: &str, state_dir: Option<&str>) -> Result<Projection, anyhow:
     Projection::new(Utf8Path::new(dest), state_dir.map(Utf8Path::new)).map_err(exit::failure)
 }
 
-/// A dry run reports the whole plan, refused rows and all: the rows are what
-/// the run is for, so a refusal records the status the run leaves with rather
-/// than replacing the report with a diagnostic.
+/// A run reports the whole plan, refused rows and all — a dry run because the
+/// rows are what it is for, a real one because a plan that refuses acts on
+/// nothing and has only the plan to report. Either way a refusal records the
+/// status the run leaves with rather than replacing the report with a
+/// diagnostic.
 fn planned_report(
     plan: &Plan,
     report: Report<PlannedAction>,
     ctx: &CommandContext,
 ) -> Result<Output<RunView>, anyhow::Error> {
-    if plan.refusals().next().is_some() {
-        ctx.app_state
-            .get_required::<exit::Verdict>()?
-            .record(exit::REFUSAL);
-    }
-    Ok(Output::Render(RunView::Planned(PlannedRun {
+    let stated = PlannedRun {
         report,
         dropped: plan.dropped.clone(),
-    })))
+    };
+    if plan.refusals().next().is_some() {
+        return refusal(RunView::Planned(stated), ctx);
+    }
+    Ok(Output::Render(RunView::Planned(stated)))
 }
 
-/// A real run acts, so a plan carrying refusals reaches the shell as
-/// `Error::Refused`, which spends the refusal status; one carrying none
-/// passes.
-fn refusals(plan: &Plan) -> Result<(), anyhow::Error> {
-    match plan.refused() {
-        Some(refused) => Err(exit::failure(Error::Refused(refused))),
-        None => Ok(()),
+/// A real run acts unless something refuses. A plan carrying refusals writes
+/// nothing and reports itself, which is the document a dry run of the same
+/// invocation reports; what a run that started applying reports is
+/// [`stopped`]'s to say.
+pub(crate) fn apply(run: Run, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
+    if let Some(plan) = run
+        .planned()
+        .filter(|plan| plan.refusals().next().is_some())
+    {
+        return planned_report(plan, plan.report(run.manifest()), ctx);
     }
+    match run.apply() {
+        Ok(applied) => Ok(Output::Render(RunView::Applied(Box::new(applied)))),
+        Err(aborted) => stopped(aborted, ctx),
+    }
+}
+
+/// What a run that could not finish reports, which turns on whether it had
+/// applied anything when it stopped.
+///
+/// One that had not states the refusal the way the planning stages state
+/// theirs — the keys it declined, the archive members the plan stripped, and
+/// nothing acted on — and a failure there replaces the output with its
+/// diagnostic, the run having nothing to report. Such a run wrote no manifest
+/// either, which is why only a stop at an action reaches that branch: a stop
+/// naming the record has rows the record was written for.
+///
+/// One that had renders the rows it applied whatever stopped it, in the tense
+/// it applied them in and under a document marked as stopped: a refusal adds
+/// the keys it declined, a failure the diagnostic that would otherwise have
+/// replaced the rows, and either adds what the state directory does not
+/// record. A run part-way through a plan reading as a plan would claim a
+/// destination nobody touched, which is the one thing this output must never
+/// claim; dropping the rows for a failure would claim it just as loudly.
+fn stopped(aborted: Box<Aborted>, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
+    let Aborted { stopped, applied } = *aborted;
+    match stopped {
+        Stopped::Applying(error) if applied.report.is_empty() => {
+            refusal_or_failure(error, &applied.manifest, applied.dropped, ctx)
+        }
+        stopped => {
+            let refused = match stopped.error() {
+                Error::Refused(refused) => refused_rows(refused, &applied.manifest),
+                _ => Report::default(),
+            };
+            ctx.app_state
+                .get_required::<exit::Verdict>()?
+                .record(exit::of_error(stopped.error()));
+            Ok(Output::Render(RunView::Aborted(Box::new(AbortedRun::new(
+                applied, refused, &stopped,
+            )))))
+        }
+    }
+}
+
+/// A refusal a run met without acting on anything states the keys it declined
+/// and the archive members its plan stripped, on the terms a plan's own rows
+/// are stated on; every other error replaces the output with its diagnostic.
+///
+/// The drops come from the plan the refusal cut short rather than from the
+/// error, which names no archive: a mapping expanding one is stripped to
+/// decide the plan, so a refusal met before the first action lands has drops
+/// to state and a document omitting them would say the archive arrived whole.
+///
+/// Deciding and applying run back to back over one destination, so no command
+/// line reaches an apply-time refusal on its own — the disk has to move in
+/// between — and that half of the contract is driven from `app_tests` over
+/// this function, which is what it is visible past this module for.
+pub(crate) fn refusal_or_failure(
+    error: Error,
+    manifest: &Manifest,
+    dropped: BTreeSet<Dropped>,
+    ctx: &CommandContext,
+) -> Result<Output<RunView>, anyhow::Error> {
+    match error {
+        Error::Refused(refused) => refusal(
+            RunView::Planned(PlannedRun::refused(&refused, manifest, dropped)),
+            ctx,
+        ),
+        failure => Err(exit::failure(failure)),
+    }
+}
+
+/// Renders the rows a refusal leaves the run with, recording the refusal so
+/// the process leaves with 2 though the run rendered rather than failed.
+fn refusal(stated: RunView, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
+    ctx.app_state
+        .get_required::<exit::Verdict>()?
+        .record(exit::REFUSAL);
+    Ok(Output::Render(stated))
 }
 
 /// `--tree` names the tree, one positional a mapping file, two or more the
@@ -184,13 +265,46 @@ fn desired(
     }
 }
 
+/// Classifies the destination, and under `--check` records the status the
+/// process leaves with.
+///
+/// A `--state-dir` that is not there reads as the empty manifest, and an empty
+/// manifest classifies every path on disk as foreign — a report a misspelled
+/// path and a destination full of files nobody recorded produce alike. The
+/// warning names which one this is. The default state directory's absence
+/// warns about nothing: a destination nothing has been projected onto has no
+/// state directory yet, and that is not a mistake.
+///
+/// `--check` spends the refusal status on both, so a gate fails on a
+/// destination that drifted and on the command line that misspelled where to
+/// look for it.
+///
+/// The classification runs first so a destination that cannot be opened fails
+/// as an operational failure alone, rather than warning about a state
+/// directory nothing was going to read.
 #[handler]
 pub(crate) fn status(
     #[arg] dest: String,
     #[arg(name = "state-dir")] state_dir: Option<String>,
+    #[flag] check: bool,
+    #[ctx] ctx: &CommandContext,
 ) -> Result<Output<Status>, anyhow::Error> {
     let projection = projection(&dest, state_dir.as_deref())?;
-    Ok(Output::Render(projection.status().map_err(exit::failure)?))
+    let classified = projection.status().map_err(exit::failure)?;
+    let named_but_absent =
+        state_dir.is_some() && !projection.state_dir_exists().map_err(exit::failure)?;
+    if named_but_absent {
+        standout::warnings::push_warning(format!(
+            "state dir {} does not exist; treating manifest as empty",
+            projection.state_dir()
+        ));
+    }
+    if check && (named_but_absent || !classified.is_clean()) {
+        ctx.app_state
+            .get_required::<exit::Verdict>()?
+            .record(exit::REFUSAL);
+    }
+    Ok(Output::Render(classified))
 }
 
 fn run_config(action: ConfigAction) -> Result<Output<ConfigView>, anyhow::Error> {
@@ -231,6 +345,7 @@ pub(crate) fn config_set(
     #[arg] scope: Option<String>,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
     settings::require_key(&key)?;
+    settings::require_value(&key, &value)?;
     run_config(ConfigAction::Set { key, value, scope })
 }
 

@@ -42,6 +42,23 @@ fn the_destination_defaults_to_the_working_directory() {
     assert_eq!(status.get_one::<String>("state-dir"), None);
 }
 
+/// `--check` is a flag on the leaf and it is off unless the invocation spells
+/// it, so a status nobody asked to gate on keeps exiting 0.
+#[test]
+fn status_reads_its_check_off_the_command_line() {
+    for (argv, check) in [
+        (vec!["proiectio", "status"], false),
+        (vec!["proiectio", "status", "--check"], true),
+    ] {
+        let matches = command()
+            .try_get_matches_from(&argv)
+            .unwrap_or_else(|error| panic!("{argv:?}: {error}"));
+        let status = matches.subcommand_matches("status").expect("the leaf");
+
+        assert_eq!(status.get_flag("check"), check, "{argv:?}");
+    }
+}
+
 /// Standout dispatches on the parsed subcommand path, so the config leaves
 /// must parse under the canonical name whichever spelling names the group.
 #[test]
@@ -211,6 +228,105 @@ fn write_carries_every_permission_on_the_invocation() {
     assert!(write.get_flag("dry-run"));
     assert!(write.get_flag("force"));
     assert!(write.get_flag("allow-external-targets"));
+}
+
+/// An unset shell variable interpolates to an empty argument, and no argument
+/// carrying a path or a name reads one as a value: `--dest ""` is not the
+/// working directory, `--owner ""` is not an owner, and `config get ""` names
+/// no key. Every one of them is a usage error at the command line, before a
+/// run reaches the destination or clapfig is asked for anything. The last six
+/// are clapfig's own arguments, which [`command`] patches.
+#[test]
+fn no_argument_reads_an_empty_string_as_a_value() {
+    for argv in [
+        vec!["proiectio", "status", "--dest", ""],
+        vec!["proiectio", "status", "--state-dir", ""],
+        vec!["proiectio", "write", "deploy.toml", "--dest", ""],
+        vec!["proiectio", "write", "deploy.toml", "--state-dir", ""],
+        vec!["proiectio", "write", "deploy.toml", "--owner", ""],
+        vec!["proiectio", "write", ""],
+        vec!["proiectio", "write", "--tree", ""],
+        vec!["proiectio", "rm", "--dest", ""],
+        vec!["proiectio", "rm", "--state-dir", ""],
+        vec!["proiectio", "rm", "--owner", ""],
+        vec!["proiectio", "rm", ""],
+        vec!["proiectio", "config", "gen", "--file", ""],
+        vec!["proiectio", "config", "schema", "--file", ""],
+        vec!["proiectio", "config", "get", ""],
+        vec!["proiectio", "config", "set", "", "site"],
+        vec!["proiectio", "config", "unset", ""],
+        vec!["proiectio", "config", "list", "--scope", ""],
+    ] {
+        let error = command()
+            .try_get_matches_from(&argv)
+            .expect_err(&format!("a usage error for {argv:?}"));
+
+        assert_eq!(
+            error.kind(),
+            ErrorKind::ValueValidation,
+            "{argv:?}: {error}"
+        );
+    }
+}
+
+/// An owner is refused blank as well as empty: it is a name the manifest
+/// records and a listing prints, so a blank one is an owner no reader of that
+/// file can see. A path is left to the filesystem, which answers for a blank
+/// name itself.
+#[test]
+fn an_owner_that_is_nothing_but_whitespace_is_refused() {
+    for argv in [
+        vec!["proiectio", "write", "deploy.toml", "--owner", "  "],
+        vec!["proiectio", "rm", "--owner", "\t"],
+    ] {
+        let error = command()
+            .try_get_matches_from(&argv)
+            .expect_err(&format!("a usage error for {argv:?}"));
+
+        assert_eq!(
+            error.kind(),
+            ErrorKind::ValueValidation,
+            "{argv:?}: {error}"
+        );
+        assert!(
+            error.to_string().contains(libproiectio::OWNER_RULE),
+            "{argv:?}: {error}"
+        );
+    }
+}
+
+/// The rule refuses a name with nothing in it, not a name with a space in it:
+/// an owner, a destination and a path each keep every character they carry.
+#[test]
+fn a_value_with_a_space_in_it_is_a_value() {
+    let matches = command()
+        .try_get_matches_from([
+            "proiectio",
+            "write",
+            "my mapping.toml",
+            "--dest",
+            "/srv/my site",
+            "--owner",
+            "my site",
+        ])
+        .expect("a parsed command line");
+    let write = matches.subcommand_matches("write").expect("the leaf");
+
+    assert_eq!(
+        write.get_one::<String>("owner").map(String::as_str),
+        Some("my site")
+    );
+    assert_eq!(
+        write.get_one::<String>("dest").map(String::as_str),
+        Some("/srv/my site")
+    );
+    assert_eq!(
+        write
+            .get_many::<Utf8PathBuf>("paths")
+            .map(|values| values.map(|value| value.as_str()).collect::<Vec<_>>())
+            .unwrap_or_default(),
+        ["my mapping.toml"]
+    );
 }
 
 // The `config` help names its keys in prose, and prose does not follow a

@@ -73,3 +73,45 @@ fn relative_paths_resolve_against_the_current_directory() {
     assert_eq!(projection.target(), cwd.join("site"));
     assert_eq!(projection.state_dir(), cwd.join("state"));
 }
+
+/// The fact a caller reads to tell an empty manifest it meant from one it
+/// misspelled, for a state directory beside the destination and for one under
+/// it. A read never creates either, so the answer stays no until a write does.
+#[test]
+fn a_state_directory_states_whether_it_is_there() {
+    use crate::test_support::Tree;
+
+    let dest = Tree::new().materialize();
+    let elsewhere = Tree::new().materialize();
+
+    for (case, state_dir) in [
+        ("beside the destination", elsewhere.path("never-created")),
+        ("under the destination", dest.path("never-created")),
+    ] {
+        let projection = Projection::new(dest.root(), Some(&state_dir)).expect("a projection");
+
+        assert!(
+            !projection.state_dir_exists().expect("a state directory"),
+            "{case}"
+        );
+        std::fs::create_dir(&state_dir).expect("a state directory");
+        assert!(
+            projection.state_dir_exists().expect("a state directory"),
+            "{case}"
+        );
+    }
+}
+
+/// The default state directory answers the same way: absent until a write
+/// creates it, which is the ordinary state of a fresh destination.
+#[test]
+fn the_default_state_directory_is_absent_until_something_creates_it() {
+    use crate::test_support::Tree;
+
+    let dest = Tree::new().materialize();
+    let projection = Projection::new(dest.root(), None).expect("a projection");
+
+    assert!(!projection.state_dir_exists().expect("a state directory"));
+    std::fs::create_dir(projection.state_dir()).expect("a state directory");
+    assert!(projection.state_dir_exists().expect("a state directory"));
+}

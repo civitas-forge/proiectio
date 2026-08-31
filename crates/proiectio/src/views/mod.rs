@@ -10,7 +10,7 @@ mod status;
 
 pub(crate) use config::ConfigView;
 pub(crate) use run::lines as run_lines;
-pub(crate) use run::{PlannedRun, RunView};
+pub(crate) use run::{AbortedRun, PlannedRun, RunView, refused_rows};
 pub(crate) use status::csv as status_csv;
 pub(crate) use status::lines as status_lines;
 

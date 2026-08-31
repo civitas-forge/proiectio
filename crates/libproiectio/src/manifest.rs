@@ -15,6 +15,29 @@ pub const MANIFEST_FILE_NAME: &str = "manifest.json";
 /// state directory.
 pub const LOCK_FILE_NAME: &str = "proiectio.lock";
 
+/// The one rule an owner keeps, wherever the name comes from. Owners are
+/// opaque otherwise: the crate records the name verbatim and never reads it.
+pub const OWNER_RULE: &str =
+    "an owner names a producer in the manifest, and neither an empty nor a blank string names one";
+
+/// Whether `owner` names one, per [`OWNER_RULE`]. The name a manifest records
+/// is the name a removal has to spell back and a listing prints, and neither
+/// an empty nor a blank string is one a reader of that file can see.
+pub fn names_an_owner(owner: &str) -> bool {
+    !owner.trim().is_empty()
+}
+
+/// [`OWNER_RULE`] as the planning entry points enforce it, which is where a
+/// name first reaches the manifest.
+pub(crate) fn require_owner(owner: &str) -> crate::Result<()> {
+    match names_an_owner(owner) {
+        true => Ok(()),
+        false => Err(crate::Error::OwnerNotNamed {
+            owner: owner.to_owned(),
+        }),
+    }
+}
+
 /// The recorded state of a projection: one JSON file in a caller-chosen state
 /// directory, mapping each projected path to what was last written there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

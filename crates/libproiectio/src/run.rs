@@ -4,9 +4,9 @@ use cap_std::ambient_authority;
 use cap_std::fs_utf8::Dir;
 
 use crate::{
-    ApplyReport, BlockMarkers, Desired, DriftPolicy, Error, Manifest, Plan, PlanOptions,
+    Aborted, ApplyReport, BlockMarkers, Desired, DriftPolicy, Error, Manifest, Plan, PlanOptions,
     Projection, RemovalScope, Report, Result, StateLock, apply, block_markers, decide,
-    decide_removal, load_manifest, observe,
+    decide_removal, load_manifest, observe, require_owner,
 };
 
 /// One write pass over a projection, holding the single-writer guard from
@@ -80,9 +80,12 @@ impl Run {
     /// Decides what applying `desired` under `owner` would do, and keeps it
     /// as the plan [`apply`](Run::apply) will execute; `origin` is named by
     /// every refusal. Deciding again discards the kept plan first, so a
-    /// decision that fails partway leaves the run with no plan.
+    /// decision that fails partway leaves the run with no plan. A name that is
+    /// not an owner ([`OWNER_RULE`](crate::OWNER_RULE)) fails with
+    /// [`Error::OwnerNotNamed`], the kept plan already discarded.
     pub fn plan(&mut self, owner: &str, desired: &Desired, options: PlanOptions) -> Result<&Plan> {
         self.plan = None;
+        require_owner(owner)?;
         let observations = observe(&self.dest, &self.manifest, &block_markers(desired))?;
         self.plan = Some(decide(
             owner,
@@ -106,6 +109,7 @@ impl Run {
         drift: DriftPolicy,
     ) -> Result<&Plan> {
         self.plan = None;
+        require_owner(owner)?;
         let observations = observe(&self.dest, &self.manifest, &BlockMarkers::new())?;
         self.plan = Some(decide_removal(
             owner,
@@ -124,12 +128,14 @@ impl Run {
     }
 
     /// Executes the plan this run decided and persists the manifest,
-    /// releasing the guard as the run is consumed.
+    /// releasing the guard as the run is consumed. A run that stops part-way
+    /// fails with [`Aborted`], which carries the rows it applied before it
+    /// stopped.
     ///
     /// ```no_run
     /// # use camino::Utf8PathBuf;
-    /// # use libproiectio::{Desired, PlanOptions, Projection, Result};
-    /// # fn write(projection: &Projection) -> Result<()> {
+    /// # use libproiectio::{Desired, PlanOptions, Projection};
+    /// # fn write(projection: &Projection) -> Result<(), Box<dyn std::error::Error>> {
     /// let desired = Desired::new();
     /// let mut run = projection.begin()?;
     /// run.plan("harness", &desired, PlanOptions::default())?;
@@ -144,8 +150,8 @@ impl Run {
     ///
     /// ```compile_fail
     /// # use camino::Utf8PathBuf;
-    /// # use libproiectio::{Desired, PlanOptions, Projection, Result};
-    /// # fn write(projection: &Projection) -> Result<()> {
+    /// # use libproiectio::{Desired, PlanOptions, Projection};
+    /// # fn write(projection: &Projection) -> Result<(), Box<dyn std::error::Error>> {
     /// let desired = Desired::new();
     /// let plan = projection.plan("harness", &desired, PlanOptions::default())?.plan;
     /// let run = projection.begin()?;
@@ -157,7 +163,7 @@ impl Run {
     ///
     /// A run that decided no plan writes nothing and reports the manifest as
     /// loaded.
-    pub fn apply(self) -> Result<ApplyReport> {
+    pub fn apply(self) -> std::result::Result<ApplyReport, Box<Aborted>> {
         let Some(plan) = &self.plan else {
             return Ok(ApplyReport {
                 report: Report::default(),

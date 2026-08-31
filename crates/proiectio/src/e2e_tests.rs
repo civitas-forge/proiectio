@@ -26,8 +26,8 @@ fn run_as(dir: &TempDir, mode: OutputMode, args: &[&str]) -> TestResult {
     run_over(dir, mode, &exit::Verdict::default(), args)
 }
 
-/// The same, over a verdict the caller keeps: a refused dry run renders its
-/// plan and leaves the refusal there rather than in the run's result.
+/// The same, over a verdict the caller keeps: a refused run renders its plan
+/// and leaves the refusal there rather than in the run's result.
 fn run_over(dir: &TempDir, mode: OutputMode, verdict: &exit::Verdict, args: &[&str]) -> TestResult {
     let mut argv = vec!["proiectio"];
     argv.extend_from_slice(args);
@@ -131,13 +131,11 @@ fn a_destination_is_projected_re_projected_refused_forced_and_cleared() {
     assert_eq!(dry.stdout(), refused_plan(&deploy));
     assert_eq!(dry.error(), None);
 
-    let refused = run(&dir, &source);
-    assert_eq!(exit::status(refused.outcome()), exit::REFUSAL);
-    assert!(
-        refused.error().unwrap_or_default().contains("bin/tool"),
-        "{}",
-        refused.error().unwrap_or_default()
-    );
+    let real = exit::Verdict::default();
+    let refused = run_over(&dir, OutputMode::Text, &real, &source);
+    assert_eq!(leaving(&refused, &real), exit::REFUSAL);
+    assert_eq!(refused.stdout(), refused_plan(&deploy));
+    assert_eq!(refused.error(), None);
 
     let forced = run(
         &dir,
@@ -281,7 +279,7 @@ fn removal_prunes_the_directories_it_empties() {
     );
 }
 
-/// A drifted path refuses, names itself, and stays on disk until the
+/// A drifted path refuses in a row that names it, and stays on disk until the
 /// invocation lifts the policy.
 #[test]
 #[serial]
@@ -290,14 +288,17 @@ fn rm_of_a_drifted_path_refuses_until_force_lifts_the_policy() {
     run(&dir, &["write", deploy.as_str(), "--dest", dest.as_str()]).assert_success();
     std::fs::write(dest.join("bin/tool").as_std_path(), EDITED).expect("a local edit");
 
-    let refused = run(&dir, &["rm", "bin/tool", "--dest", dest.as_str()]);
-
-    assert_eq!(exit::status(refused.outcome()), exit::REFUSAL);
-    assert!(
-        refused.error().unwrap_or_default().contains("bin/tool"),
-        "{}",
-        refused.error().unwrap_or_default()
+    let verdict = exit::Verdict::default();
+    let refused = run_over(
+        &dir,
+        OutputMode::Text,
+        &verdict,
+        &["rm", "bin/tool", "--dest", dest.as_str()],
     );
+
+    assert_eq!(leaving(&refused, &verdict), exit::REFUSAL);
+    assert_eq!(refused.stdout(), "would refuse     bin/tool  (drifted)\n");
+    assert_eq!(refused.error(), None);
     assert_eq!(
         std::fs::read(dest.join("bin/tool")).expect("the edited file"),
         EDITED
@@ -314,21 +315,27 @@ fn rm_of_a_drifted_path_refuses_until_force_lifts_the_policy() {
 }
 
 /// A positional that climbs out of the destination is refused before anything
-/// is read, and names the path it refused.
+/// is read, in a row naming the path and the containment rule it broke.
 #[test]
 #[serial]
 fn rm_refuses_a_path_that_leaves_the_destination() {
     let (dir, dest, deploy) = tour();
     run(&dir, &["write", deploy.as_str(), "--dest", dest.as_str()]).assert_success();
 
-    let result = run(&dir, &["rm", "../outside", "--dest", dest.as_str()]);
-
-    assert_eq!(exit::status(result.outcome()), exit::REFUSAL);
-    assert!(
-        result.error().unwrap_or_default().contains("../outside"),
-        "{}",
-        result.error().unwrap_or_default()
+    let verdict = exit::Verdict::default();
+    let result = run_over(
+        &dir,
+        OutputMode::Text,
+        &verdict,
+        &["rm", "../outside", "--dest", dest.as_str()],
     );
+
+    assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
+    assert_eq!(
+        result.stdout(),
+        "would refuse     ../outside  (containment)\n"
+    );
+    assert_eq!(result.error(), None);
 }
 
 /// A dry run reports the plan and removes nothing, on the same exit contract
@@ -382,7 +389,8 @@ const ESCAPING: [&str; 2] = ["../ESCAPE/x", "/etc/passwd"];
 
 /// A dry run reaches the verdict the real run reaches, which for a manifest
 /// key outside the destination is a containment refusal — not a preview of a
-/// removal there. Both leave the destination as it stands.
+/// removal there — and reports it in the same rows. Both leave the destination
+/// as it stands.
 #[test]
 #[serial]
 fn a_dry_run_of_rm_refuses_the_escaping_keys_the_real_run_refuses() {
@@ -408,17 +416,17 @@ fn a_dry_run_of_rm_refuses_the_escaping_keys_the_real_run_refuses() {
          would remove     current\n"
     );
 
-    let real = run(&dir, &["rm", "--dest", dest.as_str()]);
-
-    assert_eq!(exit::status(real.outcome()), exit::REFUSAL);
-    let message = real.error().unwrap_or_default();
-    assert!(
-        message.contains("refusing paths that violate containment"),
-        "{message}"
+    let real_verdict = exit::Verdict::default();
+    let real = run_over(
+        &dir,
+        OutputMode::Text,
+        &real_verdict,
+        &["rm", "--dest", dest.as_str()],
     );
-    for path in ESCAPING {
-        assert!(message.contains(path), "{message}");
-    }
+
+    assert_eq!(leaving(&real, &real_verdict), exit::REFUSAL);
+    assert_eq!(real.stdout(), dry.stdout());
+    assert_eq!(real.error(), None);
     // Neither run touched the destination: the real one refuses whole.
     assert!(dest.join("bin/tool").exists());
 }
