@@ -2370,6 +2370,49 @@ fn a_removal_landing_on_a_record_with_nothing_on_disk_forgets_it() {
 }
 
 #[test]
+fn a_removal_landing_on_a_record_whose_own_removal_refuses_refuses_too() {
+    // The two records disagree about the node, so the plan removes one and
+    // refuses the other as drifted. A refusal takes no node, so it claims the
+    // location for nothing: the key that walks there is graded against the
+    // manifest as it would be against a landing this plan never named.
+    let kept = file("kept\n", false);
+    let old = file("old\n", false);
+    let manifest = manifest_of(&[
+        ("a", recorded(&link("real"), &["other"])),
+        ("a/x.txt", recorded(&kept, &[OWNER])),
+        ("real/x.txt", recorded(&old, &[OWNER])),
+    ]);
+    let observations = observed(&[
+        ("a", on_disk(&link("real"))),
+        ("real/x.txt", on_disk(&kept)),
+    ]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "real/x.txt"),
+        &Action::Refuse {
+            refusal: Refusal::Drift,
+        }
+    );
+    assert_eq!(
+        action(&plan, "a/x.txt"),
+        &Action::Refuse {
+            refusal: Refusal::RecordedLanding {
+                through: Utf8PathBuf::from("a"),
+                at: Utf8PathBuf::from("real/x.txt"),
+                owners: BTreeSet::from([OWNER.to_owned()]),
+            },
+        }
+    );
+}
+
+#[test]
 fn a_write_walks_through_the_location_a_removal_vacates() {
     // The removal of `logs/x` unlinks `real/x`, so the write beneath it walks
     // through a location the run leaves empty. Filed under the key instead,

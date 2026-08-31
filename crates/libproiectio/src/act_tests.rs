@@ -1557,6 +1557,77 @@ fn a_removal_landing_on_a_node_this_plan_only_releases_refuses() {
     );
 }
 
+// The other half of the refused landing: a plan carrying that refusal never
+// runs at all. `validate` collects every `Action::Refuse` before the first
+// walk, so the aliased removal never reaches the landing and the node the
+// refused removal was aimed at is still there afterwards.
+#[test]
+fn a_plan_whose_landing_removal_refuses_never_runs() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("a/x.txt", "kept\n")
+        .file("real/x.txt", "kept\n")
+        .write_under(dest.root());
+    let kept = sha256_hex(b"kept\n");
+    let manifest = Manifest {
+        version: MANIFEST_VERSION,
+        entries: BTreeMap::from([
+            (
+                "a".into(),
+                recorded(EntryKind::Symlink, sha256_hex(b"real"), &["other"]),
+            ),
+            (
+                "a/x.txt".into(),
+                recorded(EntryKind::File, kept.clone(), &["own"]),
+            ),
+            (
+                "real/x.txt".into(),
+                recorded(EntryKind::File, sha256_hex(b"old\n"), &["own"]),
+            ),
+        ]),
+    };
+    let plan = Plan {
+        dropped: BTreeSet::new(),
+        owner: "own".to_owned(),
+        origins: BTreeMap::new(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([
+            (
+                "a/x.txt".into(),
+                Action::Remove {
+                    expected: Some(NodeSignature {
+                        kind: EntryKind::File,
+                        hash: kept,
+                        executable: false,
+                    }),
+                },
+            ),
+            (
+                "real/x.txt".into(),
+                Action::Refuse {
+                    refusal: Refusal::Drift,
+                },
+            ),
+        ]),
+    };
+    fs::remove_dir_all(dest.path("a")).expect("the directory the plan walked through");
+    std::os::unix::fs::symlink("real", dest.path("a")).expect("the link that appears in the gap");
+
+    let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the plan carries a refusal");
+
+    match error {
+        Error::Refused(refused) => assert_eq!(
+            refusals_of(&refused),
+            BTreeMap::from([(Utf8PathBuf::from("real/x.txt"), Refusal::Drift)])
+        ),
+        other => panic!("expected Drift, got {other:?}"),
+    }
+    assert_eq!(
+        fs::read(dest.path("real/x.txt")).expect("the node the refused removal was aimed at"),
+        b"kept\n"
+    );
+}
+
 // A drop is not an action, so apply performs nothing for it and records
 // nothing in the manifest. It rides the report beside the rows rather than
 // among them, which is what leaves a run whose only news is a dropped member
