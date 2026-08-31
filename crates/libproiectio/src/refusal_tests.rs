@@ -169,13 +169,15 @@ fn messages_open_with_the_kind_and_name_each_path_with_its_detail() {
         rendered,
         [
             "refusing to touch drifted paths (edited on disk): drift; \
-             pass --force to touch them anyway",
+             pass --force to touch them anyway, where the projection can still \
+             tell what it would replace",
             "refusing directories the plan can neither replace nor remove: \
              directory (holding directory/note.md, directory/theirs (held by site), \
              which --force does not remove)",
             "refusing to touch foreign paths (not written by this projection): foreign; \
              no flag overrides this: remove the paths by hand to let the projection \
-             write them",
+             write them — for a block, the marker region rather than the container \
+             holding it",
             "refusing paths that violate containment: containment",
             "refusing desired paths that claim overlapping locations: tree (with tree/below)",
             "refusing paths whose desired entries conflict with another owner's: \
@@ -195,10 +197,14 @@ fn messages_open_with_the_kind_and_name_each_path_with_its_detail() {
 fn every_kind_names_what_lifts_it_or_names_nothing() {
     for kind in one_of_each().iter().map(|(_, refusal, _)| refusal.kind()) {
         let expected = match kind {
-            RefusalKind::Drift => Some("pass --force to touch them anyway"),
+            RefusalKind::Drift => Some(
+                "pass --force to touch them anyway, where the projection can still tell what it \
+                 would replace",
+            ),
             RefusalKind::ExternalTarget => Some("pass --allow-external-targets to write them"),
             RefusalKind::Foreign => Some(
-                "no flag overrides this: remove the paths by hand to let the projection write them",
+                "no flag overrides this: remove the paths by hand to let the projection write \
+                 them — for a block, the marker region rather than the container holding it",
             ),
             RefusalKind::Containment
             | RefusalKind::TreeConflict
@@ -225,7 +231,8 @@ fn a_message_states_what_lifts_it_once_however_many_paths_it_names() {
     assert_eq!(
         refused.to_string(),
         "refusing to touch drifted paths (edited on disk): bin/tool, etc/rc; \
-         pass --force to touch them anyway"
+         pass --force to touch them anyway, where the projection can still \
+         tell what it would replace"
     );
 }
 

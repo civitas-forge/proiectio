@@ -266,11 +266,31 @@ impl RefusalKind {
     /// passing the flag permits rather than what the command then does with the
     /// path: `--force` overwrites a drifted path under `write` and removes it
     /// under `rm`, and a hint naming either verb would lie under the other.
+    ///
+    /// A hint may not send the reader somewhere the engine will refuse them
+    /// again, and it may never send them somewhere destructive. Two kinds
+    /// carry a qualifier for that reason, and both qualifiers are load-bearing:
+    ///
+    /// - `--force` does not lift every [`Drift`](Self::Drift). A drifted node
+    ///   the projection cannot pin a signature on — one that is no longer a
+    ///   file or a link, or a region among duplicate markers — refuses under
+    ///   [`DriftPolicy::Overwrite`](crate::DriftPolicy::Overwrite) too, since
+    ///   the engine will not replace what it cannot first identify.
+    /// - Removing a [`Foreign`](Self::Foreign) path is right for a node the
+    ///   projection wanted to write whole, and wrong for a block: a block owns
+    ///   a region, not the container holding it, and never creates a container.
+    ///   Deleting the container destroys the author's file and leaves the next
+    ///   run refusing
+    ///   [`ContainerMissing`](crate::BlockFault::ContainerMissing).
     pub fn override_hint(self) -> Option<&'static str> {
         match self {
-            RefusalKind::Drift => Some("pass --force to touch them anyway"),
+            RefusalKind::Drift => Some(
+                "pass --force to touch them anyway, where the projection can still tell what it \
+                 would replace",
+            ),
             RefusalKind::Foreign => Some(
-                "no flag overrides this: remove the paths by hand to let the projection write them",
+                "no flag overrides this: remove the paths by hand to let the projection write \
+                 them — for a block, the marker region rather than the container holding it",
             ),
             RefusalKind::ExternalTarget => Some("pass --allow-external-targets to write them"),
             RefusalKind::Containment

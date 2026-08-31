@@ -1,5 +1,8 @@
 //! App wiring: the composition root naming every command, template and style.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use anyhow::Result;
 use minijinja::Value;
 use standout::cli::App;
@@ -9,6 +12,33 @@ use standout::{EmbeddedTemplates, MiniJinjaEngine, embed_styles, embed_templates
 use crate::exit::Verdict;
 use crate::handlers;
 use crate::views;
+
+/// Whether the invocation carried `--force`.
+///
+/// The hint lines need it and the document cannot carry it: what a run
+/// serializes is the library's own report, and the drift policy is the command
+/// line's, not the report's. So it reaches rendering the way [`Verdict`] does —
+/// a cell this composition root owns, the handler records into, and the `run`
+/// context function reads back.
+///
+/// It suppresses the drift hint rather than rewording it. The hint names the
+/// flag that lifts drift; a reader who passed that flag and was refused anyway
+/// has met the drift no policy lifts, and repeating the flag at them is advice
+/// they have already taken.
+#[derive(Clone, Default)]
+pub(crate) struct Forced(Rc<Cell<bool>>);
+
+impl Forced {
+    /// Records what the command line carried, before the run it describes is
+    /// rendered.
+    pub(crate) fn record(&self, forced: bool) {
+        self.0.set(forced);
+    }
+
+    fn get(&self) -> bool {
+        self.0.get()
+    }
+}
 
 pub(crate) fn templates() -> EmbeddedTemplates {
     embed_templates!("src/templates")
@@ -73,15 +103,22 @@ pub(crate) fn engine() -> MiniJinjaEngine {
 }
 
 pub(crate) fn build(verdict: Verdict) -> Result<App> {
+    let forced = Forced::default();
+    let hints = forced.clone();
     Ok(App::builder()
         .version(env!("CARGO_PKG_VERSION"))
         .app_state(verdict)
+        .app_state(forced)
         .template_engine(Box::new(engine()))
         .templates(templates())
         .styles(embed_styles!("src/styles"))
         .default_theme("proiectio")
-        .context_fn("run", |context: &RenderContext| {
-            Value::from_serialize(views::run_lines(context.data, context.ambiguous_width()))
+        .context_fn("run", move |context: &RenderContext| {
+            Value::from_serialize(views::run_lines(
+                context.data,
+                context.ambiguous_width(),
+                hints.get(),
+            ))
         })
         .context_fn("status", |context: &RenderContext| {
             Value::from_serialize(views::status_lines(context.data, context.ambiguous_width()))

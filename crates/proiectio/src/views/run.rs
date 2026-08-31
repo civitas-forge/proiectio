@@ -396,11 +396,19 @@ const REFUSAL_KINDS: [RefusalKind; 9] = [
 /// What lifts a refusal of the kind the library serializes under `name`, in
 /// the library's own words; `None` for a kind nothing lifts, and for one this
 /// CLI does not know.
-fn hinting(name: &str) -> Option<&'static str> {
-    REFUSAL_KINDS
+///
+/// `forced` says the invocation carried `--force`, which drops the drift hint:
+/// that hint names the flag that lifts drift, and a run refusing drift with the
+/// flag already on has met the drift no policy lifts. The reader took the
+/// advice; printing it again would send them back to where they are.
+fn hinting(name: &str, forced: bool) -> Option<&'static str> {
+    let kind = REFUSAL_KINDS
         .into_iter()
-        .find(|kind| kind_name(*kind).as_deref() == Some(name))
-        .and_then(RefusalKind::override_hint)
+        .find(|kind| kind_name(*kind).as_deref() == Some(name))?;
+    if forced && kind == RefusalKind::Drift {
+        return None;
+    }
+    kind.override_hint()
 }
 
 /// The name the library serializes one refusal kind under, taken from the kind.
@@ -552,7 +560,7 @@ const APPLIED_VERBS: usize = "overwrote".len();
 const DROPPED: &str = "dropped";
 
 /// The lines `run.jinja` prints for one write-pass document.
-pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
+pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth, forced: bool) -> RunLines {
     // Where the rows sit is what tells the tenses apart: a plan flattens its
     // report into the document, so its rows are at the top level, and both an
     // apply and a run that stopped nest theirs under `report`. Nothing else in
@@ -636,7 +644,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
         let note = note(target, qualifier.as_deref(), executable(shape));
         if let Some(hint) = fields
             .and_then(|fields| fields.get("refusal"))
-            .and_then(|refusal| hinting(named(Some(refusal)).0))
+            .and_then(|refusal| hinting(named(Some(refusal)).0, forced))
             .map(str::to_owned)
             && !hints.contains(&hint)
         {

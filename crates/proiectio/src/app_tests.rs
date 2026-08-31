@@ -1736,7 +1736,8 @@ fn a_refused_dry_run_renders_the_whole_plan() {
             "would refuse     bin/tool              (drifted) (from mapping {deploy})\n\
              would overwrite  config/settings.toml  (content changed)\n\
              would skip       current               -> releases/1.2.3\n\
-             pass --force to touch them anyway\n"
+             pass --force to touch them anyway, where the projection can still \
+         tell what it would replace\n"
         )
     );
     assert_eq!(result.error(), None);
@@ -1855,7 +1856,8 @@ fn a_refused_rm_renders_the_document_its_dry_run_renders() {
         "would refuse     bin/tool              (drifted)\n\
          would remove     config/settings.toml\n\
          would remove     current\n\
-         pass --force to touch them anyway\n"
+         pass --force to touch them anyway, where the projection can still \
+         tell what it would replace\n"
     );
     assert!(dest.join("bin/tool").exists());
 }
@@ -1884,6 +1886,16 @@ fn mid_run(#[ctx] ctx: &CommandContext) -> Result<Output<views::RunView>> {
         BTreeSet::new(),
         ctx,
     )
+}
+
+/// The same refusal from a run whose command line carried `--force`, recorded
+/// the way `write` and `rm` record it. Drift refusing with the flag already on
+/// is drift no policy lifts, and the hint naming the flag has nothing to tell
+/// this reader.
+#[handler]
+fn mid_run_forced(#[ctx] ctx: &CommandContext) -> Result<Output<views::RunView>> {
+    ctx.app_state.get_required::<Forced>()?.record(true);
+    mid_run(ctx)
 }
 
 /// A run that applies rows and then meets a refusal, which is what the disk
@@ -1958,25 +1970,38 @@ fn edited_under(
 /// The app a stand-in handler runs under: this CLI's own templates, styles and
 /// context injection, with `write` bound to the handler named.
 macro_rules! stand_in_app {
-    ($verdict:expr, $handler:path) => {
+    ($verdict:expr, $handler:path) => {{
+        // Mirrors `app::build`, `Forced` included: a stand-in handler runs
+        // under the same state the real one does.
+        let forced = Forced::default();
+        let hints = forced.clone();
         App::builder()
             .app_state($verdict.clone())
+            .app_state(forced)
             .templates(templates())
             .styles(embed_styles!("src/styles"))
             .default_theme("proiectio")
             .template_engine(Box::new(engine()))
-            .context_fn("run", |context: &RenderContext| {
-                Value::from_serialize(views::run_lines(context.data, context.ambiguous_width()))
+            .context_fn("run", move |context: &RenderContext| {
+                Value::from_serialize(views::run_lines(
+                    context.data,
+                    context.ambiguous_width(),
+                    hints.get(),
+                ))
             })
             .command_with("write", $handler, |cfg| cfg.template("run.jinja"))
             .expect("a command")
             .build()
             .expect("an app")
-    };
+    }};
 }
 
 fn mid_run_app(verdict: &exit::Verdict) -> App {
     stand_in_app!(verdict, mid_run__handler)
+}
+
+fn mid_run_forced_app(verdict: &exit::Verdict) -> App {
+    stand_in_app!(verdict, mid_run_forced__handler)
 }
 
 fn moved_under_app(verdict: &exit::Verdict) -> App {
@@ -2060,7 +2085,8 @@ fn a_refusal_before_the_first_action_prints_the_members_strip_erased() {
             "would refuse     top             (drifted) (from archive {archive})\n\
              dropped          ._skeleton-1.2  (no path left after strip 1) \
              (from archive {archive})\n\
-             pass --force to touch them anyway\n"
+             pass --force to touch them anyway, where the projection can still \
+         tell what it would replace\n"
         )
     );
 }
@@ -2269,7 +2295,32 @@ fn a_refusal_met_while_applying_renders_the_keys_the_error_names() {
     assert_eq!(
         rendered.stdout(),
         "would refuse     bin/tool  (drifted) (from mapping /srv/deploy.toml)\n\
-         pass --force to touch them anyway\n"
+         pass --force to touch them anyway, where the projection can still \
+         tell what it would replace\n"
+    );
+}
+
+/// The same refusal under `--force` states the row and stops: the flag is on,
+/// the run refused anyway, and the line telling the reader to pass it would be
+/// advice they cannot act on twice. The row itself is unchanged — what refused
+/// and why is the part they still need.
+#[test]
+#[serial]
+fn a_refusal_under_force_states_the_row_without_advising_the_flag() {
+    let (dir, _) = classified_dir();
+
+    let verdict = exit::Verdict::default();
+    let rendered = harness(&dir).run(
+        &mid_run_forced_app(&verdict),
+        cli::command(),
+        ["proiectio", "write", "map.toml", "--force"],
+    );
+
+    assert_eq!(leaving(&rendered, &verdict), exit::REFUSAL);
+    assert_eq!(rendered.error(), None);
+    assert_eq!(
+        rendered.stdout(),
+        "would refuse     bin/tool  (drifted) (from mapping /srv/deploy.toml)\n"
     );
 }
 

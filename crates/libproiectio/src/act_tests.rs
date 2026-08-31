@@ -3243,7 +3243,8 @@ fn a_refused_ancestor_is_attributed_to_the_planned_key_beneath_it() {
         error.to_string(),
         "refusing to touch foreign paths (not written by this projection): \
          dir (from mapping /maps/deploy.toml); no flag overrides this: remove the paths by \
-         hand to let the projection write them"
+         hand to let the projection write them — for a block, the marker region rather than \
+         the container holding it"
     );
     match error {
         Error::Refused(refused) => assert_eq!(

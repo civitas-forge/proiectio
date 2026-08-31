@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Desired, Origin, RefusalKind};
+use crate::{Desired, DesiredRegion, Origin, RefusalKind};
 
 // The owner every test plans for unless it says otherwise.
 const OWNER: &str = "site";
@@ -2117,6 +2117,15 @@ fn a_drifted_orphan_now_a_directory_stays_refused_under_overwrite_policy() {
             refusal: Refusal::Drift,
         }
     );
+
+    // `--force` is already on and the path refused anyway, so the hint may not
+    // promise the flag lifts it. Its qualifier is what keeps the message true
+    // here: nothing can be pinned on a node that is no longer a file or a link.
+    assert_eq!(
+        plan.refused().expect("a refused path").to_string(),
+        "refusing to touch drifted paths (edited on disk): old; pass --force to touch them \
+         anyway, where the projection can still tell what it would replace"
+    );
 }
 
 // --- a directory standing where a file or a link belongs ---
@@ -2329,6 +2338,76 @@ fn a_desired_block_over_a_directory_stays_foreign() {
         &Action::Refuse {
             refusal: Refusal::Foreign,
         }
+    );
+}
+
+// A container the author owns, already carrying the desired marker over a
+// body this projection did not write, is foreign — and removing it is the one
+// thing that does not help, since a block never creates its container. Both
+// halves are asserted here because the pair is what the `Foreign` message may
+// not tell the reader to do.
+#[test]
+fn a_foreign_block_container_is_refused_and_removing_it_refuses_too() {
+    let desired = tree(&[("rc", &block("ours\n", Placement::Append))]);
+    let theirs = Observation::Block {
+        hash: None,
+        newline_terminated: true,
+        occurrences: 1,
+        desired: Some(DesiredRegion {
+            occurrences: 1,
+            hash: Some(sha256_hex(b"theirs\n")),
+            author_newline_terminated: true,
+        }),
+    };
+
+    let standing = plan(
+        &desired,
+        &Manifest::new(),
+        &observed(&[("rc", theirs)]),
+        DriftPolicy::Overwrite,
+    );
+
+    assert_eq!(
+        action(&standing, "rc"),
+        &Action::Refuse {
+            refusal: Refusal::Foreign,
+        }
+    );
+
+    // The reader takes the removal advice: the container is gone, and with it
+    // whatever else the author kept in the file.
+    let removed = plan(
+        &desired,
+        &Manifest::new(),
+        &observed(&[]),
+        DriftPolicy::Overwrite,
+    );
+
+    assert_eq!(
+        action(&removed, "rc"),
+        &Action::Refuse {
+            refusal: Refusal::Block {
+                fault: BlockFault::ContainerMissing,
+            },
+        },
+        "removing a block's container does not let the projection write it"
+    );
+
+    // What the `Foreign` hint sends the reader to do instead: the marker
+    // region goes and the container stays, and the projection writes.
+    let region_gone = plan(
+        &desired,
+        &Manifest::new(),
+        &observed(&[("rc", no_region(true))]),
+        DriftPolicy::Overwrite,
+    );
+
+    assert_eq!(
+        action(&region_gone, "rc"),
+        &Action::Write {
+            entry: block("ours\n", Placement::Append),
+        },
+        "clearing the region rather than the container is what lets it write"
     );
 }
 
