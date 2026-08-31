@@ -272,8 +272,9 @@ impl RefusalKind {
     /// carry a qualifier for that reason, and both qualifiers are load-bearing:
     ///
     /// - `--force` does not lift every [`Drift`](Self::Drift). A drifted node
-    ///   the projection cannot pin a signature on — one that is no longer a
-    ///   file or a link, or a region among duplicate markers — refuses under
+    ///   the projection cannot pin a signature on — a directory or a device
+    ///   standing where a file was, or a region among duplicate markers —
+    ///   refuses under
     ///   [`DriftPolicy::Overwrite`](crate::DriftPolicy::Overwrite) too, since
     ///   the engine will not replace what it cannot first identify.
     /// - Removing a [`Foreign`](Self::Foreign) path is right for a node the

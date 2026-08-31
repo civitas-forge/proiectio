@@ -2120,7 +2120,8 @@ fn a_drifted_orphan_now_a_directory_stays_refused_under_overwrite_policy() {
 
     // `--force` is already on and the path refused anyway, so the hint may not
     // promise the flag lifts it. Its qualifier is what keeps the message true
-    // here: nothing can be pinned on a node that is no longer a file or a link.
+    // here: a device stands where the file was, and nothing pins a signature
+    // on that.
     assert_eq!(
         plan.refused().expect("a refused path").to_string(),
         "refusing to touch drifted paths (edited on disk): old; pass --force to touch them \
