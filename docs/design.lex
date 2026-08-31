@@ -20,7 +20,10 @@ Proiectio Design
     atomically and after every other write — and on a failed apply
     still persisted, recording the entries actually applied, so a
     partial run heals on re-run instead of classifying its own
-    writes as Foreign.
+    writes as Foreign. The one stop that cannot heal is the save
+    itself failing: then the state directory records nothing of the
+    run, Stopped says so, and the next run meets those writes as
+    Foreign.
 
     The manifest and its entries:
 
