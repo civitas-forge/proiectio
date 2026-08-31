@@ -35,12 +35,6 @@ Implementation Guidelines
     and apply are separate calls in the library, so the gap between
     them is real even where the CLI closes it to milliseconds.
 
-    Those re-checks add no verdicts of their own: whatever the
-    snapshot already showed, decide refuses first, and act refuses
-    only what changed on disk after observation. A dry run and a real
-    run over an untouched destination therefore reach the same
-    verdict for every path.
-
 2. Testing
 
     The split above does most of the work: decide is table-testable
