@@ -41,8 +41,10 @@ Proiectio Design
 
     :: rust ::
 
-    Owners are strings proiectio never interprets; a caller writes
-    whatever names the thing that produced the tree. Two owners may
+    Owners are strings proiectio never interprets, beyond requiring
+    that a name is there at all — an empty or blank owner refuses at
+    every planning entry point; a caller writes whatever names the
+    thing that produced the tree. Two owners may
     hold one path only while writing identical bytes — the hash check
     enforces it.
 2. Classification and Apply

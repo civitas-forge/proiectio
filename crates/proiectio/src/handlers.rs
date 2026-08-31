@@ -98,7 +98,7 @@ pub(crate) fn rm(
 fn owner_or_configured(owner: Option<String>) -> Result<String, anyhow::Error> {
     match owner {
         Some(named) => Ok(named),
-        None => Ok(settings::builder().load()?.owner),
+        None => settings::require_owner(settings::builder().load()?.owner),
     }
 }
 
@@ -113,10 +113,11 @@ fn write_settings(
         (Some(owner), Some(bytes)) => (owner, bytes),
         (owner, max_source_size) => {
             let configured = settings::builder().load()?;
-            (
-                owner.unwrap_or(configured.owner),
-                max_source_size.unwrap_or(configured.max_source_size),
-            )
+            let owner = match owner {
+                Some(named) => named,
+                None => settings::require_owner(configured.owner)?,
+            };
+            (owner, max_source_size.unwrap_or(configured.max_source_size))
         }
     };
     Ok((
@@ -311,6 +312,7 @@ pub(crate) fn config_set(
     #[arg] scope: Option<String>,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
     settings::require_key(&key)?;
+    settings::require_value(&key, &value)?;
     run_config(ConfigAction::Set { key, value, scope })
 }
 

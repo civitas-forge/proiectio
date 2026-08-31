@@ -4,7 +4,7 @@ use camino::Utf8PathBuf;
 use clapfig::error::ClapfigError;
 use clapfig::runtime::{LeafType, Shape};
 use clapfig::{Clapfig, ConfigAction, Schema, SearchPath, TypedBuilder, UnknownKeyDecision};
-use libproiectio::Error;
+use libproiectio::{Error, OWNER_RULE, names_an_owner};
 use serde::{Deserialize, Serialize};
 
 /// Projection settings as `proiectio.toml` declares them.
@@ -114,6 +114,44 @@ fn user_config_path() -> Result<Utf8PathBuf, Error> {
     Utf8PathBuf::from_path_buf(dirs.config_dir().join(FILE)).map_err(|path| Error::PathNotUtf8 {
         path: path.to_string_lossy().into_owned(),
     })
+}
+
+/// The key [`OWNER_RULE`] belongs to, as the schema spells it.
+const OWNER_KEY: &str = "owner";
+
+/// The owner a run records under, refused where the layer it came from left
+/// no name — the file, or `PROIECTIO__OWNER`, whose values reach the run
+/// already parsed. The flag parses through [`crate::cli`], which refuses the
+/// same values at the command line, and libproiectio refuses them again where
+/// a plan is decided; this is the layer that names the configuration as the
+/// place the bad value came from.
+///
+/// `config list` and `config get` do not take this route: an operator whose
+/// file carries a blank owner needs to be able to read it back.
+pub(crate) fn require_owner(owner: String) -> Result<String, anyhow::Error> {
+    match names_an_owner(&owner) {
+        true => Ok(owner),
+        false => Err(anyhow::anyhow!(
+            "the configured owner is {owner:?}: {OWNER_RULE}"
+        )),
+    }
+}
+
+/// What `config set` will write, refused where it is not a value. Clapfig
+/// persists the string it is handed, so a key whose type does not parse is
+/// its own error; an empty string parses as a `String` and would land in the
+/// file, which is what this catches.
+pub(crate) fn require_value(key: &str, value: &str) -> Result<(), anyhow::Error> {
+    let complaint = match key {
+        OWNER_KEY => (!names_an_owner(value)).then_some(OWNER_RULE),
+        _ => value.is_empty().then_some("empty is not a value"),
+    };
+    match complaint {
+        Some(reason) => Err(anyhow::anyhow!(
+            "{key} cannot be set to {value:?}: {reason}"
+        )),
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn require_key(key: &str) -> Result<(), ClapfigError> {
