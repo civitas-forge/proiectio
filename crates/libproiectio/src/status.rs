@@ -24,8 +24,11 @@ pub enum PathState {
 pub type Status = Report<PathState>;
 
 impl Status {
-    /// Whether the destination holds exactly what the manifest records: no
-    /// path edited, none gone, and none on disk the manifest never wrote.
+    /// Whether every row the report holds is [`Clean`](PathState::Clean): no
+    /// recorded path edited, none gone, and no unrecorded file on disk. What
+    /// the report leaves out — an unrecorded directory holding nothing, a
+    /// non-UTF-8 entry, the state subtree — is no row here either, and so
+    /// cannot make a destination unclean.
     ///
     /// A report of no rows is clean, and an empty manifest agrees with an
     /// empty destination, so this cannot tell a destination nothing was ever

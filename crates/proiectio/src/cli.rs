@@ -13,7 +13,8 @@ use clapfig::ConfigCommand;
         safety \"no\" — drift, a foreign path, or a containment violation — and is \
         distinct from an error (1). Where a refusal has an override, re-run with \
         --force (drift) or --allow-external-targets (a symlink leaving the destination). \
-        `status --check` reports those same findings on the same 2 without acting on them."
+        `status --check` spends the same 2 on what it classifies — a drifted, missing, or \
+        foreign path — without acting on it."
 )]
 pub(crate) struct Cli {
     /// Target directory; default cwd.
@@ -117,10 +118,12 @@ pub(crate) enum Commands {
         /// Exit 2 unless every path is clean.
         ///
         /// A drifted, missing or foreign path exits 2, and so does a
-        /// --state-dir that is not there, which reads as the empty manifest
-        /// and would otherwise report a whole destination as foreign and
-        /// pass. Everything clean exits 0. The report itself is the same
-        /// either way; the exit code is the verdict.
+        /// --state-dir that is not there, which reads as the empty manifest.
+        /// A destination holding files classifies them all as foreign and
+        /// exits 2 on the rows alone; an empty one reports no rows, which is
+        /// clean, and the misspelled path would pass unnoticed. Everything
+        /// clean exits 0. The report itself is the same either way; the exit
+        /// code is the verdict.
         #[arg(long)]
         check: bool,
     },
