@@ -135,7 +135,14 @@ Proiectio Design
     nothing, so the caller learns the path was never held and a
     re-run still changes no disk. Status runs the classification and writes nothing, and a
     destination nothing was ever projected into reports rather than
-    failing. Proiectio has no notion of git: a caller that wants owned
+    failing.
+
+    Every verdict in a plan is decided against the destination as
+    observed when the run began. The one effect a verdict accounts
+    for is the space the plan's own removals free — never the order
+    they run in — so a removal resolving through a link the same run
+    removes refuses and names the link: remove the link in its own
+    run, and the next run decides over the disk it left. Proiectio has no notion of git: a caller that wants owned
     paths excluded from version control reads the owned-path list off
     the manifest and maintains the exclusion itself.
 
