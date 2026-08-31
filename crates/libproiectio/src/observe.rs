@@ -210,14 +210,17 @@ pub(crate) fn observe(
 }
 
 /// States the region of every block record whose ancestry walks out through a
-/// recorded link, at the location that walk comes out at.
+/// recorded link, under the record's own key and read out of the container the
+/// walk comes out at.
 ///
 /// [`walk`] picks a container to parse by the manifest key standing at the
 /// path it is walking, so a container the key only reaches through a link
 /// observes as an ordinary [`File`](Observation::File) at the location it
-/// actually occupies. Deciding grades a record against that location, and
-/// applying strips the region there, so that is where the region has to be
-/// stated for the two to agree.
+/// actually occupies. Deciding grades a record against the container applying
+/// strips the region from, which is that one — and the region is stated under
+/// the record's key because the marker, the placement, and the desired text
+/// are the record's own: two keys reaching one container each hold a region of
+/// their own there.
 fn relocated_regions(
     dest: &Dir,
     manifest: &Manifest,
@@ -254,9 +257,9 @@ fn relocated_regions(
             landing.at.as_str(),
             &landing.at,
             Some((marker, placement)),
-            wanted.get(&landing.at),
+            wanted.get(path),
         )?;
-        regions.insert(landing.at, observation);
+        regions.insert(path.clone(), observation);
     }
     into.paths.extend(regions);
     Ok(())

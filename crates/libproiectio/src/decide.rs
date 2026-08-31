@@ -350,7 +350,15 @@ fn plan_actions(
                 ),
                 Ok(landing) => {
                     let at = landing.map_or_else(|| path.clone(), |landing| landing.at);
-                    let observed = observations.paths.get(&at);
+                    // A block owns a region of the container, not the
+                    // container, and two keys can reach one container: the
+                    // region parsed under this record's own marker is stated
+                    // under this record's key, wherever the container sits.
+                    let observed = if recorded.kind.is_block() {
+                        observations.paths.get(path)
+                    } else {
+                        observations.paths.get(&at)
+                    };
                     let state = recorded_state(recorded, observed);
                     let action = drifted_directory(
                         owner,
@@ -377,29 +385,47 @@ fn plan_actions(
     // section 2 gives two desired keys over one location — so both refuse.
     // A removal expecting nothing claims nothing: apply only re-checks that
     // the location is empty, which leaves it free for another key's write.
-    let mut claimed: BTreeMap<&Utf8Path, BTreeSet<Utf8PathBuf>> = BTreeMap::new();
+    // A block removal claims one marker's region and republishes the
+    // container, so two of them at one container conflict only where they
+    // strip the same marker; every other claim is on the whole node and
+    // conflicts with all of them.
+    let mut claimed: BTreeMap<&Utf8Path, Vec<(Option<&str>, &Utf8Path)>> = BTreeMap::new();
     for (path, action, at) in &orphans {
         if matches!(action, Action::Remove { expected: None }) {
             continue;
         }
         if let Some(at) = at {
+            let marker = manifest
+                .entries
+                .get(path)
+                .and_then(|recorded| block::block_kind(&recorded.kind))
+                .map(|(marker, _)| marker);
             claimed
                 .entry(at.as_path())
                 .or_default()
-                .insert(path.clone());
+                .push((marker, path.as_path()));
         }
     }
     for path in admitted.keys() {
         claimed
             .entry(path.as_path())
             .or_default()
-            .insert(path.clone());
+            .push((None, path.as_path()));
     }
     let mut collided: BTreeMap<Utf8PathBuf, BTreeSet<Utf8PathBuf>> = BTreeMap::new();
-    for keys in claimed.into_values().filter(|keys| keys.len() > 1) {
-        for key in &keys {
-            let others = keys.iter().filter(|&other| other != key).cloned().collect();
-            collided.insert(key.clone(), others);
+    for claims in claimed.into_values() {
+        for (marker, key) in &claims {
+            let others: BTreeSet<Utf8PathBuf> = claims
+                .iter()
+                .filter(|(other_marker, other)| {
+                    other != key
+                        && (marker.is_none() || other_marker.is_none() || other_marker == marker)
+                })
+                .map(|(_, other)| (*other).to_owned())
+                .collect();
+            if !others.is_empty() {
+                collided.insert((*key).to_owned(), others);
+            }
         }
     }
     let conflict = |paths: &BTreeSet<Utf8PathBuf>| {

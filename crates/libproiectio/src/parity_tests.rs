@@ -26,12 +26,24 @@ const MARKER: &str = "# proiectio";
 
 // A desired tree of one block region at `path`, which no `Tree` declares.
 fn block_at(path: &'static str, body: &'static str) -> BTreeMap<Utf8PathBuf, Entry> {
+    marked_block_at(path, MARKER, Placement::Append, body)
+}
+
+// The same under a marker and placement of the case's choosing, which is what
+// lets two regions stand in one container: an append region runs to the end of
+// the bytes, so a second region has to be a prepend.
+fn marked_block_at(
+    path: &'static str,
+    marker: &'static str,
+    placement: Placement,
+    body: &'static str,
+) -> BTreeMap<Utf8PathBuf, Entry> {
     BTreeMap::from([(
         Utf8PathBuf::from(path),
         Entry::Block {
             body: body.as_bytes().to_vec(),
-            marker: MARKER.to_owned(),
-            placement: Placement::Append,
+            marker: marker.to_owned(),
+            placement,
         },
     )])
 }
@@ -40,6 +52,8 @@ fn block_at(path: &'static str, body: &'static str) -> BTreeMap<Utf8PathBuf, Ent
 enum Op {
     // Project this tree under `OWNER`.
     Write(Tree),
+    // The same over entries a `Tree` cannot declare, which is the blocks.
+    WriteEntries(BTreeMap<Utf8PathBuf, Entry>),
     // Remove everything `OWNER` holds.
     Remove,
     // Remove the recorded paths this list names.
@@ -149,6 +163,41 @@ fn outcome_of(verdict: &PlannedAction) -> ApplyOutcome {
     }
 }
 
+// The setup behind the two cases where `a/rc` and `b/rc` name regions of one
+// file: each is recorded over a container of its own, since a block the
+// projection has never recorded cannot be first written through a link, and
+// the two containers are then collapsed by hand onto the one file the links
+// reach. `b/rc` prepends and `a/rc` appends because an append region runs to
+// the end of the bytes, which leaves the prepend end as the only room for a
+// second region.
+fn two_regions_one_container(case: Case) -> Case {
+    let mut entries = marked_block_at("a/rc", "# alpha", Placement::Append, "alpha\n");
+    entries.extend(marked_block_at(
+        "b/rc",
+        "# beta",
+        Placement::Prepend,
+        "beta\n",
+    ));
+    case.then_by_hand(|root| {
+        Tree::new()
+            .file("a/rc", "author\n")
+            .file("b/rc", "author\n")
+            .write_under(root);
+    })
+    .recording_entries(OWNER, entries)
+    .then_by_hand(|root| {
+        fs::remove_dir_all(root.join("a")).expect("clear the first container's directory");
+        fs::remove_dir_all(root.join("b")).expect("clear the second container's directory");
+        Tree::new()
+            .file("real/rc", "beta\n# beta\nauthor\n# alpha\nalpha\n")
+            .write_under(root);
+    })
+    .recording(
+        "other",
+        Tree::new().symlink("a", "real").symlink("b", "real"),
+    )
+}
+
 fn containment(link: &str) -> Refusal {
     Refusal::Containment {
         through: Some(Utf8PathBuf::from(link)),
@@ -195,6 +244,9 @@ fn parity(case: &Case) {
     let requested;
     let plan = match &case.op {
         Op::Write(tree) => run.plan(OWNER, &Desired::from_caller(tree.entries()), options),
+        Op::WriteEntries(entries) => {
+            run.plan(OWNER, &Desired::from_caller(entries.clone()), options)
+        }
         Op::Remove => run.plan_removal(OWNER, RemovalScope::Everything, case.drift),
         Op::RemovePaths(paths) => {
             requested = paths.iter().map(Utf8PathBuf::from).collect();
@@ -457,6 +509,49 @@ fn cases() -> Vec<Case> {
         })
         .recording("other", Tree::new().symlink("logs", "real"))
         .plans("logs/x", PlannedAction::Remove),
+        // The removal above, run as a write instead. A write goes down at its
+        // key or nowhere, so the same walk that lets a removal act at the
+        // landing refuses the write outright — which is why nothing the
+        // relocated observation says about desired text ever reaches a splice.
+        Case::new(
+            "a block write beneath a recorded link",
+            Op::WriteEntries(marked_block_at(
+                "logs/rc",
+                "# renamed",
+                Placement::Append,
+                "managed\n",
+            )),
+        )
+        .then_by_hand(|root| {
+            Tree::new()
+                .file("logs/rc", "author\n# renamed\n")
+                .write_under(root);
+        })
+        .recording_entries(OWNER, block_at("logs/rc", "managed\n"))
+        .then_by_hand(|root| {
+            fs::rename(root.join("logs"), root.join("real")).expect("move the container aside");
+        })
+        .recording("other", Tree::new().symlink("logs", "real"))
+        .refuses("logs/rc", containment("logs")),
+        // Two records reaching one container through two links. Each parses
+        // the container under its own marker, so removing one grades it on its
+        // own region: stated at the landing, the two parses overwrote each
+        // other and the survivor's hash made the other record read drifted.
+        two_regions_one_container(Case::new(
+            "one of two records sharing a container, removed",
+            Op::RemovePaths(&["a/rc"]),
+        ))
+        .plans("a/rc", PlannedAction::Remove),
+        // Both of them, removed in one plan. A block removal strips its own
+        // marker's region and republishes the container, so the two act on
+        // different nodes however much of one file they share — claiming the
+        // whole container for each refused a pair applying carries out.
+        two_regions_one_container(Case::new(
+            "both records sharing a container, removed",
+            Op::Remove,
+        ))
+        .plans("a/rc", PlannedAction::Remove)
+        .plans("b/rc", PlannedAction::Remove),
         // The same walk, landing inside the state subtree. Before deciding
         // graded the landing, the plan aimed a removal at the state file and
         // applying deleted it: act knows no state prefix, so nothing behind
