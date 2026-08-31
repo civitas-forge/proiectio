@@ -61,14 +61,17 @@ pub(crate) fn load_manifest(state: &Dir, state_dir: &Utf8Path) -> Result<Manifes
 
 /// Atomically persists `manifest` as `state`'s [`MANIFEST_FILE_NAME`],
 /// mode `0o644`: tempfile inside the state directory, renamed over the path.
-pub(crate) fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
-    let path = Utf8Path::new(MANIFEST_FILE_NAME);
+///
+/// `state_dir` is where the handle is rooted, and only the messages use it,
+/// as in [`load_manifest`].
+pub(crate) fn save_manifest(state: &Dir, state_dir: &Utf8Path, manifest: &Manifest) -> Result<()> {
+    let path = state_dir.join(MANIFEST_FILE_NAME);
     let mut json = serde_json::to_vec_pretty(manifest).map_err(|source| Error::ManifestFormat {
-        path: path.to_owned(),
+        path: path.clone(),
         source,
     })?;
     json.push(b'\n');
-    persist(state, MANIFEST_FILE_NAME, path, &json, false)
+    persist(state, MANIFEST_FILE_NAME, &path, &json, false)
 }
 
 /// Executes `plan` verbatim against `dest` and persists the updated
@@ -84,6 +87,7 @@ pub(crate) fn save_manifest(state: &Dir, manifest: &Manifest) -> Result<()> {
 pub(crate) fn apply(
     dest: &Dir,
     state: &Dir,
+    state_dir: &Utf8Path,
     manifest: &Manifest,
     plan: &Plan,
 ) -> std::result::Result<ApplyReport, Box<Aborted>> {
@@ -101,14 +105,14 @@ pub(crate) fn apply(
     let mut rows = BTreeMap::new();
     let stopped = match run(dest, &mut manifest, plan, &mut rows) {
         // Every action applied, so only the record can still stop the run.
-        Ok(()) => save_manifest(state, &manifest)
+        Ok(()) => save_manifest(state, state_dir, &manifest)
             .err()
             .map(Stopped::Recording),
         // The rows before the error are on the destination whether or not the
         // manifest saying so reaches the state directory, and a run that
         // wrote nothing has nothing to record.
         Err(applying) if rows.is_empty() => Some(Stopped::Applying(applying)),
-        Err(applying) => Some(match save_manifest(state, &manifest) {
+        Err(applying) => Some(match save_manifest(state, state_dir, &manifest) {
             Ok(()) => Stopped::Applying(applying),
             Err(recording) => Stopped::ApplyingAndRecording {
                 applying,

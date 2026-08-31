@@ -52,7 +52,7 @@ fn project(dest: &Fixture, state: &Fixture, desired: &Desired) -> ApplyReport {
         PlanOptions::default(),
     )
     .expect("decide");
-    apply(&dest_dir, &state_dir, &manifest, &plan).expect("apply the plan")
+    apply(&dest_dir, &state_dir, state.root(), &manifest, &plan).expect("apply the plan")
 }
 
 // The action the strict default plan gives each desired path, against an
