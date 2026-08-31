@@ -6,9 +6,10 @@ use serde::{Serialize, Serializer};
 
 use crate::{EntryKind, Origin};
 
-/// The shape a row states for a node the projection knows by its recorded
-/// kind rather than by an [`Entry`](crate::Entry): a manifest entry or an
-/// action's expected signature. Both stages spell it here, so a plan's row
+/// The shape a row states for a node the projection knows only by its
+/// manifest record, which holds a link's target as a hash and no string.
+/// Both stages spell record-built rows here and signature-built rows with
+/// [`NodeSignature::shape`](crate::NodeSignature::shape), so a plan's row
 /// and the apply row for the same path cannot drift apart.
 pub(crate) fn recorded_shape(kind: &EntryKind, executable: bool) -> PathShape {
     match kind {

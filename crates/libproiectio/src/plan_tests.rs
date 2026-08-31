@@ -35,8 +35,7 @@ fn one_of_each() -> Plan {
                         contents: b"#!/bin/sh\n".to_vec(),
                         executable: true,
                     },
-                    expected: NodeSignature {
-                        kind: EntryKind::File,
+                    expected: NodeSignature::File {
                         hash: "aa11".to_owned(),
                         executable: true,
                     },
@@ -50,8 +49,7 @@ fn one_of_each() -> Plan {
                         contents: b"port = 80\n".to_vec(),
                         executable: false,
                     },
-                    expected: NodeSignature {
-                        kind: EntryKind::File,
+                    expected: NodeSignature::File {
                         hash: "dd44".to_owned(),
                         executable: false,
                     },
@@ -63,10 +61,8 @@ fn one_of_each() -> Plan {
                     entry: Entry::Symlink {
                         target: "themes/dark".to_owned(),
                     },
-                    expected: NodeSignature {
-                        kind: EntryKind::Symlink,
-                        hash: "ee55".to_owned(),
-                        executable: false,
+                    expected: NodeSignature::Symlink {
+                        target: LinkTarget::Utf8("themes/dark".to_owned()),
                     },
                 },
             ),
@@ -85,8 +81,7 @@ fn one_of_each() -> Plan {
             (
                 Utf8PathBuf::from("orphan.txt"),
                 Action::Remove {
-                    expected: Some(NodeSignature {
-                        kind: EntryKind::File,
+                    expected: Some(NodeSignature::File {
                         hash: "bb22".to_owned(),
                         executable: false,
                     }),

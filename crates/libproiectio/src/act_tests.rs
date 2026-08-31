@@ -1188,7 +1188,9 @@ fn removing_a_recorded_symlink_unlinks_it_and_leaves_the_target() {
     assert_eq!(
         facts_at(&report, "latest"),
         &PathFacts {
-            shape: Some(PathShape::Symlink { target: None }),
+            shape: Some(PathShape::Symlink {
+                target: Some("notes".to_owned())
+            }),
             owners: BTreeSet::from(["own".to_owned()]),
             origin: Some(Origin::Caller),
         }
@@ -1322,8 +1324,7 @@ fn a_removal_whose_link_appears_in_the_gap_refuses_the_landing_another_owner_hol
         actions: BTreeMap::from([(
             "a/x.txt".into(),
             Action::Remove {
-                expected: Some(NodeSignature {
-                    kind: EntryKind::File,
+                expected: Some(NodeSignature::File {
                     hash: kept,
                     executable: false,
                 }),
@@ -1390,8 +1391,7 @@ fn a_removal_landing_on_a_node_this_plan_only_releases_refuses() {
             (
                 "a/x.txt".into(),
                 Action::Remove {
-                    expected: Some(NodeSignature {
-                        kind: EntryKind::File,
+                    expected: Some(NodeSignature::File {
                         hash: kept,
                         executable: false,
                     }),
@@ -1460,8 +1460,7 @@ fn a_plan_whose_landing_removal_refuses_never_runs() {
             (
                 "a/x.txt".into(),
                 Action::Remove {
-                    expected: Some(NodeSignature {
-                        kind: EntryKind::File,
+                    expected: Some(NodeSignature::File {
                         hash: kept,
                         executable: false,
                     }),
@@ -1533,18 +1532,17 @@ fn a_removal_landing_where_a_block_strip_acts_refuses_rather_than_unlink_the_con
             (
                 "a/x".into(),
                 Action::Remove {
-                    expected: Some(NodeSignature {
-                        kind: block_kind(Placement::Append),
+                    expected: Some(NodeSignature::Block {
+                        marker: MARKER.to_owned(),
+                        placement: Placement::Append,
                         hash: sha256_hex(b"managed\n"),
-                        executable: false,
                     }),
                 },
             ),
             (
                 "z/x".into(),
                 Action::Remove {
-                    expected: Some(NodeSignature {
-                        kind: EntryKind::File,
+                    expected: Some(NodeSignature::File {
                         hash: sha256_hex(container.as_bytes()),
                         executable: false,
                     }),
@@ -1617,8 +1615,7 @@ fn a_removal_landing_on_a_record_another_removal_already_dropped_still_refuses()
             (
                 "a/x".into(),
                 Action::Remove {
-                    expected: Some(NodeSignature {
-                        kind: EntryKind::File,
+                    expected: Some(NodeSignature::File {
                         hash: sha256_hex(b"author\n"),
                         executable: false,
                     }),
@@ -1627,10 +1624,10 @@ fn a_removal_landing_on_a_record_another_removal_already_dropped_still_refuses()
             (
                 "z/x".into(),
                 Action::Remove {
-                    expected: Some(NodeSignature {
-                        kind: block_kind(Placement::Append),
+                    expected: Some(NodeSignature::Block {
+                        marker: MARKER.to_owned(),
+                        placement: Placement::Append,
                         hash: sha256_hex(b"managed\n"),
-                        executable: false,
                     }),
                 },
             ),
@@ -1960,8 +1957,7 @@ fn a_forged_remove_of_an_unrecorded_path_refuses_foreign() {
         actions: BTreeMap::from([(
             "victim.txt".into(),
             Action::Remove {
-                expected: Some(NodeSignature {
-                    kind: EntryKind::File,
+                expected: Some(NodeSignature::File {
                     hash: sha256_hex(b"precious"),
                     executable: false,
                 }),
@@ -1999,8 +1995,7 @@ fn a_forged_skip_of_an_unrecorded_path_refuses_instead_of_adopting() {
                     contents: b"same bytes".to_vec(),
                     executable: false,
                 },
-                expected: NodeSignature {
-                    kind: EntryKind::File,
+                expected: NodeSignature::File {
                     hash: sha256_hex(b"same bytes"),
                     executable: false,
                 },
@@ -2049,8 +2044,7 @@ fn a_hand_built_plan_replacing_a_region_with_a_whole_file_fails_up_front() {
             (
                 "a.txt".into(),
                 Action::Remove {
-                    expected: Some(NodeSignature {
-                        kind: EntryKind::File,
+                    expected: Some(NodeSignature::File {
                         hash: sha256_hex(b"old"),
                         executable: false,
                     }),
@@ -2063,10 +2057,10 @@ fn a_hand_built_plan_replacing_a_region_with_a_whole_file_fails_up_front() {
                         contents: b"new".to_vec(),
                         executable: false,
                     },
-                    expected: NodeSignature {
-                        kind: block_kind(Placement::Append),
+                    expected: NodeSignature::Block {
+                        marker: MARKER.to_owned(),
+                        placement: Placement::Append,
                         hash: sha256_hex(b"body\n"),
-                        executable: false,
                     },
                     reason: OverwriteReason::ContentChanged,
                 },
@@ -2522,8 +2516,7 @@ fn a_removal_through_an_owned_link_prunes_the_resolved_directory() {
         actions: BTreeMap::from([(
             "logs/x.txt".into(),
             Action::Remove {
-                expected: Some(NodeSignature {
-                    kind: EntryKind::File,
+                expected: Some(NodeSignature::File {
                     hash: sha256_hex(b"bytes"),
                     executable: false,
                 }),
@@ -2563,8 +2556,7 @@ fn deciding_aims_that_removal_at_the_node_the_walk_resolves_to() {
     assert_eq!(
         plan.actions.get(Utf8Path::new("logs/x.txt")),
         Some(&Action::Remove {
-            expected: Some(NodeSignature {
-                kind: EntryKind::File,
+            expected: Some(NodeSignature::File {
                 hash: sha256_hex(b"bytes"),
                 executable: false,
             }),
@@ -4429,13 +4421,10 @@ fn a_hand_built_plan_expecting_another_marker_fails_up_front() {
         actions: BTreeMap::from([(
             "rc".into(),
             Action::Remove {
-                expected: Some(NodeSignature {
-                    kind: EntryKind::Block {
-                        marker: "# theirs".to_owned(),
-                        placement: Placement::Append,
-                    },
+                expected: Some(NodeSignature::Block {
+                    marker: "# theirs".to_owned(),
+                    placement: Placement::Append,
                     hash: sha256_hex(b"their tail\n"),
-                    executable: false,
                 }),
             },
         )]),

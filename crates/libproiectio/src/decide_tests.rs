@@ -18,10 +18,26 @@ fn link(target: &str) -> Entry {
 }
 
 fn signature(entry: &Entry) -> NodeSignature {
-    NodeSignature {
-        kind: entry.kind(),
-        hash: desired_hash(entry),
-        executable: desired_executable(entry),
+    match entry {
+        Entry::File {
+            contents,
+            executable,
+        } => NodeSignature::File {
+            hash: sha256_hex(contents),
+            executable: *executable,
+        },
+        Entry::Symlink { target } => NodeSignature::Symlink {
+            target: LinkTarget::Utf8(target.clone()),
+        },
+        Entry::Block {
+            body,
+            marker,
+            placement,
+        } => NodeSignature::Block {
+            marker: marker.clone(),
+            placement: *placement,
+            hash: sha256_hex(body),
+        },
     }
 }
 
@@ -518,8 +534,7 @@ fn an_agreement_skip_carries_the_desired_signature() {
         action(&plan, "bin/tool"),
         &Action::Skip {
             entry: agreed.clone(),
-            expected: NodeSignature {
-                kind: EntryKind::File,
+            expected: NodeSignature::File {
                 hash: desired_hash(&agreed),
                 executable: true,
             },
@@ -630,6 +645,46 @@ fn drift_policy_overwrite_lifts_a_drifted_orphan_to_removal() {
 
     assert_eq!(
         action(&plan, "old.txt"),
+        &Action::Remove {
+            expected: Some(signature(&drifted)),
+        }
+    );
+}
+
+#[test]
+fn a_removed_recorded_link_plans_and_reports_the_observed_target() {
+    let entry = link("themes/dark");
+    let manifest = manifest_of(&[("current", recorded(&entry, &[OWNER]))]);
+    let observations = observed(&[("current", on_disk(&entry))]);
+
+    let plan = plan(&tree(&[]), &manifest, &observations, DriftPolicy::Refuse);
+
+    assert_eq!(
+        action(&plan, "current"),
+        &Action::Remove {
+            expected: Some(signature(&entry)),
+        }
+    );
+    let report = plan.report(&manifest);
+    let row = report.rows.get(Utf8Path::new("current")).expect("a row");
+    assert_eq!(
+        row.facts.as_ref().and_then(|facts| facts.shape.as_ref()),
+        Some(&PathShape::Symlink {
+            target: Some("themes/dark".to_owned())
+        })
+    );
+}
+
+#[test]
+fn a_lifted_drifted_link_removal_states_the_target_the_disk_holds() {
+    let drifted = link("themes/light");
+    let manifest = manifest_of(&[("current", recorded(&link("themes/dark"), &[OWNER]))]);
+    let observations = observed(&[("current", on_disk(&drifted))]);
+
+    let plan = plan(&tree(&[]), &manifest, &observations, DriftPolicy::Overwrite);
+
+    assert_eq!(
+        action(&plan, "current"),
         &Action::Remove {
             expected: Some(signature(&drifted)),
         }
@@ -3253,13 +3308,10 @@ fn a_drifted_region_lifts_under_force_and_a_lost_container_does_not() {
         action(&lifted, "conf"),
         &Action::Overwrite {
             entry,
-            expected: NodeSignature {
-                kind: EntryKind::Block {
-                    marker: MARKER.to_owned(),
-                    placement: Placement::Append,
-                },
+            expected: NodeSignature::Block {
+                marker: MARKER.to_owned(),
+                placement: Placement::Append,
                 hash: sha256_hex(b"edited\n"),
-                executable: false,
             },
             reason: OverwriteReason::ForcedDrift,
         }

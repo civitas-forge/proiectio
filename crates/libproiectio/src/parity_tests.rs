@@ -13,8 +13,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::test_support::Tree;
 use crate::{
-    ApplyOutcome, Desired, DriftPolicy, Entry, Error, Placement, PlanOptions, PlannedAction,
-    Projection, Refusal, RemovalScope,
+    ApplyOutcome, Desired, DriftPolicy, Entry, Error, PathShape, Placement, PlanOptions,
+    PlannedAction, Projection, Refusal, RemovalScope,
 };
 
 const OWNER: &str = "site";
@@ -255,11 +255,10 @@ fn parity(case: &Case) {
     .clone();
     let manifest = run.manifest().clone();
 
-    let planned: BTreeMap<Utf8PathBuf, PlannedAction> = plan
-        .report(&manifest)
-        .rows
-        .into_iter()
-        .map(|(path, row)| (path, row.verdict))
+    let planned_rows = plan.report(&manifest).rows;
+    let planned: BTreeMap<Utf8PathBuf, PlannedAction> = planned_rows
+        .iter()
+        .map(|(path, row)| (path.clone(), row.verdict.clone()))
         .collect();
     let stated: BTreeMap<Utf8PathBuf, PlannedAction> = case
         .plans
@@ -279,14 +278,41 @@ fn parity(case: &Case) {
             let applied: BTreeMap<Utf8PathBuf, ApplyOutcome> = report
                 .report
                 .rows
-                .into_iter()
-                .map(|(path, row)| (path, row.verdict))
+                .iter()
+                .map(|(path, row)| (path.clone(), row.verdict))
                 .collect();
             let expected: BTreeMap<Utf8PathBuf, ApplyOutcome> = planned
                 .iter()
                 .map(|(path, verdict)| (path.clone(), outcome_of(verdict)))
                 .collect();
             assert_eq!(applied, expected, "{what}: what the real run did");
+            // Owners may change under a run (a skip joins one, a release
+            // drops one), so facts as a whole are each tense's own; the
+            // shape a row states is not, and has to agree.
+            let applied_shapes: BTreeMap<Utf8PathBuf, Option<PathShape>> = report
+                .report
+                .rows
+                .iter()
+                .map(|(path, row)| {
+                    (
+                        path.clone(),
+                        row.facts.as_ref().and_then(|facts| facts.shape.clone()),
+                    )
+                })
+                .collect();
+            let planned_shapes: BTreeMap<Utf8PathBuf, Option<PathShape>> = planned_rows
+                .iter()
+                .map(|(path, row)| {
+                    (
+                        path.clone(),
+                        row.facts.as_ref().and_then(|facts| facts.shape.clone()),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                applied_shapes, planned_shapes,
+                "{what}: the shape each row states"
+            );
         }
         Err(aborted) => {
             let Error::Refused(refused) = aborted.stopped.error() else {

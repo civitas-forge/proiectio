@@ -297,7 +297,7 @@ fn a_removal_writes_its_records_under_the_header_a_write_writes() {
         "path,verdict,detail,shape,executable,target,owners,origin,phase\n\
          bin/tool,Removed,,file,true,,\"[\"\"default\"\"]\",Caller,applied\n\
          config/settings.toml,Removed,,file,false,,\"[\"\"default\"\"]\",Caller,applied\n\
-         current,Removed,,symlink,,,\"[\"\"default\"\"]\",Caller,applied\n"
+         current,Removed,,symlink,,releases/1.2.3,\"[\"\"default\"\"]\",Caller,applied\n"
     );
 }
 
@@ -1805,7 +1805,7 @@ fn a_refused_rm_renders_the_document_its_dry_run_renders() {
         rendered.stdout(),
         "would refuse     bin/tool              (drifted)\n\
          would remove     config/settings.toml\n\
-         would remove     current\n\
+         would remove     current               -> releases/1.2.3\n\
          pass --force to touch them anyway, where the projection can still \
          tell what it would replace\n"
     );
