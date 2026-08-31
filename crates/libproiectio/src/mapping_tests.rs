@@ -888,7 +888,11 @@ fn a_missing_source_is_an_io_error_naming_the_resolved_path() {
 
     assert!(matches!(
         load_mapping(&fixture.path("deploy.toml"), crate::Limits::default()).unwrap_err(),
-        Error::Io { path, .. } if path == fixture.path("assets/gone.txt")
+        Error::Io {
+            role: IoRole::Source,
+            path,
+            ..
+        } if path == fixture.path("assets/gone.txt")
     ));
 }
 
@@ -898,7 +902,11 @@ fn a_missing_mapping_file_is_an_io_error() {
 
     assert!(matches!(
         load_mapping(&fixture.path("gone.toml"), crate::Limits::default()).unwrap_err(),
-        Error::Io { path, .. } if path == fixture.path("gone.toml")
+        Error::Io {
+            role: IoRole::Mapping,
+            path,
+            ..
+        } if path == fixture.path("gone.toml")
     ));
 }
 
@@ -910,7 +918,11 @@ fn a_relative_mapping_path_resolves_against_the_current_directory() {
 
     assert!(matches!(
         load_mapping(absent.relative(), crate::Limits::default()).unwrap_err(),
-        Error::Io { path, .. } if path == absent.absolute()
+        Error::Io {
+            role: IoRole::Mapping,
+            path,
+            ..
+        } if path == absent.absolute()
     ));
 }
 
@@ -958,4 +970,26 @@ fn a_mappings_source_files_spend_the_same_budget() {
         Error::SourceTooLarge { path: named, .. } if named == fixture.path("b.bin")
     ));
     load_mapping(&path, Limits::default()).expect("load under the default bound");
+}
+
+// One positional is read as a mapping, so a caller who meant `--tree` and
+// spelled the directory as a positional gets told which option a directory
+// belongs to — not whichever OS error reading a directory raises on the host.
+#[test]
+fn a_directory_named_as_a_mapping_is_named_as_a_directory() {
+    let fixture = crate::test_support::Tree::new()
+        .file("skeleton/keep.txt", "a")
+        .materialize();
+    let directory = fixture.path("skeleton");
+
+    let error = load_mapping(&directory, crate::Limits::default()).expect_err("not a mapping");
+
+    assert!(
+        matches!(&error, Error::MappingIsDirectory { path } if *path == directory),
+        "got {error:?}"
+    );
+    assert!(
+        error.to_string().contains("--tree"),
+        "the message names the option a directory belongs to: {error}"
+    );
 }

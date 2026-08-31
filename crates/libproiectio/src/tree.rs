@@ -8,7 +8,9 @@ use cap_std::ambient_authority;
 use cap_std::fs::Dir;
 
 use crate::limits::Budget;
-use crate::{Desired, Entry, Error, Limits, MAX_WALK_DEPTH, Origin, Refusal, Refused, Result};
+use crate::{
+    Desired, Entry, Error, IoRole, Limits, MAX_WALK_DEPTH, Origin, Refusal, Refused, Result,
+};
 
 /// Walks `source` into a desired tree: every regular file becomes an
 /// [`Entry::File`] with its bytes and owner-executable bit, every symlink an
@@ -26,6 +28,7 @@ pub fn load_tree(source: &Utf8Path, limits: Limits) -> Result<Desired> {
     let source = crate::absolutize(source)?;
     let source = source.as_path();
     let root = Dir::open_ambient_dir(source, ambient_authority()).map_err(|e| Error::Io {
+        role: IoRole::SourceTree,
         path: source.to_owned(),
         source: e,
     })?;
@@ -44,7 +47,7 @@ pub fn load_tree(source: &Utf8Path, limits: Limits) -> Result<Desired> {
         return Err(Refused::aggregate(
             walk.refused
                 .into_iter()
-                .map(|path| (path, Refusal::Containment, origin.clone())),
+                .map(|path| (path, Refusal::Containment { through: None }, origin.clone())),
         )
         .expect("refused is not empty")
         .into());
@@ -232,7 +235,11 @@ pub(crate) fn open_file_nofollow(dir: &Dir, name: &str) -> std::io::Result<std::
 
 /// Wraps an OS error as [`Error::Io`] at an absolute source-tree path.
 fn io_at(path: Utf8PathBuf) -> impl FnOnce(std::io::Error) -> Error {
-    move |source| Error::Io { path, source }
+    move |source| Error::Io {
+        role: IoRole::SourceTree,
+        path,
+        source,
+    }
 }
 
 /// Whether the source file's owner-executable bit is set.

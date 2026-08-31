@@ -27,7 +27,11 @@ fn one_of_each() -> Vec<(Utf8PathBuf, Refusal, Origin)> {
             Origin::Caller,
         ),
         (path("foreign"), Refusal::Foreign, Origin::Caller),
-        (path("containment"), Refusal::Containment, Origin::Caller),
+        (
+            path("containment"),
+            Refusal::Containment { through: None },
+            Origin::Caller,
+        ),
         (
             path("tree"),
             Refusal::TreeConflict {
@@ -164,19 +168,96 @@ fn messages_open_with_the_kind_and_name_each_path_with_its_detail() {
     assert_eq!(
         rendered,
         [
-            "refusing to touch drifted paths (edited on disk): drift",
+            "refusing to touch drifted paths (edited on disk): drift; \
+             pass --force to touch them anyway, where the projection can still \
+             tell what it would replace",
             "refusing directories the plan can neither replace nor remove: \
              directory (holding directory/note.md, directory/theirs (held by site), \
              which --force does not remove)",
-            "refusing to touch foreign paths (not written by this projection): foreign",
+            "refusing to touch foreign paths (not written by this projection): foreign; \
+             no flag overrides this: remove the paths by hand to let the projection \
+             write them — for a block, the marker region rather than the container \
+             holding it",
             "refusing paths that violate containment: containment",
             "refusing desired paths that claim overlapping locations: tree (with tree/below)",
             "refusing paths whose desired entries conflict with another owner's: \
              owner (held by site)",
-            "refusing symlinks with targets outside the destination: external -> /opt",
+            "refusing symlinks with targets outside the destination: external -> /opt; \
+             pass --allow-external-targets to write them",
             "refusing symlinks whose targets are not paths: invalid -> \"\"",
             "refusing block entries: block (the marker is empty)",
         ]
+    );
+}
+
+// Every kind either names the flag that lifts it or says nothing lifts it.
+// Matched over `RefusalKind` itself, so a kind added there stops this
+// compiling until somebody decides which of the two it is.
+#[test]
+fn every_kind_names_what_lifts_it_or_names_nothing() {
+    for kind in one_of_each().iter().map(|(_, refusal, _)| refusal.kind()) {
+        let expected = match kind {
+            RefusalKind::Drift => Some(
+                "pass --force to touch them anyway, where the projection can still tell what it \
+                 would replace",
+            ),
+            RefusalKind::ExternalTarget => Some("pass --allow-external-targets to write them"),
+            RefusalKind::Foreign => Some(
+                "no flag overrides this: remove the paths by hand to let the projection write \
+                 them — for a block, the marker region rather than the container holding it",
+            ),
+            RefusalKind::Containment
+            | RefusalKind::TreeConflict
+            | RefusalKind::DirectoryInTheWay
+            | RefusalKind::OwnerConflict
+            | RefusalKind::InvalidTarget
+            | RefusalKind::Block => None,
+        };
+
+        assert_eq!(kind.override_hint(), expected, "{kind:?}");
+    }
+}
+
+// A `Refused` carries one kind, so the way out is stated once — after the
+// last path, not after each of them.
+#[test]
+fn a_message_states_what_lifts_it_once_however_many_paths_it_names() {
+    let refused = Refused::aggregate([
+        (path("bin/tool"), Refusal::Drift, Origin::Caller),
+        (path("etc/rc"), Refusal::Drift, Origin::Caller),
+    ])
+    .expect("two drifted paths");
+
+    assert_eq!(
+        refused.to_string(),
+        "refusing to touch drifted paths (edited on disk): bin/tool, etc/rc; \
+         pass --force to touch them anyway, where the projection can still \
+         tell what it would replace"
+    );
+}
+
+// A path spelled entirely of ordinary components reads as an accusation
+// against its spelling unless the message says which ancestor is the link.
+#[test]
+fn a_containment_message_names_the_symlink_ancestor_where_one_is_the_cause() {
+    let message = |through: Option<&str>| {
+        Refused::one(
+            path("config/app.toml"),
+            Refusal::Containment {
+                through: through.map(path),
+            },
+            Origin::Caller,
+        )
+        .to_string()
+    };
+
+    assert_eq!(
+        message(Some("config")),
+        "refusing paths that violate containment: config/app.toml (below the symlink config)"
+    );
+    assert_eq!(
+        message(None),
+        "refusing paths that violate containment: config/app.toml"
     );
 }
 

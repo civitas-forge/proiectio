@@ -23,6 +23,7 @@ fn path() -> Utf8PathBuf {
 fn operational_failures() -> Vec<Error> {
     vec![
         Error::Io {
+            role: libproiectio::IoRole::Unstated,
             path: path(),
             source: std::io::Error::from(std::io::ErrorKind::NotFound),
         },

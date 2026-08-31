@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use camino::Utf8Path;
 use cap_std::fs_utf8::{Dir, MetadataExt};
 
-use crate::{Error, MAX_WALK_DEPTH, Manifest, Result};
+use crate::{Error, IoRole, MAX_WALK_DEPTH, Manifest, Result};
 
 /// Lowercase hex SHA-256 of `bytes` — the hash convention everywhere a hash
 /// is recorded: file contents, a symlink's target string, a block's body.
@@ -329,6 +329,7 @@ fn observe_region(
 /// Wraps an OS error as [`Error::Io`] at `path`, relative to the destination.
 pub(crate) fn io_error(path: &Utf8Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
     move |source| Error::Io {
+        role: IoRole::Unstated,
         path: path.to_owned(),
         source,
     }

@@ -1,12 +1,13 @@
 use camino::Utf8Path;
 
-use crate::{Desired, Error, Limits, Result, load_archive, load_tree};
+use crate::{Desired, Error, IoRole, Limits, Result, load_archive, load_tree};
 
 /// Loads whatever `source` names — a directory through
 /// [`load_tree`], anything else through [`load_archive`] — under `limits`.
 pub fn load_source(source: &Utf8Path, strip: Option<u32>, limits: Limits) -> Result<Desired> {
     let source = crate::absolutize(source)?;
     let meta = source.metadata().map_err(|error| Error::Io {
+        role: IoRole::Source,
         path: source.clone(),
         source: error,
     })?;

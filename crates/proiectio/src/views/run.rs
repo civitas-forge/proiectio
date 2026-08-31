@@ -9,8 +9,8 @@ use std::iter;
 
 use camino::Utf8Path;
 use libproiectio::{
-    ApplyReport, BlockFault, Dropped, Error, Manifest, PathFacts, PlannedAction, Refused, Report,
-    Row, Stopped,
+    ApplyReport, BlockFault, Dropped, Error, Manifest, PathFacts, PlannedAction, RefusalKind,
+    Refused, Report, Row, Stopped,
 };
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -201,11 +201,17 @@ pub(crate) struct RowView {
     pub(crate) note: Option<String>,
 }
 
-/// What `run.jinja` prints: one row per path, the count a real run closes
-/// with, and what a run that stopped says past that count.
+/// What `run.jinja` prints: one row per path, what lifts the refusals among
+/// them, the count a real run closes with, and what a run that stopped says
+/// past that count.
 #[derive(Debug, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct RunLines {
     pub(crate) rows: Vec<RowView>,
+    /// One line per refusal kind the rows carry that something lifts, in the
+    /// order the kinds first appear. Once per kind rather than once per row:
+    /// fifty drifted paths are one `--force` away, and saying so fifty times
+    /// buries the paths.
+    pub(crate) hints: Vec<String>,
     pub(crate) summary: Option<String>,
     pub(crate) stopped: Vec<String>,
 }
@@ -345,6 +351,10 @@ fn refusing(refusal: &JsonValue) -> String {
 fn detailing(kind: &str, payload: &JsonValue) -> Option<String> {
     let string = |field| payload.get(field).and_then(JsonValue::as_str);
     match kind {
+        "Containment" => Some(format!(
+            "(below the symlink {})",
+            verbatim(string("through")?)
+        )),
         "TreeConflict" => Some(format!("(with {})", listed(payload.get("paths")?, ", ")?)),
         "OwnerConflict" => Some(format!(
             "(held by {})",
@@ -366,6 +376,45 @@ fn detailing(kind: &str, payload: &JsonValue) -> Option<String> {
             verbatim(&format!("{:?}", string("target")?))
         )),
         "Block" => Some(format!("({})", faulting(string("fault")?))),
+        _ => None,
+    }
+}
+
+/// Every kind a path is refused for, as the library declares them.
+const REFUSAL_KINDS: [RefusalKind; 9] = [
+    RefusalKind::Containment,
+    RefusalKind::TreeConflict,
+    RefusalKind::Foreign,
+    RefusalKind::Drift,
+    RefusalKind::DirectoryInTheWay,
+    RefusalKind::OwnerConflict,
+    RefusalKind::ExternalTarget,
+    RefusalKind::InvalidTarget,
+    RefusalKind::Block,
+];
+
+/// What lifts a refusal of the kind the library serializes under `name`, in
+/// the library's own words; `None` for a kind nothing lifts, and for one this
+/// CLI does not know.
+///
+/// `forced` says the invocation carried `--force`, which drops the drift hint:
+/// that hint names the flag that lifts drift, and a run refusing drift with the
+/// flag already on has met the drift no policy lifts. The reader took the
+/// advice; printing it again would send them back to where they are.
+fn hinting(name: &str, forced: bool) -> Option<&'static str> {
+    let kind = REFUSAL_KINDS
+        .into_iter()
+        .find(|kind| kind_name(*kind).as_deref() == Some(name))?;
+    if forced && kind == RefusalKind::Drift {
+        return None;
+    }
+    kind.override_hint()
+}
+
+/// The name the library serializes one refusal kind under, taken from the kind.
+fn kind_name(kind: RefusalKind) -> Option<String> {
+    match serde_json::to_value(kind) {
+        Ok(JsonValue::String(name)) => Some(name),
         _ => None,
     }
 }
@@ -511,7 +560,7 @@ const APPLIED_VERBS: usize = "overwrote".len();
 const DROPPED: &str = "dropped";
 
 /// The lines `run.jinja` prints for one write-pass document.
-pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
+pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth, forced: bool) -> RunLines {
     // Where the rows sit is what tells the tenses apart: a plan flattens its
     // report into the document, so its rows are at the top level, and both an
     // apply and a run that stopped nest theirs under `report`. Nothing else in
@@ -573,6 +622,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
     };
 
     let mut tally = Tally::default();
+    let mut hints: Vec<String> = Vec::new();
     let mut lines = Vec::with_capacity(paths.len());
     for (path, row) in paths {
         let facts = row.get("facts");
@@ -592,6 +642,14 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
         }
         let qualifier = fields.and_then(|fields| qualifying(fields, facts));
         let note = note(target, qualifier.as_deref(), executable(shape));
+        if let Some(hint) = fields
+            .and_then(|fields| fields.get("refusal"))
+            .and_then(|refusal| hinting(named(Some(refusal)).0, forced))
+            .map(str::to_owned)
+            && !hints.contains(&hint)
+        {
+            hints.push(hint);
+        }
 
         lines.push(RowView {
             style,
@@ -627,6 +685,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> RunLines {
 
     RunLines {
         rows: lines,
+        hints,
         summary: (!planning).then(|| closing(&tally, document)),
         stopped: stopping(document),
     }

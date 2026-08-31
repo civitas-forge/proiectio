@@ -192,7 +192,10 @@ pub(crate) fn decide_removal(
                         admitted.insert(normalized);
                     }
                     _ => {
-                        refused.insert(request.clone(), refuse(Refusal::Containment));
+                        refused.insert(
+                            request.clone(),
+                            refuse(Refusal::Containment { through: None }),
+                        );
                     }
                 }
             }
@@ -268,12 +271,12 @@ fn plan_actions(
     let mut named: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (key, entry) in desired.iter() {
         let Some(normalized) = contained_normalize(key) else {
-            actions.insert(key.clone(), refuse(Refusal::Containment));
+            actions.insert(key.clone(), refuse(Refusal::Containment { through: None }));
             continue;
         };
         named.insert(normalized.clone());
         if overlaps_state(&normalized, state_prefix) {
-            actions.insert(key.clone(), refuse(Refusal::Containment));
+            actions.insert(key.clone(), refuse(Refusal::Containment { through: None }));
             continue;
         }
         claims.entry(normalized).or_default().insert(key, entry);
@@ -329,7 +332,7 @@ fn plan_actions(
             continue;
         }
         if overlaps_state(path, state_prefix) || !contained(path) {
-            actions.insert(path.clone(), refuse(Refusal::Containment));
+            actions.insert(path.clone(), refuse(Refusal::Containment { through: None }));
             continue;
         }
         let action = if recorded.owners.len() > 1 {
@@ -626,8 +629,10 @@ fn link_refusal(
     vacated: &BTreeSet<Utf8PathBuf>,
     options: PlanOptions,
 ) -> Option<Refusal> {
-    if resolves_through_link(path, observations, vacated) {
-        return Some(Refusal::Containment);
+    if let Some(link) = resolves_through_link(path, observations, vacated) {
+        return Some(Refusal::Containment {
+            through: Some(link),
+        });
     }
     let Entry::Symlink { target } = entry else {
         return None;
@@ -647,21 +652,26 @@ fn link_refusal(
     None
 }
 
-/// Whether some ancestor of `path` is observed as a symlink that no action in
-/// this plan removes — `vacated` naming the paths the run unlinks.
+/// The ancestor of `path` observed as a symlink that no action in this plan
+/// removes — `vacated` naming the paths the run unlinks — and `None` where
+/// every ancestor is an ordinary directory. The nearest such ancestor, which
+/// is the one a walk to `path` meets.
 fn resolves_through_link(
     path: &Utf8Path,
     observations: &Observations,
     vacated: &BTreeSet<Utf8PathBuf>,
-) -> bool {
-    path.ancestors().skip(1).any(|ancestor| {
-        !ancestor.as_str().is_empty()
-            && matches!(
-                observations.paths.get(ancestor),
-                Some(Observation::Symlink { .. })
-            )
-            && !vacated.contains(ancestor)
-    })
+) -> Option<Utf8PathBuf> {
+    path.ancestors()
+        .skip(1)
+        .find(|ancestor| {
+            !ancestor.as_str().is_empty()
+                && matches!(
+                    observations.paths.get(*ancestor),
+                    Some(Observation::Symlink { .. })
+                )
+                && !vacated.contains(*ancestor)
+        })
+        .map(Utf8Path::to_owned)
 }
 
 /// `true` where a desired symlink's target, resolved from the link's parent

@@ -14,7 +14,15 @@ pub enum Refusal {
     /// The projection may not write the path — it is refused by
     /// [`contained_join`](crate::contained_join), it lies beneath a symlink
     /// that outlives the plan, or it overlaps the state directory.
-    Containment,
+    Containment {
+        /// The ancestor that is a symlink, where that is what put the path out
+        /// of reach: a path spelled entirely of ordinary components still
+        /// resolves somewhere else, and a message that only says "containment"
+        /// reads as an accusation against the spelling. `None` where the
+        /// spelling itself is what containment declines, or where the stage
+        /// that refused knows no link.
+        through: Option<Utf8PathBuf>,
+    },
     /// The desired tree claims one on-disk location more than once: this key
     /// shares a normalized path with another desired key, or its path lies
     /// beneath another desired path. Both sides of a conflict are refused.
@@ -131,7 +139,7 @@ impl Refusal {
             Refusal::Drift => RefusalKind::Drift,
             Refusal::DirectoryInTheWay { .. } => RefusalKind::DirectoryInTheWay,
             Refusal::Foreign => RefusalKind::Foreign,
-            Refusal::Containment => RefusalKind::Containment,
+            Refusal::Containment { .. } => RefusalKind::Containment,
             Refusal::TreeConflict { .. } => RefusalKind::TreeConflict,
             Refusal::OwnerConflict { .. } => RefusalKind::OwnerConflict,
             Refusal::ExternalTarget { .. } => RefusalKind::ExternalTarget,
@@ -144,7 +152,11 @@ impl Refusal {
     /// rendered.
     fn detail(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Refusal::Drift | Refusal::Foreign | Refusal::Containment => Ok(()),
+            Refusal::Drift | Refusal::Foreign => Ok(()),
+            Refusal::Containment { through: None } => Ok(()),
+            Refusal::Containment {
+                through: Some(link),
+            } => write!(f, " (below the symlink {link})"),
             Refusal::DirectoryInTheWay {
                 holding,
                 unreadable,
@@ -236,6 +248,58 @@ impl RefusalKind {
             RefusalKind::ExternalTarget => "refusing symlinks with targets outside the destination",
             RefusalKind::InvalidTarget => "refusing symlinks whose targets are not paths",
             RefusalKind::Block => "refusing block entries",
+        }
+    }
+
+    /// What lifts a refusal of this kind, in the invocation's own vocabulary:
+    /// the flag the caller passes, or — where no flag lifts it — what the
+    /// caller does instead. `None` for the kinds a caller answers by naming
+    /// different paths, which the paths themselves already say.
+    ///
+    /// The flag names are this crate's on purpose: the policies
+    /// [`DriftPolicy`](crate::DriftPolicy) and
+    /// [`ExternalTargetPolicy`](crate::ExternalTargetPolicy) are spelled one
+    /// way on every command line that drives this engine, and a message that
+    /// names the policy without naming the flag leaves the reader to guess.
+    ///
+    /// One kind's hint serves every command that can raise it, so it says what
+    /// passing the flag permits rather than what the command then does with the
+    /// path: `--force` overwrites a drifted path under `write` and removes it
+    /// under `rm`, and a hint naming either verb would lie under the other.
+    ///
+    /// A hint may not send the reader somewhere the engine will refuse them
+    /// again, and it may never send them somewhere destructive. Two kinds
+    /// carry a qualifier for that reason, and both qualifiers are load-bearing:
+    ///
+    /// - `--force` does not lift every [`Drift`](Self::Drift). A drifted node
+    ///   the projection cannot pin a signature on — a directory or a device
+    ///   standing where a file was, or a region among duplicate markers —
+    ///   refuses under
+    ///   [`DriftPolicy::Overwrite`](crate::DriftPolicy::Overwrite) too, since
+    ///   the engine will not replace what it cannot first identify.
+    /// - Removing a [`Foreign`](Self::Foreign) path is right for a node the
+    ///   projection wanted to write whole, and wrong for a block: a block owns
+    ///   a region, not the container holding it, and never creates a container.
+    ///   Deleting the container destroys the author's file and leaves the next
+    ///   run refusing
+    ///   [`ContainerMissing`](crate::BlockFault::ContainerMissing).
+    pub fn override_hint(self) -> Option<&'static str> {
+        match self {
+            RefusalKind::Drift => Some(
+                "pass --force to touch them anyway, where the projection can still tell what it \
+                 would replace",
+            ),
+            RefusalKind::Foreign => Some(
+                "no flag overrides this: remove the paths by hand to let the projection write \
+                 them — for a block, the marker region rather than the container holding it",
+            ),
+            RefusalKind::ExternalTarget => Some("pass --allow-external-targets to write them"),
+            RefusalKind::Containment
+            | RefusalKind::TreeConflict
+            | RefusalKind::DirectoryInTheWay
+            | RefusalKind::OwnerConflict
+            | RefusalKind::InvalidTarget
+            | RefusalKind::Block => None,
         }
     }
 }
@@ -340,7 +404,12 @@ impl fmt::Display for Refused {
                 named => write!(f, " ({named})")?,
             }
         }
-        Ok(())
+        // Once, after the paths: a `Refused` carries one kind, so the way out
+        // is the same for every key in it.
+        match self.kind().override_hint() {
+            Some(hint) => write!(f, "; {hint}"),
+            None => Ok(()),
+        }
     }
 }
 

@@ -203,7 +203,16 @@ fn an_in_dest_state_directory_symlinked_out_of_the_target_refuses() {
     let error = projection
         .begin()
         .expect_err("the state prefix leaves the target");
-    assert!(matches!(error, Error::Io { .. }), "got {error:?}");
+    assert!(
+        matches!(
+            error,
+            Error::Io {
+                role: IoRole::StateDirectory,
+                ..
+            }
+        ),
+        "got {error:?}"
+    );
 
     // Nothing was written through the link, and the read agrees.
     assert_tree(elsewhere.root(), &Tree::new());
@@ -313,7 +322,7 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
     assert_eq!(
         plan.actions.get(Utf8Path::new("../escape")),
         Some(&Action::Refuse {
-            refusal: Refusal::Containment
+            refusal: Refusal::Containment { through: None }
         })
     );
 

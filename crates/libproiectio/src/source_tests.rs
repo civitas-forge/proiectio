@@ -117,8 +117,11 @@ fn a_missing_path_is_an_io_error_whatever_its_name() {
 
         assert!(matches!(
             &error,
-            Error::Io { path: named, source }
-                if *named == path && source.kind() == std::io::ErrorKind::NotFound
+            Error::Io {
+                role: IoRole::Source,
+                path: named,
+                source,
+            } if *named == path && source.kind() == std::io::ErrorKind::NotFound
         ));
     }
 }

@@ -4,8 +4,8 @@ use cap_std::ambient_authority;
 use cap_std::fs_utf8::Dir;
 
 use crate::{
-    Aborted, ApplyReport, BlockMarkers, Desired, DriftPolicy, Error, Manifest, Plan, PlanOptions,
-    Projection, RemovalScope, Report, Result, StateLock, apply, block_markers, decide,
+    Aborted, ApplyReport, BlockMarkers, Desired, DriftPolicy, Error, IoRole, Manifest, Plan,
+    PlanOptions, Projection, RemovalScope, Report, Result, StateLock, apply, block_markers, decide,
     decide_removal, load_manifest, observe, require_owner,
 };
 
@@ -33,7 +33,7 @@ impl Projection {
         let dest = self.open_target()?;
         let state = self.open_or_create_state(&dest)?;
         let lock = StateLock::acquire(&state)?;
-        let manifest = load_manifest(&state)?;
+        let manifest = load_manifest(&state, self.state_dir())?;
         Ok(Run {
             projection: self.clone(),
             dest,
@@ -50,6 +50,7 @@ impl Projection {
     /// authority.
     fn open_or_create_state(&self, dest: &Dir) -> Result<Dir> {
         let io = |source| Error::Io {
+            role: IoRole::StateDirectory,
             path: self.state_dir().to_owned(),
             source,
         };

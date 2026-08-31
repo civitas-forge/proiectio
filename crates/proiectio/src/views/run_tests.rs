@@ -27,13 +27,18 @@ fn records(rows: JsonValue) -> JsonValue {
 }
 
 fn planned(rows: JsonValue) -> RunLines {
-    lines(&json!({ "rows": records(rows) }), AmbiguousWidth::Narrow)
+    lines(
+        &json!({ "rows": records(rows) }),
+        AmbiguousWidth::Narrow,
+        false,
+    )
 }
 
 fn applied(rows: JsonValue) -> RunLines {
     lines(
         &json!({ "report": { "rows": records(rows) } }),
         AmbiguousWidth::Narrow,
+        false,
     )
 }
 
@@ -670,7 +675,7 @@ fn a_real_run_counts_what_it_did_and_a_plan_counts_nothing() {
 #[test]
 fn a_document_that_names_no_rows_prints_nothing() {
     assert_eq!(
-        lines(&json!({ "kind": "listing" }), AmbiguousWidth::Narrow),
+        lines(&json!({ "kind": "listing" }), AmbiguousWidth::Narrow, false),
         RunLines::default()
     );
 }
@@ -696,7 +701,7 @@ fn a_dropped_member_prints_a_row_naming_the_archive() {
         json!({ "rows": [], "dropped": dropped }),
         json!({ "report": { "rows": [] }, "dropped": dropped }),
     ] {
-        let row = only(lines(&document, AmbiguousWidth::Narrow));
+        let row = only(lines(&document, AmbiguousWidth::Narrow, false));
         assert_eq!(row.style, "skipped");
         assert_eq!(row.verb, "dropped");
         assert_eq!(row.path, "._pkg");
@@ -728,7 +733,7 @@ fn two_archives_dropping_the_same_member_print_both_rows() {
         "dropped": [carried_by("/assets/plugins.tar.gz"), carried_by("/assets/vendor.tar.gz")],
     });
 
-    let rows = lines(&document, AmbiguousWidth::Narrow).rows;
+    let rows = lines(&document, AmbiguousWidth::Narrow, false).rows;
     assert_eq!(
         rows.iter()
             .map(|row| (row.path.as_str(), row.note.as_deref()))
@@ -767,7 +772,7 @@ fn one_archive_under_two_prefixes_prints_a_row_per_entry() {
         "dropped": [asked_by("backup", 2), asked_by("vendor", 1)],
     });
 
-    let rows = lines(&document, AmbiguousWidth::Narrow).rows;
+    let rows = lines(&document, AmbiguousWidth::Narrow, false).rows;
     assert_eq!(
         rows.iter()
             .map(|row| row.note.as_deref())
@@ -801,7 +806,7 @@ fn dropped_members_share_the_path_column_with_the_rows() {
             },
         })],
     });
-    let rows = lines(&document, AmbiguousWidth::Narrow).rows;
+    let rows = lines(&document, AmbiguousWidth::Narrow, false).rows;
     assert_eq!(rows.len(), 2);
     let width = |row: &RowView| row.path.len() + row.path_pad.len();
     assert_eq!(width(&rows[0]), width(&rows[1]));
@@ -844,7 +849,7 @@ fn a_refusal_renders_the_row_shape_a_refused_plan_renders() {
             }],
         })
     );
-    let row = only(lines(&document, AmbiguousWidth::Narrow));
+    let row = only(lines(&document, AmbiguousWidth::Narrow, false));
     assert_eq!((row.style, row.verb.as_str()), ("refused", "would refuse"));
     assert_eq!(row.path, "bin/tool");
     assert_eq!(
@@ -882,7 +887,7 @@ fn a_refusal_of_several_keys_renders_a_row_for_each() {
     ));
 
     assert_eq!(document.get("dropped"), None);
-    let rows = lines(&document, AmbiguousWidth::Narrow).rows;
+    let rows = lines(&document, AmbiguousWidth::Narrow, false).rows;
     assert_eq!(
         rows.iter()
             .map(|row| (row.path.as_str(), row.verb.as_str(), row.note.as_deref()))
@@ -945,7 +950,7 @@ fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
     assert_eq!(document["recorded"], json!(true));
     assert_eq!(document["stopped_at"], json!("applying"));
     assert_eq!(document.get("stopped"), None);
-    let rendered = lines(&document, AmbiguousWidth::Narrow);
+    let rendered = lines(&document, AmbiguousWidth::Narrow, false);
     assert_eq!(
         rendered
             .rows
@@ -982,7 +987,7 @@ fn a_run_a_failure_stopped_states_its_rows_and_the_failure() {
     assert_eq!(document["aborted"], json!(true));
     assert_eq!(document["recorded"], json!(true));
     assert_eq!(document.get("refused"), None);
-    let rendered = lines(&document, AmbiguousWidth::Narrow);
+    let rendered = lines(&document, AmbiguousWidth::Narrow, false);
     assert_eq!(rendered.rows.len(), 1);
     assert_eq!(
         rendered.stopped,
@@ -1004,7 +1009,7 @@ fn a_run_that_could_not_record_what_it_applied_says_so() {
 
     assert_eq!(document["recorded"], json!(false));
     assert_eq!(document["stopped_at"], json!("recording"));
-    let rendered = lines(&document, AmbiguousWidth::Narrow);
+    let rendered = lines(&document, AmbiguousWidth::Narrow, false);
     assert_eq!(
         rendered.stopped,
         vec![
@@ -1026,7 +1031,9 @@ fn a_run_that_only_its_record_stopped_is_not_called_part_way() {
     ));
 
     assert_eq!(
-        lines(&document, AmbiguousWidth::Narrow).summary.as_deref(),
+        lines(&document, AmbiguousWidth::Narrow, false)
+            .summary
+            .as_deref(),
         Some("1 written, 0 skipped — the run applied its whole plan and could not record it")
     );
 }
@@ -1053,7 +1060,7 @@ fn a_run_that_refused_and_could_not_record_states_the_rows_and_the_record() {
 
     assert_eq!(document["recorded"], json!(false));
     assert_eq!(document["stopped_at"], json!("applying_and_recording"));
-    let rendered = lines(&document, AmbiguousWidth::Narrow);
+    let rendered = lines(&document, AmbiguousWidth::Narrow, false);
     assert_eq!(rendered.rows.len(), 2);
     // An action stopped this one, so the plan is half applied and the summary
     // says so, whatever became of the record.
@@ -1110,7 +1117,7 @@ fn drops_at_the_top_level_leave_each_document_in_its_own_tense() {
     ));
 
     let verbs = |document: &JsonValue| {
-        lines(document, AmbiguousWidth::Narrow)
+        lines(document, AmbiguousWidth::Narrow, false)
             .rows
             .into_iter()
             .map(|row| row.verb)
@@ -1162,4 +1169,152 @@ fn holding(path: &str, owners: &[&str]) -> Manifest {
         },
     );
     manifest
+}
+
+/// A containment refusal whose cause is a symlinked ancestor names the link,
+/// in the words the library's own message names it with: a key spelled
+/// entirely of ordinary components otherwise reads as an accusation against
+/// its spelling. A containment refusal carrying no link names none.
+#[test]
+fn a_containment_row_names_the_symlink_ancestor_the_refusal_carries() {
+    let through_config = Refusal::Containment {
+        through: Some(Utf8PathBuf::from("config")),
+    };
+    let from_library = Refused::one(
+        Utf8PathBuf::from("config/app.toml"),
+        through_config.clone(),
+        Origin::Caller,
+    )
+    .to_string();
+    let row = only(refused(&serialized(&through_config)));
+
+    assert_eq!(
+        row.note.as_deref(),
+        Some("(containment) (below the symlink config)")
+    );
+    assert!(
+        from_library.ends_with("(below the symlink config)"),
+        "the library's own message says it too: {from_library}"
+    );
+
+    let row = only(refused(&serialized(Refusal::Containment { through: None })));
+
+    assert_eq!(row.note.as_deref(), Some("(containment)"));
+}
+
+/// What lifts a refusal is stated once per kind, under the rows: fifty
+/// drifted paths are one `--force` away, and fifty copies of the sentence
+/// would bury the paths it is about.
+#[test]
+fn the_rows_close_with_what_lifts_each_kind_of_refusal_among_them_once() {
+    let refuse = |refusal: JsonValue| json!({ "facts": null, "verdict": { "Refuse": { "refusal": refusal } } });
+    let document = planned(json!({
+        "bin/tool": refuse(serialized(Refusal::Drift)),
+        "etc/rc": refuse(serialized(Refusal::Drift)),
+        "link": refuse(serialized(Refusal::ExternalTarget { target: "/opt".to_owned() })),
+    }));
+
+    assert_eq!(
+        document.hints,
+        [
+            "pass --force to touch them anyway, where the projection can still tell what it \
+             would replace",
+            "pass --allow-external-targets to write them",
+        ]
+    );
+}
+
+/// A run that already carried `--force` and refused drift anyway has met the
+/// drift no policy lifts, so the line naming the flag goes: the reader took
+/// that advice before the run, and repeating it sends them back where they
+/// are. The hints for the other kinds are untouched — `--force` says nothing
+/// about a symlink leaving the destination.
+#[test]
+fn a_run_that_already_passed_force_is_not_told_to_pass_force() {
+    let refuse = |refusal: JsonValue| json!({ "facts": null, "verdict": { "Refuse": { "refusal": refusal } } });
+    let rows = json!({
+        "bin/tool": refuse(serialized(Refusal::Drift)),
+        "link": refuse(serialized(Refusal::ExternalTarget { target: "/opt".to_owned() })),
+    });
+    let document = |forced: bool| {
+        lines(
+            &json!({ "rows": records(rows.clone()) }),
+            AmbiguousWidth::Narrow,
+            forced,
+        )
+    };
+
+    assert_eq!(
+        document(true).hints,
+        ["pass --allow-external-targets to write them"]
+    );
+    assert_eq!(document(false).hints.len(), 2, "and stays without the flag");
+}
+
+/// A refusal nothing lifts closes with nothing, and neither does a run that
+/// refused none: the line is there to say what to do, not to fill a slot.
+#[test]
+fn rows_nothing_lifts_close_with_nothing() {
+    let document = refused(&serialized(Refusal::Containment { through: None }));
+    assert!(document.hints.is_empty());
+
+    let document = planned(json!({ "one": file(json!("Write")) }));
+    assert!(document.hints.is_empty());
+}
+
+/// The hints come from the library rather than from strings spelled here, so
+/// the CLI and the library say one thing: each kind is looked up by the name
+/// the library serializes it under, and a kind whose name this view cannot
+/// find would silently lose its hint.
+///
+/// The kinds are spelled out here rather than read off `REFUSAL_KINDS`,
+/// because that array is the very thing under test: a loop over it can only
+/// ever agree with itself, and a kind the array left out would go unvisited
+/// and unmissed. The match is over `RefusalKind` itself, so a kind added to
+/// the library stops this compiling until somebody comes here — where this
+/// list and the array in `run.rs` are both in view — and the two assertions
+/// below then hold the array to it.
+#[test]
+fn every_kind_the_library_lifts_finds_its_hint_through_the_serialized_name() {
+    let declared = [
+        RefusalKind::Containment,
+        RefusalKind::TreeConflict,
+        RefusalKind::Foreign,
+        RefusalKind::Drift,
+        RefusalKind::DirectoryInTheWay,
+        RefusalKind::OwnerConflict,
+        RefusalKind::ExternalTarget,
+        RefusalKind::InvalidTarget,
+        RefusalKind::Block,
+    ];
+    for kind in declared {
+        match kind {
+            RefusalKind::Containment
+            | RefusalKind::TreeConflict
+            | RefusalKind::Foreign
+            | RefusalKind::Drift
+            | RefusalKind::DirectoryInTheWay
+            | RefusalKind::OwnerConflict
+            | RefusalKind::ExternalTarget
+            | RefusalKind::InvalidTarget
+            | RefusalKind::Block => {}
+        }
+        let name = kind_name(kind).expect("a kind serializes as its name");
+
+        assert!(
+            REFUSAL_KINDS.contains(&kind),
+            "REFUSAL_KINDS leaves out {kind:?}, whose hint the view would drop"
+        );
+        assert_eq!(hinting(&name, false), kind.override_hint(), "{kind:?}");
+    }
+    // The other direction: nothing sits in the array that the list above no
+    // longer names, so the two cannot drift apart in either one.
+    assert_eq!(REFUSAL_KINDS.len(), declared.len());
+}
+
+/// A kind this CLI does not know carries no hint rather than one belonging to
+/// another kind.
+#[test]
+fn an_unknown_refusal_kind_carries_no_hint() {
+    assert_eq!(hinting("Pondered", false), None);
 }

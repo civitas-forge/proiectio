@@ -40,7 +40,7 @@ fn refused(source: &Fixture, names: &[&str]) -> BTreeMap<Utf8PathBuf, Origin> {
 fn project(dest: &Fixture, state: &Fixture, desired: &Desired) -> ApplyReport {
     let dest_dir = dir_at(dest.root());
     let state_dir = dir_at(state.root());
-    let manifest = load_manifest(&state_dir).expect("load manifest");
+    let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
     let observations =
         observe(&dest_dir, &manifest, &block_markers(desired)).expect("observe destination");
     let plan = decide(
@@ -438,7 +438,11 @@ fn a_missing_source_is_an_io_error_naming_it() {
 
     assert!(matches!(
         load_tree(&gone, crate::Limits::default()).unwrap_err(),
-        Error::Io { path, .. } if path == gone
+        Error::Io {
+            role: IoRole::SourceTree,
+            path,
+            ..
+        } if path == gone
     ));
 }
 
@@ -451,7 +455,11 @@ fn a_source_that_is_a_file_is_an_io_error_naming_it() {
 
     assert!(matches!(
         load_tree(&file, crate::Limits::default()).unwrap_err(),
-        Error::Io { path, .. } if path == file
+        Error::Io {
+            role: IoRole::SourceTree,
+            path,
+            ..
+        } if path == file
     ));
 }
 
@@ -461,7 +469,11 @@ fn a_relative_source_path_resolves_against_the_current_directory() {
 
     assert!(matches!(
         load_tree(absent.relative(), crate::Limits::default()).unwrap_err(),
-        Error::Io { path, .. } if path == absent.absolute()
+        Error::Io {
+            role: IoRole::SourceTree,
+            path,
+            ..
+        } if path == absent.absolute()
     ));
 }
 

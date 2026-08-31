@@ -10,7 +10,12 @@ use crate::{Error, Origin, Refusal, Refused, Result};
 pub fn contained_join(dest: &Utf8Path, rel: &Utf8Path) -> Result<Utf8PathBuf> {
     match contained_normalize(rel) {
         Some(normalized) => Ok(dest.join(normalized)),
-        None => Err(Refused::one(rel.to_owned(), Refusal::Containment, Origin::Caller).into()),
+        None => Err(Refused::one(
+            rel.to_owned(),
+            Refusal::Containment { through: None },
+            Origin::Caller,
+        )
+        .into()),
     }
 }
 

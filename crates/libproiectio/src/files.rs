@@ -6,7 +6,7 @@ use cap_std::fs::Dir;
 
 use crate::limits::Budget;
 use crate::tree::{is_executable, open_file_nofollow};
-use crate::{Desired, Entry, Error, Limits, Origin, Result};
+use crate::{Desired, Entry, Error, IoRole, Limits, Origin, Result};
 
 /// Loads each path as an entry keyed by its own basename. One budget of
 /// [`Limits::max_source_bytes`] covers everything the call holds: each
@@ -61,14 +61,16 @@ fn load_one(path: &Utf8Path, budget: &Budget) -> Result<Entry> {
     let parent = path.parent().expect("an absolute path has a parent");
     let name = path.file_name().expect("a named path has a file name");
     let io = |source| Error::Io {
+        role: IoRole::NamedFile,
         path: path.to_owned(),
         source,
     };
 
-    let dir = Dir::open_ambient_dir(parent, ambient_authority()).map_err(|source| Error::Io {
-        path: parent.to_owned(),
-        source,
-    })?;
+    // Named by the path the caller handed in rather than by the parent that
+    // failed to open: the caller never named the parent, and a message about a
+    // directory they did not write on the command line sends them looking for
+    // the wrong mistake.
+    let dir = Dir::open_ambient_dir(parent, ambient_authority()).map_err(io)?;
     let file_type = dir.symlink_metadata(name).map_err(io)?.file_type();
     if file_type.is_symlink() {
         let target = dir.read_link_contents(name).map_err(io)?;

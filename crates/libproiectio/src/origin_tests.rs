@@ -6,7 +6,7 @@ use crate::{Error, Refusal, Refused};
 fn containment(origin: Origin) -> Error {
     Refused::one(
         Utf8PathBuf::from("../etc/passwd"),
-        Refusal::Containment,
+        Refusal::Containment { through: None },
         origin,
     )
     .into()

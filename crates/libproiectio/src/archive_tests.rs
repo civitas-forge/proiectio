@@ -474,7 +474,7 @@ fn an_expanded_archive_projects_and_its_relative_link_resolves() {
     let (dest, state) = (Tree::new().materialize(), Tree::new().materialize());
     let dest_dir = dir_at(dest.root());
     let state_dir = dir_at(state.root());
-    let manifest = load_manifest(&state_dir).expect("load manifest");
+    let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
     let observations =
         observe(&dest_dir, &manifest, &block_markers(&desired)).expect("observe destination");
     let plan = decide(
@@ -496,7 +496,7 @@ fn an_expanded_archive_projects_and_its_relative_link_resolves() {
 
     // Nothing downstream remembers an archive existed: the manifest records
     // one ordinary entry per member.
-    let manifest = load_manifest(&state_dir).expect("reload manifest");
+    let manifest = load_manifest(&state_dir, state.root()).expect("reload manifest");
     let recorded: Vec<&str> = manifest.entries.keys().map(|path| path.as_str()).collect();
     assert_eq!(
         recorded,
@@ -845,7 +845,11 @@ fn a_relative_archive_path_resolves_against_the_current_directory() {
 
     assert!(matches!(
         load_archive(absent.relative(), 0, crate::Limits::default()).unwrap_err(),
-        Error::Io { path, .. } if path == absent.absolute()
+        Error::Io {
+            role: IoRole::Archive,
+            path,
+            ..
+        } if path == absent.absolute()
     ));
 }
 

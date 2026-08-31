@@ -8,7 +8,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::Serialize;
 
 use crate::limits::Budget;
-use crate::{Desired, Entry, Error, Limits, Origin, Refusal, Refused, Result};
+use crate::{Desired, Entry, Error, IoRole, Limits, Origin, Refusal, Refused, Result};
 
 /// How many members one archive may carry.
 const MAX_MEMBERS: usize = 50_000;
@@ -98,6 +98,7 @@ pub(crate) fn expand(
         path: source.to_owned(),
     })?;
     let file = File::open(source).map_err(|e| Error::Io {
+        role: IoRole::Archive,
         path: source.to_owned(),
         source: e,
     })?;
@@ -144,6 +145,7 @@ pub(crate) fn expand(
                 .get_ref()
                 .metadata()
                 .map_err(|e| Error::Io {
+                    role: IoRole::Archive,
                     path: source.to_owned(),
                     source: e,
                 })?
@@ -160,7 +162,7 @@ pub(crate) fn expand(
             expansion
                 .refused
                 .into_iter()
-                .map(|path| (path, Refusal::Containment, origin.clone())),
+                .map(|path| (path, Refusal::Containment { through: None }, origin.clone())),
         )
         .expect("refused is not empty")
         .into());

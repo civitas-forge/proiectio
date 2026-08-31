@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::Utf8PathBuf;
 
 use super::*;
-use crate::{BlockFault, Limits, Manifest, Origin, Refusal, RefusalKind, Refused};
+use crate::{BlockFault, IoRole, Limits, Manifest, Origin, Refusal, RefusalKind, Refused};
 
 fn every_variant() -> Vec<Error> {
     let refusal = |kind: RefusalKind| -> Error {
@@ -14,7 +14,7 @@ fn every_variant() -> Vec<Error> {
                 unreadable: BTreeSet::new(),
             },
             RefusalKind::Foreign => Refusal::Foreign,
-            RefusalKind::Containment => Refusal::Containment,
+            RefusalKind::Containment => Refusal::Containment { through: None },
             RefusalKind::TreeConflict => Refusal::TreeConflict {
                 paths: BTreeSet::new(),
             },
@@ -49,6 +49,7 @@ fn every_variant() -> Vec<Error> {
     .collect();
     every.extend([
         Error::Io {
+            role: IoRole::Destination,
             path: Utf8PathBuf::from("config/settings.toml"),
             source: std::io::Error::other("disk full"),
         },
@@ -76,6 +77,9 @@ fn every_variant() -> Vec<Error> {
         Error::MappingFormat {
             path: Utf8PathBuf::from("deploy.toml"),
             source: toml::from_str::<toml::Table>("not toml").expect_err("parse failure"),
+        },
+        Error::MappingIsDirectory {
+            path: Utf8PathBuf::from("/srv/skeleton"),
         },
         Error::MappingVersion {
             path: Utf8PathBuf::from("deploy.toml"),
@@ -191,7 +195,7 @@ fn every_variant() -> Vec<Error> {
 //
 // The eight refusals all serialize as `refused`, so this is one tag shorter
 // than the list is long.
-const EVERY_KIND: [&str; 34] = [
+const EVERY_KIND: [&str; 35] = [
     "refused",
     "io",
     "manifest_format",
@@ -201,6 +205,7 @@ const EVERY_KIND: [&str; 34] = [
     "path_not_utf8",
     "state_dir_is_target",
     "mapping_format",
+    "mapping_is_directory",
     "mapping_version",
     "mapping_contents_xor_source",
     "mapping_duplicate",
@@ -243,6 +248,7 @@ fn is_named_above(error: &Error) -> bool {
         | Error::PathNotUtf8 { .. }
         | Error::StateDirIsTarget { .. }
         | Error::MappingFormat { .. }
+        | Error::MappingIsDirectory { .. }
         | Error::MappingVersion { .. }
         | Error::MappingContentsXorSource { .. }
         | Error::MappingDuplicate { .. }
@@ -521,10 +527,65 @@ fn path_resolution_failures_name_the_path_and_exit_1() {
 #[test]
 fn io_messages_keep_the_os_error_visible() {
     let error = Error::Io {
+        role: IoRole::Unstated,
         path: Utf8PathBuf::from("bin/tool"),
         source: std::io::Error::other("disk full"),
     };
     assert_eq!(error.to_string(), "bin/tool: disk full");
+}
+
+// An OS error says what went wrong and where, and nothing about which of a
+// run's arguments the path was — the same sentence for a destination, a
+// mapping, and a tree. The role is the word that tells them apart. Matched
+// over `IoRole` itself, so a role added there stops this compiling until it
+// has a word.
+#[test]
+fn every_role_opens_the_message_with_the_word_that_places_the_path() {
+    for role in [
+        IoRole::Destination,
+        IoRole::StateDirectory,
+        IoRole::Mapping,
+        IoRole::SourceTree,
+        IoRole::Archive,
+        IoRole::Source,
+        IoRole::NamedFile,
+        IoRole::Unstated,
+    ] {
+        let placed = match role {
+            IoRole::Destination => "destination /srv/site: not there",
+            IoRole::StateDirectory => "state directory /srv/site: not there",
+            IoRole::Mapping => "mapping /srv/site: not there",
+            IoRole::SourceTree => "source tree /srv/site: not there",
+            IoRole::Archive => "archive /srv/site: not there",
+            IoRole::Source => "source /srv/site: not there",
+            IoRole::NamedFile => "named file /srv/site: not there",
+            // The run's own working paths, which its other lines place.
+            IoRole::Unstated => "/srv/site: not there",
+        };
+        let error = Error::Io {
+            role,
+            path: Utf8PathBuf::from("/srv/site"),
+            source: std::io::Error::other("not there"),
+        };
+
+        assert_eq!(error.to_string(), placed, "{role:?}");
+    }
+}
+
+// A directory named where a mapping belongs is a `--tree` the caller spelled
+// as a positional, not a broken mapping, and the message says so rather than
+// reporting whichever OS error a read of a directory happens to raise.
+#[test]
+fn a_directory_named_as_a_mapping_names_the_option_it_belongs_to() {
+    let error = Error::MappingIsDirectory {
+        path: Utf8PathBuf::from("/srv/skeleton"),
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "mapping /srv/skeleton is a directory: a mapping is a TOML file; \
+         pass a directory as --tree to project the tree it holds"
+    );
 }
 
 // The single-writer lock's contention variant is exit-1 territory: not a
@@ -568,11 +629,13 @@ fn each_variant_family_serializes_as_a_map_tagged_by_its_kind() {
 
     assert_eq!(
         value(Error::Io {
+            role: IoRole::Destination,
             path: Utf8PathBuf::from("config/settings.toml"),
             source: std::io::Error::other("disk full"),
         }),
         serde_json::json!({
             "kind": "io",
+            "role": "destination",
             "path": "config/settings.toml",
             "source": "disk full",
         })

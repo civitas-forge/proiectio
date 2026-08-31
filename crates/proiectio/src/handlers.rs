@@ -14,6 +14,7 @@ use libproiectio::{
 use standout::cli::{CommandContext, Output};
 use standout::handler;
 
+use crate::app::Forced;
 use crate::exit;
 use crate::settings;
 use crate::views::{AbortedRun, ConfigView, PlannedRun, RunView, refused_rows};
@@ -36,6 +37,7 @@ pub(crate) fn write(
     #[flag(name = "allow-external-targets")] allow_external_targets: bool,
     #[ctx] ctx: &CommandContext,
 ) -> Result<Output<RunView>, anyhow::Error> {
+    ctx.app_state.get_required::<Forced>()?.record(force);
     let (owner, limits) = write_settings(owner, max_source_size)?;
     let desired = desired(&paths, tree.as_deref(), strip, limits).map_err(exit::failure)?;
     let options = PlanOptions {
@@ -77,6 +79,7 @@ pub(crate) fn rm(
     } else {
         RemovalScope::Paths(&named)
     };
+    ctx.app_state.get_required::<Forced>()?.record(force);
     let owner = owner_or_configured(owner)?;
     let drift = drift(force);
 
