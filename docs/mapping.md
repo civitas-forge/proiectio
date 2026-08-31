@@ -100,7 +100,7 @@ $ echo $?
 
 The flag is permission granted per invocation and is never recorded, so every
 run of that mapping needs it — including a re-run where disk already matches.
-[docs/security.lex](security.lex) section 3 states how a target is graded
+[docs/dev/security.lex](dev/security.lex) section 3 states how a target is graded
 in-dest or external.
 
 ## [archives]
@@ -171,7 +171,7 @@ $ echo $?
 
 Absolute keys, `.` or empty components, and spellings Windows resolves somewhere
 other than an ordinary file under the destination are refused the same way.
-[docs/security.lex](security.lex) section 2 lists them all. The verdict is
+[docs/dev/security.lex](dev/security.lex) section 2 lists them all. The verdict is
 lexical, so a mapping gets the same answer on every host.
 
 Two keys may not overlap: one location is planned once.

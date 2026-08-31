@@ -37,8 +37,8 @@ $ echo $?
 2
 ```
 
-The full rules live in [docs/cli-tour.lex](cli-tour.lex) sections 2–4 and
-[docs/design.lex](design.lex) section 2.
+The full rules live in [docs/dev/cli-tour.lex](dev/cli-tour.lex) sections 2–4 and
+[docs/dev/design.lex](dev/design.lex) section 2.
 
 ## Someone edited a projected file (drifted)
 
@@ -103,7 +103,7 @@ linked     toolchain  -> /opt/toolchains/rust-1.80
 
 The flag is per-invocation permission, never recorded state: every run of that
 mapping needs it, including a run where disk already matches and status reports
-clean. [docs/security.lex](security.lex) section 3 grades targets.
+clean. [docs/dev/security.lex](dev/security.lex) section 3 grades targets.
 
 ## A path that leaves the destination
 
@@ -119,7 +119,7 @@ $ echo $?
 
 Rewrite the key as a path inside the destination. A key beneath a symlinked
 ancestor is refused the same way: remove the link, or project to a path that does
-not pass through one. [docs/security.lex](security.lex) section 2 states the
+not pass through one. [docs/dev/security.lex](dev/security.lex) section 2 states the
 grading rules.
 
 ## Two owners, one destination

@@ -162,9 +162,9 @@ etc/motd,Skipped,,file,false,,"[""two""]","{""Mapping"":{""path"":""/home/you/wo
 
 - [docs/mapping.md](docs/mapping.md) — the mapping-file reference.
 - [docs/refusals.md](docs/refusals.md) — when proiectio says no.
-- [docs/design.lex](docs/design.lex) — the model.
-- [docs/cli-tour.lex](docs/cli-tour.lex) — the CLI contract.
-- [docs/security.lex](docs/security.lex) — the trust split and symlink rules.
+- [docs/dev/design.lex](docs/dev/design.lex) — the model.
+- [docs/dev/cli-tour.lex](docs/dev/cli-tour.lex) — the CLI contract.
+- [docs/dev/security.lex](docs/dev/security.lex) — the trust split and symlink rules.
 
 The library is [libproiectio](https://crates.io/crates/libproiectio) on crates.io, documented at [docs.rs/libproiectio](https://docs.rs/libproiectio).
 

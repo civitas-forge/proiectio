@@ -682,7 +682,7 @@ fn archive_tables_in_one_mapping_share_one_byte_budget() {
     ));
 }
 
-// The full example of `docs/cli-tour.lex` section 5, verbatim.
+// The full example of `docs/dev/cli-tour.lex` section 5, verbatim.
 const CLI_TOUR_EXAMPLE: &str = r#"version = 1
 
 [files."config/settings.toml"]

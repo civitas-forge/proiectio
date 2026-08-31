@@ -184,7 +184,7 @@ fn action<'plan>(plan: &'plan Plan, path: &str) -> &'plan Action {
         .unwrap_or_else(|| panic!("no action at {path}"))
 }
 
-// --- classification (`docs/design.lex` section 2, the state table) ---
+// --- classification (`docs/dev/design.lex` section 2, the state table) ---
 
 #[test]
 fn clean_when_disk_matches_the_recorded_entry() {
@@ -402,7 +402,7 @@ fn the_state_subtree_never_classifies() {
     );
 }
 
-// --- the action table (`docs/design.lex` section 2), row by row ---
+// --- the action table (`docs/dev/design.lex` section 2), row by row ---
 
 #[test]
 fn disk_already_equal_to_desired_skips() {
@@ -1306,7 +1306,7 @@ fn the_state_subtree_is_invisible_to_planning() {
     );
 }
 
-// --- symlink target grading (`docs/security.lex` section 3) ---
+// --- symlink target grading (`docs/dev/security.lex` section 3) ---
 
 fn allowing_external() -> PlanOptions {
     PlanOptions {

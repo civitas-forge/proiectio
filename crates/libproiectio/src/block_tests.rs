@@ -1,5 +1,5 @@
 // Table tests for the region mechanics — pure over bytes, no filesystem
-// (`docs/implementation.lex` section 2).
+// (`docs/dev/implementation.lex` section 2).
 
 use super::*;
 use Placement::{Append, Prepend};

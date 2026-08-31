@@ -1,4 +1,4 @@
-// The dry/real parity harness. `docs/implementation.lex` section 1 lets
+// The dry/real parity harness. `docs/dev/implementation.lex` section 1 lets
 // applying refuse only what the disk did after the observation; every case
 // here builds a destination, decides against it, touches nothing, and applies,
 // so any refusal apply raises that the plan did not is this file's failure.

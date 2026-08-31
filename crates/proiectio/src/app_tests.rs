@@ -400,7 +400,7 @@ fn refusing_app() -> App {
 
 type Row = (&'static str, fn() -> App, &'static [&'static str], u8);
 
-/// The whole 0/1/2 contract of `docs/cli-tour.lex` section 2 in one table.
+/// The whole 0/1/2 contract of `docs/dev/cli-tour.lex` section 2 in one table.
 #[test]
 #[serial]
 fn every_outcome_pins_the_status_the_process_exits_with() {

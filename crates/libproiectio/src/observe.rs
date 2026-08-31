@@ -181,7 +181,7 @@ pub(crate) fn block_markers(desired: &crate::Desired) -> BlockMarkers {
 /// is not excluded here.
 ///
 /// cap-std has no read-only handle type, so "this stage writes nothing"
-/// (`docs/implementation.lex` §1) is a discipline the walk keeps and its
+/// (`docs/dev/implementation.lex` §1) is a discipline the walk keeps and its
 /// tests check, not a guarantee the types carry.
 ///
 /// Symlinks are observed as themselves and never entered, so a recorded path
