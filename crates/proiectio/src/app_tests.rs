@@ -221,7 +221,7 @@ fn csv_writes_one_row_per_path_under_the_same_header() {
 #[serial]
 fn a_write_pass_writes_one_csv_record_per_path_under_the_same_header() {
     let (dir, dest, deploy) = tour();
-    let header = "path,verdict,detail,shape,executable,target,owners,origin\n";
+    let header = "path,verdict,detail,shape,executable,target,owners,origin,phase\n";
     let named = format!("\"{{\"\"Mapping\"\":{{\"\"path\"\":\"\"{deploy}\"\"}}}}\"");
 
     let planned = harness(&dir).output_mode(OutputMode::Csv).run(
@@ -241,20 +241,21 @@ fn a_write_pass_writes_one_csv_record_per_path_under_the_same_header() {
         planned.stdout(),
         format!(
             "{header}\
-             bin/tool,Write,,file,true,,,{named}\n\
-             config/settings.toml,Write,,file,false,,,{named}\n\
-             current,Write,,symlink,,releases/1.2.3,,{named}\n"
+             bin/tool,Write,,file,true,,,{named},planned\n\
+             config/settings.toml,Write,,file,false,,,{named},planned\n\
+             current,Write,,symlink,,releases/1.2.3,,{named},planned\n"
         )
     );
-    // The verdict vocabulary is the tense's own, which is what the `phase`
-    // field the other modes carry tells a reader apart; the header is not.
+    // The verdict vocabulary is the tense's own, and the last cell names the
+    // tense outright: the header is one line for both, and a record says which
+    // of the two wrote it.
     assert_eq!(
         applied.stdout(),
         format!(
             "{header}\
-             bin/tool,Written,,file,true,,\"[\"\"default\"\"]\",{named}\n\
-             config/settings.toml,Written,,file,false,,\"[\"\"default\"\"]\",{named}\n\
-             current,Written,,symlink,,releases/1.2.3,\"[\"\"default\"\"]\",{named}\n"
+             bin/tool,Written,,file,true,,\"[\"\"default\"\"]\",{named},applied\n\
+             config/settings.toml,Written,,file,false,,\"[\"\"default\"\"]\",{named},applied\n\
+             current,Written,,symlink,,releases/1.2.3,\"[\"\"default\"\"]\",{named},applied\n"
         )
     );
 }
@@ -283,10 +284,10 @@ fn a_removal_writes_its_records_under_the_header_a_write_writes() {
     removed.assert_success();
     assert_eq!(
         removed.stdout(),
-        "path,verdict,detail,shape,executable,target,owners,origin\n\
-         bin/tool,Removed,,file,true,,\"[\"\"default\"\"]\",Caller\n\
-         config/settings.toml,Removed,,file,false,,\"[\"\"default\"\"]\",Caller\n\
-         current,Removed,,symlink,,,\"[\"\"default\"\"]\",Caller\n"
+        "path,verdict,detail,shape,executable,target,owners,origin,phase\n\
+         bin/tool,Removed,,file,true,,\"[\"\"default\"\"]\",Caller,applied\n\
+         config/settings.toml,Removed,,file,false,,\"[\"\"default\"\"]\",Caller,applied\n\
+         current,Removed,,symlink,,,\"[\"\"default\"\"]\",Caller,applied\n"
     );
 }
 
@@ -2266,8 +2267,8 @@ fn the_csv_a_run_that_could_not_record_writes_says_so_on_stderr() {
     assert_eq!(projected.error(), None);
     assert_eq!(
         projected.stdout(),
-        "path,verdict,detail,shape,executable,target,owners,origin\n\
-         bin/tool,Written,,file,false,,\"[\"\"own\"\"]\",Caller\n"
+        "path,verdict,detail,shape,executable,target,owners,origin,phase\n\
+         bin/tool,Written,,file,false,,\"[\"\"own\"\"]\",Caller,aborted\n"
     );
 
     let stated = stated_on_stderr(&projected);
@@ -2282,8 +2283,9 @@ fn the_csv_a_run_that_could_not_record_writes_says_so_on_stderr() {
     );
     assert_eq!(
         stated[2],
-        "nothing records the paths the run applied, so the next run over this \
-         destination classifies them as foreign"
+        "nothing in the state directory records what this run applied, so the next \
+         run over this destination judges it against the record that stood before \
+         the run"
     );
 
     // Every mode that serializes the document takes the same channel, so a
@@ -2426,10 +2428,10 @@ fn the_csv_a_run_that_stopped_part_way_writes_states_the_key_it_refused() {
     assert_eq!(projected.error(), None);
     assert_eq!(
         projected.stdout(),
-        "path,verdict,detail,shape,executable,target,owners,origin\n\
-         pivot,Released,,symlink,,,\"[\"\"other\"\",\"\"own\"\"]\",Caller\n\
+        "path,verdict,detail,shape,executable,target,owners,origin,phase\n\
+         pivot,Released,,symlink,,,\"[\"\"other\"\",\"\"own\"\"]\",Caller,aborted\n\
          pivot/x.txt,Refuse,\"{\"\"refusal\"\":{\"\"Containment\"\":\
-         {\"\"through\"\":\"\"pivot\"\"}}}\",,,,,Caller\n"
+         {\"\"through\"\":\"\"pivot\"\"}}}\",,,,,Caller,aborted\n"
     );
 }
 

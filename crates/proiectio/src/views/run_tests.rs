@@ -1164,8 +1164,9 @@ fn a_stopped_run_states_past_its_records_how_far_it_got_and_what_that_left() {
         vec![
             "the run applied its whole plan and could not record it",
             unrecorded,
-            "nothing records the paths the run applied, so the next run over \
-             this destination classifies them as foreign",
+            "nothing in the state directory records what this run applied, so the \
+             next run over this destination judges it against the record that stood \
+             before the run",
         ]
     );
 
@@ -1183,8 +1184,9 @@ fn a_stopped_run_states_past_its_records_how_far_it_got_and_what_that_left() {
         vec![
             "the run stopped part-way through the plan, and what it applied stands",
             unrecorded,
-            "nothing records the paths the run applied, so the next run over \
-             this destination classifies them as foreign",
+            "nothing in the state directory records what this run applied, so the \
+             next run over this destination judges it against the record that stood \
+             before the run",
         ]
     );
 }
@@ -1309,8 +1311,9 @@ fn every_tense_names_its_phase_and_states_its_rows_at_the_same_key() {
 
 /// The CSV columns over the rows of a plan and of the run that applied it: one
 /// record per path under a header that does not move, in either tense. The
-/// verdict vocabulary is the tense's own — `Write` against `Written` — which
-/// is what the phase field is there to tell the reader.
+/// verdict vocabulary is the tense's own — `Write` against `Written` — and the
+/// last cell names the tense, so a reader of the records alone tells the two
+/// apart rather than inferring them from a vocabulary they share verdicts with.
 #[test]
 fn csv_writes_one_record_per_path_under_one_header_in_either_tense() {
     let planned = published_plan(PlannedRun {
@@ -1335,14 +1338,42 @@ fn csv_writes_one_record_per_path_under_one_header_in_either_tense() {
 
     assert_eq!(
         projected(&planned),
-        "path,verdict,detail,shape,executable,target,owners,origin\n\
+        "path,verdict,detail,shape,executable,target,owners,origin,phase\n\
          bin/tool,Write,,file,true,,\"[\"\"site\"\"]\",\
-         \"{\"\"Tree\"\":{\"\"path\"\":\"\"/srv/skeleton\"\"}}\"\n"
+         \"{\"\"Tree\"\":{\"\"path\"\":\"\"/srv/skeleton\"\"}}\",planned\n"
     );
     assert_eq!(
         projected(&applied),
-        "path,verdict,detail,shape,executable,target,owners,origin\n\
-         bin/tool,Written,,,,,,\n"
+        "path,verdict,detail,shape,executable,target,owners,origin,phase\n\
+         bin/tool,Written,,,,,,,applied\n"
+    );
+}
+
+/// The two tenses that spell one verdict alike, which is what the phase cell is
+/// there for: a dry run and a real one both state `NotRecorded` at a path no
+/// manifest records, and both rows carry the same facts. Without the last cell
+/// the two records are the same bytes, and a reader of a CSV alone could not
+/// say whether the removal happened.
+#[test]
+fn the_phase_cell_parts_the_two_tenses_that_spell_a_verdict_alike() {
+    let record = |phase: &str, verdict: JsonValue| {
+        projected(&json!({
+            "phase": phase,
+            "rows": [{ "path": "bin/tool", "verdict": verdict, "facts": null }],
+        }))
+        .lines()
+        .nth(1)
+        .expect("one record")
+        .to_owned()
+    };
+
+    assert_eq!(
+        record("planned", serialized(PlannedAction::NotRecorded)),
+        "bin/tool,NotRecorded,,,,,,,planned"
+    );
+    assert_eq!(
+        record("applied", serialized(ApplyOutcome::NotRecorded)),
+        "bin/tool,NotRecorded,,,,,,,applied"
     );
 }
 
@@ -1368,10 +1399,10 @@ fn csv_over_a_stopped_run_states_the_keys_it_refused() {
 
     assert_eq!(
         projected(&document),
-        "path,verdict,detail,shape,executable,target,owners,origin\n\
+        "path,verdict,detail,shape,executable,target,owners,origin,phase\n\
          bin/tool,Refuse,\"{\"\"refusal\"\":{\"\"OwnerConflict\"\":{\"\"owners\"\":\
-         [\"\"site\"\"]}}}\",,,,\"[\"\"site\"\"]\",Caller\n\
-         config/settings.toml,Written,,,,,,\n"
+         [\"\"site\"\"]}}}\",,,,\"[\"\"site\"\"]\",Caller,aborted\n\
+         config/settings.toml,Written,,,,,,,aborted\n"
     );
 }
 
@@ -1423,12 +1454,12 @@ fn a_verdict_carrying_a_payload_names_itself_and_states_what_it_carries() {
             .to_owned()
     };
 
-    assert_eq!(detailed(json!("Write")), "one,Write,,,,,,");
+    assert_eq!(detailed(json!("Write")), "one,Write,,,,,,,planned");
     assert_eq!(
         detailed(serialized(PlannedAction::Overwrite {
             reason: OverwriteReason::ContentChanged,
         })),
-        "one,Overwrite,\"{\"\"reason\"\":\"\"ContentChanged\"\"}\",,,,,"
+        "one,Overwrite,\"{\"\"reason\"\":\"\"ContentChanged\"\"}\",,,,,,planned"
     );
     assert_eq!(
         detailed(serialized(PlannedAction::Refuse {
@@ -1436,7 +1467,8 @@ fn a_verdict_carrying_a_payload_names_itself_and_states_what_it_carries() {
                 owners: BTreeSet::from(["site".to_owned()]),
             },
         })),
-        "one,Refuse,\"{\"\"refusal\"\":{\"\"OwnerConflict\"\":{\"\"owners\"\":[\"\"site\"\"]}}}\",,,,,"
+        "one,Refuse,\"{\"\"refusal\"\":{\"\"OwnerConflict\"\":{\"\"owners\"\":[\"\"site\"\"]}}}\",\
+         ,,,,,planned"
     );
 }
 
@@ -1451,14 +1483,20 @@ fn a_link_row_states_the_target_it_writes() {
 
     assert_eq!(
         projected(&document),
-        "path,verdict,detail,shape,executable,target,owners,origin\n\
-         current,Write,,symlink,,releases/1.2.3,,\n"
+        "path,verdict,detail,shape,executable,target,owners,origin,phase\n\
+         current,Write,,symlink,,releases/1.2.3,,,planned\n"
     );
 }
 
 /// A dropped archive member takes no record: it reached no path in the
 /// destination, so it has no path cell to fill and is no row of the report.
 /// Neither the manifest nor what stopped a run is a row either.
+///
+/// A document whose rows are empty is a header and nothing else, in every
+/// tense: the phase cell rides on records the rows mint, and a run that
+/// reached no path mints none. Naming the tense in a record of its own would
+/// be a record standing for no path, which is the shape the path column
+/// promises against.
 #[test]
 fn a_dropped_member_takes_no_csv_record() {
     let document = published_plan(PlannedRun {
@@ -1474,10 +1512,15 @@ fn a_dropped_member_takes_no_csv_record() {
         }]),
     });
 
-    assert_eq!(
-        projected(&document),
-        "path,verdict,detail,shape,executable,target,owners,origin\n"
-    );
+    let header = "path,verdict,detail,shape,executable,target,owners,origin,phase\n";
+    assert_eq!(projected(&document), header);
+
+    let stopped = published_abort(AbortedRun::new(
+        wrote(&[]),
+        Report::default(),
+        &Stopped::Recording(held("state.lock")),
+    ));
+    assert_eq!(projected(&stopped), header);
 }
 
 /// The CSV a write pass writes for one document.

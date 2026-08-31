@@ -192,8 +192,8 @@ pub(crate) struct AbortedRun {
     pub(crate) manifest: Manifest,
     /// Whether the state directory records the applied rows, which only a run
     /// stopped at an action leaves it doing: either other phase failed writing
-    /// the manifest, so the destination holds writes nothing on disk records
-    /// and a later run reads them as foreign.
+    /// the manifest, so what the destination holds went unrecorded and a later
+    /// run judges it against the record that stood before this one.
     pub(crate) recorded: bool,
     /// What stopped the run and what stopped its record, where the rows do
     /// not already say it: the failure a non-refusal stopped with, and the
@@ -801,10 +801,19 @@ const PART_WAY: &str = "the run stopped part-way through the plan, and what it a
 const WHOLE_PLAN: &str = "the run applied its whole plan and could not record it";
 
 /// What a run whose manifest never reached the state directory leaves behind,
-/// which no row of the report says: the paths it wrote are on the destination
-/// and nothing records them, so the next run reads them as foreign.
-const UNRECORDED: &str = "nothing records the paths the run applied, \
-     so the next run over this destination classifies them as foreign";
+/// which no row of the report says: the record in the state directory is the
+/// one the run found there, so it says nothing of what this run applied, and
+/// that older record is what the next run judges the destination against.
+///
+/// Which classification each path then reads as is not stated here. The save
+/// replaces the manifest whole, so a path this run overwrote, skipped or
+/// removed can be recorded already and read as clean, drifted or missing; only
+/// a path nothing recorded before reads as foreign. Deriving the per-path
+/// answer would mean keeping the pre-run manifest to replay the next run's
+/// deciding against, which is recovery machinery this CLI does not carry.
+const UNRECORDED: &str = "nothing in the state directory records what this run applied, \
+     so the next run over this destination judges it against the record that stood \
+     before the run";
 
 /// The run-level facts a stopped run states on stderr rather than in the rows:
 /// how far it got, what stopped it, and — where the manifest never landed —
@@ -900,12 +909,19 @@ fn named(verdict: Option<&JsonValue>) -> (&str, Option<&JsonValue>) {
 /// carries — `Overwrite` its reason, `Refuse` its refusal — which has no cell
 /// of its own. It is empty for the verdicts that carry nothing.
 ///
-/// What a document states that is not about one path takes no record here. A
-/// dropped archive member reached no path in the destination, so it has no path
-/// cell to fill. `manifest` states the destination rather than this run. And
-/// `stopped`, `recorded` and `stopped_at` are facts about the run, which reach
-/// a structured caller on stderr, in the sentences [`warnings`] states — beside
-/// the exit code, 1 for a failure and 2 for a refusal whatever the output mode.
+/// The last cell is the one run-level fact every record carries: `phase`, the
+/// tense the document names itself by, the same word in every record of one
+/// run. It is here because it is what reads the verdict cell: the vocabularies
+/// are per-tense and both of them spell `NotRecorded`, so a dry run's record
+/// and an applied run's can otherwise be the same bytes.
+///
+/// The rest of what a document states that is not about one path takes no
+/// record here. A dropped archive member reached no path in the destination, so
+/// it has no path cell to fill. `manifest` states the destination rather than
+/// this run. And `stopped`, `recorded` and `stopped_at` are diagnostics of the
+/// run, which reach a structured caller on stderr, in the sentences
+/// [`warnings`] states — beside the exit code, 1 for a failure and 2 for a
+/// refusal whatever the output mode.
 pub(crate) fn csv() -> StructuredOutputProjection {
     StructuredOutputProjection::csv(
         CsvProjection::builder("rows")
@@ -925,6 +941,14 @@ pub(crate) fn csv() -> StructuredOutputProjection {
                 cells::cell(cells::owners(row))
             })
             .derived_column(cells::header("origin"), |row, _| cells::cell(origin(row)))
+            .derived_column(cells::header("phase"), |_, document| {
+                cells::cell(
+                    document
+                        .get("phase")
+                        .and_then(JsonValue::as_str)
+                        .map(str::to_owned),
+                )
+            })
             .build(),
     )
 }
