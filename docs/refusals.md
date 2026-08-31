@@ -125,8 +125,9 @@ grading rules.
 
 ## Two owners, one destination
 
-Two owners may hold one path while they write identical bytes. The second write
-joins the entry as a second owner and reports `skipped`.
+Two owners may hold one path while they write the identical entry — same kind,
+same contents or target, same executable bit. The second write joins the entry
+as a second owner and reports `skipped`.
 
 ```console
 $ proiectio write shared.toml --dest ./share-dest --owner two
@@ -145,7 +146,7 @@ $ ls ./share-dest/etc
 motd
 ```
 
-A write whose content differs from what another owner holds refuses as an owner
+A write whose entry differs from what another owner holds refuses as an owner
 conflict, naming the holders.
 
 ```console
@@ -162,10 +163,12 @@ Write the same bytes as the holder, or project to a different path.
 A recorded path gone from disk is not a refusal. The next write rewrites it.
 
 ```console
+$ rm ./site/current
 $ proiectio write deploy.toml --dest ./site --owner site
+skipped    bin/tool              (exec)
 skipped    config/settings.toml
 linked     current               -> releases/1.2.3
-1 written, 1 skipped
+1 written, 2 skipped
 ```
 
 `rm` forgets the record and unlinks nothing.
@@ -173,9 +176,10 @@ linked     current               -> releases/1.2.3
 ```console
 $ rm ./site/config/settings.toml
 $ proiectio rm --dest ./site --owner site
+removed    bin/tool              (exec)
 forgot     config/settings.toml
 removed    current               -> releases/1.2.3
-1 removed, 1 forgotten
+2 removed, 1 forgotten
 ```
 
 ## Gating CI
@@ -189,8 +193,10 @@ $ proiectio status --dest ./site --check
 
 A dry run asks whether one desired tree still applies: it refuses drift on the
 paths it claims, plans a rewrite for a missing one, and ignores foreign paths
-it does not claim. `status --check` holds the whole destination to its
-manifest: any drifted, missing, or foreign row exits 2.
+it does not claim. `status --check` holds the destination to its manifest: any
+drifted or missing recorded path, or a foreign file or link, exits 2. An
+unrecorded directory and a name that is not UTF-8 are outside the report and
+never fail it.
 
 `--output json` and `--output csv` carry the same verdicts for tooling.
 
