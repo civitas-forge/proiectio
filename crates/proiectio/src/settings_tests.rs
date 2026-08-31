@@ -35,9 +35,7 @@ fn an_omitted_key_takes_its_compiled_default() {
 }
 
 /// A clapfig default is a literal, so the schema cannot spell the library's
-/// constant. This is what holds the two to each other: the bound a run takes
-/// with nothing configured is the one `libproiectio` would have applied on
-/// its own.
+/// constant; this holds the two to each other.
 #[test]
 fn the_size_bounds_default_is_the_librarys_own() {
     let dir = TempDir::new().expect("a temporary directory");
@@ -74,9 +72,8 @@ fn a_file_declaring_the_owner_loads_it() {
     );
 }
 
-/// `config schema` allowlists `^//` on every object, so a file spelling a note
-/// that way validates against the emitted schema; the loader accepts the same
-/// file.
+/// A file spelling a note under the `^//` allowlist validates against the
+/// emitted schema; the loader accepts the same file.
 #[test]
 fn a_comment_key_the_schema_allowlists_loads() {
     let dir = TempDir::new().expect("a temporary directory");
@@ -117,10 +114,8 @@ fn an_undeclared_key_is_refused_with_the_nearest_one() {
     }
 }
 
-/// The preflight resolves a file only for an edit that lands in the scope this
-/// CLI resolves. A `--scope` naming anything else is clapfig's to refuse by
-/// name, and a read edits nothing — resolving for either would answer with a
-/// complaint about a file neither one meant.
+/// The preflight resolves a file only for an edit that lands in the scope
+/// this CLI resolves; a wrong `--scope` is clapfig's to refuse by name.
 #[test]
 fn only_an_edit_through_the_registered_scope_resolves_a_file_first() {
     let unset = |scope: Option<&str>| ConfigAction::Unset {
@@ -162,9 +157,8 @@ fn the_schemas_leaf_types_are_what_a_rendered_line_is_spelled_from() {
     assert!(leaf_type("owner.deeper").is_none());
 }
 
-/// A listing flattens a map's entries into dotted keys, so the walk drops the
-/// entry key the writer chose and reads the item shape underneath it — the
-/// same step clapfig's own `doc_for_shape` takes.
+/// A listing flattens a map's entries into dotted keys, so the walk drops
+/// the entry key and reads the item shape underneath it.
 #[test]
 fn a_key_under_a_map_resolves_to_the_item_shapes_leaf() {
     let shape = Shape::Object(
@@ -208,9 +202,8 @@ fn an_optional_field_resolves_to_the_leaf_type_it_wraps() {
     ));
 }
 
-/// `require_key` asks the schema whether the path resolves, not whether anyone
-/// documented it: clapfig answers `Some(vec![])` for a declared field with no
-/// doc comment, so an undocumented key is still a key.
+/// `require_key` asks whether the path resolves, not whether anyone
+/// documented it: an undocumented key is still a key.
 #[test]
 fn a_key_the_schema_declares_without_a_doc_comment_is_still_a_key() {
     let shape = Shape::Object(
@@ -225,17 +218,14 @@ fn a_key_the_schema_declares_without_a_doc_comment_is_still_a_key() {
     );
 }
 
-/// The key the owner rule is stated for is one the schema declares: the rule
-/// is matched by name in [`require_value`], and a schema that renamed the key
-/// would leave the match on a key nothing sets.
+/// The key the owner rule is matched by name on is one the schema declares.
 #[test]
 fn the_owner_rule_names_a_key_the_schema_declares() {
     assert!(declared_keys().iter().any(|key| key == OWNER_KEY));
 }
 
-/// `config set` is the layer that puts a value in the file, so it is where a
-/// value that is not one is refused. Every key refuses an empty string;
-/// `owner` refuses a blank one too.
+/// `config set` is where a non-value is refused: every key refuses an empty
+/// string; `owner` refuses a blank one too.
 #[test]
 fn config_set_refuses_a_value_that_names_nothing() {
     for (key, value) in [

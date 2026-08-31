@@ -44,15 +44,10 @@ pub struct Row<V> {
 
 /// Every path the report classifies, in path order.
 ///
-/// A row states its own path, so no format has to spell a path as a name:
-/// `rows` serializes as a sequence of records rather than as a map keyed by
-/// path. Spelled as names, paths cost the two formats different things. An XML
-/// element name cannot carry a `/`, and the underscore Standout substitutes
-/// for one turns `a/b` and `a_b` into one element name, so the second row
-/// overwrites the first. A CSV header can carry a `/` and keeps the two apart,
-/// but a header spelled from paths is a header that changes with the
-/// destination, and nothing can be written to read it. Carried as a value, a
-/// path is only ever itself.
+/// `rows` serializes as a sequence of records, each stating its own path,
+/// never as a map keyed by path: a path spelled as a name collides in XML
+/// element names and makes CSV headers change with the destination, while
+/// carried as a value it is only ever itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report<V> {
     pub rows: BTreeMap<Utf8PathBuf, Row<V>>,

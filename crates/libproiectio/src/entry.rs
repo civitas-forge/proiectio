@@ -42,7 +42,6 @@ pub enum EntryKind {
         /// matched byte-exact. [`BlockFault`](crate::BlockFault) names what a
         /// marker and a body may not be.
         marker: String,
-        /// Which end of the container the region occupies.
         placement: Placement,
     },
 }
@@ -59,25 +58,15 @@ impl EntryKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
     /// A regular file with the given contents.
-    File {
-        /// The exact bytes to write.
-        contents: Vec<u8>,
-        /// Whether the executable bit is set on the written file.
-        executable: bool,
-    },
+    File { contents: Vec<u8>, executable: bool },
     /// A symbolic link, whose target string reaches disk verbatim.
-    Symlink {
-        /// The link target, written verbatim.
-        target: String,
-    },
+    Symlink { target: String },
     /// A managed region at one end of a container the projection does not own
     /// whole. [`EntryKind::Block`] carries the region's rules.
     Block {
         /// The bytes inside the region. No line of it may equal `marker`.
         body: Vec<u8>,
-        /// The line bounding the region on the inside.
         marker: String,
-        /// Which end of the container the region occupies.
         placement: Placement,
     },
 }

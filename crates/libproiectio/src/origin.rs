@@ -12,21 +12,12 @@ pub enum Origin {
     /// empty string.
     #[default]
     Caller,
-    /// A TOML mapping file, at this absolute path
-    /// ([`load_mapping`](crate::load_mapping)).
-    Mapping {
-        /// The mapping file's location.
-        path: Utf8PathBuf,
-    },
-    /// A walked source directory, at this absolute path
-    /// ([`load_tree`](crate::load_tree)).
-    Tree {
-        /// The source directory's location.
-        path: Utf8PathBuf,
-    },
+    /// A TOML mapping file ([`load_mapping`](crate::load_mapping)).
+    Mapping { path: Utf8PathBuf },
+    /// A walked source directory ([`load_tree`](crate::load_tree)).
+    Tree { path: Utf8PathBuf },
     /// An expanded archive ([`load_archive`](crate::load_archive)).
     Archive {
-        /// The archive's location.
         path: Utf8PathBuf,
         /// The mapping whose `[archives]` table named this archive, where a
         /// mapping did.

@@ -148,19 +148,11 @@ impl Walk<'_> {
         Ok(())
     }
 
-    /// Enters one walked node in the tree, spending what holding it costs.
-    ///
-    /// A file's bytes are already spent by the time this is called, but they
-    /// are not all the walk keeps: the key every entry is filed under and the
-    /// target every symlink carries are bytes read out of the source tree and
-    /// held for as long as the tree is. Nothing else bounds how many entries
-    /// a walk may retain — a directory of a million empty files or symlinks
-    /// costs no file bytes at all — so charging what is retained is what
-    /// bounds it, without a second constant to keep in step with the first.
+    /// Enters one walked node in the tree, spending what holding it costs
+    /// beyond the file bytes already spent — the key, a symlink's target.
+    /// Nothing else bounds how many entries a walk may retain: a directory
+    /// of a million empty files costs no file bytes at all.
     fn retain(&mut self, rel: &Utf8Path, key: Utf8PathBuf, node: Entry) -> Result<()> {
-        // What holding this entry costs beyond the file bytes
-        // `Budget::read_to_end` already spent: the key, and whatever the node
-        // carries of its own.
         let held = key.as_str().len()
             + match &node {
                 Entry::File { .. } => 0,
@@ -173,12 +165,9 @@ impl Walk<'_> {
     }
 
     /// Normalizes one walked path, recording it among the refused and
-    /// answering `None` where containment declines it.
-    ///
-    /// A refused name is held as long as an admitted one — the walk carries
-    /// every one of them to the end so a single refusal can name them all —
-    /// so it is spent like an admitted one. Nothing else bounds how many
-    /// names a walk may refuse.
+    /// answering `None` where containment declines it. A refused name is
+    /// held to the end of the walk like an admitted one, so it spends the
+    /// budget like one.
     fn admit(&mut self, rel: &Utf8Path) -> Result<Option<Utf8PathBuf>> {
         match crate::containment::contained_normalize(rel) {
             Some(normalized) => Ok(Some(normalized)),

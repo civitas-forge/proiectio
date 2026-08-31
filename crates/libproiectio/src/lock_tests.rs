@@ -35,8 +35,6 @@ fn contended_acquire_reports_lock_held_immediately() {
         .join()
         .expect("contender thread")
         .expect_err("the lock is held");
-    // Absolute: the operator has to go look at the lock, and the bare name
-    // does not say which state directory holds it.
     let lock = state.path(LOCK_FILE_NAME);
     match &error {
         Error::LockHeld { path } => assert_eq!(*path, lock),

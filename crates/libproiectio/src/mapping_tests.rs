@@ -134,8 +134,6 @@ fn inline_contents_default_to_non_executable_and_the_override_wins() {
 
 #[test]
 fn link_targets_are_carried_verbatim_absolute_included() {
-    // Grading a target in-dest or external needs the destination, so it is
-    // plan's judgment; the mapping source carries the string untouched.
     let text = r#"
         version = 1
         [links."toolchain"]
@@ -308,9 +306,7 @@ fn two_entries_projecting_one_normalized_key_are_refused() {
     ));
 }
 
-// A well-formed gzipped tar of `(name, contents, executable)` members.
-// Mapping tests need only legitimate archives — the hostile corpus lives
-// beside the expansion it exercises — so the `tar` writer builds them.
+// A well-formed gzipped tar; the hostile corpus lives in archive_tests.
 fn targz(members: &[(&str, &str, bool)]) -> Vec<u8> {
     let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
     let mut builder = tar::Builder::new(encoder);
@@ -330,9 +326,7 @@ fn targz(members: &[(&str, &str, bool)]) -> Vec<u8> {
         .expect("finish the gzip stream")
 }
 
-// A zip carrying one member under the name given, verbatim — the writer
-// does not sanitize what it is handed, which is what lets a mapping test
-// spell a member that climbs out of its prefix.
+// A zip of one member under the given name, verbatim — the writer does not sanitize.
 fn zip_named(name: &str, body: &str) -> Vec<u8> {
     use std::io::Write;
 
@@ -385,9 +379,7 @@ fn archive_members_expand_under_their_prefix_as_ordinary_entries() {
 }
 
 // The archive stock macOS `tar` writes: an AppleDouble `._vendor-1.0` beside
-// the wrapper, which `strip = 1` leaves with no path. The mapping loads, and
-// the dropped member is named against the archive that carried it — not
-// against the prefix, which it never reaches.
+// the wrapper, which `strip = 1` leaves with no path.
 #[test]
 fn an_archive_member_strip_erases_is_dropped_and_named_by_its_archive() {
     let text = r#"
@@ -427,9 +419,6 @@ fn an_archive_member_strip_erases_is_dropped_and_named_by_its_archive() {
     );
 }
 
-// A member name is unique only inside its own archive. Two archives in one
-// mapping both dropping `._pkg` are two drops, each named by the archive
-// that carried it — neither displaces the other.
 #[test]
 fn two_archives_dropping_the_same_member_name_are_both_recorded() {
     let text = r#"
@@ -478,11 +467,6 @@ fn two_archives_dropping_the_same_member_name_are_both_recorded() {
     );
 }
 
-// One entry whose `strip` erases its whole archive fails the mapping, even
-// though another entry would have projected. Loading is all-or-nothing, so
-// the caller never reaches a plan — which matters because a plan built from
-// the surviving entry alone would remove whatever the failed entry used to
-// hold.
 #[test]
 fn an_entry_strip_erases_entirely_fails_the_whole_mapping() {
     let text = r#"
@@ -517,9 +501,6 @@ fn an_entry_strip_erases_entirely_fails_the_whole_mapping() {
     ));
 }
 
-// One archive named twice is two expansions. Their drops share a member
-// name, an archive, and a mapping, so what tells them apart is the entry
-// that asked for each: its prefix and its strip count.
 #[test]
 fn one_archive_expanded_under_two_prefixes_drops_a_member_once_per_entry() {
     let text = r#"
@@ -568,10 +549,6 @@ fn one_archive_expanded_under_two_prefixes_drops_a_member_once_per_entry() {
     );
 }
 
-// A member is judged before the prefix is joined, so a prefix confines
-// rather than absorbs: joined first, `../escape` under `vendor/` would have
-// normalized to `escape` — a projected path outside the prefix the mapping
-// wrote, refused by nothing.
 #[test]
 fn an_archive_member_climbing_out_of_its_prefix_is_refused_by_name() {
     let text = r#"
@@ -597,9 +574,6 @@ fn an_archive_member_climbing_out_of_its_prefix_is_refused_by_name() {
     ));
 }
 
-// The definition of done: one mapping may name several archives, so a
-// member path says neither which archive to open nor which file to edit.
-// The refusal names both.
 #[test]
 fn a_refused_member_names_its_archive_and_the_mapping_that_named_it() {
     let text = r#"
@@ -643,8 +617,6 @@ fn a_refused_member_names_its_archive_and_the_mapping_that_named_it() {
     );
 }
 
-// An expanded member is an ordinary projected path, so one colliding with
-// another entry's key is the same double claim two `[files]` keys would be.
 #[test]
 fn an_archive_member_colliding_with_another_entry_is_a_duplicate() {
     let text = r#"
@@ -668,8 +640,6 @@ fn an_archive_member_colliding_with_another_entry_is_a_duplicate() {
     ));
 }
 
-// Two archive tables naming one prefix would merge into one location with
-// no rule for which member wins where they overlap.
 #[test]
 fn two_archive_tables_naming_one_prefix_are_a_duplicate() {
     let text = r#"
@@ -686,11 +656,6 @@ fn two_archive_tables_naming_one_prefix_are_a_duplicate() {
     ));
 }
 
-// Every `[archives]` table in one mapping spends one byte budget. The
-// bound is on what one untrusted input may make the process allocate, and
-// a mapping is one input: per-table budgets would let a mapping buy a
-// multiple of the bound by naming one small bomb from several tables, with
-// every expanded tree live at once because they all merge into one.
 #[test]
 fn archive_tables_in_one_mapping_share_one_byte_budget() {
     const LIMIT: Limits = Limits {
@@ -759,8 +724,6 @@ fn the_cli_tour_example_parses_to_its_tree_archive_included() {
         .file("assets/vendor.tar.gz", vendor)
         .materialize();
 
-    // The archive's members are ordinary entries beside the mapping's own,
-    // keyed under the table's prefix with the wrapper directory stripped.
     let mapping = Origin::Mapping {
         path: fixture.path("deploy.toml"),
     };
@@ -910,8 +873,6 @@ fn a_missing_mapping_file_is_an_io_error() {
     ));
 }
 
-// A relative path resolves against the current directory rather than
-// failing, so the error names where the load actually looked.
 #[test]
 fn a_relative_mapping_path_resolves_against_the_current_directory() {
     let absent = MissingName::with_suffix(".toml");
@@ -926,9 +887,6 @@ fn a_relative_mapping_path_resolves_against_the_current_directory() {
     ));
 }
 
-// A mapping's own text is input the caller did not write, so it is charged
-// too: a mapping cannot buy the whole budget for its `source` files by
-// carrying the bytes inline instead.
 #[test]
 fn a_mapping_larger_than_the_bound_fails_before_it_parses() {
     let text = format!(
@@ -947,8 +905,6 @@ fn a_mapping_larger_than_the_bound_fails_before_it_parses() {
     load_mapping(&path, Limits::default()).expect("load under the default bound");
 }
 
-// The files a mapping's `source` keys name spend the same budget the mapping
-// itself did.
 #[test]
 fn a_mappings_source_files_spend_the_same_budget() {
     let text = r#"
@@ -972,9 +928,6 @@ fn a_mappings_source_files_spend_the_same_budget() {
     load_mapping(&path, Limits::default()).expect("load under the default bound");
 }
 
-// One positional is read as a mapping, so a caller who meant `--tree` and
-// spelled the directory as a positional gets told which option a directory
-// belongs to — not whichever OS error reading a directory raises on the host.
 #[test]
 fn a_directory_named_as_a_mapping_is_named_as_a_directory() {
     let fixture = crate::test_support::Tree::new()

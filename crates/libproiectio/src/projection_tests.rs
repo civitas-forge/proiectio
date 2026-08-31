@@ -38,9 +38,6 @@ fn an_omitted_state_dir_defaults_to_proiectio_under_the_target() {
 
 #[test]
 fn a_state_dir_equal_to_the_target_is_rejected() {
-    // The state files would sit at the destination root with no subtree
-    // to exclude, and the projection's own manifest would classify as
-    // foreign.
     assert!(matches!(
         projection("/srv/site", Some("/srv/site")).unwrap_err(),
         Error::StateDirIsTarget { path } if path == "/srv/site"
@@ -74,9 +71,6 @@ fn relative_paths_resolve_against_the_current_directory() {
     assert_eq!(projection.state_dir(), cwd.join("state"));
 }
 
-/// The fact a caller reads to tell an empty manifest it meant from one it
-/// misspelled, for a state directory beside the destination and for one under
-/// it. A read never creates either, so the answer stays no until a write does.
 #[test]
 fn a_state_directory_states_whether_it_is_there() {
     use crate::test_support::Tree;
@@ -102,8 +96,6 @@ fn a_state_directory_states_whether_it_is_there() {
     }
 }
 
-/// The default state directory answers the same way: absent until a write
-/// creates it, which is the ordinary state of a fresh destination.
 #[test]
 fn the_default_state_directory_is_absent_until_something_creates_it() {
     use crate::test_support::Tree;
@@ -116,9 +108,6 @@ fn the_default_state_directory_is_absent_until_something_creates_it() {
     assert!(projection.state_dir_exists().expect("a state directory"));
 }
 
-/// A destination that is not there fails as the destination rather than as an
-/// unplaced path: `--dest`, a mapping, and a `--tree` all report the same OS
-/// error, and the role is what tells the reader which argument to fix.
 #[test]
 fn a_destination_that_is_not_there_is_named_as_the_destination() {
     use crate::test_support::Tree;

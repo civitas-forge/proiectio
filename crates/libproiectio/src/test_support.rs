@@ -14,7 +14,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::{Entry, Origin, Refusal, Refused, StateDir};
 
-// One node of a declared tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Node {
     File { contents: Vec<u8>, executable: bool },
@@ -66,8 +65,6 @@ impl Tree {
         )
     }
 
-    // Only empty directories need this; parents of files and links are
-    // created implicitly.
     pub(crate) fn dir(self, path: impl AsRef<str>) -> Self {
         self.insert(path, Node::Dir)
     }
@@ -191,7 +188,6 @@ impl Fixture {
         &self.root
     }
 
-    // The absolute path of `rel` inside the fixture.
     pub(crate) fn path(&self, rel: impl AsRef<Utf8Path>) -> Utf8PathBuf {
         let rel = rel.as_ref();
         assert_normal_relative(rel);
@@ -460,12 +456,10 @@ pub(crate) fn plant(path: &std::path::Path) -> bool {
     }
 }
 
-// The refused paths alone.
 pub(crate) fn paths_of(refused: &Refused) -> BTreeSet<Utf8PathBuf> {
     refused.paths().keys().cloned().collect()
 }
 
-// Each refused path with the source that named it.
 pub(crate) fn origins_of(refused: &Refused) -> BTreeMap<Utf8PathBuf, Origin> {
     refused
         .paths()
@@ -474,7 +468,6 @@ pub(crate) fn origins_of(refused: &Refused) -> BTreeMap<Utf8PathBuf, Origin> {
         .collect()
 }
 
-// Each refused path with its reason.
 pub(crate) fn refusals_of(refused: &Refused) -> BTreeMap<Utf8PathBuf, Refusal> {
     refused
         .paths()
@@ -483,7 +476,6 @@ pub(crate) fn refusals_of(refused: &Refused) -> BTreeMap<Utf8PathBuf, Refusal> {
         .collect()
 }
 
-// Each refused path with its reason and the source that named it.
 pub(crate) fn sourced_of(refused: &Refused) -> BTreeMap<Utf8PathBuf, (Refusal, Origin)> {
     refused
         .paths()
