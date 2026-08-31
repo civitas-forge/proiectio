@@ -9,8 +9,8 @@ it. The refusal message names the flag that overrides it, where a flag exists.
 
 ## The status vocabulary
 
-`status` reads the manifest, classifies every recorded path, and writes nothing.
-Four verdicts:
+`status` classifies the manifest's paths and everything else it finds under the
+destination, writing nothing. Four verdicts:
 
 - `clean` — disk matches the record: bytes, kind, executable bit.
 - `drifted` — a recorded path was edited on disk.
@@ -26,8 +26,9 @@ clean    config/settings.toml
 missing  current
 ```
 
-Plain `status` always exits 0 — the report is the product. `--check` exits 2 when
-any row is not clean, the same 2 a dry run spends on the same finding.
+Plain `status` always exits 0 — the report is the product. `--check` exits 2
+when any row is not clean. A dry run spends the same 2 on its own refusals; the
+two ask different questions ([Gating CI](#gating-ci)).
 
 ```console
 $ proiectio status --dest ./site --check

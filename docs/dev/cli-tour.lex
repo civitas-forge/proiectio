@@ -128,8 +128,8 @@ The CLI
     :: shell ::
 
     Plain status always exits 0 — the report is the product. --check
-    is the gate: it exits 2 when any row is not clean, the same 2 a
-    dry run spends on the same finding, so CI can gate on either. A
+    is the gate: it exits 2 when any row is not clean, so CI can gate
+    on it; a dry run spends the same 2 on its own refusals. A
     named --state-dir that does not exist warns on stderr, and under
     --check fails, so a typo cannot read as healthy.
 

@@ -201,8 +201,9 @@ owner = "default"
 [docs/dev/cli-tour.lex](dev/cli-tour.lex) section 7 states the command and how
 values resolve.
 
-`max_source_size` is how many bytes one write may read from its sources,
-default 500 MiB. An archive counts what it expands to rather than its size on
-disk, except a zip, whose file must also fit because its index is read whole
-before any member. `--owner` and `--max-source-size` on the command line always
+`max_source_size` is how many bytes one write may read in, default 500 MiB:
+one budget covering the mapping file's own text, every referenced source, and
+what archives expand to. An archive counts what it expands to rather than its
+size on disk, except a zip, whose file must also fit because its index is read
+whole before any member. `--owner` and `--max-source-size` on the command line always
 win over the configured value.

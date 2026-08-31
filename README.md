@@ -10,7 +10,8 @@ It is built for tools that render managed files into a checkout or a workspace â
 $ cargo install proiectio --locked
 ```
 
-Rust 1.96 or later. Unix only: macOS and Linux.
+The CLI requires Rust 1.96; the `libproiectio` library builds on 1.85. Unix
+only: macOS and Linux.
 
 ## Quick start
 
@@ -76,7 +77,8 @@ Two or more file positionals project those files under their basenames; a single
 
 ## Check
 
-`status` reads the manifest, classifies every recorded path, and writes nothing.
+`status` classifies the manifest's paths and everything else it finds under the
+destination, writing nothing.
 
 ```console
 $ proiectio status --dest ./site
