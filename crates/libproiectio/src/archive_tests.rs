@@ -6,7 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs_utf8::Dir as Utf8Dir;
 
 use super::*;
-use crate::test_support::{Fixture, MissingName, Tree, assert_tree, origins_of};
+use crate::test_support::{Fixture, MissingName, Tree, assert_tree, origins_of, state_at};
 use crate::{
     Dropped, Manifest, Origin, PlanOptions, Refusal, RefusalKind, apply, block_markers, decide,
     load_manifest, observe,
@@ -473,8 +473,8 @@ fn an_expanded_archive_projects_and_its_relative_link_resolves() {
 
     let (dest, state) = (Tree::new().materialize(), Tree::new().materialize());
     let dest_dir = dir_at(dest.root());
-    let state_dir = dir_at(state.root());
-    let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
+    let state_dir = state_at(state.root());
+    let manifest = load_manifest(&state_dir).expect("load manifest");
     let observations =
         observe(&dest_dir, &manifest, &block_markers(&desired)).expect("observe destination");
     let plan = decide(
@@ -486,7 +486,7 @@ fn an_expanded_archive_projects_and_its_relative_link_resolves() {
         PlanOptions::default(),
     )
     .expect("decide");
-    apply(&dest_dir, &state_dir, state.root(), &manifest, &plan).expect("apply the plan");
+    apply(&dest_dir, &state_dir, &manifest, &plan).expect("apply the plan");
 
     assert_tree(dest.root(), &declared_tree());
     assert_eq!(
@@ -496,7 +496,7 @@ fn an_expanded_archive_projects_and_its_relative_link_resolves() {
 
     // Nothing downstream remembers an archive existed: the manifest records
     // one ordinary entry per member.
-    let manifest = load_manifest(&state_dir, state.root()).expect("reload manifest");
+    let manifest = load_manifest(&state_dir).expect("reload manifest");
     let recorded: Vec<&str> = manifest.entries.keys().map(|path| path.as_str()).collect();
     assert_eq!(
         recorded,

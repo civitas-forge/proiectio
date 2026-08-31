@@ -7,8 +7,8 @@ use cap_std::fs_utf8::Dir;
 
 use crate::{
     BlockMarkers, Desired, DriftPolicy, Error, IoRole, Manifest, Plan, PlanOptions, PlannedAction,
-    RemovalScope, Report, Result, Status, absolutize, block_markers, decide, decide_removal,
-    load_manifest, observe, require_owner, status,
+    RemovalScope, Report, Result, StateDir, Status, absolutize, block_markers, decide,
+    decide_removal, load_manifest, observe, require_owner, status,
 };
 
 const DEFAULT_STATE_DIR: &str = ".proiectio";
@@ -94,7 +94,7 @@ impl Projection {
     /// [`Manifest`].
     pub fn manifest(&self) -> Result<Manifest> {
         match self.open_state(None) {
-            Some(state) => load_manifest(&state?, &self.state_dir),
+            Some(state) => load_manifest(&state?),
             None => Ok(Manifest::new()),
         }
     }
@@ -106,7 +106,7 @@ impl Projection {
     /// manifest.
     fn manifest_under(&self, dest: &Dir) -> Result<Manifest> {
         match self.open_state(Some(dest)) {
-            Some(state) => load_manifest(&state?, &self.state_dir),
+            Some(state) => load_manifest(&state?),
             None => Ok(Manifest::new()),
         }
     }
@@ -170,7 +170,7 @@ impl Projection {
     /// An in-dest state directory is opened through `dest` where the caller
     /// holds one, and otherwise through a fresh open of the target, whose
     /// absence also reads as `None`.
-    fn open_state(&self, dest: Option<&Dir>) -> Option<Result<Dir>> {
+    fn open_state(&self, dest: Option<&Dir>) -> Option<Result<StateDir>> {
         let Some(prefix) = self.state_prefix() else {
             return self
                 .absent_is_none(Dir::open_ambient_dir(&self.state_dir, ambient_authority()));
@@ -186,9 +186,9 @@ impl Projection {
     }
 
     /// One open of the state directory, with its absence reported as `None`.
-    fn absent_is_none(&self, opened: std::io::Result<Dir>) -> Option<Result<Dir>> {
+    fn absent_is_none(&self, opened: std::io::Result<Dir>) -> Option<Result<StateDir>> {
         match opened {
-            Ok(state) => Some(Ok(state)),
+            Ok(dir) => Some(Ok(StateDir::new(dir, self.state_dir.clone()))),
             Err(source) if source.kind() == NotFound => None,
             Err(source) => Some(Err(Error::Io {
                 role: IoRole::StateDirectory,

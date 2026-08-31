@@ -11,8 +11,9 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use cap_std::fs_utf8::Dir;
 
-use crate::{Entry, Origin, Refusal, Refused};
+use crate::{Entry, Origin, Refusal, Refused, StateDir};
 
 // One node of a declared tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +198,19 @@ impl Fixture {
         assert_normal_relative(rel);
         self.root.join(rel)
     }
+}
+
+// The state directory at a fixture root, as the library takes one: a
+// capability handle there, paired with that root as the path its messages
+// name. Ambient authority is the test's to spend; the library itself never
+// opens ambient paths.
+pub(crate) fn state_at(root: &Utf8Path) -> StateDir {
+    assert!(root.is_absolute(), "state_at takes an absolute root");
+    StateDir::new(
+        Dir::open_ambient_dir(root, cap_std::ambient_authority())
+            .expect("open fixture root as a Dir"),
+        root.to_owned(),
+    )
 }
 
 #[derive(Debug)]

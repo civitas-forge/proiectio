@@ -5,8 +5,8 @@ use cap_std::fs_utf8::Dir;
 
 use crate::{
     Aborted, ApplyReport, BlockMarkers, Desired, DriftPolicy, Error, IoRole, Manifest, Plan,
-    PlanOptions, Projection, RemovalScope, Report, Result, StateLock, apply, block_markers, decide,
-    decide_removal, load_manifest, observe, require_owner,
+    PlanOptions, Projection, RemovalScope, Report, Result, StateDir, StateLock, apply,
+    block_markers, decide, decide_removal, load_manifest, observe, require_owner,
 };
 
 /// One write pass over a projection, holding the single-writer guard from
@@ -18,7 +18,7 @@ use crate::{
 pub struct Run {
     projection: Projection,
     dest: Dir,
-    state: Dir,
+    state: StateDir,
     _lock: StateLock,
     manifest: Manifest,
     plan: Option<Plan>,
@@ -32,8 +32,8 @@ impl Projection {
     pub fn begin(&self) -> Result<Run> {
         let dest = self.open_target()?;
         let state = self.open_or_create_state(&dest)?;
-        let lock = StateLock::acquire(&state, self.state_dir())?;
-        let manifest = load_manifest(&state, self.state_dir())?;
+        let lock = StateLock::acquire(&state)?;
+        let manifest = load_manifest(&state)?;
         Ok(Run {
             projection: self.clone(),
             dest,
@@ -48,22 +48,23 @@ impl Projection {
     /// above it — where a first run finds none. An in-dest state directory
     /// is created and opened through `dest` rather than against ambient
     /// authority.
-    fn open_or_create_state(&self, dest: &Dir) -> Result<Dir> {
+    fn open_or_create_state(&self, dest: &Dir) -> Result<StateDir> {
         let io = |source| Error::Io {
             role: IoRole::StateDirectory,
             path: self.state_dir().to_owned(),
             source,
         };
-        match self.state_prefix() {
+        let dir = match self.state_prefix() {
             Some(prefix) => {
                 dest.create_dir_all(prefix).map_err(io)?;
-                dest.open_dir(prefix).map_err(io)
+                dest.open_dir(prefix).map_err(io)?
             }
             None => {
                 std::fs::create_dir_all(self.state_dir()).map_err(io)?;
-                Dir::open_ambient_dir(self.state_dir(), ambient_authority()).map_err(io)
+                Dir::open_ambient_dir(self.state_dir(), ambient_authority()).map_err(io)?
             }
-        }
+        };
+        Ok(StateDir::new(dir, self.state_dir().to_owned()))
     }
 }
 
@@ -172,13 +173,7 @@ impl Run {
                 manifest: self.manifest,
             });
         };
-        apply(
-            &self.dest,
-            &self.state,
-            self.projection.state_dir(),
-            &self.manifest,
-            plan,
-        )
+        apply(&self.dest, &self.state, &self.manifest, plan)
     }
 }
 
