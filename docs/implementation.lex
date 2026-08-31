@@ -35,6 +35,14 @@ Implementation Guidelines
     and apply are separate calls in the library, so the gap between
     them is real even where the CLI closes it to milliseconds.
 
+    That exception is bounded by an invariant: act refuses only
+    because the disk changed after observation. Every refusal act can
+    derive from the snapshot alone is decide's to reach first, so a
+    dry run's verdict is the real run's verdict whenever nothing
+    touches the destination between the two calls. The parity suite
+    in libproiectio holds both stages to this, path by path, over the
+    refusal families act owns.
+
 2. Testing
 
     The split above does most of the work: decide is table-testable

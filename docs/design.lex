@@ -78,10 +78,14 @@ Proiectio Design
       DriftPolicy::Overwrite (the CLI's --force).
     - Foreign: refuse always — a projection never overwrites a file
       it did not write.
-    - Two desired entries claiming one on-disk location — the same
-      path after normalization, or one lying beneath another: both
-      refused as a tree conflict, since there is no deterministic
-      entry to prefer.
+    - Two claims on one on-disk location — desired entries sharing a
+      normalized path, one lying beneath another, or a removal whose
+      walk through a recorded link lands where another action acts:
+      every side refused as a tree conflict, since there is no
+      deterministic claim to prefer. A block removal claims its
+      region, not its container, so two block removals conflict only
+      over one marker; a whole node conflicts with any claim on its
+      location.
     - A desired symlink whose target leaves the destination: refused
       and named with its target, unless the caller permits external
       targets (the CLI's --allow-external-targets). [./security.lex]
