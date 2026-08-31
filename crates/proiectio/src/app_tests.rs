@@ -139,6 +139,45 @@ fn status_is_the_librarys_own_status_document() {
     assert_eq!(stated(rows, "current")["verdict"], "Missing");
 }
 
+/// The manifest records a link by the hash of its target, so a status row's
+/// target comes from the link the walk read on disk. Every output mode carries
+/// it: the JSON document states the string, and the CSV `target` column writes
+/// it.
+#[test]
+#[serial]
+fn status_states_where_a_recorded_link_points() {
+    let (dir, dest, deploy) = tour();
+    harness(&dir)
+        .run(
+            &app(),
+            cli::command(),
+            write_argv(&[deploy.as_str()], &dest),
+        )
+        .assert_success();
+    let status = ["proiectio", "status", "--dest", dest.as_str()];
+
+    let json = harness(&dir)
+        .output_mode(OutputMode::Json)
+        .run(&app(), cli::command(), status);
+    let csv = harness(&dir)
+        .output_mode(OutputMode::Csv)
+        .run(&app(), cli::command(), status);
+
+    json.assert_success();
+    csv.assert_success();
+    let document: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
+    assert_eq!(
+        stated(&document["rows"], "current")["facts"]["shape"]["Symlink"]["target"],
+        "releases/1.2.3"
+    );
+    assert!(
+        csv.stdout()
+            .contains("current,Clean,symlink,,releases/1.2.3,"),
+        "{}",
+        csv.stdout()
+    );
+}
+
 /// A destination holding the two paths one XML element name cannot tell
 /// apart: `a/b` and `a_b`. The name XML would give the first is the second's
 /// own name, so a document spelling paths as names reports one row for the
@@ -199,16 +238,16 @@ fn csv_writes_one_row_per_path_under_the_same_header() {
     recorded.assert_success();
     assert_eq!(
         foreign.stdout(),
-        "path,verdict,shape,executable,owners\n\
-         a/b,Foreign,,,\n\
-         a_b,Foreign,,,\n"
+        "path,verdict,shape,executable,target,owners\n\
+         a/b,Foreign,,,,\n\
+         a_b,Foreign,,,,\n"
     );
     assert_eq!(
         recorded.stdout(),
-        "path,verdict,shape,executable,owners\n\
-         bin/tool,Drifted,file,false,\"[\"\"default\"\"]\"\n\
-         config/settings.toml,Clean,file,false,\"[\"\"default\"\"]\"\n\
-         current,Missing,file,false,\"[\"\"default\"\"]\"\n"
+        "path,verdict,shape,executable,target,owners\n\
+         bin/tool,Drifted,file,false,,\"[\"\"default\"\"]\"\n\
+         config/settings.toml,Clean,file,false,,\"[\"\"default\"\"]\"\n\
+         current,Missing,file,false,,\"[\"\"default\"\"]\"\n"
     );
 }
 

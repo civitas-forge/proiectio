@@ -936,7 +936,9 @@ pub(crate) fn csv() -> StructuredOutputProjection {
             .derived_column(cells::header("executable"), |row, _| {
                 cells::cell(cells::executable(row))
             })
-            .derived_column(cells::header("target"), |row, _| cells::cell(target(row)))
+            .derived_column(cells::header("target"), |row, _| {
+                cells::cell(cells::target(row))
+            })
             .derived_column(cells::header("owners"), |row, _| {
                 cells::cell(cells::owners(row))
             })
@@ -959,17 +961,6 @@ fn detail(row: &JsonValue) -> Option<String> {
     flat(named(row.get("verdict")).1?)
 }
 
-/// Where the row's link points, for a row stating a link that names one.
-fn target(row: &JsonValue) -> Option<String> {
-    Some(
-        row.get("facts")?
-            .get("shape")?
-            .get("Symlink")?
-            .get("target")?
-            .as_str()?
-            .to_owned(),
-    )
-}
 
 /// Which source named the path; nothing for a row stating none.
 fn origin(row: &JsonValue) -> Option<String> {

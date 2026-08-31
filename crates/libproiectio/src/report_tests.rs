@@ -187,8 +187,8 @@ fn a_symlink_row_carries_its_target_verbatim() {
     assert_eq!(json["facts"]["origin"], "Caller");
 }
 
-// A status row knows the manifest's hash of a link target rather than the
-// string, and no source named the path.
+// Nothing on disk named a target for the row to state, and no source named
+// the path.
 #[test]
 fn a_row_can_name_neither_target_nor_origin() {
     let report = Report {

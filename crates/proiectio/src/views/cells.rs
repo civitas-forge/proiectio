@@ -43,6 +43,18 @@ pub(super) fn executable(row: &JsonValue) -> Option<String> {
     Some(executable.to_string())
 }
 
+/// Where the row's link points, for a row stating a link that names one.
+pub(super) fn target(row: &JsonValue) -> Option<String> {
+    Some(
+        row.get("facts")?
+            .get("shape")?
+            .get("Symlink")?
+            .get("target")?
+            .as_str()?
+            .to_owned(),
+    )
+}
+
 /// The owners holding the path, as the JSON array the row states them in. An
 /// owner name is an opaque string, so any character this cell joined names
 /// with could also sit inside one, and `["a+b", "c"]` and `["a", "b+c"]` would
