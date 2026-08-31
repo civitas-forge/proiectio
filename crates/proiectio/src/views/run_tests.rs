@@ -942,10 +942,12 @@ fn a_refused_row_states_the_owners_the_manifest_records() {
     assert_eq!(document["rows"][0]["facts"]["owners"], json!(["site"]));
 }
 
-/// A run that stopped part-way renders both halves at once, in one table laid
-/// out in path order: a refused key sorting before an applied one prints
-/// before it, as it would in any other report. Each row reads in the tense of
-/// what happened to it, and the summary says the run stopped.
+/// A run that stopped part-way states both halves as one sequence of rows, in
+/// path order: a refused key sorting before an applied one comes before it, as
+/// it would in any other report, and a reader of `rows` alone reads every path
+/// the run has a verdict for. A refused row states its refusal in the words a
+/// plan states one in. Each row renders in the tense of what happened to it,
+/// and the summary says the run stopped.
 #[test]
 fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
     let refused = Refused::one(
@@ -964,6 +966,22 @@ fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
     assert_eq!(document["recorded"], json!(true));
     assert_eq!(document["stopped_at"], json!("applying"));
     assert_eq!(document.get("stopped"), None);
+    assert_eq!(document.get("refused"), None);
+    assert_eq!(
+        document["rows"]
+            .as_array()
+            .expect("the rows")
+            .iter()
+            .map(|row| (row["path"].clone(), row["verdict"].clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                json!("bin/tool"),
+                json!({ "Refuse": { "refusal": "Drift" } })
+            ),
+            (json!("config/settings.toml"), json!("Written")),
+        ]
+    );
     let rendered = lines(&document, AmbiguousWidth::Narrow, false);
     assert_eq!(
         rendered
@@ -1000,7 +1018,8 @@ fn a_run_a_failure_stopped_states_its_rows_and_the_failure() {
 
     assert_eq!(document["phase"], json!("aborted"));
     assert_eq!(document["recorded"], json!(true));
-    assert_eq!(document.get("refused"), None);
+    // Nothing was refused, so the rows are the applied ones alone.
+    assert_eq!(document["rows"][0]["verdict"], json!("Written"));
     let rendered = lines(&document, AmbiguousWidth::Narrow, false);
     assert_eq!(rendered.rows.len(), 1);
     assert_eq!(
@@ -1179,14 +1198,7 @@ fn every_tense_names_its_phase_and_states_its_rows_at_the_same_key() {
     assert_eq!(keys(&documents[1]), ["phase", "rows", "manifest"]);
     assert_eq!(
         keys(&documents[2]),
-        [
-            "phase",
-            "rows",
-            "manifest",
-            "refused",
-            "recorded",
-            "stopped_at"
-        ]
+        ["phase", "rows", "manifest", "recorded", "stopped_at"]
     );
     for (document, phase) in documents.iter().zip(["planned", "applied", "aborted"]) {
         assert_eq!(document["phase"], json!(phase));
@@ -1235,6 +1247,67 @@ fn csv_writes_one_record_per_path_under_one_header_in_either_tense() {
         "path,verdict,detail,shape,executable,target,owners,origin\n\
          bin/tool,Written,,,,,,\n"
     );
+}
+
+/// A stopped run's CSV names the keys it refused beside the rows it applied,
+/// each with the refusal in `detail`: a reader of the CSV alone learns which
+/// paths the run failed on and why, which is the half of the run that matters
+/// most and the half the rows were once missing.
+#[test]
+fn csv_over_a_stopped_run_states_the_keys_it_refused() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::OwnerConflict {
+            owners: BTreeSet::from(["site".to_owned()]),
+        },
+        Origin::Caller,
+    );
+
+    let document = published_abort(AbortedRun::new(
+        wrote(&["config/settings.toml"]),
+        refused_rows(&refused, &holding("bin/tool", &["site"])),
+        &Stopped::Applying(Error::Refused(refused)),
+    ));
+
+    assert_eq!(
+        projected(&document),
+        "path,verdict,detail,shape,executable,target,owners,origin\n\
+         bin/tool,Refuse,\"{\"\"refusal\"\":{\"\"OwnerConflict\"\":{\"\"owners\"\":\
+         [\"\"site\"\"]}}}\",,,,\"[\"\"site\"\"]\",Caller\n\
+         config/settings.toml,Written,,,,,,\n"
+    );
+}
+
+/// The renderer tells the planning tense from the acting ones by matching
+/// `phase` against [`PLANNED`], and serde spells that field from the variant
+/// name: renaming the variant would part the two without a word, and every
+/// plan would then be laid out as an apply. Each arm is serialized here and
+/// checked against the constant the renderer matches on.
+#[test]
+fn the_phase_the_renderer_matches_on_is_the_one_serde_writes() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+    let planned = published_plan(PlannedRun::refused(
+        &refused,
+        &Manifest::new(),
+        BTreeSet::new(),
+    ));
+    let acting = [
+        serialized(RunView::Applied(Box::new(wrote(&["bin/tool"]).into()))),
+        published_abort(AbortedRun::new(
+            wrote(&["bin/tool"]),
+            Report::default(),
+            &Stopped::Applying(held("lock")),
+        )),
+    ];
+
+    assert_eq!(planned["phase"], json!(PLANNED));
+    for document in &acting {
+        assert_ne!(document["phase"], json!(PLANNED), "{document}");
+    }
 }
 
 /// A verdict carrying a payload fills two cells: its own name, and what it

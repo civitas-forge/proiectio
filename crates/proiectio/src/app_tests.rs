@@ -2068,7 +2068,10 @@ macro_rules! stand_in_app {
                     hints.get(),
                 ))
             })
-            .command_with("write", $handler, |cfg| cfg.template("run.jinja"))
+            .command_with("write", $handler, |cfg| {
+                cfg.template("run.jinja")
+                    .structured_output_projection(views::run_csv())
+            })
             .expect("a command")
             .build()
             .expect("an app")
@@ -2317,10 +2320,10 @@ fn a_run_that_stopped_part_way_states_the_rows_it_applied() {
     );
 }
 
-/// And structured output says so too: the applied rows under the `report` key
-/// an apply's document uses, the refused keys under `refused`, and `aborted`
-/// marking the run as one that stopped. No `rows` key at the top level, which
-/// is what a plan document carries.
+/// And structured output says so too: `aborted` marking the run as one that
+/// stopped, and one `rows` sequence carrying both what it applied and the key
+/// it refused — the verdict vocabulary of the stage each row came from, and no
+/// second sequence to read.
 #[test]
 #[serial]
 fn the_document_a_run_that_stopped_part_way_renders_is_not_a_plan() {
@@ -2339,10 +2342,39 @@ fn the_document_a_run_that_stopped_part_way_renders_is_not_a_plan() {
     assert_eq!(structured.error(), None);
     let value: JsonValue = serde_json::from_str(structured.stdout()).expect("a JSON document");
     assert_eq!(value["phase"], "aborted");
+    assert_eq!(value.get("refused"), None);
     assert_eq!(stated(&value["rows"], "pivot")["verdict"], "Released");
     assert_eq!(
-        stated(&value["refused"]["rows"], "pivot/x.txt")["verdict"]["Refuse"]["refusal"],
+        stated(&value["rows"], "pivot/x.txt")["verdict"]["Refuse"]["refusal"],
         serde_json::json!({ "Containment": { "through": "pivot" } })
+    );
+}
+
+/// The same run under `--output csv`: the refused key takes a record of its
+/// own, naming the refusal in `detail`. A CSV reader learns which path the run
+/// failed on and why, rather than reading the one release that landed and
+/// taking the run for a clean one. What stopped the run past the paths — the
+/// exit code — is the channel that says the run did not finish.
+#[test]
+#[serial]
+fn the_csv_a_run_that_stopped_part_way_writes_states_the_key_it_refused() {
+    let (dir, dest) = held_by_two();
+
+    let verdict = exit::Verdict::default();
+    let projected = harness(&dir).output_mode(OutputMode::Csv).run(
+        &moved_under_app(&verdict),
+        cli::command(),
+        ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
+    );
+
+    assert_eq!(leaving(&projected, &verdict), exit::REFUSAL);
+    assert_eq!(projected.error(), None);
+    assert_eq!(
+        projected.stdout(),
+        "path,verdict,detail,shape,executable,target,owners,origin\n\
+         pivot,Released,,symlink,,,\"[\"\"other\"\",\"\"own\"\"]\",Caller\n\
+         pivot/x.txt,Refuse,\"{\"\"refusal\"\":{\"\"Containment\"\":\
+         {\"\"through\"\":\"\"pivot\"\"}}}\",,,,,Caller\n"
     );
 }
 
