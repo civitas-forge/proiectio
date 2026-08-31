@@ -15,27 +15,39 @@ use crate::{Error, LOCK_FILE_NAME, Result};
 /// process — succeeds. Dropping it releases the lock.
 #[derive(Debug)]
 pub(crate) struct StateLock {
-    /// The `flock` belongs to this open file description; closing it releases.
-    _file: File,
+    /// The `flock` belongs to this open file description, which
+    /// [`Drop`](StateLock::drop) unlocks before closing.
+    file: File,
 }
 
 impl StateLock {
     /// Takes the lock on `state`'s [`LOCK_FILE_NAME`], creating the file if
     /// absent; never blocks — a lock held elsewhere reports
     /// [`Error::LockHeld`]. The file outlives the guard, never unlinked.
-    pub(crate) fn acquire(state: &Dir) -> Result<StateLock> {
-        let path = Utf8Path::new(LOCK_FILE_NAME);
+    ///
+    /// `state_dir` is where the handle is rooted, and only the messages use
+    /// it: a contended lock is one the operator has to go look at, and the
+    /// file name alone does not say which state directory holds it.
+    pub(crate) fn acquire(state: &Dir, state_dir: &Utf8Path) -> Result<StateLock> {
+        let path = state_dir.join(LOCK_FILE_NAME);
         let file = state
-            .open_with(path, OpenOptions::new().create(true).write(true))
-            .map_err(io_error(path))?;
+            .open_with(LOCK_FILE_NAME, OpenOptions::new().create(true).write(true))
+            .map_err(io_error(&path))?;
         match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
-            Ok(()) => Ok(StateLock { _file: file }),
+            Ok(()) => Ok(StateLock { file }),
             // EWOULDBLOCK (EAGAIN on this platform family): held elsewhere.
-            Err(errno) if errno == rustix::io::Errno::WOULDBLOCK => Err(Error::LockHeld {
-                path: path.to_owned(),
-            }),
-            Err(errno) => Err(io_error(path)(errno.into())),
+            Err(errno) if errno == rustix::io::Errno::WOULDBLOCK => Err(Error::LockHeld { path }),
+            Err(errno) => Err(io_error(&path)(errno.into())),
         }
+    }
+}
+
+impl Drop for StateLock {
+    // The close releases the `flock` too, but on macOS not always before the
+    // next `acquire` runs: a release left to the close lands milliseconds
+    // late under load, and the acquisition meanwhile meets `LockHeld`.
+    fn drop(&mut self) {
+        let _ = rustix::fs::flock(&self.file, rustix::fs::FlockOperation::Unlock);
     }
 }
 

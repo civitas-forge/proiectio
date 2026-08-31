@@ -124,7 +124,7 @@ pub enum Error {
     /// Not a refusal.
     #[error("state lock {path} is held by another writer")]
     LockHeld {
-        /// The lock file's path, relative to the state directory.
+        /// The lock file's location.
         path: Utf8PathBuf,
     },
     #[error("the current directory cannot be read: {source}")]
