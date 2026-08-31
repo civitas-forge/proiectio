@@ -961,7 +961,6 @@ fn detail(row: &JsonValue) -> Option<String> {
     flat(named(row.get("verdict")).1?)
 }
 
-
 /// Which source named the path; nothing for a row stating none.
 fn origin(row: &JsonValue) -> Option<String> {
     flat(row.get("facts")?.get("origin")?)

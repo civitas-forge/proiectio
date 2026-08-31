@@ -140,9 +140,9 @@ fn status_is_the_librarys_own_status_document() {
 }
 
 /// The manifest records a link by the hash of its target, so a status row's
-/// target comes from the link the walk read on disk. Every output mode carries
-/// it: the JSON document states the string, and the CSV `target` column writes
-/// it.
+/// target comes from the link the walk read on disk. The structured modes
+/// carry it — the JSON document states the string, the CSV `target` column
+/// writes it — while the rendered table stays verdict and path.
 #[test]
 #[serial]
 fn status_states_where_a_recorded_link_points() {
