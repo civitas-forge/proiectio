@@ -1114,6 +1114,103 @@ fn a_run_that_refused_and_could_not_record_states_the_rows_and_the_record() {
     );
 }
 
+/// The sentences a stopped run states past its records: how far it got, what
+/// stopped it, and — where the manifest never landed — what the destination is
+/// left holding. A record is one path and none of these is about a path, so a
+/// caller reading the records alone would take a run that lost half its plan,
+/// or lost the manifest for the whole of it, for one that finished.
+#[test]
+fn a_stopped_run_states_past_its_records_how_far_it_got_and_what_that_left() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+    let unrecorded = "the state directory does not record what the run applied: \
+                      state lock state.lock is held by another writer";
+
+    // A refusal an action met, whose keys the records do carry: only how far
+    // the run got is left to say.
+    assert_eq!(
+        warnings(&published_abort(AbortedRun::new(
+            wrote(&["config/settings.toml"]),
+            refused_rows(&refused, &Manifest::new()),
+            &Stopped::Applying(Error::Refused(refused.clone())),
+        ))),
+        vec!["the run stopped part-way through the plan, and what it applied stands"]
+    );
+
+    // A failure the records carry nothing of, which is stated once past them.
+    assert_eq!(
+        warnings(&published_abort(AbortedRun::new(
+            wrote(&["bin/tool"]),
+            Report::default(),
+            &Stopped::Applying(held("lock")),
+        ))),
+        vec![
+            "the run stopped part-way through the plan, and what it applied stands",
+            "state lock lock is held by another writer",
+        ]
+    );
+
+    // Every action applied and the manifest did not, so the run is not called
+    // part-way and the reader is told what the next run will make of the paths.
+    assert_eq!(
+        warnings(&published_abort(AbortedRun::new(
+            wrote(&["bin/tool"]),
+            Report::default(),
+            &Stopped::Recording(held("state.lock")),
+        ))),
+        vec![
+            "the run applied its whole plan and could not record it",
+            unrecorded,
+            "nothing records the paths the run applied, so the next run over \
+             this destination classifies them as foreign",
+        ]
+    );
+
+    // Both halves lost: the stage an action stopped, the record that failed
+    // with it, and what the destination is left holding.
+    assert_eq!(
+        warnings(&published_abort(AbortedRun::new(
+            wrote(&["config/settings.toml"]),
+            refused_rows(&refused, &Manifest::new()),
+            &Stopped::ApplyingAndRecording {
+                applying: Error::Refused(refused.clone()),
+                recording: held("state.lock"),
+            },
+        ))),
+        vec![
+            "the run stopped part-way through the plan, and what it applied stands",
+            unrecorded,
+            "nothing records the paths the run applied, so the next run over \
+             this destination classifies them as foreign",
+        ]
+    );
+}
+
+/// A run that finished has no such sentence, and neither has a plan: the
+/// channel opens on the one tense whose rows do not say the whole of what
+/// happened.
+#[test]
+fn a_plan_and_a_run_that_finished_state_nothing_past_their_rows() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+    for document in [
+        published_plan(PlannedRun::refused(
+            &refused,
+            &Manifest::new(),
+            BTreeSet::new(),
+        )),
+        serialized(RunView::Applied(Box::new(wrote(&["bin/tool"]).into()))),
+    ] {
+        assert!(warnings(&document).is_empty(), "{document}");
+    }
+}
+
 /// Where the rows sit is what tells the tenses apart, and nothing else in the
 /// document does: a plan and a run that stopped both state their stripped
 /// archive members at the top level, so a plan carrying drops still reads as a

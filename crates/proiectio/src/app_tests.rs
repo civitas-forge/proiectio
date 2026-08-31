@@ -2068,10 +2068,7 @@ macro_rules! stand_in_app {
                     hints.get(),
                 ))
             })
-            .command_with("write", $handler, |cfg| {
-                cfg.template("run.jinja")
-                    .structured_output_projection(views::run_csv())
-            })
+            .command_with("write", $handler, crate::app::run_command)
             .expect("a command")
             .build()
             .expect("an app")
@@ -2245,6 +2242,64 @@ fn a_run_a_failure_stopped_prints_its_rows_and_the_failure() {
     );
 }
 
+/// The same run under `--output csv`, where the records are the whole of
+/// stdout: one path, written, and no cell for the manifest that never landed.
+/// A caller reading those alone would take the run for a clean one — the exit
+/// code says it failed but not which half of it did — so the three facts the
+/// records cannot hold go to stderr: that the plan is whole on the destination,
+/// what stopped the record, and what the next run will make of the paths.
+#[test]
+#[serial]
+fn the_csv_a_run_that_could_not_record_writes_says_so_on_stderr() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let dest = utf8(&dir).join("dest");
+    std::fs::create_dir(&dest).expect("a destination");
+
+    let verdict = exit::Verdict::default();
+    let projected = harness(&dir).output_mode(OutputMode::Csv).run(
+        &unrecorded_app(&verdict),
+        cli::command(),
+        ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
+    );
+
+    assert_eq!(leaving(&projected, &verdict), exit::FAILURE);
+    assert_eq!(projected.error(), None);
+    assert_eq!(
+        projected.stdout(),
+        "path,verdict,detail,shape,executable,target,owners,origin\n\
+         bin/tool,Written,,file,false,,\"[\"\"own\"\"]\",Caller\n"
+    );
+
+    let stated = stated_on_stderr(&projected);
+    assert_eq!(stated.len(), 3, "{stated:?}");
+    assert_eq!(
+        stated[0],
+        "the run applied its whole plan and could not record it"
+    );
+    assert!(
+        stated[1].starts_with("the state directory does not record what the run applied"),
+        "{stated:?}"
+    );
+    assert_eq!(
+        stated[2],
+        "nothing records the paths the run applied, so the next run over this \
+         destination classifies them as foreign"
+    );
+
+    // Every mode that serializes the document takes the same channel, so a
+    // caller that changes format does not change which facts reach it.
+    let dir = TempDir::new().expect("a temporary directory");
+    let dest = utf8(&dir).join("dest");
+    std::fs::create_dir(&dest).expect("a destination");
+    let structured = harness(&dir).output_mode(OutputMode::Json).run(
+        &unrecorded_app(&verdict),
+        cli::command(),
+        ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
+    );
+
+    assert_eq!(stated_on_stderr(&structured), stated);
+}
+
 /// A destination two owners hold, whose recorded link is no longer on disk:
 /// `real/keep.txt` and a `pivot` link to the directory holding it, both under
 /// `own` and `other`, with `pivot` deleted by hand so a plan sees no link at
@@ -2376,6 +2431,50 @@ fn the_csv_a_run_that_stopped_part_way_writes_states_the_key_it_refused() {
          pivot/x.txt,Refuse,\"{\"\"refusal\"\":{\"\"Containment\"\":\
          {\"\"through\"\":\"\"pivot\"\"}}}\",,,,,Caller\n"
     );
+}
+
+/// And what the records cannot carry reaches that same caller on stderr: a
+/// record is one path, and how far the run got is about the run. The rendered
+/// output of the same run says it in the body instead, so the two never say it
+/// twice to one reader.
+#[test]
+#[serial]
+fn the_csv_a_stopped_run_writes_says_on_stderr_how_far_the_run_got() {
+    let (dir, dest) = held_by_two();
+    let argv = ["proiectio", "write", "unread.toml", "--dest", dest.as_str()];
+
+    let verdict = exit::Verdict::default();
+    let projected = harness(&dir).output_mode(OutputMode::Csv).run(
+        &moved_under_app(&verdict),
+        cli::command(),
+        argv,
+    );
+
+    assert_eq!(leaving(&projected, &verdict), exit::REFUSAL);
+    assert_eq!(projected.error(), None);
+    assert_eq!(
+        stated_on_stderr(&projected),
+        ["the run stopped part-way through the plan, and what it applied stands"]
+    );
+
+    let (dir, dest) = held_by_two();
+    let argv = ["proiectio", "write", "unread.toml", "--dest", dest.as_str()];
+    let rendered = harness(&dir).run(&moved_under_app(&verdict), cli::command(), argv);
+
+    assert!(
+        rendered
+            .stdout()
+            .contains("the run stopped part-way through the plan"),
+        "{}",
+        rendered.stdout()
+    );
+    assert_eq!(stated_on_stderr(&rendered), [] as [&str; 0]);
+}
+
+/// The warnings a run wrote to stderr, which `main` prints after the run's own
+/// output.
+fn stated_on_stderr(result: &standout_test::TestResult) -> Vec<&str> {
+    result.warnings().iter().map(String::as_str).collect()
 }
 
 /// An apply-time refusal states its keys rather than a diagnostic, on the

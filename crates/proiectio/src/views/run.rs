@@ -86,12 +86,21 @@ pub(crate) struct AppliedRun {
     pub(crate) manifest: Manifest,
 }
 
+/// The one place an [`ApplyReport`] becomes a CLI document, for the applied
+/// tense and the stopped one alike: it destructures the library's report whole,
+/// so a field the library adds fails to compile here rather than going missing
+/// from both documents.
 impl From<ApplyReport> for AppliedRun {
     fn from(applied: ApplyReport) -> AppliedRun {
+        let ApplyReport {
+            report,
+            dropped,
+            manifest,
+        } = applied;
         AppliedRun {
-            report: applied.report,
-            dropped: applied.dropped,
-            manifest: applied.manifest,
+            report,
+            dropped,
+            manifest,
         }
     }
 }
@@ -166,8 +175,9 @@ pub(crate) enum StoppedVerdict {
 /// beside it: a reader of any format, `--output csv` included, reads the whole
 /// per-path story of the run from `rows` alone. What stopped the run is not a
 /// path, so `stopped`, `recorded` and `stopped_at` stay beside the rows and out
-/// of the CSV; a caller that wants those reads the exit code and the other
-/// formats.
+/// of the CSV; a structured caller reads those from the stderr sentences
+/// [`warnings`] states them in, and the exit code says which verdict the run
+/// left with.
 #[derive(Serialize)]
 pub(crate) struct AbortedRun {
     /// Every path the run has a verdict for, in path order: the actions that
@@ -215,12 +225,17 @@ impl AbortedRun {
             ),
             Stopped::Recording(error) => (StoppedAt::Recording, vec![unrecorded(error)]),
         };
+        let AppliedRun {
+            report,
+            dropped,
+            manifest,
+        } = AppliedRun::from(applied);
         AbortedRun {
             report: Report {
-                rows: ran(applied.report, refused),
+                rows: ran(report, refused),
             },
-            dropped: applied.dropped,
-            manifest: applied.manifest,
+            dropped,
+            manifest,
             recorded: stopped.recorded(),
             stopped: stated,
             stopped_at,
@@ -765,33 +780,73 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth, forced: bool) -
 /// actions no destination is missing.
 fn closing(tally: &Tally, document: &JsonValue) -> String {
     let counts = tally.summary();
-    match document.get("stopped_at").and_then(JsonValue::as_str) {
-        Some("applying" | "applying_and_recording") => format!(
-            "{counts} — the run stopped part-way through the plan, and what it applied stands"
-        ),
-        Some("recording") => {
-            format!("{counts} — the run applied its whole plan and could not record it")
-        }
-        _ => counts,
+    match reached(document) {
+        Some(stage) => format!("{counts} — {stage}"),
+        None => counts,
     }
+}
+
+/// How far a run that could not finish got, in the split the library's own
+/// `Stopped` makes; `None` for a document stating no stage, which is every
+/// document but a stopped run's.
+fn reached(document: &JsonValue) -> Option<&'static str> {
+    match document.get("stopped_at").and_then(JsonValue::as_str)? {
+        "applying" | "applying_and_recording" => Some(PART_WAY),
+        "recording" => Some(WHOLE_PLAN),
+        _ => None,
+    }
+}
+
+const PART_WAY: &str = "the run stopped part-way through the plan, and what it applied stands";
+const WHOLE_PLAN: &str = "the run applied its whole plan and could not record it";
+
+/// What a run whose manifest never reached the state directory leaves behind,
+/// which no row of the report says: the paths it wrote are on the destination
+/// and nothing records them, so the next run reads them as foreign.
+const UNRECORDED: &str = "nothing records the paths the run applied, \
+     so the next run over this destination classifies them as foreign";
+
+/// The run-level facts a stopped run states on stderr rather than in the rows:
+/// how far it got, what stopped it, and — where the manifest never landed —
+/// what the destination is left holding. Empty for every document that is not
+/// a stopped run's.
+///
+/// These are the facts the records cannot carry. A CSV record is one path and
+/// these are about the run, and the exit code separates a failure from a
+/// refusal without saying which half of the run met it; a caller reading only
+/// stdout would take a run that wrote its plan and lost the manifest for one
+/// that finished.
+pub(crate) fn warnings(document: &JsonValue) -> Vec<String> {
+    if document.get("stopped_at").is_none() {
+        return Vec::new();
+    }
+    let mut stated: Vec<String> = reached(document).map(str::to_owned).into_iter().collect();
+    stated.extend(stopped(document).map(str::to_owned));
+    if document.get("recorded").and_then(JsonValue::as_bool) == Some(false) {
+        stated.push(UNRECORDED.to_owned());
+    }
+    stated
 }
 
 /// What a run that stopped says past its counts: the failure that stopped it
 /// where no refused row states it, and what the state directory does not
-/// record. These reach the reader here because a rendered document leaves no
-/// diagnostic on stderr for them to reach it by.
+/// record. These reach a reader of the rendered output here, in the body,
+/// rather than on the stderr channel [`warnings`] states them on: only a
+/// structured mode leaves the body unable to carry them.
 fn stopping(document: &JsonValue) -> Vec<String> {
+    stopped(document).map(verbatim).collect()
+}
+
+/// The sentences a stopped run states past its rows, as the document spells
+/// them: the failure that stopped it, and the record it could not write.
+fn stopped(document: &JsonValue) -> impl Iterator<Item = &str> {
     document
         .get("stopped")
         .and_then(JsonValue::as_array)
-        .map(|stated| {
-            stated
-                .iter()
-                .filter_map(JsonValue::as_str)
-                .map(verbatim)
-                .collect()
-        })
+        .map(Vec::as_slice)
         .unwrap_or_default()
+        .iter()
+        .filter_map(JsonValue::as_str)
 }
 
 /// What one dropped member's row says: the `strip` count that left it with no
@@ -848,9 +903,9 @@ fn named(verdict: Option<&JsonValue>) -> (&str, Option<&JsonValue>) {
 /// What a document states that is not about one path takes no record here. A
 /// dropped archive member reached no path in the destination, so it has no path
 /// cell to fill. `manifest` states the destination rather than this run. And
-/// `stopped`, `recorded` and `stopped_at` are facts about the run: a caller
-/// reads those from the exit code, which is 1 for a failure and 2 for a
-/// refusal whatever the output mode, and from the other formats.
+/// `stopped`, `recorded` and `stopped_at` are facts about the run, which reach
+/// a structured caller on stderr, in the sentences [`warnings`] states — beside
+/// the exit code, 1 for a failure and 2 for a refusal whatever the output mode.
 pub(crate) fn csv() -> StructuredOutputProjection {
     StructuredOutputProjection::csv(
         CsvProjection::builder("rows")
