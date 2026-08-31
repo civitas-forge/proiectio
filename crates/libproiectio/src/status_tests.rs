@@ -251,6 +251,65 @@ fn status_writes_nothing() {
     );
 }
 
+/// One row of the cleanliness contract: what to call the case, and what to do
+/// to the destination after it is projected. Nothing done leaves it clean.
+type Difference = (&'static str, Option<fn(&Utf8Path)>);
+
+/// What "clean" means over a whole report: every recorded path as written and
+/// nothing on disk the manifest never wrote. One path in any other state is
+/// enough to say no.
+#[test]
+fn a_report_is_clean_only_where_every_row_is() {
+    let tree = Tree::new()
+        .file("clean.txt", "as written")
+        .file("drifted.txt", "as written")
+        .file("gone.txt", "as written");
+    let cases: [Difference; 4] = [
+        ("nothing touched", None),
+        (
+            "a drifted path",
+            Some(|dest| {
+                fs::write(dest.join("drifted.txt"), "edited by hand").expect("edit");
+            }),
+        ),
+        (
+            "a missing path",
+            Some(|dest| {
+                fs::remove_file(dest.join("gone.txt")).expect("delete");
+            }),
+        ),
+        (
+            "a foreign path",
+            Some(|dest| {
+                fs::write(dest.join("theirs.txt"), "never ours").expect("plant");
+            }),
+        ),
+    ];
+
+    for (case, differ) in cases {
+        let dest = Tree::new().materialize();
+        let state = Tree::new().materialize();
+        let classifying = projection(dest.root(), state.root());
+        project(&classifying, "own", tree.entries());
+        if let Some(differ) = differ {
+            differ(dest.root());
+        }
+
+        assert_eq!(
+            classifying.status().expect("status").is_clean(),
+            differ.is_none(),
+            "with {case}"
+        );
+    }
+}
+
+/// A report of no rows is clean: an empty manifest and an empty destination
+/// agree, and nothing in either says whether anything was ever projected.
+#[test]
+fn a_report_of_no_rows_is_clean() {
+    assert!(Status::default().is_clean());
+}
+
 #[test]
 fn the_state_subtree_inside_the_destination_never_classifies() {
     let dest = Tree::new().materialize();

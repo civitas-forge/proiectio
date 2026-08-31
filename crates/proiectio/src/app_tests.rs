@@ -367,6 +367,137 @@ fn every_outcome_pins_the_status_the_process_exits_with() {
     }
 }
 
+/// `--check` is a verdict and not a format: a destination the manifest no
+/// longer matches prints exactly what it prints without the flag, on stdout,
+/// and the run leaves with the refusal status instead.
+#[test]
+#[serial]
+fn check_leaves_the_report_alone_and_spends_the_refusal_status_on_it() {
+    let (dir, dest) = classified_dir();
+    let verdict = exit::Verdict::default();
+
+    let plain = harness(&dir).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "status", "--dest", dest.as_str()],
+    );
+    let checking = harness(&dir).run(
+        &over(&verdict),
+        cli::command(),
+        ["proiectio", "status", "--dest", dest.as_str(), "--check"],
+    );
+
+    assert_eq!(exit::status(plain.outcome()), exit::OK);
+    assert_eq!(leaving(&checking, &verdict), exit::REFUSAL);
+    assert_eq!(checking.stdout(), plain.stdout());
+    assert_eq!(checking.error(), None);
+}
+
+/// `--check` on a destination that matches its manifest is the pass a CI gate
+/// is written for: the same report, and nothing recorded against the run.
+#[test]
+#[serial]
+fn check_passes_a_destination_that_matches_its_manifest() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let dest = utf8(&dir);
+    crate::testing::projected(&dest);
+    let verdict = exit::Verdict::default();
+
+    let result = harness(&dir).run(
+        &over(&verdict),
+        cli::command(),
+        ["proiectio", "status", "--dest", dest.as_str(), "--check"],
+    );
+
+    assert_eq!(leaving(&result, &verdict), exit::OK);
+    result.assert_stdout_contains("clean    bin/tool");
+}
+
+/// #103: a `--state-dir` that is not there reads as the empty manifest, which
+/// classifies the destination's every path — the real manifest included — as
+/// foreign. The report cannot be told from a healthy destination full of
+/// unrecorded files, so the run says on stderr which one it is, and `--check`
+/// fails on it.
+#[test]
+#[serial]
+fn a_state_directory_that_is_not_there_warns_and_fails_a_check() {
+    let (dir, dest) = classified_dir();
+    let absent = dest.join("no-such-state");
+    let argv = [
+        "proiectio",
+        "status",
+        "--dest",
+        dest.as_str(),
+        "--state-dir",
+        absent.as_str(),
+    ];
+
+    let plain = harness(&dir).run(&app(), cli::command(), argv);
+    plain.assert_success();
+    plain.assert_stdout_contains("foreign  bin/tool");
+    plain.assert_warning_contains(&format!(
+        "state dir {absent} does not exist; treating manifest as empty"
+    ));
+
+    let verdict = exit::Verdict::default();
+    let mut checking = argv.to_vec();
+    checking.push("--check");
+    let checked = harness(&dir).run(&over(&verdict), cli::command(), checking);
+
+    assert_eq!(leaving(&checked, &verdict), exit::REFUSAL);
+}
+
+/// The typo `--check` cannot read off the rows: an empty destination whose
+/// named state directory is missing classifies nothing at all, so the report
+/// is the clean one and only the missing directory says otherwise.
+#[test]
+#[serial]
+fn check_fails_an_absent_state_directory_even_where_the_report_is_empty() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let dest = utf8(&dir);
+    let verdict = exit::Verdict::default();
+
+    let result = harness(&dir).run(
+        &over(&verdict),
+        cli::command(),
+        [
+            "proiectio",
+            "status",
+            "--dest",
+            dest.as_str(),
+            "--state-dir",
+            dest.join("no-such-state").as_str(),
+            "--check",
+        ],
+    );
+
+    assert_eq!(result.stdout(), "");
+    assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
+}
+
+/// The default state directory is absent until a write creates it, so a
+/// destination nothing has been projected onto is not a mistake to report:
+/// no warning, and `--check` passes an empty destination whose empty manifest
+/// agrees with it. Nothing in the manifest can tell that destination from one
+/// whose every owner has released it, and neither can this.
+#[test]
+#[serial]
+fn the_default_state_directory_being_absent_warns_about_nothing_and_passes_a_check() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let dest = utf8(&dir);
+    let verdict = exit::Verdict::default();
+
+    let result = harness(&dir).run(
+        &over(&verdict),
+        cli::command(),
+        ["proiectio", "status", "--dest", dest.as_str(), "--check"],
+    );
+
+    assert_eq!(result.stdout(), "");
+    assert_eq!(leaving(&result, &verdict), exit::OK);
+    assert!(result.warnings().is_empty(), "{:?}", result.warnings());
+}
+
 /// A path is data, not markup. One whose components are spelled as style tags
 /// reaches the terminal as the characters they are, and structured output
 /// carries them unescaped.

@@ -265,13 +265,46 @@ fn desired(
     }
 }
 
+/// Classifies the destination, and under `--check` records the status the
+/// process leaves with.
+///
+/// A `--state-dir` that is not there reads as the empty manifest, and an empty
+/// manifest classifies every path on disk as foreign — a report a misspelled
+/// path and a destination full of files nobody recorded produce alike. The
+/// warning names which one this is. The default state directory's absence
+/// warns about nothing: a destination nothing has been projected onto has no
+/// state directory yet, and that is not a mistake.
+///
+/// `--check` spends the refusal status on both, so a gate fails on a
+/// destination that drifted and on the command line that misspelled where to
+/// look for it.
+///
+/// The classification runs first so a destination that cannot be opened fails
+/// as an operational failure alone, rather than warning about a state
+/// directory nothing was going to read.
 #[handler]
 pub(crate) fn status(
     #[arg] dest: String,
     #[arg(name = "state-dir")] state_dir: Option<String>,
+    #[flag] check: bool,
+    #[ctx] ctx: &CommandContext,
 ) -> Result<Output<Status>, anyhow::Error> {
     let projection = projection(&dest, state_dir.as_deref())?;
-    Ok(Output::Render(projection.status().map_err(exit::failure)?))
+    let classified = projection.status().map_err(exit::failure)?;
+    let named_but_absent =
+        state_dir.is_some() && !projection.state_dir_exists().map_err(exit::failure)?;
+    if named_but_absent {
+        standout::warnings::push_warning(format!(
+            "state dir {} does not exist; treating manifest as empty",
+            projection.state_dir()
+        ));
+    }
+    if check && (named_but_absent || !classified.is_clean()) {
+        ctx.app_state
+            .get_required::<exit::Verdict>()?
+            .record(exit::REFUSAL);
+    }
+    Ok(Output::Render(classified))
 }
 
 fn run_config(action: ConfigAction) -> Result<Output<ConfigView>, anyhow::Error> {
