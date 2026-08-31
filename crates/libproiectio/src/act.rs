@@ -41,13 +41,15 @@ use crate::block;
 use crate::containment::{
     Hop, contained_normalize, contained_target, contained_target_chain, is_pathname,
 };
-use crate::observe::{Container, io_error, read_container, sha256_hex_of_reader};
+use crate::observe::{
+    Container, Landing, io_error, read_container, recorded_landing, sha256_hex_of_reader,
+};
 use crate::report::recorded_shape;
 use crate::{
     Aborted, Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error,
     ExternalTargetPolicy, MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest,
     ManifestEntry, NodeSignature, Origin, PathFacts, PathShape, Placement, Plan, Refusal, Refused,
-    Report, Result, Row, StateDir, Stopped, sha256_hex,
+    Report, Result, Row, StateDir, Stopped, acts_at_landing, sha256_hex,
 };
 
 /// Loads the manifest from `state`'s [`MANIFEST_FILE_NAME`]; a state
@@ -110,9 +112,10 @@ pub(crate) fn apply(
             },
         }));
     }
+    let snapshot = manifest;
     let mut manifest = manifest.clone();
     let mut rows = BTreeMap::new();
-    let stopped = match run(dest, &mut manifest, plan, &mut rows) {
+    let stopped = match run(dest, snapshot, &mut manifest, plan, &mut rows) {
         Ok(()) => save_manifest(state, &manifest)
             .err()
             .map(Stopped::Recording),
@@ -288,6 +291,7 @@ fn entry_block_fault(entry: &Entry) -> Option<BlockFault> {
 /// holding exactly what was applied.
 fn run(
     dest: &Dir,
+    snapshot: &Manifest,
     manifest: &mut Manifest,
     plan: &Plan,
     rows: &mut BTreeMap<Utf8PathBuf, Row<ApplyOutcome>>,
@@ -300,7 +304,9 @@ fn run(
         // leaves no empty directory of its own making behind.
         if matches!(action, Action::OverwriteDirectory { .. }) {
             let recorded = manifest.entries.get(path).cloned();
-            let vacated = acting_on(plan, path, || remove_directory(dest, manifest, path))?;
+            let vacated = acting_on(plan, path, || {
+                remove_directory(dest, manifest, snapshot, path, action)
+            })?;
             prune_above(&vacated, &mut removed_dirs_candidates);
             manifest.entries.remove(path);
             rows.insert(
@@ -313,7 +319,9 @@ fn run(
         }
         if matches!(action, Action::RemoveDirectory) {
             let recorded = manifest.entries.get(path).cloned();
-            let vacated = acting_on(plan, path, || remove_directory(dest, manifest, path))?;
+            let vacated = acting_on(plan, path, || {
+                remove_directory(dest, manifest, snapshot, path, action)
+            })?;
             prune_above(&vacated, &mut removed_dirs_candidates);
             manifest.entries.remove(path);
             rows.insert(
@@ -332,9 +340,11 @@ fn run(
                     .get(path)
                     .is_some_and(|recorded| recorded.kind.is_block())
                 {
-                    remove_block(dest, manifest, path, expected.as_ref())?;
+                    remove_block(dest, manifest, snapshot, path, action)?;
                 } else {
-                    let vacated = remove(dest, manifest, path, expected.as_ref())?
+                    // With the walk's own ancestry hand-deleted there is no
+                    // resolved location; prune from the action key instead.
+                    let vacated = remove(dest, manifest, snapshot, path, action)?
                         .unwrap_or_else(|| path.clone());
                     prune_above(&vacated, &mut removed_dirs_candidates);
                 }
@@ -658,21 +668,27 @@ fn regrade_recorded_link(
 fn remove(
     dest: &Dir,
     manifest: &Manifest,
+    snapshot: &Manifest,
     path: &Utf8Path,
-    expected: Option<&NodeSignature>,
+    acting: &Action,
 ) -> Result<Option<Utf8PathBuf>> {
-    let Some(Walked {
-        parent,
-        leaf,
-        resolved_parent,
-        ..
-    }) = verified_parent(dest, manifest, path, false)?
-    else {
+    let Action::Remove { expected } = acting else {
+        unreachable!("dispatched on a removal")
+    };
+    let expected = expected.as_ref();
+    let Some(walked) = verified_parent(dest, manifest, path, false)? else {
         return match expected {
             Some(_) => Err(drift(path)),
             None => Ok(None),
         };
     };
+    held_landing(snapshot, path, &walked.landing(), acting)?;
+    let Walked {
+        parent,
+        leaf,
+        resolved_parent,
+        ..
+    } = walked;
     match expected {
         Some(expected) => {
             check_leaf(&parent, &leaf, path, expected)?;
@@ -691,17 +707,24 @@ fn remove(
 /// [`Action::OverwriteDirectory`], returning the resolved location the
 /// directory vacated. The `rmdir` itself is the re-check no signature can
 /// carry: anything but an empty directory at `path` is [`Refusal::Drift`].
-fn remove_directory(dest: &Dir, manifest: &Manifest, path: &Utf8Path) -> Result<Utf8PathBuf> {
+fn remove_directory(
+    dest: &Dir,
+    manifest: &Manifest,
+    snapshot: &Manifest,
+    path: &Utf8Path,
+    acting: &Action,
+) -> Result<Utf8PathBuf> {
     use std::io::ErrorKind;
-    let Some(Walked {
+    let Some(walked) = verified_parent(dest, manifest, path, false)? else {
+        return Err(drift(path));
+    };
+    held_landing(snapshot, path, &walked.landing(), acting)?;
+    let Walked {
         parent,
         leaf,
         resolved_parent,
         ..
-    }) = verified_parent(dest, manifest, path, false)?
-    else {
-        return Err(drift(path));
-    };
+    } = walked;
     match parent.remove_dir(&leaf) {
         Ok(()) => Ok(resolved_parent.join(leaf)),
         Err(e)
@@ -1013,9 +1036,14 @@ fn overwrite_block(
 fn remove_block(
     dest: &Dir,
     manifest: &Manifest,
+    snapshot: &Manifest,
     path: &Utf8Path,
-    expected: Option<&NodeSignature>,
+    acting: &Action,
 ) -> Result<()> {
+    let Action::Remove { expected } = acting else {
+        unreachable!("dispatched on a removal")
+    };
+    let expected = expected.as_ref();
     let recorded = manifest
         .entries
         .get(path)
@@ -1031,6 +1059,15 @@ fn remove_block(
             Ok(())
         };
     };
+    held_landing(
+        snapshot,
+        path,
+        &Landing {
+            at: container.landing.clone(),
+            through: container.through.clone(),
+        },
+        acting,
+    )?;
     if block::occurrence_count(&container.bytes, marker) > 1 {
         return Err(drift(path));
     }
@@ -1293,6 +1330,16 @@ struct Walked {
     through: Option<Utf8PathBuf>,
 }
 
+impl Walked {
+    /// Where the walk came out, in the shape the landing grades read.
+    fn landing(&self) -> Landing {
+        Landing {
+            at: self.resolved_parent.join(&self.leaf),
+            through: self.through.clone(),
+        }
+    }
+}
+
 /// The no-follow ancestor walk: opens each ancestor component of `path` from
 /// the previously verified handle and returns where it came out. Without
 /// `create`, missing ancestry answers `None`.
@@ -1425,6 +1472,26 @@ fn at_action_key(path: &Utf8Path, landing: &Utf8Path, through: Option<&Utf8Path>
                 through: through.map(Utf8Path::to_path_buf),
             },
         ))
+    }
+}
+
+/// Refuses `acting` where its walk came out on a landing the manifest
+/// records ([`acts_at_landing`], the same question deciding grades by).
+/// Graded against the manifest as the run loaded it: the removal pass drops
+/// records from the live one as it goes, and a record another removal of
+/// this plan dropped must still refuse the walk that lands on it.
+fn held_landing(
+    snapshot: &Manifest,
+    path: &Utf8Path,
+    landing: &Landing,
+    acting: &Action,
+) -> Result<()> {
+    if !acts_at_landing(acting) || landing.at == *path {
+        return Ok(());
+    }
+    match recorded_landing(landing, snapshot) {
+        Some(refusal) => Err(refuse(path, refusal)),
+        None => Ok(()),
     }
 }
 

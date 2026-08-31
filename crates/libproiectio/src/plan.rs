@@ -180,6 +180,20 @@ fn verdict_of(action: &Action) -> PlannedAction {
     }
 }
 
+/// Whether `action` changes the node its walk comes out at — the one reading
+/// of "this action reaches the landing" both stages grade by. True of every
+/// removal carrying a signature and of the two directory removals; an
+/// absence-only removal, a release, a skip, a not-recorded and a refusal
+/// leave the disk alone, and a write goes down at its key or nowhere.
+pub(crate) fn acts_at_landing(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Remove { expected: Some(_) }
+            | Action::RemoveDirectory
+            | Action::OverwriteDirectory { .. }
+    )
+}
+
 /// One planned per-path action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {

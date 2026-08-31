@@ -748,3 +748,91 @@ fn rm_reads_the_manifest_the_state_dir_flag_names() {
     assert_eq!(result.stdout(), CLEARED);
     assert_eq!(entries(&dest), Vec::<String>::new());
 }
+
+/// What both the dry and the real run print for the refusal: a run refused
+/// before it acted renders the plan it declined, in the plan's own tense.
+const REFUSED_LANDING: &str = "would refuse     a/x.txt  (recorded landing) \
+                               (through the symlink a, onto real/x.txt, held by p)";
+
+/// The #137 transcript: two owners, one hand deletion, no manifest editing.
+#[test]
+#[serial]
+fn rm_refuses_where_a_recorded_link_resolves_onto_another_owners_node() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let root = utf8(&dir);
+    let dest = root.join("dest");
+    std::fs::create_dir(&dest).expect("a destination");
+
+    let held = root.join("o.toml");
+    std::fs::write(
+        &held,
+        b"version = 1\n\n[files.\"a/x.txt\"]\ncontents = \"kept\\n\"\n",
+    )
+    .expect("the mapping the first owner projects");
+    let theirs = root.join("p.toml");
+    std::fs::write(
+        &theirs,
+        b"version = 1\n\n[files.\"real/x.txt\"]\ncontents = \"kept\\n\"\n",
+    )
+    .expect("the mapping the second owner projects");
+    let pivoted = root.join("p-linked.toml");
+    std::fs::write(
+        &pivoted,
+        b"version = 1\n\n\
+          [files.\"real/x.txt\"]\ncontents = \"kept\\n\"\n\n\
+          [links.\"a\"]\ntarget = \"real\"\n",
+    )
+    .expect("the mapping that plants the link");
+
+    for (mapping, owner) in [(&held, "o"), (&theirs, "p")] {
+        run(
+            &dir,
+            &[
+                "write",
+                mapping.as_str(),
+                "--dest",
+                dest.as_str(),
+                "--owner",
+                owner,
+            ],
+        )
+        .assert_success();
+    }
+    std::fs::remove_dir_all(dest.join("a").as_std_path()).expect("the hand deletion");
+    run(
+        &dir,
+        &[
+            "write",
+            pivoted.as_str(),
+            "--dest",
+            dest.as_str(),
+            "--owner",
+            "p",
+        ],
+    )
+    .assert_success();
+
+    for extra in [vec!["--dry-run"], vec![]] {
+        let mut argv = vec!["rm", "--dest", dest.as_str(), "--owner", "o"];
+        argv.extend(extra);
+        let verdict = exit::Verdict::default();
+        let result = run_over(&dir, OutputMode::Text, &verdict, &argv);
+
+        assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
+        assert_eq!(result.stdout(), format!("{REFUSED_LANDING}\n"), "{argv:?}");
+        assert_eq!(
+            std::fs::read(dest.join("real/x.txt").as_std_path()).expect("the node p records"),
+            b"kept\n"
+        );
+        assert!(dest.join("real").is_dir(), "pruning took p's directory");
+    }
+
+    assert_eq!(
+        manifest_of(&dest).entries[Utf8Path::new("real/x.txt")].owners,
+        std::collections::BTreeSet::from(["p".to_owned()])
+    );
+    assert_eq!(
+        manifest_of(&dest).entries[Utf8Path::new("a/x.txt")].owners,
+        std::collections::BTreeSet::from(["o".to_owned()])
+    );
+}

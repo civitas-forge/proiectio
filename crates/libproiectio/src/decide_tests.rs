@@ -2044,6 +2044,169 @@ fn two_removals_landing_on_one_node_refuse_the_conflict() {
 }
 
 #[test]
+fn a_removal_landing_on_another_owners_record_refuses() {
+    let kept = file("kept\n", false);
+    let manifest = manifest_of(&[
+        ("a", recorded(&link("real"), &["p"])),
+        ("a/x.txt", recorded(&kept, &[OWNER])),
+        ("real/x.txt", recorded(&kept, &["p"])),
+    ]);
+    let observations = observed(&[
+        ("a", on_disk(&link("real"))),
+        ("real/x.txt", on_disk(&kept)),
+    ]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "a/x.txt"),
+        &Action::Refuse {
+            refusal: Refusal::RecordedLanding {
+                through: Utf8PathBuf::from("a"),
+                at: Utf8PathBuf::from("real/x.txt"),
+                owners: BTreeSet::from(["p".to_owned()]),
+            },
+        }
+    );
+}
+
+#[test]
+fn a_scoped_removal_landing_on_a_record_outside_its_scope_refuses() {
+    let kept = file("kept\n", false);
+    let manifest = manifest_of(&[
+        ("a", recorded(&link("real"), &["other"])),
+        ("a/x.txt", recorded(&kept, &[OWNER])),
+        ("real/x.txt", recorded(&kept, &[OWNER])),
+    ]);
+    let observations = observed(&[
+        ("a", on_disk(&link("real"))),
+        ("real/x.txt", on_disk(&kept)),
+    ]);
+    let scope = requested(&["a/x.txt"]);
+
+    let plan = removal(
+        RemovalScope::Paths(&scope),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "a/x.txt"),
+        &Action::Refuse {
+            refusal: Refusal::RecordedLanding {
+                through: Utf8PathBuf::from("a"),
+                at: Utf8PathBuf::from("real/x.txt"),
+                owners: BTreeSet::from([OWNER.to_owned()]),
+            },
+        }
+    );
+}
+
+#[test]
+fn a_removal_landing_on_a_record_this_plan_only_releases_refuses() {
+    // A release leaves the node standing, so it does not vacate the landing.
+    let kept = file("kept\n", false);
+    let manifest = manifest_of(&[
+        ("a", recorded(&link("real"), &["other"])),
+        ("a/x.txt", recorded(&kept, &[OWNER])),
+        ("real/x.txt", recorded(&kept, &[OWNER, "p"])),
+    ]);
+    let observations = observed(&[
+        ("a", on_disk(&link("real"))),
+        ("real/x.txt", on_disk(&kept)),
+    ]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(action(&plan, "real/x.txt"), &Action::Release);
+    assert_eq!(
+        action(&plan, "a/x.txt"),
+        &Action::Refuse {
+            refusal: Refusal::RecordedLanding {
+                through: Utf8PathBuf::from("a"),
+                at: Utf8PathBuf::from("real/x.txt"),
+                owners: BTreeSet::from(["p".to_owned(), OWNER.to_owned()]),
+            },
+        }
+    );
+}
+
+#[test]
+fn a_removal_landing_on_a_record_with_nothing_on_disk_forgets_it() {
+    // Refusing an absence-only removal would strand a stale record.
+    let kept = file("kept\n", false);
+    let manifest = manifest_of(&[
+        ("a", recorded(&link("real"), &["p"])),
+        ("a/x.txt", recorded(&kept, &[OWNER])),
+        ("real/x.txt", recorded(&kept, &["p"])),
+    ]);
+    let observations = observed(&[
+        ("a", on_disk(&link("real"))),
+        ("real", Observation::Directory),
+    ]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(action(&plan, "a/x.txt"), &Action::Remove { expected: None });
+}
+
+#[test]
+fn a_removal_landing_on_a_record_whose_own_removal_refuses_refuses_too() {
+    // A refusal takes no node, so it claims the landing for nothing.
+    let kept = file("kept\n", false);
+    let old = file("old\n", false);
+    let manifest = manifest_of(&[
+        ("a", recorded(&link("real"), &["other"])),
+        ("a/x.txt", recorded(&kept, &[OWNER])),
+        ("real/x.txt", recorded(&old, &[OWNER])),
+    ]);
+    let observations = observed(&[
+        ("a", on_disk(&link("real"))),
+        ("real/x.txt", on_disk(&kept)),
+    ]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "real/x.txt"),
+        &Action::Refuse {
+            refusal: Refusal::Drift,
+        }
+    );
+    assert_eq!(
+        action(&plan, "a/x.txt"),
+        &Action::Refuse {
+            refusal: Refusal::RecordedLanding {
+                through: Utf8PathBuf::from("a"),
+                at: Utf8PathBuf::from("real/x.txt"),
+                owners: BTreeSet::from([OWNER.to_owned()]),
+            },
+        }
+    );
+}
+
+#[test]
 fn a_write_walks_through_the_location_a_removal_vacates() {
     let old = file("old\n", false);
     let fresh = file("fresh\n", false);

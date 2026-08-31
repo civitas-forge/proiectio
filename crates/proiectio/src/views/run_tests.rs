@@ -282,6 +282,7 @@ fn every_refusal_kind_the_library_declares_reads_as_one_spelling() {
     for kind in [
         RefusalKind::Containment,
         RefusalKind::TreeConflict,
+        RefusalKind::RecordedLanding,
         RefusalKind::Foreign,
         RefusalKind::Drift,
         RefusalKind::DirectoryInTheWay,
@@ -293,6 +294,7 @@ fn every_refusal_kind_the_library_declares_reads_as_one_spelling() {
         let spelled = match kind {
             RefusalKind::Containment => "containment",
             RefusalKind::TreeConflict => "tree conflict",
+            RefusalKind::RecordedLanding => "recorded landing",
             RefusalKind::Foreign => "foreign",
             RefusalKind::Drift => "drifted",
             RefusalKind::DirectoryInTheWay => "directory in the way",
@@ -321,6 +323,14 @@ fn a_refused_row_renders_the_payload_its_refusal_carries() {
                 owners: BTreeSet::from(["base".to_owned(), "site".to_owned()]),
             },
             "(owner conflict) (held by base+site)",
+        ),
+        (
+            Refusal::RecordedLanding {
+                through: Utf8PathBuf::from("a"),
+                at: Utf8PathBuf::from("real/x.txt"),
+                owners: BTreeSet::from(["base".to_owned(), "site".to_owned()]),
+            },
+            "(recorded landing) (through the symlink a, onto real/x.txt, held by base+site)",
         ),
         (
             Refusal::DirectoryInTheWay {
@@ -1517,6 +1527,7 @@ fn every_kind_the_library_lifts_finds_its_hint_through_the_serialized_name() {
     let declared = [
         RefusalKind::Containment,
         RefusalKind::TreeConflict,
+        RefusalKind::RecordedLanding,
         RefusalKind::Foreign,
         RefusalKind::Drift,
         RefusalKind::DirectoryInTheWay,
@@ -1529,6 +1540,7 @@ fn every_kind_the_library_lifts_finds_its_hint_through_the_serialized_name() {
         match kind {
             RefusalKind::Containment
             | RefusalKind::TreeConflict
+            | RefusalKind::RecordedLanding
             | RefusalKind::Foreign
             | RefusalKind::Drift
             | RefusalKind::DirectoryInTheWay

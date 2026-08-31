@@ -378,6 +378,7 @@ fn refusing(refusal: &JsonValue) -> String {
     let spelled = match kind {
         "Containment" => "containment",
         "TreeConflict" => "tree conflict",
+        "RecordedLanding" => "recorded landing",
         "Foreign" => "foreign",
         "Drift" => "drifted",
         "DirectoryInTheWay" => "directory in the way",
@@ -403,6 +404,12 @@ fn detailing(kind: &str, payload: &JsonValue) -> Option<String> {
             verbatim(string("through")?)
         )),
         "TreeConflict" => Some(format!("(with {})", listed(payload.get("paths")?, ", ")?)),
+        "RecordedLanding" => Some(format!(
+            "(through the symlink {}, onto {}, held by {})",
+            verbatim(string("through")?),
+            verbatim(string("at")?),
+            listed(payload.get("owners")?, "+")?
+        )),
         "OwnerConflict" => Some(format!(
             "(held by {})",
             listed(payload.get("owners")?, "+")?
@@ -427,9 +434,10 @@ fn detailing(kind: &str, payload: &JsonValue) -> Option<String> {
     }
 }
 
-const REFUSAL_KINDS: [RefusalKind; 9] = [
+const REFUSAL_KINDS: [RefusalKind; 10] = [
     RefusalKind::Containment,
     RefusalKind::TreeConflict,
+    RefusalKind::RecordedLanding,
     RefusalKind::Foreign,
     RefusalKind::Drift,
     RefusalKind::DirectoryInTheWay,

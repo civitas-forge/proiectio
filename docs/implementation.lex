@@ -116,9 +116,14 @@ Implementation Guidelines
       the write is planned again, and deciding refuses it under the
       no-alias rule. A walk that relocated a write is therefore the
       Containment refusal.
-    - A removal follows the link. It unlinks through the resolved
-      location and reports it, so pruning judges the directory that
-      actually lost a child.
+    - A removal follows the link. Where the manifest records the
+      location the walk comes out at, the removal refuses as
+      RecordedLanding, naming the link, the landing and its owners;
+      deciding and applying both grade this, each against the
+      manifest as it loaded. A removal expecting nothing drops its
+      record without grading the landing. Otherwise the removal
+      unlinks through the resolved location and reports it, so
+      pruning judges the directory that actually lost a child.
     - A release walks nothing and reads no disk. It drops one owner
       from a manifest entry, and deciding plans it over a shared
       path clean, drifted or missing alike, so a disk check would

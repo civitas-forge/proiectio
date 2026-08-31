@@ -40,6 +40,15 @@ fn one_of_each() -> Vec<(Utf8PathBuf, Refusal, Origin)> {
             Origin::Caller,
         ),
         (
+            path("landing"),
+            Refusal::RecordedLanding {
+                through: path("a"),
+                at: path("real/x.txt"),
+                owners: BTreeSet::from(["site".to_owned()]),
+            },
+            Origin::Caller,
+        ),
+        (
             path("owner"),
             Refusal::OwnerConflict {
                 owners: BTreeSet::from(["site".to_owned()]),
@@ -79,6 +88,7 @@ fn one_of_each_covers_every_kind() {
         match kind {
             RefusalKind::Containment
             | RefusalKind::TreeConflict
+            | RefusalKind::RecordedLanding
             | RefusalKind::Foreign
             | RefusalKind::Drift
             | RefusalKind::DirectoryInTheWay
@@ -88,7 +98,7 @@ fn one_of_each_covers_every_kind() {
             | RefusalKind::Block => {}
         }
     }
-    assert_eq!(kinds.len(), 9);
+    assert_eq!(kinds.len(), 10);
 }
 
 #[test]
@@ -103,6 +113,7 @@ fn precedence_is_declaration_order() {
         [
             RefusalKind::Containment,
             RefusalKind::TreeConflict,
+            RefusalKind::RecordedLanding,
             RefusalKind::Foreign,
             RefusalKind::Drift,
             RefusalKind::DirectoryInTheWay,
@@ -180,6 +191,8 @@ fn messages_open_with_the_kind_and_name_each_path_with_its_detail() {
              holding it",
             "refusing paths that violate containment: containment",
             "refusing paths that claim overlapping locations: tree (with tree/below)",
+            "refusing removals that resolve through a link onto a path another record holds: \
+             landing (through the symlink a, onto real/x.txt, held by site)",
             "refusing paths whose desired entries conflict with another owner's: \
              owner (held by site)",
             "refusing symlinks with targets outside the destination: external -> /opt; \
@@ -208,6 +221,7 @@ fn every_kind_names_what_lifts_it_or_names_nothing() {
             ),
             RefusalKind::Containment
             | RefusalKind::TreeConflict
+            | RefusalKind::RecordedLanding
             | RefusalKind::DirectoryInTheWay
             | RefusalKind::OwnerConflict
             | RefusalKind::InvalidTarget

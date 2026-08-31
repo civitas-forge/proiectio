@@ -196,6 +196,14 @@ fn containment(link: &str) -> Refusal {
     }
 }
 
+fn recorded_landing(through: &str, at: &str, owners: &[&str]) -> Refusal {
+    Refusal::RecordedLanding {
+        through: Utf8PathBuf::from(through),
+        at: Utf8PathBuf::from(at),
+        owners: owners.iter().map(|owner| (*owner).to_owned()).collect(),
+    }
+}
+
 fn parity(case: &Case) {
     let what = case.what;
     let dest = Tree::new().materialize();
@@ -497,6 +505,78 @@ fn cases() -> Vec<Case> {
         ))
         .plans("a/rc", PlannedAction::Remove)
         .plans("b/rc", PlannedAction::Remove),
+        Case::new("a removal landing on another owner's record", Op::Remove)
+            .recording(OWNER, Tree::new().file("a/x.txt", "kept\n"))
+            .recording("other", Tree::new().file("real/x.txt", "kept\n"))
+            .then_by_hand(|root| {
+                fs::remove_dir_all(root.join("a")).expect("remove the recorded directory");
+            })
+            .recording(
+                "other",
+                Tree::new()
+                    .file("real/x.txt", "kept\n")
+                    .symlink("a", "real"),
+            )
+            .refuses("a/x.txt", recorded_landing("a", "real/x.txt", &["other"])),
+        Case::new(
+            "a scoped removal landing outside its own scope",
+            Op::RemovePaths(&["a/x.txt"]),
+        )
+        .recording(
+            OWNER,
+            Tree::new()
+                .file("a/x.txt", "kept\n")
+                .file("real/x.txt", "kept\n"),
+        )
+        .then_by_hand(|root| {
+            fs::remove_dir_all(root.join("a")).expect("remove the recorded directory");
+        })
+        .recording("other", Tree::new().symlink("a", "real"))
+        .refuses("a/x.txt", recorded_landing("a", "real/x.txt", &[OWNER])),
+        Case::new("an aliased forget over a recorded landing", Op::Remove)
+            .recording(OWNER, Tree::new().file("a/x.txt", "kept\n"))
+            .recording(
+                "other",
+                Tree::new()
+                    .file("real/x.txt", "kept\n")
+                    .file("real/y.txt", "other\n"),
+            )
+            .then_by_hand(|root| {
+                fs::remove_dir_all(root.join("a")).expect("remove the recorded directory");
+            })
+            .recording(
+                "other",
+                Tree::new()
+                    .file("real/x.txt", "kept\n")
+                    .file("real/y.txt", "other\n")
+                    .symlink("a", "real"),
+            )
+            .then_by_hand(|root| {
+                fs::remove_file(root.join("real/x.txt")).expect("delete the landing's node");
+            })
+            .plans("a/x.txt", PlannedAction::Forget),
+        Case::new(
+            "a block strip landing on another owner's record",
+            Op::Remove,
+        )
+        .then_by_hand(|root| {
+            Tree::new().file("a/rc", "author\n").write_under(root);
+        })
+        .recording_entries(OWNER, block_at("a/rc", "managed\n"))
+        .recording(
+            "other",
+            Tree::new().file("real/rc", "author\n# proiectio\nmanaged\n"),
+        )
+        .then_by_hand(|root| {
+            fs::remove_dir_all(root.join("a")).expect("clear the container's directory");
+        })
+        .recording(
+            "other",
+            Tree::new()
+                .file("real/rc", "author\n# proiectio\nmanaged\n")
+                .symlink("a", "real"),
+        )
+        .refuses("a/rc", recorded_landing("a", "real/rc", &["other"])),
         Case::new("a removal landing inside the state subtree", Op::Remove)
             .with_state_in_dest()
             .recording(OWNER, Tree::new().file("logs/private-state", "secret\n"))
