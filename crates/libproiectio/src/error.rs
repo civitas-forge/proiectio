@@ -359,6 +359,14 @@ pub enum Error {
     },
     #[error("source {path} is a directory: strip drops components of archive members")]
     StripOnDirectory { path: Utf8PathBuf },
+    /// A plan was asked for under a name that is not an owner — empty, or
+    /// nothing but whitespace. Refused where the plan is decided, before a
+    /// write can record it or a removal look it up. Not a refusal.
+    #[error("{owner:?} is not an owner: {}", crate::OWNER_RULE)]
+    OwnerNotNamed {
+        /// The name as it arrived.
+        owner: String,
+    },
 }
 
 fn display_string<T: std::fmt::Display, S: Serializer>(

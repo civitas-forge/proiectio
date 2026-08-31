@@ -3,8 +3,7 @@
 use camino::Utf8PathBuf;
 use clap::{CommandFactory, Parser, Subcommand};
 use clapfig::ConfigCommand;
-
-use crate::settings;
+use libproiectio::{OWNER_RULE, names_an_owner};
 
 #[derive(Parser)]
 #[command(
@@ -145,7 +144,9 @@ pub(crate) fn command() -> clap::Command {
             .visible_alias("conf")
             .long_about(CONFIG_ABOUT)
             .mut_arg("scope", |scope| {
-                scope.help("Persist scope to target [possible values: user] [default: user].")
+                scope
+                    .help("Persist scope to target [possible values: user] [default: user].")
+                    .value_parser(a_name)
             })
             .mut_subcommand("gen", utf8_destination)
             .mut_subcommand("schema", utf8_destination)
@@ -164,7 +165,9 @@ pub(crate) fn command() -> clap::Command {
 /// one; `set` names its value second.
 fn name_the_key(command: clap::Command) -> clap::Command {
     let named = command.mut_arg("key", |key| {
-        key.index(1).help("Config key (e.g. \"owner\").")
+        key.index(1)
+            .help("Config key (e.g. \"owner\").")
+            .value_parser(a_name)
     });
     if named.get_name() == "set" {
         named.mut_arg("value", |value| value.index(2))
@@ -184,8 +187,11 @@ fn utf8_destination(command: clap::Command) -> clap::Command {
 /// An empty argument is a shell variable nobody set, and this CLI reads none
 /// of them as a value: `--dest ""` is not the working directory, `--owner ""`
 /// is not an owner, and `write ""` names no file. Every argument that carries
-/// a path or a name parses through one of the three below, so the refusal is
-/// clap's own usage error, naming the option and quoting what arrived.
+/// a path or a name parses through one of the four below — including `key`
+/// and `--scope`, which clapfig declares and [`command`] patches — so the
+/// refusal is clap's own usage error, naming the option and quoting what
+/// arrived. `config set`'s value is the one argument left, whose emptiness is
+/// the key's business and so [`crate::settings::require_value`]'s.
 fn a_directory(value: &str) -> Result<String, String> {
     non_empty(value).map(str::to_owned)
 }
@@ -194,14 +200,20 @@ fn a_path(value: &str) -> Result<Utf8PathBuf, String> {
     non_empty(value).map(Utf8PathBuf::from)
 }
 
+/// A configuration key or a persist scope: a name clapfig looks up, in a
+/// registry that has no entry spelled with the empty string.
+fn a_name(value: &str) -> Result<String, String> {
+    non_empty(value).map(str::to_owned)
+}
+
 /// An owner is also refused when it is nothing but whitespace: it is a name
 /// the manifest records and a listing prints, and a blank one is a phantom
 /// owner no reader of that file can see. A path is left to the filesystem,
 /// which answers for a blank name itself.
 fn an_owner(value: &str) -> Result<String, String> {
-    match settings::names_an_owner(value) {
+    match names_an_owner(value) {
         true => Ok(value.to_owned()),
-        false => Err(settings::OWNER_RULE.to_owned()),
+        false => Err(OWNER_RULE.to_owned()),
     }
 }
 

@@ -1105,7 +1105,7 @@ fn config_set_refuses_an_owner_that_names_nothing() {
             result
                 .error()
                 .unwrap_or_default()
-                .contains(crate::settings::OWNER_RULE),
+                .contains(libproiectio::OWNER_RULE),
             "{value:?}: {}",
             result.error().unwrap_or_default()
         );
@@ -1138,7 +1138,7 @@ fn a_configured_owner_that_names_nothing_stops_a_run() {
             result
                 .error()
                 .unwrap_or_default()
-                .contains(crate::settings::OWNER_RULE),
+                .contains(libproiectio::OWNER_RULE),
             "{argv:?}: {}",
             result.error().unwrap_or_default()
         );
@@ -1166,7 +1166,7 @@ fn an_owner_the_environment_leaves_empty_stops_a_run() {
         result
             .error()
             .unwrap_or_default()
-            .contains(crate::settings::OWNER_RULE),
+            .contains(libproiectio::OWNER_RULE),
         "{}",
         result.error().unwrap_or_default()
     );

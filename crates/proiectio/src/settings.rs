@@ -4,7 +4,7 @@ use camino::Utf8PathBuf;
 use clapfig::error::ClapfigError;
 use clapfig::runtime::{LeafType, Shape};
 use clapfig::{Clapfig, ConfigAction, Schema, SearchPath, TypedBuilder, UnknownKeyDecision};
-use libproiectio::Error;
+use libproiectio::{Error, OWNER_RULE, names_an_owner};
 use serde::{Deserialize, Serialize};
 
 /// Projection settings as `proiectio.toml` declares them.
@@ -116,22 +116,15 @@ fn user_config_path() -> Result<Utf8PathBuf, Error> {
     })
 }
 
-/// The one rule an owner keeps, wherever the name comes from: the flag, a
-/// `config set`, a configuration file, or `PROIECTIO__OWNER`.
-pub(crate) const OWNER_RULE: &str =
-    "an owner names a producer in the manifest, and neither an empty nor a blank string names one";
-
-/// The key that rule belongs to, as the schema spells it.
+/// The key [`OWNER_RULE`] belongs to, as the schema spells it.
 const OWNER_KEY: &str = "owner";
 
-pub(crate) fn names_an_owner(owner: &str) -> bool {
-    !owner.trim().is_empty()
-}
-
 /// The owner a run records under, refused where the layer it came from left
-/// no name. The flag parses through [`crate::cli`], which refuses the same
-/// values at the command line; this is the check the file and environment
-/// layers pass through, which reach the run already parsed.
+/// no name — the file, or `PROIECTIO__OWNER`, whose values reach the run
+/// already parsed. The flag parses through [`crate::cli`], which refuses the
+/// same values at the command line, and libproiectio refuses them again where
+/// a plan is decided; this is the layer that names the configuration as the
+/// place the bad value came from.
 ///
 /// `config list` and `config get` do not take this route: an operator whose
 /// file carries a blank owner needs to be able to read it back.

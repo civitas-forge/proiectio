@@ -213,10 +213,12 @@ fn write_carries_every_permission_on_the_invocation() {
     assert!(write.get_flag("allow-external-targets"));
 }
 
-/// An unset shell variable interpolates to an empty argument, and no option
-/// this CLI declares reads one as a value: `--dest ""` is not the working
-/// directory and `--owner ""` is not an owner. Every one of them is a usage
-/// error at the command line, before a run reaches the destination.
+/// An unset shell variable interpolates to an empty argument, and no argument
+/// carrying a path or a name reads one as a value: `--dest ""` is not the
+/// working directory, `--owner ""` is not an owner, and `config get ""` names
+/// no key. Every one of them is a usage error at the command line, before a
+/// run reaches the destination or clapfig is asked for anything. The last six
+/// are clapfig's own arguments, which [`command`] patches.
 #[test]
 fn no_argument_reads_an_empty_string_as_a_value() {
     for argv in [
@@ -233,6 +235,10 @@ fn no_argument_reads_an_empty_string_as_a_value() {
         vec!["proiectio", "rm", ""],
         vec!["proiectio", "config", "gen", "--file", ""],
         vec!["proiectio", "config", "schema", "--file", ""],
+        vec!["proiectio", "config", "get", ""],
+        vec!["proiectio", "config", "set", "", "site"],
+        vec!["proiectio", "config", "unset", ""],
+        vec!["proiectio", "config", "list", "--scope", ""],
     ] {
         let error = command()
             .try_get_matches_from(&argv)
@@ -266,7 +272,7 @@ fn an_owner_that_is_nothing_but_whitespace_is_refused() {
             "{argv:?}: {error}"
         );
         assert!(
-            error.to_string().contains(settings::OWNER_RULE),
+            error.to_string().contains(libproiectio::OWNER_RULE),
             "{argv:?}: {error}"
         );
     }

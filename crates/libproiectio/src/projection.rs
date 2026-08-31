@@ -8,7 +8,7 @@ use cap_std::fs_utf8::Dir;
 use crate::{
     BlockMarkers, Desired, DriftPolicy, Error, Manifest, Plan, PlanOptions, PlannedAction,
     RemovalScope, Report, Result, Status, absolutize, block_markers, decide, decide_removal,
-    load_manifest, observe, status,
+    load_manifest, observe, require_owner, status,
 };
 
 const DEFAULT_STATE_DIR: &str = ".proiectio";
@@ -100,8 +100,10 @@ impl Projection {
     /// `owner` would perform, decided outside the single-writer guard and so
     /// not applicable, with the manifest it was decided against. An empty
     /// tree plans a removal; `origin` is named by every refusal the plan
-    /// carries.
+    /// carries. A name that is not an owner ([`OWNER_RULE`](crate::OWNER_RULE))
+    /// fails with [`Error::OwnerNotNamed`] before the destination is opened.
     pub fn plan(&self, owner: &str, desired: &Desired, options: PlanOptions) -> Result<Planned> {
+        require_owner(owner)?;
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
         let observations = observe(&dest, &manifest, &block_markers(desired))?;
@@ -125,6 +127,7 @@ impl Projection {
         scope: RemovalScope<'_>,
         drift: DriftPolicy,
     ) -> Result<Planned> {
+        require_owner(owner)?;
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
         let observations = observe(&dest, &manifest, &BlockMarkers::new())?;

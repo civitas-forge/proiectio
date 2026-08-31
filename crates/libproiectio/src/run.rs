@@ -6,7 +6,7 @@ use cap_std::fs_utf8::Dir;
 use crate::{
     ApplyReport, BlockMarkers, Desired, DriftPolicy, Error, Manifest, Plan, PlanOptions,
     Projection, RemovalScope, Report, Result, StateLock, apply, block_markers, decide,
-    decide_removal, load_manifest, observe,
+    decide_removal, load_manifest, observe, require_owner,
 };
 
 /// One write pass over a projection, holding the single-writer guard from
@@ -80,9 +80,12 @@ impl Run {
     /// Decides what applying `desired` under `owner` would do, and keeps it
     /// as the plan [`apply`](Run::apply) will execute; `origin` is named by
     /// every refusal. Deciding again discards the kept plan first, so a
-    /// decision that fails partway leaves the run with no plan.
+    /// decision that fails partway leaves the run with no plan. A name that is
+    /// not an owner ([`OWNER_RULE`](crate::OWNER_RULE)) fails with
+    /// [`Error::OwnerNotNamed`], the kept plan already discarded.
     pub fn plan(&mut self, owner: &str, desired: &Desired, options: PlanOptions) -> Result<&Plan> {
         self.plan = None;
+        require_owner(owner)?;
         let observations = observe(&self.dest, &self.manifest, &block_markers(desired))?;
         self.plan = Some(decide(
             owner,
@@ -106,6 +109,7 @@ impl Run {
         drift: DriftPolicy,
     ) -> Result<&Plan> {
         self.plan = None;
+        require_owner(owner)?;
         let observations = observe(&self.dest, &self.manifest, &BlockMarkers::new())?;
         self.plan = Some(decide_removal(
             owner,
