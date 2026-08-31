@@ -2348,17 +2348,36 @@ fn the_csv_a_run_that_could_not_record_writes_says_so_on_stderr() {
     );
 
     // Every mode that serializes the document takes the same channel, so a
-    // caller that changes format does not change which facts reach it.
-    let dir = TempDir::new().expect("a temporary directory");
-    let dest = utf8(&dir).join("dest");
-    std::fs::create_dir(&dest).expect("a destination");
-    let structured = harness(&dir).output_mode(OutputMode::Json).run(
+    // caller that changes format does not change which facts reach it. The two
+    // runs are over two destinations — a second run over the first would meet
+    // the writes the first one left unrecorded — and the failure names the
+    // state directory it could not write, so each list is read with its own
+    // destination standing in the other's place.
+    let elsewhere = TempDir::new().expect("a temporary directory");
+    let other = utf8(&elsewhere).join("dest");
+    std::fs::create_dir(&other).expect("a destination");
+    let structured = harness(&elsewhere).output_mode(OutputMode::Json).run(
         &unrecorded_app(&verdict),
         cli::command(),
-        ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
+        [
+            "proiectio",
+            "write",
+            "unread.toml",
+            "--dest",
+            other.as_str(),
+        ],
     );
 
-    assert_eq!(stated_on_stderr(&structured), stated);
+    let over = |stated: Vec<&str>, dest: &Utf8Path| -> Vec<String> {
+        stated
+            .into_iter()
+            .map(|line| line.replace(dest.as_str(), "the destination"))
+            .collect()
+    };
+    assert_eq!(
+        over(stated_on_stderr(&structured), &other),
+        over(stated, &dest)
+    );
 }
 
 /// A destination two owners hold, whose recorded link is no longer on disk:
