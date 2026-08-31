@@ -33,10 +33,10 @@ use crate::block;
 use crate::containment::{Hop, contained_normalize, contained_target_chain, is_pathname};
 use crate::{
     Action, BlockFault, Desired, DriftPolicy, Entry, EntryKind, Error, ExternalTargetPolicy,
-    Landing, MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations,
-    Origin, OverwriteReason, PathFacts, PathShape, PathState, Placement, Plan, PlanOptions,
-    Refusal, Report, Result, Row, Status, acts_at_landing, recorded_landing, sha256_hex,
-    walked_ancestry,
+    Landing, LinkTarget, MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation,
+    Observations, Origin, OverwriteReason, PathFacts, PathShape, PathState, Placement, Plan,
+    PlanOptions, Refusal, Report, Result, Row, Status, acts_at_landing, recorded_landing,
+    sha256_hex, walked_ancestry,
 };
 
 /// One row per path in the union of the manifest and the observations,
@@ -1030,22 +1030,47 @@ fn clean_overwrite_reason(entry: &Entry, recorded: &ManifestEntry) -> OverwriteR
 /// `observed` supplies what the record cannot: the target string a link's
 /// recorded hash digests.
 fn recorded_signature(recorded: &ManifestEntry, observed: Option<&Observation>) -> NodeSignature {
-    NodeSignature {
-        kind: recorded.kind.clone(),
-        hash: recorded.hash.clone(),
-        executable: recorded.executable,
-        target: observed_target(observed),
+    match &recorded.kind {
+        EntryKind::File => NodeSignature::File {
+            hash: recorded.hash.clone(),
+            executable: recorded.executable,
+        },
+        EntryKind::Symlink => NodeSignature::Symlink {
+            target: match observed_target(observed) {
+                Some(target) => LinkTarget::Utf8(target),
+                None => LinkTarget::NotUtf8 {
+                    hash: recorded.hash.clone(),
+                },
+            },
+        },
+        EntryKind::Block { marker, placement } => NodeSignature::Block {
+            marker: marker.clone(),
+            placement: *placement,
+            hash: recorded.hash.clone(),
+        },
     }
 }
 
 fn desired_signature(entry: &Entry) -> NodeSignature {
-    NodeSignature {
-        kind: entry.kind(),
-        hash: desired_hash(entry),
-        executable: desired_executable(entry),
-        target: match entry {
-            Entry::Symlink { target } => Some(target.clone()),
-            Entry::File { .. } | Entry::Block { .. } => None,
+    match entry {
+        Entry::File {
+            contents,
+            executable,
+        } => NodeSignature::File {
+            hash: sha256_hex(contents),
+            executable: *executable,
+        },
+        Entry::Symlink { target } => NodeSignature::Symlink {
+            target: LinkTarget::Utf8(target.clone()),
+        },
+        Entry::Block {
+            body,
+            marker,
+            placement,
+        } => NodeSignature::Block {
+            marker: marker.clone(),
+            placement: *placement,
+            hash: sha256_hex(body),
         },
     }
 }
@@ -1068,26 +1093,23 @@ fn observed_signature(
     recorded: &ManifestEntry,
     observation: &Observation,
 ) -> Option<NodeSignature> {
-    if recorded.kind.is_block() {
-        return identified_region(observation).map(|hash| NodeSignature {
-            kind: recorded.kind.clone(),
+    if let EntryKind::Block { marker, placement } = &recorded.kind {
+        return identified_region(observation).map(|hash| NodeSignature::Block {
+            marker: marker.clone(),
+            placement: *placement,
             hash: hash.clone(),
-            executable: false,
-            target: None,
         });
     }
     match observation {
-        Observation::File { hash, executable } => Some(NodeSignature {
-            kind: EntryKind::File,
+        Observation::File { hash, executable } => Some(NodeSignature::File {
             hash: hash.clone(),
             executable: *executable,
-            target: None,
         }),
-        Observation::Symlink { hash, target } => Some(NodeSignature {
-            kind: EntryKind::Symlink,
-            hash: hash.clone(),
-            executable: false,
-            target: target.clone(),
+        Observation::Symlink { hash, target } => Some(NodeSignature::Symlink {
+            target: match target {
+                Some(target) => LinkTarget::Utf8(target.clone()),
+                None => LinkTarget::NotUtf8 { hash: hash.clone() },
+            },
         }),
         Observation::Block { .. }
         | Observation::Absent

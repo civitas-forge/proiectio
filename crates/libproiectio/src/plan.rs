@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use crate::report::recorded_shape;
 use crate::{
-    Dropped, Entry, EntryKind, Manifest, ManifestEntry, Origin, PathFacts, PathShape, Refusal,
-    Refused, Report, Row,
+    Dropped, Entry, EntryKind, Manifest, ManifestEntry, Origin, PathFacts, PathShape, Placement,
+    Refusal, Refused, Report, Row, sha256_hex,
 };
 
 /// What planning does when a recorded path's state on disk differs from the
@@ -136,11 +136,7 @@ fn facts_of(
         }),
         Action::Remove {
             expected: Some(expected),
-        } => Some(recorded_shape(
-            &expected.kind,
-            expected.executable,
-            expected.target.clone(),
-        )),
+        } => Some(expected.shape()),
         // None of these four names a node of its own, so each row states
         // what the manifest records at the path; apply's row for the same
         // path draws on the same entry, so a dry run and a real run state
@@ -150,7 +146,7 @@ fn facts_of(
         | Action::RemoveDirectory
         | Action::Remove { expected: None } => {
             let recorded = recorded?;
-            Some(recorded_shape(&recorded.kind, recorded.executable, None))
+            Some(recorded_shape(&recorded.kind, recorded.executable))
         }
         Action::Refuse { .. } => None,
     };
@@ -281,22 +277,102 @@ pub enum PlannedAction {
     },
 }
 
-/// The on-disk node an action expects at apply time. Apply re-checks `kind`,
-/// `hash`, and `executable` and refuses if any changed since the plan.
+/// The on-disk node an action expects at apply time, spelled per kind so a
+/// signature carries exactly the facts its kind has. Apply re-checks it and
+/// refuses if the node changed since the plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeSignature {
-    /// The node's kind. For a [`Block`](EntryKind::Block) it carries the
-    /// marker and placement the region is located with.
-    pub kind: EntryKind,
+pub enum NodeSignature {
+    File {
+        /// [`sha256_hex`](crate::sha256_hex) of the contents.
+        hash: String,
+        executable: bool,
+    },
+    /// A link is its target: the hash the re-check compares derives from it.
+    Symlink { target: LinkTarget },
+    Block {
+        /// The marker and placement the region is located with.
+        marker: String,
+        placement: Placement,
+        /// [`sha256_hex`](crate::sha256_hex) of the region's body.
+        hash: String,
+    },
+}
+
+impl NodeSignature {
+    /// The node's kind.
+    pub fn kind(&self) -> EntryKind {
+        match self {
+            NodeSignature::File { .. } => EntryKind::File,
+            NodeSignature::Symlink { .. } => EntryKind::Symlink,
+            NodeSignature::Block {
+                marker, placement, ..
+            } => EntryKind::Block {
+                marker: marker.clone(),
+                placement: *placement,
+            },
+        }
+    }
+
     /// [`sha256_hex`](crate::sha256_hex) of the node — file contents, the
-    /// link target string, or a region's body.
-    pub hash: String,
-    /// The executable bit; always `false` for symlinks and blocks.
-    pub executable: bool,
-    /// The link target string `hash` digests, which run rows state; the hash
-    /// re-check covers it. `None` for a non-link node and for a target that
-    /// is not UTF-8.
-    pub target: Option<String>,
+    /// link target, or a region's body.
+    pub fn hash(&self) -> String {
+        match self {
+            NodeSignature::File { hash, .. } | NodeSignature::Block { hash, .. } => hash.clone(),
+            NodeSignature::Symlink { target } => target.hash(),
+        }
+    }
+
+    /// The executable bit; `false` for symlinks and blocks.
+    pub fn executable(&self) -> bool {
+        match self {
+            NodeSignature::File { executable, .. } => *executable,
+            NodeSignature::Symlink { .. } | NodeSignature::Block { .. } => false,
+        }
+    }
+
+    /// The shape a row over this signature states, for both stages, so a
+    /// plan's row and the apply row for one path cannot drift apart.
+    pub(crate) fn shape(&self) -> PathShape {
+        match self {
+            NodeSignature::File { executable, .. } => PathShape::File {
+                executable: *executable,
+            },
+            NodeSignature::Symlink { target } => PathShape::Symlink {
+                target: target.as_str().map(str::to_owned),
+            },
+            NodeSignature::Block { .. } => PathShape::Block,
+        }
+    }
+}
+
+/// A symlink's target as a signature knows it. The projection writes UTF-8
+/// targets, so only a hand-made link admitted by
+/// [`DriftPolicy::Overwrite`] is known by hash alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkTarget {
+    /// The target string as read at plan time.
+    Utf8(String),
+    /// A target that is not UTF-8, known by
+    /// [`sha256_hex`](crate::sha256_hex) of its bytes.
+    NotUtf8 { hash: String },
+}
+
+impl LinkTarget {
+    /// [`sha256_hex`](crate::sha256_hex) of the target bytes.
+    pub fn hash(&self) -> String {
+        match self {
+            LinkTarget::Utf8(target) => sha256_hex(target.as_bytes()),
+            LinkTarget::NotUtf8 { hash } => hash.clone(),
+        }
+    }
+
+    /// The target string, and `None` where only its hash is known.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            LinkTarget::Utf8(target) => Some(target),
+            LinkTarget::NotUtf8 { .. } => None,
+        }
+    }
 }
 
 #[cfg(test)]

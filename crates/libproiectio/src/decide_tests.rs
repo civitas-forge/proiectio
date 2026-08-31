@@ -18,13 +18,25 @@ fn link(target: &str) -> Entry {
 }
 
 fn signature(entry: &Entry) -> NodeSignature {
-    NodeSignature {
-        kind: entry.kind(),
-        hash: desired_hash(entry),
-        executable: desired_executable(entry),
-        target: match entry {
-            Entry::Symlink { target } => Some(target.clone()),
-            Entry::File { .. } | Entry::Block { .. } => None,
+    match entry {
+        Entry::File {
+            contents,
+            executable,
+        } => NodeSignature::File {
+            hash: sha256_hex(contents),
+            executable: *executable,
+        },
+        Entry::Symlink { target } => NodeSignature::Symlink {
+            target: LinkTarget::Utf8(target.clone()),
+        },
+        Entry::Block {
+            body,
+            marker,
+            placement,
+        } => NodeSignature::Block {
+            marker: marker.clone(),
+            placement: *placement,
+            hash: sha256_hex(body),
         },
     }
 }
@@ -522,11 +534,9 @@ fn an_agreement_skip_carries_the_desired_signature() {
         action(&plan, "bin/tool"),
         &Action::Skip {
             entry: agreed.clone(),
-            expected: NodeSignature {
-                kind: EntryKind::File,
+            expected: NodeSignature::File {
                 hash: desired_hash(&agreed),
                 executable: true,
-                target: None,
             },
         }
     );
@@ -3298,14 +3308,10 @@ fn a_drifted_region_lifts_under_force_and_a_lost_container_does_not() {
         action(&lifted, "conf"),
         &Action::Overwrite {
             entry,
-            expected: NodeSignature {
-                kind: EntryKind::Block {
-                    marker: MARKER.to_owned(),
-                    placement: Placement::Append,
-                },
+            expected: NodeSignature::Block {
+                marker: MARKER.to_owned(),
+                placement: Placement::Append,
                 hash: sha256_hex(b"edited\n"),
-                executable: false,
-                target: None,
             },
             reason: OverwriteReason::ForcedDrift,
         }

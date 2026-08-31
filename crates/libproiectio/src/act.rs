@@ -219,7 +219,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                 if record_is_block != entry.kind().is_block() {
                     block(BlockFault::KindChange);
                 }
-                if let Some(fault) = signature_block_fault(recorded_kind, &expected.kind) {
+                if let Some(fault) = signature_block_fault(recorded_kind, &expected.kind()) {
                     block(fault);
                 }
             }
@@ -227,7 +227,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
             | Action::Remove {
                 expected: Some(expected),
             } => {
-                if let Some(fault) = signature_block_fault(recorded_kind, &expected.kind) {
+                if let Some(fault) = signature_block_fault(recorded_kind, &expected.kind()) {
                     block(fault);
                 }
             }
@@ -381,7 +381,10 @@ fn run(
                 links.push((path, action));
                 unpublished.insert(path.clone());
             }
-            Action::Skip { expected, .. } if expected.kind == EntryKind::Symlink => {
+            Action::Skip {
+                expected: NodeSignature::Symlink { .. },
+                ..
+            } => {
                 links.push((path, action));
             }
             _ => {}
@@ -394,7 +397,10 @@ fn run(
             | Action::Overwrite { entry, .. }
             | Action::OverwriteDirectory { entry }
                 if matches!(entry, Entry::Symlink { .. }) => {}
-            Action::Skip { expected, .. } if expected.kind == EntryKind::Symlink => {}
+            Action::Skip {
+                expected: NodeSignature::Symlink { .. },
+                ..
+            } => {}
             Action::Write { entry } if matches!(entry, Entry::Block { .. }) => {
                 let outcome = acting_on(plan, path, || write_block(dest, manifest, path, entry))?;
                 record(manifest, path, entry, &plan.owner);
@@ -502,9 +508,9 @@ fn skip(manifest: &mut Manifest, path: &Utf8Path, expected: &NodeSignature, owne
     manifest.entries.insert(
         path.to_owned(),
         ManifestEntry {
-            kind: expected.kind.clone(),
-            hash: expected.hash.clone(),
-            executable: expected.executable,
+            kind: expected.kind(),
+            hash: expected.hash(),
+            executable: expected.executable(),
             owners,
         },
     );
@@ -553,10 +559,8 @@ fn recorded_facts(
 ) -> Option<PathFacts> {
     recorded.map(|recorded| PathFacts {
         shape: Some(match expected {
-            Some(expected) => {
-                recorded_shape(&expected.kind, expected.executable, expected.target.clone())
-            }
-            None => recorded_shape(&recorded.kind, recorded.executable, None),
+            Some(expected) => expected.shape(),
+            None => recorded_shape(&recorded.kind, recorded.executable),
         }),
         owners: recorded.owners.clone(),
         origin: Some(origin),
@@ -1014,7 +1018,12 @@ fn overwrite_block(
     else {
         unreachable!("dispatched on a block entry");
     };
-    let Some((recorded_marker, recorded_placement)) = block::block_kind(&expected.kind) else {
+    let NodeSignature::Block {
+        marker: recorded_marker,
+        placement: recorded_placement,
+        hash: expected_hash,
+    } = expected
+    else {
         unreachable!("validate pairs a block entry with a block signature");
     };
     let Some(container) = read_block_container(dest, manifest, path)? else {
@@ -1024,10 +1033,10 @@ fn overwrite_block(
     if block::occurrence_count(&container.bytes, recorded_marker) != 1 {
         return Err(drift(path));
     }
-    let Some(region) = block::locate(&container.bytes, recorded_marker, recorded_placement) else {
+    let Some(region) = block::locate(&container.bytes, recorded_marker, *recorded_placement) else {
         unreachable!("one occurrence locates a region");
     };
-    if sha256_hex(&container.bytes[region.body.clone()]) != expected.hash {
+    if sha256_hex(&container.bytes[region.body.clone()]) != *expected_hash {
         return Err(drift(path));
     }
     let author = block::strip(&container.bytes, Some(&region));
@@ -1068,8 +1077,8 @@ fn remove_block(
         .entries
         .get(path)
         .expect("validate refuses a removal the manifest does not record");
-    let kind = expected.map_or(&recorded.kind, |expected| &expected.kind);
-    let Some((marker, placement)) = block::block_kind(kind) else {
+    let kind = expected.map_or_else(|| recorded.kind.clone(), NodeSignature::kind);
+    let Some((marker, placement)) = block::block_kind(&kind) else {
         unreachable!("dispatched on a block record, and validate pairs it with a block signature");
     };
     let Some(container) = read_block_container(dest, manifest, path)? else {
@@ -1093,7 +1102,7 @@ fn remove_block(
     }
     match (expected, block::locate(&container.bytes, marker, placement)) {
         (Some(expected), Some(region)) => {
-            if sha256_hex(&container.bytes[region.body.clone()]) != expected.hash {
+            if sha256_hex(&container.bytes[region.body.clone()]) != expected.hash() {
                 return Err(drift(path));
             }
             let author = block::strip(&container.bytes, Some(&region));
@@ -1285,27 +1294,34 @@ fn check_leaf(parent: &Dir, leaf: &str, path: &Utf8Path, expected: &NodeSignatur
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(drift(path)),
         Err(e) => return Err(io_error(path)(e)),
     };
-    match &expected.kind {
-        EntryKind::File => {
+    match expected {
+        NodeSignature::File {
+            hash: expected_hash,
+            executable: expected_executable,
+        } => {
             if !meta.file_type().is_file() {
                 return Err(drift(path));
             }
             let executable = meta.mode() & 0o100 != 0;
             let file = parent.open(leaf).map_err(io_error(path))?;
             let hash = sha256_hex_of_reader(file).map_err(io_error(path))?;
-            if hash != expected.hash || executable != expected.executable {
+            if hash != *expected_hash || executable != *expected_executable {
                 return Err(drift(path));
             }
         }
-        EntryKind::Symlink => {
+        NodeSignature::Symlink { target } => {
             if !meta.file_type().is_symlink() {
                 return Err(drift(path));
             }
-            if link_target_hash(parent, leaf, path)? != expected.hash {
+            if link_target_hash(parent, leaf, path)? != target.hash() {
                 return Err(drift(path));
             }
         }
-        EntryKind::Block { marker, placement } => {
+        NodeSignature::Block {
+            marker,
+            placement,
+            hash: expected_hash,
+        } => {
             let Container::File { bytes, .. } = read_container(parent, leaf, path)? else {
                 return Err(drift(path));
             };
@@ -1315,7 +1331,7 @@ fn check_leaf(parent: &Dir, leaf: &str, path: &Utf8Path, expected: &NodeSignatur
             let Some(region) = block::locate(&bytes, marker, *placement) else {
                 unreachable!("one occurrence locates a region");
             };
-            if sha256_hex(&bytes[region.body]) != expected.hash {
+            if sha256_hex(&bytes[region.body]) != *expected_hash {
                 return Err(drift(path));
             }
         }
