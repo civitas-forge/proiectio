@@ -20,7 +20,7 @@ clapfig.workspace = true
 # scope makes, so the echoed path is the path the edit landed in. Clapfig keeps
 # its resolved persist path private, so there is nothing to ask instead.
 directories.workspace = true
-libproiectio = { path = "../libproiectio", version = "0.9.1" }
+libproiectio = { path = "../libproiectio", version = "0.9.2" }
 # Standout takes a render-only template context as a `minijinja::Value`.
 minijinja.workspace = true
 serde.workspace = true
