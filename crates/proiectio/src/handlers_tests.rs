@@ -253,7 +253,7 @@ fn rm_over_the_default_state_directory_warns_about_nothing() {
 /// whole report: nothing warns about a state directory the run never went on
 /// to read.
 #[test]
-fn a_removal_that_cannot_open_the_destination_warns_about_no_state_directory() {
+fn a_removal_that_cannot_open_the_destination_does_not_warn() {
     let _ = standout::warnings::drain_warnings();
     let dir = TempDir::new().expect("a temporary directory");
     let absent = utf8(&dir).join("absent");
