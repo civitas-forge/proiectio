@@ -63,6 +63,20 @@ pub(crate) fn write(
     apply(run, ctx)
 }
 
+/// Removes what the manifest records, and says on stderr where the manifest it
+/// read was the empty one a `--state-dir` that is not there stands in for.
+///
+/// An empty manifest holds nothing to remove, so the run reports `nothing to
+/// do` and leaves with 0 — the same report a destination whose owner holds
+/// nothing prints. The warning names which one this is.
+///
+/// The fact is read before the run rather than after it: a real removal opens
+/// the state directory for writing and creates the one it was told to use, so
+/// afterwards every named directory is there.
+///
+/// The warning is written after the run, so a removal that could not open the
+/// destination fails as an operational failure alone rather than warning about
+/// a directory nothing went on to read.
 #[handler]
 pub(crate) fn rm(
     #[arg] dest: String,
@@ -84,17 +98,47 @@ pub(crate) fn rm(
     let drift = drift(force);
 
     let projection = projection(&dest, state_dir.as_deref())?;
-    if dry_run {
+    let named_but_absent = named_state_dir_is_absent(&projection, state_dir.as_deref())?;
+    let reported = if dry_run {
         let planned = projection
             .plan_removal(&owner, scope, drift)
             .map_err(exit::failure)?;
-        return planned_report(&planned.plan, planned.report(), ctx);
+        planned_report(&planned.plan, planned.report(), ctx)?
+    } else {
+        let mut run = projection.begin().map_err(exit::failure)?;
+        run.plan_removal(&owner, scope, drift)
+            .map(|_| ())
+            .map_err(exit::failure)?;
+        apply(run, ctx)?
+    };
+    if named_but_absent {
+        warn_absent_state_dir(&projection);
     }
-    let mut run = projection.begin().map_err(exit::failure)?;
-    run.plan_removal(&owner, scope, drift)
-        .map(|_| ())
-        .map_err(exit::failure)?;
-    apply(run, ctx)
+    Ok(reported)
+}
+
+/// Whether the command line named a state directory the filesystem does not
+/// have. The default one's absence is not this: a destination nothing has been
+/// projected onto has no state directory yet, and no invocation claimed
+/// otherwise.
+fn named_state_dir_is_absent(
+    projection: &Projection,
+    state_dir: Option<&str>,
+) -> Result<bool, anyhow::Error> {
+    match state_dir {
+        Some(_) => Ok(!projection.state_dir_exists().map_err(exit::failure)?),
+        None => Ok(false),
+    }
+}
+
+/// Says on stderr that the manifest read empty because the directory holding
+/// it is not there — the one thing a report over an empty manifest cannot say,
+/// since a destination nobody recorded reads the same.
+fn warn_absent_state_dir(projection: &Projection) {
+    standout::warnings::push_warning(format!(
+        "state dir {} does not exist; treating manifest as empty",
+        projection.state_dir()
+    ));
 }
 
 /// The owner the invocation names, and otherwise the configured one.
@@ -294,13 +338,9 @@ pub(crate) fn status(
 ) -> Result<Output<Status>, anyhow::Error> {
     let projection = projection(&dest, state_dir.as_deref())?;
     let classified = projection.status().map_err(exit::failure)?;
-    let named_but_absent =
-        state_dir.is_some() && !projection.state_dir_exists().map_err(exit::failure)?;
+    let named_but_absent = named_state_dir_is_absent(&projection, state_dir.as_deref())?;
     if named_but_absent {
-        standout::warnings::push_warning(format!(
-            "state dir {} does not exist; treating manifest as empty",
-            projection.state_dir()
-        ));
+        warn_absent_state_dir(&projection);
     }
     if check && (named_but_absent || !classified.is_clean()) {
         ctx.app_state

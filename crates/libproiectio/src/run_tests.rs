@@ -102,7 +102,12 @@ fn a_second_run_meets_lock_held_while_the_first_lives() {
         .expect("contender thread")
         .expect_err("the lock is held");
 
-    assert!(matches!(error, Error::LockHeld { .. }));
+    // Absolute: the operator has to go look at the lock, and the bare name
+    // does not say which state directory holds it.
+    match &error {
+        Error::LockHeld { path } => assert_eq!(*path, state.path(LOCK_FILE_NAME)),
+        other => panic!("expected LockHeld, got {other:?}"),
+    }
     assert!(!error.is_refusal(), "a contended lock is exit-1 territory");
 
     drop(first);

@@ -63,7 +63,7 @@ fn every_variant() -> Vec<Error> {
             supported: crate::MANIFEST_VERSION,
         },
         Error::LockHeld {
-            path: Utf8PathBuf::from(crate::LOCK_FILE_NAME),
+            path: Utf8PathBuf::from("/srv/site/.proiectio/proiectio.lock"),
         },
         Error::CurrentDirectory {
             source: std::io::Error::other("no such directory"),
@@ -589,20 +589,19 @@ fn a_directory_named_as_a_mapping_names_the_option_it_belongs_to() {
 }
 
 // The single-writer lock's contention variant is exit-1 territory: not a
-// refusal, and its message names the state-dir-relative lock path.
+// refusal, and its message names the lock file where it lies — the operator
+// has to go look at it, and the bare name does not say which state directory
+// holds it.
 #[test]
 fn lock_held_exits_1_and_names_the_lock_path() {
-    let error = Error::LockHeld {
-        path: Utf8PathBuf::from(crate::LOCK_FILE_NAME),
-    };
+    let lock = Utf8PathBuf::from("/srv/site/.proiectio/proiectio.lock");
+    let error = Error::LockHeld { path: lock.clone() };
     assert!(!error.is_refusal());
     assert_eq!(exit_code(Err(error)), 1);
-    let error = Error::LockHeld {
-        path: Utf8PathBuf::from(crate::LOCK_FILE_NAME),
-    };
+    let error = Error::LockHeld { path: lock };
     assert_eq!(
         error.to_string(),
-        "state lock proiectio.lock is held by another writer"
+        "state lock /srv/site/.proiectio/proiectio.lock is held by another writer"
     );
 }
 

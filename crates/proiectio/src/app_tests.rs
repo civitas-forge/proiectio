@@ -1942,6 +1942,65 @@ fn a_refused_rm_renders_the_document_its_dry_run_renders() {
     assert!(dest.join("bin/tool").exists());
 }
 
+/// #126: `rm` reads a `--state-dir` that is not there as the empty manifest,
+/// which records nothing to remove, so the run prints what a destination whose
+/// owner holds nothing prints and leaves with 0. The paths the real manifest
+/// records stay where they are, and the stderr warning is the only thing
+/// telling the two runs apart.
+#[test]
+#[serial]
+fn rm_warns_about_a_state_directory_that_is_not_there() {
+    let (dir, dest, deploy) = tour();
+    harness(&dir)
+        .run(
+            &app(),
+            cli::command(),
+            write_argv(&[deploy.as_str()], &dest),
+        )
+        .assert_success();
+    let absent = utf8(&dir).join("no-such-state");
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        [
+            "proiectio",
+            "rm",
+            "--dest",
+            dest.as_str(),
+            "--state-dir",
+            absent.as_str(),
+        ],
+    );
+
+    result.assert_success();
+    assert_eq!(result.stdout(), "nothing to do\n");
+    result.assert_warning_contains(&format!(
+        "state dir {absent} does not exist; treating manifest as empty"
+    ));
+    assert!(dest.join("bin/tool").exists());
+}
+
+/// The default state directory is absent until a write creates it, so a
+/// removal over a destination nothing has been projected onto prints the same
+/// nothing to do with nothing to warn about.
+#[test]
+#[serial]
+fn rm_over_an_unprojected_destination_warns_about_nothing() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let dest = utf8(&dir);
+
+    let result = harness(&dir).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "rm", "--dest", dest.as_str()],
+    );
+
+    result.assert_success();
+    assert_eq!(result.stdout(), "nothing to do\n");
+    assert!(result.warnings().is_empty(), "{:?}", result.warnings());
+}
+
 /// A refusal met after the plan was decided by a run that had applied nothing —
 /// the whole-plan check declining what the plan carried through — reaches the
 /// shell as `Error::Refused` and states its keys the way the planning stages
