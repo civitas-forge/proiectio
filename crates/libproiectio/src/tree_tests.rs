@@ -5,7 +5,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs_utf8::Dir as Utf8Dir;
 
 use super::*;
-use crate::test_support::{Fixture, MissingName, Tree, assert_tree, origins_of};
+use crate::test_support::{Fixture, MissingName, Tree, assert_tree, origins_of, state_at};
 use crate::{
     Action, ApplyReport, Manifest, Origin, PlanOptions, Refusal, RefusalKind, apply, block_markers,
     decide, load_manifest, observe,
@@ -39,8 +39,8 @@ fn refused(source: &Fixture, names: &[&str]) -> BTreeMap<Utf8PathBuf, Origin> {
 // under the strict default policies.
 fn project(dest: &Fixture, state: &Fixture, desired: &Desired) -> ApplyReport {
     let dest_dir = dir_at(dest.root());
-    let state_dir = dir_at(state.root());
-    let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
+    let state_dir = state_at(state.root());
+    let manifest = load_manifest(&state_dir).expect("load manifest");
     let observations =
         observe(&dest_dir, &manifest, &block_markers(desired)).expect("observe destination");
     let plan = decide(
@@ -52,7 +52,7 @@ fn project(dest: &Fixture, state: &Fixture, desired: &Desired) -> ApplyReport {
         PlanOptions::default(),
     )
     .expect("decide");
-    apply(&dest_dir, &state_dir, state.root(), &manifest, &plan).expect("apply the plan")
+    apply(&dest_dir, &state_dir, &manifest, &plan).expect("apply the plan")
 }
 
 // The action the strict default plan gives each desired path, against an

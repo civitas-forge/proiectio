@@ -2,8 +2,7 @@
 //! persists the [`Manifest`] into the state directory.
 //!
 //! All I/O goes through two capability handles: a `Dir` rooted at the
-//! destination and a second `Dir` rooted at the caller-chosen state
-//! directory, which holds the manifest. Unix-only.
+//! destination and the [`StateDir`] holding the manifest. Unix-only.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write as _;
@@ -26,18 +25,14 @@ use crate::{
     Aborted, Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error,
     ExternalTargetPolicy, MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest,
     ManifestEntry, NodeSignature, Origin, PathFacts, PathShape, Placement, Plan, Refusal, Refused,
-    Report, Result, Row, Stopped, sha256_hex, vacates_node,
+    Report, Result, Row, StateDir, Stopped, sha256_hex, vacates_node,
 };
 
 /// Loads the manifest from `state`'s [`MANIFEST_FILE_NAME`]; a state
 /// directory holding no manifest file loads as the empty [`Manifest`].
-///
-/// `state_dir` is where the handle is rooted, and only the messages use it: a
-/// manifest that does not parse is one the operator has to open, and the file
-/// name alone does not say which state directory holds it.
-pub(crate) fn load_manifest(state: &Dir, state_dir: &Utf8Path) -> Result<Manifest> {
-    let path = state_dir.join(MANIFEST_FILE_NAME);
-    let bytes = match state.read(MANIFEST_FILE_NAME) {
+pub(crate) fn load_manifest(state: &StateDir) -> Result<Manifest> {
+    let path = state.path_of(MANIFEST_FILE_NAME);
+    let bytes = match state.dir().read(MANIFEST_FILE_NAME) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Manifest::new()),
         Err(e) => return Err(io_error(&path)(e)),
@@ -63,17 +58,14 @@ pub(crate) fn load_manifest(state: &Dir, state_dir: &Utf8Path) -> Result<Manifes
 
 /// Atomically persists `manifest` as `state`'s [`MANIFEST_FILE_NAME`],
 /// mode `0o644`: tempfile inside the state directory, renamed over the path.
-///
-/// `state_dir` is where the handle is rooted, and only the messages use it,
-/// as in [`load_manifest`].
-pub(crate) fn save_manifest(state: &Dir, state_dir: &Utf8Path, manifest: &Manifest) -> Result<()> {
-    let path = state_dir.join(MANIFEST_FILE_NAME);
+pub(crate) fn save_manifest(state: &StateDir, manifest: &Manifest) -> Result<()> {
+    let path = state.path_of(MANIFEST_FILE_NAME);
     let mut json = serde_json::to_vec_pretty(manifest).map_err(|source| Error::ManifestFormat {
         path: path.clone(),
         source,
     })?;
     json.push(b'\n');
-    persist(state, MANIFEST_FILE_NAME, &path, &json, false)
+    persist(state.dir(), MANIFEST_FILE_NAME, &path, &json, false)
 }
 
 /// Executes `plan` verbatim against `dest` and persists the updated
@@ -88,8 +80,7 @@ pub(crate) fn save_manifest(state: &Dir, state_dir: &Utf8Path, manifest: &Manife
 /// before the error, beside the error itself.
 pub(crate) fn apply(
     dest: &Dir,
-    state: &Dir,
-    state_dir: &Utf8Path,
+    state: &StateDir,
     manifest: &Manifest,
     plan: &Plan,
 ) -> std::result::Result<ApplyReport, Box<Aborted>> {
@@ -107,14 +98,14 @@ pub(crate) fn apply(
     let mut rows = BTreeMap::new();
     let stopped = match run(dest, &mut manifest, plan, &mut rows) {
         // Every action applied, so only the record can still stop the run.
-        Ok(()) => save_manifest(state, state_dir, &manifest)
+        Ok(()) => save_manifest(state, &manifest)
             .err()
             .map(Stopped::Recording),
         // The rows before the error are on the destination whether or not the
         // manifest saying so reaches the state directory, and a run that
         // wrote nothing has nothing to record.
         Err(applying) if rows.is_empty() => Some(Stopped::Applying(applying)),
-        Err(applying) => Some(match save_manifest(state, state_dir, &manifest) {
+        Err(applying) => Some(match save_manifest(state, &manifest) {
             Ok(()) => Stopped::Applying(applying),
             Err(recording) => Stopped::ApplyingAndRecording {
                 applying,

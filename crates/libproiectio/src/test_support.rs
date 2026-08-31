@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use crate::{Entry, Origin, Refusal, Refused};
+use crate::{Entry, Origin, Refusal, Refused, StateDir};
 
 // One node of a declared tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +197,14 @@ impl Fixture {
         assert_normal_relative(rel);
         self.root.join(rel)
     }
+}
+
+// The fixture root as the state directory the library reads and writes.
+pub(crate) fn state_at(root: &Utf8Path) -> StateDir {
+    assert!(root.is_absolute(), "state_at takes an absolute root");
+    StateDir::open(root)
+        .expect("the fixture root is there")
+        .expect("open the fixture root as a state directory")
 }
 
 #[derive(Debug)]

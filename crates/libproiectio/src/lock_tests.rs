@@ -1,30 +1,20 @@
-use camino::Utf8Path;
-use cap_std::fs_utf8::Dir;
-
 use super::*;
-use crate::test_support::Tree;
-
-// Opens a capability handle at a fixture root. Ambient authority is the
-// test's to spend; the library itself never opens ambient paths.
-fn dir_at(root: &Utf8Path) -> Dir {
-    Dir::open_ambient_dir(root, cap_std::ambient_authority()).expect("open fixture root as a Dir")
-}
+use crate::test_support::{Tree, state_at};
 
 #[test]
 fn acquire_creates_the_lock_file_in_the_state_dir() {
     let state = Tree::new().materialize();
-    let _guard =
-        StateLock::acquire(&dir_at(state.root()), state.root()).expect("acquire uncontended lock");
+    let _guard = StateLock::acquire(&state_at(state.root())).expect("acquire uncontended lock");
     assert!(state.path(LOCK_FILE_NAME).is_file());
 }
 
 #[test]
 fn dropping_the_guard_lets_the_next_writer_acquire() {
     let state = Tree::new().materialize();
-    let dir = dir_at(state.root());
-    let guard = StateLock::acquire(&dir, state.root()).expect("first acquire");
+    let dir = state_at(state.root());
+    let guard = StateLock::acquire(&dir).expect("first acquire");
     drop(guard);
-    StateLock::acquire(&dir, state.root()).expect("acquire after drop");
+    StateLock::acquire(&dir).expect("acquire after drop");
 }
 
 // The contention contract: a second writer — its own thread, its own open
@@ -34,12 +24,12 @@ fn dropping_the_guard_lets_the_next_writer_acquire() {
 #[test]
 fn contended_acquire_reports_lock_held_immediately() {
     let state = Tree::new().materialize();
-    let guard = StateLock::acquire(&dir_at(state.root()), state.root()).expect("first acquire");
+    let guard = StateLock::acquire(&state_at(state.root())).expect("first acquire");
 
     let root = state.root().to_owned();
     let contender = std::thread::spawn({
         let root = root.clone();
-        move || StateLock::acquire(&dir_at(&root), &root)
+        move || StateLock::acquire(&state_at(&root))
     });
     let error = contender
         .join()
@@ -59,7 +49,7 @@ fn contended_acquire_reports_lock_held_immediately() {
     );
 
     drop(guard);
-    let successor = std::thread::spawn(move || StateLock::acquire(&dir_at(&root), &root).map(drop));
+    let successor = std::thread::spawn(move || StateLock::acquire(&state_at(&root)).map(drop));
     successor
         .join()
         .expect("successor thread")

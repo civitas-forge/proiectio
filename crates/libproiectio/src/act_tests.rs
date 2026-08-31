@@ -6,7 +6,9 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs_utf8::Dir;
 
 use super::*;
-use crate::test_support::{Fixture, Tree, assert_tree, paths_of, plant, refusals_of, sourced_of};
+use crate::test_support::{
+    Fixture, Tree, assert_tree, paths_of, plant, refusals_of, sourced_of, state_at,
+};
 use crate::{
     BlockMarkers, Desired, DriftPolicy, Dropped, EntryKind, ExternalTargetPolicy, Origin,
     OverwriteReason, PlanOptions, RefusalKind, RemovalScope, block_markers, decide, decide_removal,
@@ -55,10 +57,9 @@ fn plan_for_with(
     desired: &BTreeMap<Utf8PathBuf, Entry>,
     options: PlanOptions,
 ) -> (Manifest, Plan) {
-    let state_root = state.root();
     let dest = dir_at(dest.root());
-    let state = dir_at(state.root());
-    let manifest = load_manifest(&state, state_root).expect("load manifest");
+    let state = state_at(state.root());
+    let manifest = load_manifest(&state).expect("load manifest");
     let desired = Desired::from_caller(desired.clone());
     let observations =
         observe(&dest, &manifest, &block_markers(&desired)).expect("observe destination");
@@ -111,8 +112,7 @@ fn stopping(
 ) -> std::result::Result<ApplyReport, Box<Aborted>> {
     apply(
         &dir_at(dest.root()),
-        &dir_at(state.root()),
-        state.root(),
+        &state_at(state.root()),
         manifest,
         plan,
     )
@@ -149,7 +149,7 @@ fn pipeline_with(
 
 // The manifest as persisted in the state fixture.
 fn persisted(state: &Fixture) -> Manifest {
-    load_manifest(&dir_at(state.root()), state.root()).expect("load persisted manifest")
+    load_manifest(&state_at(state.root())).expect("load persisted manifest")
 }
 
 // A hand-built manifest entry under the given owners.
@@ -508,10 +508,9 @@ fn removal_plan_for(
     scope: RemovalScope<'_>,
     policy: DriftPolicy,
 ) -> (Manifest, Plan) {
-    let state_root = state.root();
     let dest = dir_at(dest.root());
-    let state = dir_at(state.root());
-    let manifest = load_manifest(&state, state_root).expect("load manifest");
+    let state = state_at(state.root());
+    let manifest = load_manifest(&state).expect("load manifest");
     let observations =
         observe(&dest, &manifest, &BlockMarkers::new()).expect("observe destination");
     let plan = decide_removal(owner, scope, &manifest, &observations, None, policy);
@@ -1247,7 +1246,7 @@ fn removing_a_missing_path_forgets_it_rather_than_claiming_a_removal() {
         "gone.txt".into(),
         recorded(EntryKind::File, sha256_hex(b"bye"), &["own"]),
     );
-    save_manifest(&dir_at(state.root()), state.root(), &manifest).expect("seed the state dir");
+    save_manifest(&state_at(state.root()), &manifest).expect("seed the state dir");
 
     let report =
         pipeline(&dest, &state, "own", &BTreeMap::new(), DriftPolicy::Refuse).expect("removal");
@@ -1267,7 +1266,7 @@ fn removing_a_missing_path_refuses_if_a_node_appeared_in_the_gap() {
         "gone.txt".into(),
         recorded(EntryKind::File, sha256_hex(b"bye"), &["own"]),
     );
-    save_manifest(&dir_at(state.root()), state.root(), &manifest).expect("seed the state dir");
+    save_manifest(&state_at(state.root()), &manifest).expect("seed the state dir");
     let (manifest, plan) = plan_for(&dest, &state, "own", &BTreeMap::new(), DriftPolicy::Refuse);
     assert_eq!(
         plan.actions,
@@ -1298,7 +1297,7 @@ fn removing_a_recorded_symlink_unlinks_it_and_leaves_the_target() {
         "latest".into(),
         recorded(EntryKind::Symlink, sha256_hex(b"notes"), &["own"]),
     );
-    save_manifest(&dir_at(state.root()), state.root(), &manifest).expect("seed the state dir");
+    save_manifest(&state_at(state.root()), &manifest).expect("seed the state dir");
 
     let report =
         pipeline(&dest, &state, "own", &BTreeMap::new(), DriftPolicy::Refuse).expect("removal");
@@ -2164,7 +2163,7 @@ fn a_link_released_and_reappearing_in_the_gap_does_not_relocate_the_write() {
         "pivot".into(),
         recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own", "other"]),
     );
-    save_manifest(&dir_at(state.root()), state.root(), &seeded).expect("seed the state dir");
+    save_manifest(&state_at(state.root()), &seeded).expect("seed the state dir");
 
     // The link is not on disk at plan time, so the no-alias rule sees no
     // ancestor link and the write under it is planned.
@@ -2239,15 +2238,15 @@ fn a_run_that_could_not_record_what_it_applied_leaves_foreign_paths() {
         },
     )]);
     let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
-    let (dest_dir, state_dir) = (dir_at(dest.root()), dir_at(state.root()));
+    let (dest_dir, state_dir) = (dir_at(dest.root()), state_at(state.root()));
     // The state directory goes out from under the run, so every action applies
     // and the manifest recording them cannot be written. The handle stays open
     // and stays useless, which is what a state directory a run cannot write to
     // looks like from inside the run.
     std::fs::remove_dir_all(state.root()).expect("the state directory goes");
 
-    let stopped = apply(&dest_dir, &state_dir, state.root(), &manifest, &plan)
-        .expect_err("the manifest cannot be written");
+    let stopped =
+        apply(&dest_dir, &state_dir, &manifest, &plan).expect_err("the manifest cannot be written");
 
     assert!(matches!(stopped.stopped, Stopped::Recording(_)));
     assert!(!stopped.stopped.recorded());
@@ -2297,7 +2296,7 @@ fn a_run_that_stopped_part_way_and_could_not_record_it_keeps_both_errors() {
         "pivot".into(),
         recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own", "other"]),
     );
-    save_manifest(&dir_at(state.root()), state.root(), &seeded).expect("seed the state dir");
+    save_manifest(&state_at(state.root()), &seeded).expect("seed the state dir");
     let desired = BTreeMap::from([(
         Utf8PathBuf::from("pivot/x.txt"),
         Entry::File {
@@ -2306,12 +2305,12 @@ fn a_run_that_stopped_part_way_and_could_not_record_it_keeps_both_errors() {
         },
     )]);
     let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
-    let (dest_dir, state_dir) = (dir_at(dest.root()), dir_at(state.root()));
+    let (dest_dir, state_dir) = (dir_at(dest.root()), state_at(state.root()));
     std::os::unix::fs::symlink("real", dest.path("pivot")).expect("the link reappears");
     std::fs::remove_dir_all(state.root()).expect("the state directory goes");
 
-    let stopped = apply(&dest_dir, &state_dir, state.root(), &manifest, &plan)
-        .expect_err("the write refuses part-way");
+    let stopped =
+        apply(&dest_dir, &state_dir, &manifest, &plan).expect_err("the write refuses part-way");
 
     let Stopped::ApplyingAndRecording {
         applying,
@@ -2502,7 +2501,7 @@ fn deciding_aims_that_removal_at_the_node_the_walk_resolves_to() {
         "logs/x.txt".into(),
         recorded(EntryKind::File, sha256_hex(b"bytes"), &["own"]),
     );
-    save_manifest(&dir_at(state.root()), state.root(), &manifest).expect("seed the manifest");
+    save_manifest(&state_at(state.root()), &manifest).expect("seed the manifest");
 
     let (loaded, plan) = plan_for(&dest, &state, "own", &BTreeMap::new(), DriftPolicy::Refuse);
 
@@ -2730,8 +2729,8 @@ fn a_sourced_key_reports_its_source_at_the_path_the_action_lands_on() {
         Origin::Files,
     );
     let dest_dir = dir_at(dest.root());
-    let state_dir = dir_at(state.root());
-    let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
+    let state_dir = state_at(state.root());
+    let manifest = load_manifest(&state_dir).expect("load manifest");
     let observations =
         observe(&dest_dir, &manifest, &block_markers(&desired)).expect("observe destination");
     let plan = decide(
@@ -2744,7 +2743,7 @@ fn a_sourced_key_reports_its_source_at_the_path_the_action_lands_on() {
     )
     .expect("decide");
 
-    let report = apply(&dest_dir, &state_dir, state.root(), &manifest, &plan).expect("apply");
+    let report = apply(&dest_dir, &state_dir, &manifest, &plan).expect("apply");
 
     // The key normalizes, so the action — and the row — is at `b.txt`; the
     // origin has to follow it there rather than stay at the spelling.
@@ -3518,7 +3517,7 @@ fn a_path_beneath_another_owners_link_refuses_containment() {
         "logs".into(),
         recorded(EntryKind::Symlink, sha256_hex(b"real"), &["other"]),
     );
-    save_manifest(&dir_at(state.root()), state.root(), &manifest).expect("seed the state dir");
+    save_manifest(&state_at(state.root()), &manifest).expect("seed the state dir");
 
     let desired = BTreeMap::from([(
         Utf8PathBuf::from("logs/x.txt"),
@@ -3551,7 +3550,7 @@ fn a_path_beneath_a_link_this_run_removes_is_written_as_an_ordinary_path() {
         "logs".into(),
         recorded(EntryKind::Symlink, sha256_hex(b"real"), &["own"]),
     );
-    save_manifest(&dir_at(state.root()), state.root(), &manifest).expect("seed the state dir");
+    save_manifest(&state_at(state.root()), &manifest).expect("seed the state dir");
 
     // The desired tree drops the link and names a path under its name: act
     // removes the link first, so the write lands in a real directory.
@@ -3865,8 +3864,8 @@ fn removing_a_block_leaves_the_container_byte_identical_apart_from_the_region() 
 
         let (manifest, plan) = {
             let dest_dir = dir_at(dest.root());
-            let state_dir = dir_at(state.root());
-            let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
+            let state_dir = state_at(state.root());
+            let manifest = load_manifest(&state_dir).expect("load manifest");
             let observations =
                 observe(&dest_dir, &manifest, &BlockMarkers::new()).expect("observe");
             let plan = decide_removal(
@@ -4165,7 +4164,7 @@ fn a_symlink_at_the_container_path_is_foreign_unrecorded_and_drift_recorded() {
             &["own"],
         ),
     );
-    save_manifest(&dir_at(state.root()), state.root(), &manifest).expect("record the region");
+    save_manifest(&state_at(state.root()), &manifest).expect("record the region");
     let recorded_error = pipeline(&dest, &state, "own", &desired, DriftPolicy::Overwrite)
         .expect_err("a swapped container is drift");
     match recorded_error {
@@ -4339,8 +4338,8 @@ fn the_bytes_outside_a_region_are_never_interpreted() {
 
     let (manifest, plan) = {
         let dest_dir = dir_at(dest.root());
-        let state_dir = dir_at(state.root());
-        let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
+        let state_dir = state_at(state.root());
+        let manifest = load_manifest(&state_dir).expect("load manifest");
         let observations = observe(&dest_dir, &manifest, &BlockMarkers::new()).expect("observe");
         let plan = decide_removal(
             "own",
@@ -4461,8 +4460,8 @@ fn a_second_marker_line_past_the_edge_refuses_and_strands_nothing() {
         );
         let (manifest, plan) = {
             let dest_dir = dir_at(dest.root());
-            let state_dir = dir_at(state.root());
-            let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
+            let state_dir = state_at(state.root());
+            let manifest = load_manifest(&state_dir).expect("load manifest");
             let observations =
                 observe(&dest_dir, &manifest, &BlockMarkers::new()).expect("observe");
             let plan = decide_removal(
@@ -4636,7 +4635,7 @@ fn load_manifest_reads_an_absent_file_as_empty() {
 fn load_manifest_reports_format_and_version_defects() {
     let (_, state) = fixtures();
     fs::write(state.path(MANIFEST_FILE_NAME), "not json").expect("write garbage");
-    match load_manifest(&dir_at(state.root()), state.root()) {
+    match load_manifest(&state_at(state.root())) {
         // Absolute: the operator has to open the file, and the bare name
         // does not say which state directory holds it.
         Err(Error::ManifestFormat { path, .. }) => {
@@ -4650,7 +4649,7 @@ fn load_manifest_reports_format_and_version_defects() {
         r#"{"version": 9, "entries": {}}"#,
     )
     .expect("write a future version");
-    match load_manifest(&dir_at(state.root()), state.root()) {
+    match load_manifest(&state_at(state.root())) {
         Err(Error::ManifestVersion {
             found, supported, ..
         }) => {
@@ -4669,7 +4668,7 @@ fn save_manifest_round_trips_and_leaves_no_litter() {
         recorded(EntryKind::File, sha256_hex(b"alpha"), &["one", "two"]),
     );
 
-    save_manifest(&dir_at(state.root()), state.root(), &manifest).expect("save");
+    save_manifest(&state_at(state.root()), &manifest).expect("save");
 
     assert_eq!(persisted(&state), manifest);
     assert_eq!(names_in(&state), vec![MANIFEST_FILE_NAME.to_owned()]);
@@ -4683,8 +4682,8 @@ fn plan_result(
     desired: &BTreeMap<Utf8PathBuf, Entry>,
 ) -> (Manifest, Result<Plan>) {
     let dest_dir = dir_at(dest.root());
-    let state_dir = dir_at(state.root());
-    let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
+    let state_dir = state_at(state.root());
+    let manifest = load_manifest(&state_dir).expect("load manifest");
     let desired = Desired::from_caller(desired.clone());
     let observations =
         observe(&dest_dir, &manifest, &block_markers(&desired)).expect("observe destination");

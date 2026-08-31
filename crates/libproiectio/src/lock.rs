@@ -4,11 +4,10 @@
 //! other. Advisory binds proiectio against proiectio: no other writer in the
 //! destination is excluded.
 
-use camino::Utf8Path;
-use cap_std::fs_utf8::{Dir, File, OpenOptions};
+use cap_std::fs_utf8::{File, OpenOptions};
 
 use crate::observe::io_error;
-use crate::{Error, LOCK_FILE_NAME, Result};
+use crate::{Error, LOCK_FILE_NAME, Result, StateDir};
 
 /// The single-writer guard on a state directory: while one is alive, no other
 /// [`acquire`](StateLock::acquire) on the same state directory — thread or
@@ -24,13 +23,10 @@ impl StateLock {
     /// Takes the lock on `state`'s [`LOCK_FILE_NAME`], creating the file if
     /// absent; never blocks — a lock held elsewhere reports
     /// [`Error::LockHeld`]. The file outlives the guard, never unlinked.
-    ///
-    /// `state_dir` is where the handle is rooted, and only the messages use
-    /// it: a contended lock is one the operator has to go look at, and the
-    /// file name alone does not say which state directory holds it.
-    pub(crate) fn acquire(state: &Dir, state_dir: &Utf8Path) -> Result<StateLock> {
-        let path = state_dir.join(LOCK_FILE_NAME);
+    pub(crate) fn acquire(state: &StateDir) -> Result<StateLock> {
+        let path = state.path_of(LOCK_FILE_NAME);
         let file = state
+            .dir()
             .open_with(LOCK_FILE_NAME, OpenOptions::new().create(true).write(true))
             .map_err(io_error(&path))?;
         match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
