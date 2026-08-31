@@ -169,7 +169,7 @@ fn messages_open_with_the_kind_and_name_each_path_with_its_detail() {
         rendered,
         [
             "refusing to touch drifted paths (edited on disk): drift; \
-             pass --force to overwrite them",
+             pass --force to touch them anyway",
             "refusing directories the plan can neither replace nor remove: \
              directory (holding directory/note.md, directory/theirs (held by site), \
              which --force does not remove)",
@@ -195,7 +195,7 @@ fn messages_open_with_the_kind_and_name_each_path_with_its_detail() {
 fn every_kind_names_what_lifts_it_or_names_nothing() {
     for kind in one_of_each().iter().map(|(_, refusal, _)| refusal.kind()) {
         let expected = match kind {
-            RefusalKind::Drift => Some("pass --force to overwrite them"),
+            RefusalKind::Drift => Some("pass --force to touch them anyway"),
             RefusalKind::ExternalTarget => Some("pass --allow-external-targets to write them"),
             RefusalKind::Foreign => Some(
                 "no flag overrides this: remove the paths by hand to let the projection write them",
@@ -225,7 +225,7 @@ fn a_message_states_what_lifts_it_once_however_many_paths_it_names() {
     assert_eq!(
         refused.to_string(),
         "refusing to touch drifted paths (edited on disk): bin/tool, etc/rc; \
-         pass --force to overwrite them"
+         pass --force to touch them anyway"
     );
 }
 

@@ -1736,7 +1736,7 @@ fn a_refused_dry_run_renders_the_whole_plan() {
             "would refuse     bin/tool              (drifted) (from mapping {deploy})\n\
              would overwrite  config/settings.toml  (content changed)\n\
              would skip       current               -> releases/1.2.3\n\
-             pass --force to overwrite them\n"
+             pass --force to touch them anyway\n"
         )
     );
     assert_eq!(result.error(), None);
@@ -1855,7 +1855,7 @@ fn a_refused_rm_renders_the_document_its_dry_run_renders() {
         "would refuse     bin/tool              (drifted)\n\
          would remove     config/settings.toml\n\
          would remove     current\n\
-         pass --force to overwrite them\n"
+         pass --force to touch them anyway\n"
     );
     assert!(dest.join("bin/tool").exists());
 }
@@ -2060,7 +2060,7 @@ fn a_refusal_before_the_first_action_prints_the_members_strip_erased() {
             "would refuse     top             (drifted) (from archive {archive})\n\
              dropped          ._skeleton-1.2  (no path left after strip 1) \
              (from archive {archive})\n\
-             pass --force to overwrite them\n"
+             pass --force to touch them anyway\n"
         )
     );
 }
@@ -2199,7 +2199,7 @@ fn a_run_that_stopped_part_way_states_the_rows_it_applied() {
     assert_eq!(
         rendered.stdout(),
         "released   pivot\n\
-         refused    pivot/x.txt  (containment)\n\
+         refused    pivot/x.txt  (containment) (below the symlink pivot)\n\
          1 released, 1 refused — the run stopped part-way through the plan, \
          and what it applied stands\n"
     );
@@ -2245,7 +2245,7 @@ fn the_document_a_run_that_stopped_part_way_renders_is_not_a_plan() {
     );
     assert_eq!(
         stated(&value["refused"]["rows"], "pivot/x.txt")["verdict"]["Refuse"]["refusal"],
-        serde_json::json!({ "Containment": { "through": JsonValue::Null } })
+        serde_json::json!({ "Containment": { "through": "pivot" } })
     );
 }
 
@@ -2269,7 +2269,7 @@ fn a_refusal_met_while_applying_renders_the_keys_the_error_names() {
     assert_eq!(
         rendered.stdout(),
         "would refuse     bin/tool  (drifted) (from mapping /srv/deploy.toml)\n\
-         pass --force to overwrite them\n"
+         pass --force to touch them anyway\n"
     );
 }
 

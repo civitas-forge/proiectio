@@ -261,9 +261,14 @@ impl RefusalKind {
     /// [`ExternalTargetPolicy`](crate::ExternalTargetPolicy) are spelled one
     /// way on every command line that drives this engine, and a message that
     /// names the policy without naming the flag leaves the reader to guess.
+    ///
+    /// One kind's hint serves every command that can raise it, so it says what
+    /// passing the flag permits rather than what the command then does with the
+    /// path: `--force` overwrites a drifted path under `write` and removes it
+    /// under `rm`, and a hint naming either verb would lie under the other.
     pub fn override_hint(self) -> Option<&'static str> {
         match self {
-            RefusalKind::Drift => Some("pass --force to overwrite them"),
+            RefusalKind::Drift => Some("pass --force to touch them anyway"),
             RefusalKind::Foreign => Some(
                 "no flag overrides this: remove the paths by hand to let the projection write them",
             ),

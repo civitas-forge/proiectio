@@ -1210,7 +1210,7 @@ fn the_rows_close_with_what_lifts_each_kind_of_refusal_among_them_once() {
     assert_eq!(
         document.hints,
         [
-            "pass --force to overwrite them",
+            "pass --force to touch them anyway",
             "pass --allow-external-targets to write them",
         ]
     );
@@ -1230,11 +1230,29 @@ fn rows_nothing_lifts_close_with_nothing() {
 /// The hints come from the library rather than from strings spelled here, so
 /// the CLI and the library say one thing: each kind is looked up by the name
 /// the library serializes it under, and a kind whose name this view cannot
-/// find would silently lose its hint. The match is over `RefusalKind` itself,
-/// so a kind added there stops this compiling.
+/// find would silently lose its hint.
+///
+/// The kinds are spelled out here rather than read off `REFUSAL_KINDS`,
+/// because that array is the very thing under test: a loop over it can only
+/// ever agree with itself, and a kind the array left out would go unvisited
+/// and unmissed. The match is over `RefusalKind` itself, so a kind added to
+/// the library stops this compiling until somebody comes here — where this
+/// list and the array in `run.rs` are both in view — and the two assertions
+/// below then hold the array to it.
 #[test]
 fn every_kind_the_library_lifts_finds_its_hint_through_the_serialized_name() {
-    for kind in REFUSAL_KINDS {
+    let declared = [
+        RefusalKind::Containment,
+        RefusalKind::TreeConflict,
+        RefusalKind::Foreign,
+        RefusalKind::Drift,
+        RefusalKind::DirectoryInTheWay,
+        RefusalKind::OwnerConflict,
+        RefusalKind::ExternalTarget,
+        RefusalKind::InvalidTarget,
+        RefusalKind::Block,
+    ];
+    for kind in declared {
         match kind {
             RefusalKind::Containment
             | RefusalKind::TreeConflict
@@ -1248,8 +1266,15 @@ fn every_kind_the_library_lifts_finds_its_hint_through_the_serialized_name() {
         }
         let name = kind_name(kind).expect("a kind serializes as its name");
 
+        assert!(
+            REFUSAL_KINDS.contains(&kind),
+            "REFUSAL_KINDS leaves out {kind:?}, whose hint the view would drop"
+        );
         assert_eq!(hinting(&name), kind.override_hint(), "{kind:?}");
     }
+    // The other direction: nothing sits in the array that the list above no
+    // longer names, so the two cannot drift apart in either one.
+    assert_eq!(REFUSAL_KINDS.len(), declared.len());
 }
 
 /// A kind this CLI does not know carries no hint rather than one belonging to

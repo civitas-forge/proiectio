@@ -1942,9 +1942,12 @@ fn a_file_write_the_walk_would_relocate_through_an_owned_link_refuses() {
         apply_at(&dest, &state, &manifest, &plan).expect_err("a file is never written off its key");
 
     match error {
-        Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
-            assert_eq!(paths_of(&refused), BTreeSet::from(["logs/x.txt".into()]))
-        }
+        // `logs/x.txt` is spelled entirely of ordinary components, so the
+        // message says which ancestor is the link that put it out of reach.
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment => assert_eq!(
+            refused.to_string(),
+            "refusing paths that violate containment: logs/x.txt (below the symlink logs)"
+        ),
         other => panic!("expected Containment, got {other:?}"),
     }
     assert_tree(dest.root(), &linked);
@@ -1987,9 +1990,10 @@ fn a_block_whose_container_the_walk_relocates_refuses() {
         .expect_err("a region is never spliced off its key");
 
     match error {
-        Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
-            assert_eq!(paths_of(&refused), BTreeSet::from(["logs/rc".into()]))
-        }
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment => assert_eq!(
+            refused.to_string(),
+            "refusing paths that violate containment: logs/rc (below the symlink logs)"
+        ),
         other => panic!("expected Containment, got {other:?}"),
     }
     assert_tree(dest.root(), &linked);
@@ -2259,9 +2263,10 @@ fn a_link_the_walk_would_relocate_through_an_owned_link_refuses() {
         .expect_err("a link is never published off its key");
 
     match error {
-        Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
-            assert_eq!(paths_of(&refused), BTreeSet::from(["pivot/x".into()]))
-        }
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment => assert_eq!(
+            refused.to_string(),
+            "refusing paths that violate containment: pivot/x (below the symlink pivot)"
+        ),
         other => panic!("expected Containment, got {other:?}"),
     }
     // `a` landed — `real/x` is nothing, so it points at `escape` inside the

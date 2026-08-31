@@ -627,7 +627,12 @@ fn regrade_recorded_link(
     if plan.external_targets == ExternalTargetPolicy::Allow {
         return Ok(());
     }
-    let Some((parent, leaf, resolved_parent)) = verified_parent(dest, manifest, path, false)?
+    let Some(Walked {
+        parent,
+        leaf,
+        resolved_parent,
+        ..
+    }) = verified_parent(dest, manifest, path, false)?
     else {
         return Err(drift(path));
     };
@@ -662,7 +667,12 @@ fn remove(
     path: &Utf8Path,
     expected: Option<&NodeSignature>,
 ) -> Result<Option<Utf8PathBuf>> {
-    let Some((parent, leaf, resolved_parent)) = verified_parent(dest, manifest, path, false)?
+    let Some(Walked {
+        parent,
+        leaf,
+        resolved_parent,
+        ..
+    }) = verified_parent(dest, manifest, path, false)?
     else {
         return match expected {
             Some(_) => Err(drift(path)),
@@ -689,7 +699,12 @@ fn remove(
 /// carry: anything but an empty directory at `path` is [`Refusal::Drift`].
 fn remove_directory(dest: &Dir, manifest: &Manifest, path: &Utf8Path) -> Result<Utf8PathBuf> {
     use std::io::ErrorKind;
-    let Some((parent, leaf, resolved_parent)) = verified_parent(dest, manifest, path, false)?
+    let Some(Walked {
+        parent,
+        leaf,
+        resolved_parent,
+        ..
+    }) = verified_parent(dest, manifest, path, false)?
     else {
         return Err(drift(path));
     };
@@ -723,7 +738,8 @@ fn prune_above(vacated: &Utf8Path, candidates: &mut BTreeSet<Utf8PathBuf>) {
 fn prune(dest: &Dir, manifest: &Manifest, candidates: &BTreeSet<Utf8PathBuf>) -> Result<()> {
     use std::io::ErrorKind;
     for path in candidates.iter().rev() {
-        let Some((parent, leaf, _)) = verified_parent(dest, manifest, path, false)? else {
+        let Some(Walked { parent, leaf, .. }) = verified_parent(dest, manifest, path, false)?
+        else {
             continue;
         };
         match parent.remove_dir(&leaf) {
@@ -751,10 +767,16 @@ fn write(
     plan: &Plan,
     unpublished: &BTreeSet<Utf8PathBuf>,
 ) -> Result<Written> {
-    let Some((parent, leaf, resolved_parent)) = verified_parent(dest, manifest, path, true)? else {
+    let Some(Walked {
+        parent,
+        leaf,
+        resolved_parent,
+        through,
+    }) = verified_parent(dest, manifest, path, true)?
+    else {
         unreachable!("a creating walk opens or creates every ancestor");
     };
-    at_action_key(path, &resolved_parent.join(&leaf))?;
+    at_action_key(path, &resolved_parent.join(&leaf), through.as_deref())?;
     if fresh {
         match parent.symlink_metadata(&leaf) {
             Ok(_) => {
@@ -839,7 +861,12 @@ fn read_block_container(
     manifest: &Manifest,
     path: &Utf8Path,
 ) -> Result<Option<OpenContainer>> {
-    let Some((parent, leaf, resolved_parent)) = verified_parent(dest, manifest, path, false)?
+    let Some(Walked {
+        parent,
+        leaf,
+        resolved_parent,
+        through,
+    }) = verified_parent(dest, manifest, path, false)?
     else {
         return Ok(None);
     };
@@ -851,6 +878,7 @@ fn read_block_container(
             bytes,
             mode,
             landing,
+            through,
         })),
         Container::Absent => Ok(None),
         Container::Other => Err(if manifest.entries.contains_key(path) {
@@ -869,6 +897,9 @@ struct OpenContainer {
     /// Where the no-follow walk came out, relative to the destination: the
     /// action key unless the walk followed an owned link.
     landing: Utf8PathBuf,
+    /// The link the walk followed to land there, where it followed any —
+    /// [`Walked::through`].
+    through: Option<Utf8PathBuf>,
 }
 
 /// Executes an [`Action::Write`] whose entry is a block: splices the region
@@ -892,7 +923,7 @@ fn write_block(
     let Some(container) = read_block_container(dest, manifest, path)? else {
         return Err(block_refusal(path, BlockFault::ContainerMissing));
     };
-    at_action_key(path, &container.landing)?;
+    at_action_key(path, &container.landing, container.through.as_deref())?;
     if let Some((was_marker, was_placement)) = manifest
         .entries
         .get(path)
@@ -960,7 +991,7 @@ fn overwrite_block(
     let Some(container) = read_block_container(dest, manifest, path)? else {
         return Err(drift(path));
     };
-    at_action_key(path, &container.landing)?;
+    at_action_key(path, &container.landing, container.through.as_deref())?;
     if block::occurrence_count(&container.bytes, recorded_marker) != 1 {
         return Err(drift(path));
     }
@@ -1198,7 +1229,7 @@ fn check_expected(
     path: &Utf8Path,
     expected: &NodeSignature,
 ) -> Result<()> {
-    let Some((parent, leaf, _)) = verified_parent(dest, manifest, path, false)? else {
+    let Some(Walked { parent, leaf, .. }) = verified_parent(dest, manifest, path, false)? else {
         return Err(drift(path));
     };
     check_leaf(&parent, &leaf, path, expected)
@@ -1262,16 +1293,33 @@ fn link_target_hash(parent: &Dir, leaf: &str, path: &Utf8Path) -> Result<String>
     Ok(sha256_hex(bytes))
 }
 
+/// What the no-follow ancestor walk came out at.
+struct Walked {
+    /// The handle on the directory holding the leaf, opened without following
+    /// a final link.
+    parent: Dir,
+    /// `path`'s final component.
+    leaf: String,
+    /// The prefix the walk actually traversed, which differs from `path`'s
+    /// parent where the walk followed an owned link.
+    resolved_parent: Utf8PathBuf,
+    /// The first owned link the walk followed, where it followed any. It is
+    /// the one link that is an ancestor of `path` as spelled — the walk
+    /// restarts from the destination on following it, so any later link lies
+    /// under the resolved prefix instead — which makes it the one that
+    /// explains a `resolved_parent` the caller did not ask for.
+    through: Option<Utf8PathBuf>,
+}
+
 /// The no-follow ancestor walk: opens each ancestor component of `path` from
-/// the previously verified handle and returns that parent handle, the leaf
-/// name, and the walked prefix — which differs from `path`'s parent where the
-/// walk followed an owned link. Without `create`, missing ancestry answers `None`.
+/// the previously verified handle and returns where it came out. Without
+/// `create`, missing ancestry answers `None`.
 fn verified_parent(
     dest: &Dir,
     manifest: &Manifest,
     path: &Utf8Path,
     create: bool,
-) -> Result<Option<(Dir, String, Utf8PathBuf)>> {
+) -> Result<Option<Walked>> {
     let mut components: VecDeque<String> = path
         .components()
         .map(|component| component.as_str().to_owned())
@@ -1281,6 +1329,7 @@ fn verified_parent(
         .expect("validated action paths have a final component");
     let mut dir = dest.try_clone().map_err(io_error(Utf8Path::new(".")))?;
     let mut prefix = Utf8PathBuf::new();
+    let mut through: Option<Utf8PathBuf> = None;
     let mut visited: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     while let Some(component) = components.pop_front() {
         let here = prefix.join(&component);
@@ -1343,6 +1392,7 @@ fn verified_parent(
                     .collect();
                 restarted.append(&mut components);
                 components = restarted;
+                through.get_or_insert(here);
                 dir = dest.try_clone().map_err(io_error(Utf8Path::new(".")))?;
                 prefix = Utf8PathBuf::new();
                 continue;
@@ -1363,7 +1413,12 @@ fn verified_parent(
         }
         prefix = here;
     }
-    Ok(Some((dir, leaf, prefix)))
+    Ok(Some(Walked {
+        parent: dir,
+        leaf,
+        resolved_parent: prefix,
+        through,
+    }))
 }
 
 /// Opens the directory named `name` inside `dir` without following a final
@@ -1378,11 +1433,21 @@ fn open_nofollow(dir: &Dir, name: &str) -> std::io::Result<Dir> {
 /// Holds a write to its action key: `landing` is where [`verified_parent`]'s
 /// walk came out, and anywhere but `path` refuses as [`Refusal::Containment`].
 /// Removals are held to no key.
-fn at_action_key(path: &Utf8Path, landing: &Utf8Path) -> Result<()> {
+///
+/// A landing that is not the key means the walk followed an owned link, so
+/// [`Walked::through`] names it and the refusal carries it: the key here is
+/// spelled entirely of ordinary components, and the link is the whole of why
+/// it lands elsewhere.
+fn at_action_key(path: &Utf8Path, landing: &Utf8Path, through: Option<&Utf8Path>) -> Result<()> {
     if landing == path {
         Ok(())
     } else {
-        Err(containment(path))
+        Err(refuse(
+            path,
+            Refusal::Containment {
+                through: through.map(Utf8Path::to_path_buf),
+            },
+        ))
     }
 }
 

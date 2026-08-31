@@ -90,7 +90,7 @@ fn refused_plan(deploy: &Utf8Path) -> String {
         "would refuse     bin/tool              (drifted) (from mapping {deploy})\n\
          would skip       config/settings.toml\n\
          would link       current               -> releases/1.2.3\n\
-         pass --force to overwrite them\n"
+         pass --force to touch them anyway\n"
     )
 }
 
@@ -300,7 +300,7 @@ fn rm_of_a_drifted_path_refuses_until_force_lifts_the_policy() {
     assert_eq!(leaving(&refused, &verdict), exit::REFUSAL);
     assert_eq!(
         refused.stdout(),
-        "would refuse     bin/tool  (drifted)\npass --force to overwrite them\n"
+        "would refuse     bin/tool  (drifted)\npass --force to touch them anyway\n"
     );
     assert_eq!(refused.error(), None);
     assert_eq!(
@@ -597,7 +597,7 @@ fn a_refused_dry_run_of_rm_renders_the_whole_plan() {
         "would refuse     bin/tool              (drifted)\n\
          would remove     config/settings.toml\n\
          would remove     current\n\
-         pass --force to overwrite them\n"
+         pass --force to touch them anyway\n"
     );
     assert_eq!(result.error(), None);
     assert!(dest.join("bin/tool").exists());
