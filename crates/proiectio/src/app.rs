@@ -125,8 +125,12 @@ pub(crate) fn build(verdict: Verdict) -> Result<App> {
         })
         .command_with("write", handlers::write__handler, |cfg| {
             cfg.template("run.jinja")
+                .structured_output_projection(views::run_csv())
         })?
-        .command_with("rm", handlers::rm__handler, |cfg| cfg.template("run.jinja"))?
+        .command_with("rm", handlers::rm__handler, |cfg| {
+            cfg.template("run.jinja")
+                .structured_output_projection(views::run_csv())
+        })?
         .command_with("status", handlers::status__handler, |cfg| {
             cfg.template("status.jinja")
                 .structured_output_projection(views::status_csv())

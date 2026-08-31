@@ -173,7 +173,7 @@ pub(crate) fn apply(run: Run, ctx: &CommandContext) -> Result<Output<RunView>, a
         return planned_report(plan, plan.report(run.manifest()), ctx);
     }
     match run.apply() {
-        Ok(applied) => Ok(Output::Render(RunView::Applied(Box::new(applied)))),
+        Ok(applied) => Ok(Output::Render(RunView::Applied(Box::new(applied.into())))),
         Err(aborted) => stopped(aborted, ctx),
     }
 }

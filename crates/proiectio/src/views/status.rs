@@ -12,10 +12,11 @@ use std::iter;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use standout::AmbiguousWidth;
-use standout::tabular::{Column, Width, visible_width_with_policy};
+use standout::tabular::visible_width_with_policy;
 use standout::{CsvProjection, StructuredOutputProjection};
 
 use crate::app::verbatim;
+use crate::views::cells;
 use crate::views::pad;
 
 /// One printed line: the classification in its own style, and the path it
@@ -115,69 +116,25 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> StatusLines 
 /// input named it and not where a link points, so `origin` and a link's target
 /// are null in every status row of every destination; a column for either
 /// would promise what the document never carries. A `write` or `rm` row states
-/// both, and neither command has a projection — see #121.
+/// both, and its own projection carries them.
 pub(crate) fn csv() -> StructuredOutputProjection {
     StructuredOutputProjection::csv(
         CsvProjection::builder("rows")
-            .column(column("path"))
-            .derived_column(named("verdict"), |row, _| {
-                cell(Some(verdict_name(row.get("verdict")).to_owned()))
+            .column(cells::column("path"))
+            .derived_column(cells::header("verdict"), |row, _| {
+                cells::cell(Some(verdict_name(row.get("verdict")).to_owned()))
             })
-            .derived_column(named("shape"), |row, _| cell(shape(row)))
-            .derived_column(named("executable"), |row, _| cell(executable(row)))
-            .derived_column(named("owners"), |row, _| cell(owners(row)))
+            .derived_column(cells::header("shape"), |row, _| {
+                cells::cell(cells::shape(row))
+            })
+            .derived_column(cells::header("executable"), |row, _| {
+                cells::cell(cells::executable(row))
+            })
+            .derived_column(cells::header("owners"), |row, _| {
+                cells::cell(cells::owners(row))
+            })
             .build(),
     )
-}
-
-/// A column reading one field of the row.
-fn column(key: &str) -> Column {
-    named(key).key(key)
-}
-
-/// A column a callback fills, named for what it states.
-fn named(header: &str) -> Column {
-    Column::new(Width::fill()).header(header)
-}
-
-/// A cell holding what a row states, and an empty one where it states nothing.
-fn cell(value: Option<String>) -> JsonValue {
-    JsonValue::String(value.unwrap_or_default())
-}
-
-/// The shape the manifest records for the path, in one word.
-fn shape(row: &JsonValue) -> Option<String> {
-    let shape = row.get("facts")?.get("shape")?;
-    let named = match shape {
-        JsonValue::String(name) => name.as_str(),
-        JsonValue::Object(fields) => fields.keys().next()?.as_str(),
-        _ => return None,
-    };
-    Some(named.to_lowercase())
-}
-
-/// Whether the recorded file carries the executable bit; nothing for a path
-/// whose shape has no such bit.
-fn executable(row: &JsonValue) -> Option<String> {
-    let executable = row
-        .get("facts")?
-        .get("shape")?
-        .get("File")?
-        .get("executable")?
-        .as_bool()?;
-    Some(executable.to_string())
-}
-
-/// The owners holding the path, as the JSON array the row states them in. An
-/// owner name is an opaque string, so any character this cell joined names
-/// with could also sit inside one, and `["a+b", "c"]` and `["a", "b+c"]` would
-/// reach a reader as the same cell; the array says which is which.
-fn owners(row: &JsonValue) -> Option<String> {
-    let owners = row.get("facts")?.get("owners")?.as_array()?;
-    if owners.is_empty() {
-        return None;
-    }
-    serde_json::to_string(owners).ok()
 }
 
 #[cfg(test)]

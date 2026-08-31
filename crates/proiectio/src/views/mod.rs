@@ -4,11 +4,13 @@
 use standout::AmbiguousWidth;
 use standout::tabular::visible_width_with_policy;
 
+mod cells;
 mod config;
 mod run;
 mod status;
 
 pub(crate) use config::ConfigView;
+pub(crate) use run::csv as run_csv;
 pub(crate) use run::lines as run_lines;
 pub(crate) use run::{AbortedRun, PlannedRun, RunView, refused_rows};
 pub(crate) use status::csv as status_csv;

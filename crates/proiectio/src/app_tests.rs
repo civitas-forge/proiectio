@@ -23,7 +23,8 @@ use crate::cli;
 use crate::exit;
 use crate::testing::{
     appledouble_tarball, assert_styles_resolved, assert_tags_declared, classified, dot_tarball,
-    flat_tarball, harness, manifest_of, modified, row, skeleton, stated, tarball, tour, utf8,
+    flat_tarball, harness, manifest_of, modified, published, row, skeleton, stated, tarball, tour,
+    utf8,
 };
 
 fn app() -> App {
@@ -208,6 +209,84 @@ fn csv_writes_one_row_per_path_under_the_same_header() {
          bin/tool,Drifted,file,false,\"[\"\"default\"\"]\"\n\
          config/settings.toml,Clean,file,false,\"[\"\"default\"\"]\"\n\
          current,Missing,file,false,\"[\"\"default\"\"]\"\n"
+    );
+}
+
+/// `write` writes one record per path too, under the header its own projection
+/// names — the same header in both tenses, and the same one over a destination
+/// of any size. Before the projection each run wrote a single record whose
+/// header spelled a position per row, so the header moved with the number of
+/// rows and nothing could be written to read it.
+#[test]
+#[serial]
+fn a_write_pass_writes_one_csv_record_per_path_under_the_same_header() {
+    let (dir, dest, deploy) = tour();
+    let header = "path,verdict,detail,shape,executable,target,owners,origin\n";
+    let named = format!("\"{{\"\"Mapping\"\":{{\"\"path\"\":\"\"{deploy}\"\"}}}}\"");
+
+    let planned = harness(&dir).output_mode(OutputMode::Csv).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str(), "--dry-run"], &dest),
+    );
+    let applied = harness(&dir).output_mode(OutputMode::Csv).run(
+        &app(),
+        cli::command(),
+        write_argv(&[deploy.as_str()], &dest),
+    );
+
+    planned.assert_success();
+    applied.assert_success();
+    assert_eq!(
+        planned.stdout(),
+        format!(
+            "{header}\
+             bin/tool,Write,,file,true,,,{named}\n\
+             config/settings.toml,Write,,file,false,,,{named}\n\
+             current,Write,,symlink,,releases/1.2.3,,{named}\n"
+        )
+    );
+    // The verdict vocabulary is the tense's own, which is what the `phase`
+    // field the other modes carry tells a reader apart; the header is not.
+    assert_eq!(
+        applied.stdout(),
+        format!(
+            "{header}\
+             bin/tool,Written,,file,true,,\"[\"\"default\"\"]\",{named}\n\
+             config/settings.toml,Written,,file,false,,\"[\"\"default\"\"]\",{named}\n\
+             current,Written,,symlink,,releases/1.2.3,\"[\"\"default\"\"]\",{named}\n"
+        )
+    );
+}
+
+/// And `rm` writes the same header, over the rows its own tenses state. Every
+/// removal is the caller's own, which the origin cell names: a blank there is
+/// a row stating no origin at all, not a row nothing named.
+#[test]
+#[serial]
+fn a_removal_writes_its_records_under_the_header_a_write_writes() {
+    let (dir, dest, deploy) = tour();
+    harness(&dir)
+        .run(
+            &app(),
+            cli::command(),
+            write_argv(&[deploy.as_str()], &dest),
+        )
+        .assert_success();
+
+    let removed = harness(&dir).output_mode(OutputMode::Csv).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "rm", "--dest", dest.as_str()],
+    );
+
+    removed.assert_success();
+    assert_eq!(
+        removed.stdout(),
+        "path,verdict,detail,shape,executable,target,owners,origin\n\
+         bin/tool,Removed,,file,true,,\"[\"\"default\"\"]\",Caller\n\
+         config/settings.toml,Removed,,file,false,,\"[\"\"default\"\"]\",Caller\n\
+         current,Removed,,symlink,,,\"[\"\"default\"\"]\",Caller\n"
     );
 }
 
@@ -1458,11 +1537,10 @@ fn a_strip_that_erases_every_member_fails_and_removes_nothing() {
     assert!(dest.join("skeleton-1.2/top").exists());
 }
 
-/// The same drop under structured output, in both tenses: it rides the
-/// library's own report, beside the rows rather than among them, since a
-/// dropped member is spelled as the archive spells it and not as a path in
-/// the destination. A plan flattens its rows beside `dropped` and an apply
-/// nests them under `report`, so `dropped` sits at the top level either way.
+/// The same drop under structured output, in both tenses: it rides beside the
+/// rows rather than among them, since a dropped member is spelled as the
+/// archive spells it and not as a path in the destination. Both tenses state
+/// their rows at `rows` and their drops at `dropped`.
 #[test]
 #[serial]
 fn a_dropped_member_rides_the_librarys_own_report() {
@@ -1486,6 +1564,7 @@ fn a_dropped_member_rides_the_librarys_own_report() {
 
     planned.assert_success();
     let value: JsonValue = serde_json::from_str(planned.stdout()).expect("a JSON document");
+    assert_eq!(value["phase"], "planned");
     assert_eq!(stated(&value["rows"], "top")["verdict"], "Write");
     assert!(row(&value["rows"], "._skeleton-1.2").is_none());
     assert_eq!(value["dropped"], record);
@@ -1498,12 +1577,9 @@ fn a_dropped_member_rides_the_librarys_own_report() {
 
     applied.assert_success();
     let value: JsonValue = serde_json::from_str(applied.stdout()).expect("a JSON document");
-    assert_eq!(
-        stated(&value["report"]["rows"], "top")["verdict"],
-        "Written"
-    );
-    assert!(row(&value["report"]["rows"], "._skeleton-1.2").is_none());
-    assert!(value["report"].get("dropped").is_none());
+    assert_eq!(value["phase"], "applied");
+    assert_eq!(stated(&value["rows"], "top")["verdict"], "Written");
+    assert!(row(&value["rows"], "._skeleton-1.2").is_none());
     assert_eq!(value["dropped"], record);
 }
 
@@ -1748,7 +1824,7 @@ fn a_refused_dry_run_renders_the_whole_plan() {
 }
 
 /// And structured output is the library's own plan document, refusals and
-/// all, on the same status.
+/// all, under the planned phase and on the same status.
 #[test]
 #[serial]
 fn a_refused_dry_run_is_the_librarys_own_plan_document() {
@@ -1775,7 +1851,10 @@ fn a_refused_dry_run_is_the_librarys_own_plan_document() {
         .expect("a plan");
     assert_eq!(
         value,
-        serde_json::to_value(planned.report()).expect("a serialized report")
+        published(
+            "planned",
+            serde_json::to_value(planned.report()).expect("a serialized report")
+        )
     );
     let tool = stated(&value["rows"], "bin/tool");
     assert_eq!(tool["verdict"]["Refuse"]["refusal"], "Drift");
@@ -2060,8 +2139,7 @@ fn a_refusal_before_the_first_action_states_the_members_strip_erased() {
         "Drift"
     );
     assert_eq!(value["dropped"][0]["member"], "._skeleton-1.2");
-    assert!(value.get("report").is_none());
-    assert!(value.get("aborted").is_none());
+    assert_eq!(value["phase"], "planned");
 }
 
 /// The same run rendered: the refused row and the dropped member, in the tense
@@ -2112,11 +2190,8 @@ fn a_run_a_failure_stopped_renders_its_rows_and_the_failure() {
     assert_eq!(leaving(&structured, &verdict), exit::FAILURE);
     assert_eq!(structured.error(), None);
     let value: JsonValue = serde_json::from_str(structured.stdout()).expect("a JSON document");
-    assert_eq!(value["aborted"], JsonValue::Bool(true));
-    assert_eq!(
-        stated(&value["report"]["rows"], "bin/tool")["verdict"],
-        "Written"
-    );
+    assert_eq!(value["phase"], "aborted");
+    assert_eq!(stated(&value["rows"], "bin/tool")["verdict"], "Written");
     // The write is on the destination and the state directory does not record
     // it, which the document says as a flag, as the phase that stopped, and as
     // the sentence the failure would otherwise have been reported with alone.
@@ -2263,12 +2338,8 @@ fn the_document_a_run_that_stopped_part_way_renders_is_not_a_plan() {
     assert_eq!(leaving(&structured, &verdict), exit::REFUSAL);
     assert_eq!(structured.error(), None);
     let value: JsonValue = serde_json::from_str(structured.stdout()).expect("a JSON document");
-    assert_eq!(value["aborted"], JsonValue::Bool(true));
-    assert_eq!(value.get("rows"), None);
-    assert_eq!(
-        stated(&value["report"]["rows"], "pivot")["verdict"],
-        "Released"
-    );
+    assert_eq!(value["phase"], "aborted");
+    assert_eq!(stated(&value["rows"], "pivot")["verdict"], "Released");
     assert_eq!(
         stated(&value["refused"]["rows"], "pivot/x.txt")["verdict"]["Refuse"]["refusal"],
         serde_json::json!({ "Containment": { "through": "pivot" } })
@@ -2345,6 +2416,7 @@ fn a_refusal_met_while_applying_is_the_document_a_refused_plan_is() {
     assert_eq!(
         value,
         serde_json::json!({
+            "phase": "planned",
             "rows": [{
                 "path": "bin/tool",
                 "verdict": { "Refuse": { "refusal": "Drift" } },
@@ -2546,7 +2618,7 @@ fn a_dry_run_release_row_carries_the_owners_the_real_run_reports() {
     let planned: JsonValue = serde_json::from_str(dry.stdout()).expect("a JSON document");
     let real: JsonValue = serde_json::from_str(applied.stdout()).expect("a JSON document");
     let planned_conf = stated(&planned["rows"], "conf");
-    let real_conf = stated(&real["report"]["rows"], "conf");
+    let real_conf = stated(&real["rows"], "conf");
     assert_eq!(planned_conf["verdict"], "Release");
     assert_eq!(real_conf["verdict"], "Released");
     assert_eq!(
@@ -2590,11 +2662,12 @@ fn an_external_symlink_target_refuses_until_the_invocation_allows_it() {
     allowed.assert_stdout_contains("linked     toolchain  -> /opt/toolchains/rust-1.80");
 }
 
-/// Structured output is the library's own plan report: no view model stands
-/// between a consumer and the document the library serializes.
+/// Structured output is the library's own plan report under the phase naming
+/// the tense it reads in: nothing else stands between a consumer and the
+/// document the library serializes.
 #[test]
 #[serial]
-fn a_dry_run_is_the_librarys_own_plan_report() {
+fn a_dry_run_publishes_the_librarys_own_plan_report() {
     let (dir, dest, deploy) = tour();
 
     let result = harness(&dir).output_mode(OutputMode::Json).run(
@@ -2617,15 +2690,20 @@ fn a_dry_run_is_the_librarys_own_plan_report() {
         .expect("a plan");
     assert_eq!(
         value,
-        serde_json::to_value(planned.report()).expect("a serialized report")
+        published(
+            "planned",
+            serde_json::to_value(planned.report()).expect("a serialized report")
+        )
     );
 }
 
-/// And a real run is the library's own apply report, whose manifest reads
-/// back as the one on disk.
+/// And a real run publishes the same three keys in every destination: the
+/// phase, the library's own applied rows, and the manifest, which reads back
+/// as the one on disk. `ApplyReport` nests its rows under `report`; the
+/// published document flattens them, so both tenses state rows at `rows`.
 #[test]
 #[serial]
-fn a_real_run_is_the_librarys_own_apply_report() {
+fn a_real_run_publishes_the_librarys_own_apply_report() {
     let (dir, dest, deploy) = tour();
 
     let result = harness(&dir).output_mode(OutputMode::Json).run(
@@ -2642,12 +2720,9 @@ fn a_real_run_is_the_librarys_own_apply_report() {
             .expect("an object")
             .keys()
             .collect::<Vec<_>>(),
-        vec!["report", "manifest"]
+        vec!["phase", "rows", "manifest"]
     );
-    assert_eq!(
-        stated(&value["report"]["rows"], "bin/tool")["verdict"],
-        "Written"
-    );
+    assert_eq!(stated(&value["rows"], "bin/tool")["verdict"], "Written");
     assert_eq!(
         serde_json::from_value::<Manifest>(value["manifest"].clone()).expect("a manifest"),
         manifest_of(&dest)

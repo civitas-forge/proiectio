@@ -511,10 +511,7 @@ fn rm_of_a_path_the_owner_never_recorded_says_so_and_still_succeeds() {
     );
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
-    assert_eq!(
-        stated(&value["report"]["rows"], "typo.txt")["verdict"],
-        "NotRecorded"
-    );
+    assert_eq!(stated(&value["rows"], "typo.txt")["verdict"], "NotRecorded");
 }
 
 /// A path another owner holds alone is one this owner does not hold, so the
@@ -574,14 +571,14 @@ fn rm_of_a_path_another_owner_holds_reports_it_and_leaves_it_alone() {
     );
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
-    let row = stated(&value["report"]["rows"], "config/settings.toml");
+    let row = stated(&value["rows"], "config/settings.toml");
     assert_eq!(row["verdict"], "NotRecorded");
     assert_eq!(row["facts"]["owners"], serde_json::json!(["them"]));
 }
 
 /// A refused dry run of `rm` renders the whole plan too: the rows it would
 /// remove beside the row it refuses, on stdout and with the refusal status,
-/// and structured output is the library's own plan document.
+/// and structured output states the same rows under the planned phase.
 #[test]
 #[serial]
 fn a_refused_dry_run_of_rm_renders_the_whole_plan() {
@@ -634,11 +631,11 @@ fn rm_of_an_owner_holding_nothing_succeeds() {
     assert_eq!(result.stdout(), "nothing to do\n");
 }
 
-/// Structured output is the library's own report, as `write`'s is: no view
-/// model stands between a consumer and the document the library serializes.
+/// Structured output is the library's own rows, as `write`'s is, under the
+/// phase naming the tense they read in.
 #[test]
 #[serial]
-fn rm_is_the_librarys_own_reports() {
+fn rm_publishes_the_librarys_own_rows() {
     let (dir, dest, deploy) = tour();
     run(&dir, &["write", deploy.as_str(), "--dest", dest.as_str()]).assert_success();
 
@@ -653,11 +650,10 @@ fn rm_is_the_librarys_own_reports() {
     applied.assert_success();
     let planned: JsonValue = serde_json::from_str(dry.stdout()).expect("a JSON document");
     let real: JsonValue = serde_json::from_str(applied.stdout()).expect("a JSON document");
+    assert_eq!(planned["phase"], "planned");
+    assert_eq!(real["phase"], "applied");
     assert_eq!(stated(&planned["rows"], "bin/tool")["verdict"], "Remove");
-    assert_eq!(
-        stated(&real["report"]["rows"], "bin/tool")["verdict"],
-        "Removed"
-    );
+    assert_eq!(stated(&real["rows"], "bin/tool")["verdict"], "Removed");
     assert_eq!(
         real["manifest"],
         serde_json::to_value(manifest_of(&dest)).expect("a serialized manifest")
