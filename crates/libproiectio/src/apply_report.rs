@@ -35,10 +35,7 @@ pub enum ApplyOutcome {
 /// at the end of the run.
 ///
 /// A run that could not finish reports the same rows for what it did apply,
-/// inside the [`Aborted`] it fails with. Whether the state directory records
-/// those rows is [`Stopped::recorded`]'s to say: this manifest is the one the
-/// run decided on, which a successful run persists and an aborted one may
-/// not have.
+/// inside the [`Aborted`] it fails with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApplyReport {
     pub report: Report<ApplyOutcome>,
@@ -47,9 +44,8 @@ pub struct ApplyReport {
     /// wrote nothing for them.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub dropped: BTreeSet<Dropped>,
-    /// The manifest the run decided on: written to the state directory where
-    /// the run succeeded, and where an aborted run's [`Stopped::recorded`]
-    /// says so.
+    /// The manifest the run decided on; whether the state directory holds it
+    /// is [`Stopped::recorded`]'s to say.
     pub manifest: Manifest,
 }
 
@@ -143,9 +139,7 @@ impl std::error::Error for Aborted {
 
 impl fmt::Display for Aborted {
     /// What stopped the run, then how far it got and whether the state
-    /// directory records that, so a message quoting this never reads as a run
-    /// that stopped before it touched the destination — nor as one whose
-    /// writes are on record when they are not.
+    /// directory records that.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let applied = self.applied.report.rows.len();
         let paths = if applied == 1 { "path" } else { "paths" };

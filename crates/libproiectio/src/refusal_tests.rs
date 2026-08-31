@@ -232,8 +232,6 @@ fn every_kind_names_what_lifts_it_or_names_nothing() {
     }
 }
 
-// A `Refused` carries one kind, so the way out is stated once — after the
-// last path, not after each of them.
 #[test]
 fn a_message_states_what_lifts_it_once_however_many_paths_it_names() {
     let refused = Refused::aggregate([
@@ -250,8 +248,6 @@ fn a_message_states_what_lifts_it_once_however_many_paths_it_names() {
     );
 }
 
-// A path spelled entirely of ordinary components reads as an accusation
-// against its spelling unless the message says which ancestor is the link.
 #[test]
 fn a_containment_message_names_the_symlink_ancestor_where_one_is_the_cause() {
     let message = |through: Option<&str>| {
@@ -275,8 +271,6 @@ fn a_containment_message_names_the_symlink_ancestor_where_one_is_the_cause() {
     );
 }
 
-// The two things that hold a directory read as two clauses: what --force
-// will not remove, and what the walk could not name in the first place.
 #[test]
 fn a_directory_message_states_what_it_holds_and_what_it_could_not_read() {
     let message = |holding: BTreeMap<Utf8PathBuf, BTreeSet<String>>, unreadable: &[&str]| {

@@ -122,10 +122,8 @@ fn a_rendered_value_parses_as_the_toml_it_looks_like() {
     assert_eq!(parsed["owner"].as_str(), Some(awkward));
 }
 
-/// A scoped listing reads the file rather than the schema, so it carries keys
-/// the schema does not name and clapfig has already stringified their values.
-/// Whether the spelling stands as a value is what is left to ask, so every
-/// line parses whatever the writer put there.
+/// A scoped listing carries keys the schema does not name, already
+/// stringified; every line parses whatever the writer put there.
 #[test]
 fn a_line_for_a_key_the_schema_does_not_name_still_parses() {
     let listing = view(ConfigResult::Listing {

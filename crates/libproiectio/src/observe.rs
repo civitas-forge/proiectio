@@ -177,22 +177,18 @@ pub(crate) fn block_markers(desired: &crate::Desired) -> BlockMarkers {
 
 /// Walks the union of the destination directory and the manifest and
 /// snapshots what is on disk into [`Observations`], reading everything
-/// through the capability handle `dest`.
+/// through the capability handle `dest`. The projection's own state subtree
+/// is not excluded here.
 ///
 /// cap-std has no read-only handle type, so "this stage writes nothing"
-/// (`docs/implementation.lex` section 1) is a discipline the walk keeps and
-/// its tests check, not a guarantee the types carry.
+/// (`docs/implementation.lex` §1) is a discipline the walk keeps and its
+/// tests check, not a guarantee the types carry.
 ///
 /// Symlinks are observed as themselves and never entered, so a recorded path
-/// beneath one observes [`Observation::Absent`]. An entry whose name is not
-/// UTF-8 has no key to be observed under, so it is skipped and the directory
-/// holding it is named in [`Observations::unreadable`] — the walk saying that
-/// more stands there than it can state. An entry that cannot be read at all
-/// is an [`Error::Io`] carrying the path relative to the destination (`.` for
-/// the destination itself). A destination nesting more than
-/// [`MAX_WALK_DEPTH`] directories below `dest` is
-/// [`Error::DestinationTooDeep`] naming the directory a level past that. The
-/// projection's own state subtree is not excluded here.
+/// beneath one observes [`Observation::Absent`]. An entry that cannot be
+/// read is an [`Error::Io`] at the path relative to the destination (`.` for
+/// the destination itself); nesting past [`MAX_WALK_DEPTH`] is
+/// [`Error::DestinationTooDeep`].
 pub(crate) fn observe(
     dest: &Dir,
     manifest: &Manifest,
@@ -209,18 +205,11 @@ pub(crate) fn observe(
     Ok(into)
 }
 
-/// States the region of every block record whose ancestry walks out through a
-/// recorded link, under the record's own key and read out of the container the
-/// walk comes out at.
-///
-/// [`walk`] picks a container to parse by the manifest key standing at the
-/// path it is walking, so a container the key only reaches through a link
-/// observes as an ordinary [`File`](Observation::File) at the location it
-/// actually occupies. Deciding grades a record against the container applying
-/// strips the region from, which is that one — and the region is stated under
-/// the record's key because the marker, the placement, and the desired text
-/// are the record's own: two keys reaching one container each hold a region of
-/// their own there.
+/// States the region of every block record whose ancestry walks out through
+/// a recorded link, under the record's own key and read out of the container
+/// the walk comes out at — [`walk`] itself only parses a container under the
+/// key standing at the path it is walking, and two keys reaching one
+/// container each hold a region of their own there.
 fn relocated_regions(
     dest: &Dir,
     manifest: &Manifest,
@@ -239,8 +228,8 @@ fn relocated_regions(
         if landing.at == *path {
             continue;
         }
-        // A record of its own at the landing already had its region parsed
-        // under its own marker, and only a regular file holds a region at all.
+        // A block record at the landing already had its region parsed, and
+        // only a regular file holds a region at all.
         if manifest
             .entries
             .get(&landing.at)

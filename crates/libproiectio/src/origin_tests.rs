@@ -50,8 +50,6 @@ fn every_variant_renders_its_source() {
     }
 }
 
-// The no-origin case reads as a plain refusal rather than apologising for
-// having no source to name.
 #[test]
 fn a_caller_computed_tree_adds_nothing_to_the_message() {
     assert_eq!(
@@ -72,7 +70,6 @@ fn a_named_source_reaches_the_message() {
     );
 }
 
-// A removal is decided from the manifest, so it has no source tree to name.
 #[test]
 fn the_default_origin_is_the_caller() {
     assert_eq!(Origin::default(), Origin::Caller);

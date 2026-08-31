@@ -34,9 +34,8 @@ fn checked(dest: &Utf8Path, state_dir: Option<&Utf8Path>, check: bool) -> (u8, V
     (verdict.over(exit::OK), standout::warnings::drain_warnings())
 }
 
-/// The adapter, called as the typed function the `#[handler]` macro preserves:
-/// the two options become a [`Projection`], and what comes back is the
-/// library's own report, unmapped.
+/// The adapter, called as the typed function the `#[handler]` macro
+/// preserves; what comes back is the library's own report, unmapped.
 #[test]
 fn the_two_options_become_the_projection_the_library_classifies() {
     let dir = TempDir::new().expect("a temporary directory");
@@ -92,9 +91,8 @@ fn a_state_directory_outside_the_destination_still_names_the_manifest() {
 /// do to it after it is projected, and the status `--check` leaves with.
 type Case = (&'static str, Option<fn(&Utf8Path)>, u8);
 
-/// The verdict `--check` records: everything clean passes, and each of the
-/// three ways a path can differ from the manifest spends the refusal status.
-/// Plain `status` leaves 0 on all four.
+/// Everything clean passes; each of the three ways a path can differ spends
+/// the refusal status. Plain `status` leaves 0 on all four.
 #[test]
 fn check_records_the_refusal_status_for_every_state_but_clean() {
     let cases: [Case; 4] = [
@@ -159,9 +157,8 @@ fn a_named_state_directory_that_is_not_there_warns() {
     );
 }
 
-/// The typo a gate has to fail on: the report reads every path foreign and
-/// says nothing is wrong with the destination, so the missing directory
-/// itself is what `--check` spends the refusal on.
+/// The typo a gate has to fail on: the missing directory itself is what
+/// `--check` spends the refusal on.
 #[test]
 fn check_refuses_a_named_state_directory_that_is_not_there() {
     let dir = TempDir::new().expect("a temporary directory");
@@ -176,10 +173,8 @@ fn check_refuses_a_named_state_directory_that_is_not_there() {
     );
 }
 
-/// The default state directory is absent until something is projected, so its
-/// absence is the ordinary state of a fresh destination rather than a mistake:
-/// no warning, and `--check` passes an empty destination whose empty manifest
-/// agrees with it.
+/// The default state directory's absence is the ordinary state of a fresh
+/// destination: no warning, and `--check` passes.
 #[test]
 fn the_default_state_directory_being_absent_is_neither_a_warning_nor_a_refusal() {
     let dir = TempDir::new().expect("a temporary directory");
@@ -209,11 +204,8 @@ fn removal(dest: &Utf8Path, state_dir: Option<&Utf8Path>, dry_run: bool) -> Vec<
     standout::warnings::drain_warnings()
 }
 
-/// A `--state-dir` the filesystem does not have reads as the empty manifest,
-/// which records nothing to remove, so the removal unlinks nothing and says on
-/// stderr why. A real run creates the state directory it was told to use, so
-/// the fact is read before the run rather than after it, and the dry run and
-/// the real one warn alike.
+/// A `--state-dir` the filesystem does not have reads as the empty manifest;
+/// the removal unlinks nothing and says on stderr why, in both tenses.
 #[test]
 fn rm_warns_about_a_named_state_directory_that_is_not_there() {
     for dry_run in [false, true] {
@@ -236,9 +228,6 @@ fn rm_warns_about_a_named_state_directory_that_is_not_there() {
     }
 }
 
-/// The default state directory is absent until something is projected, so a
-/// removal over a destination nothing has been projected onto has nothing to
-/// report about it.
 #[test]
 fn rm_over_the_default_state_directory_warns_about_nothing() {
     let dir = TempDir::new().expect("a temporary directory");
@@ -250,8 +239,7 @@ fn rm_over_the_default_state_directory_warns_about_nothing() {
 }
 
 /// A destination the removal cannot open is an operational failure and the
-/// whole report: nothing warns about a state directory the run never went on
-/// to read.
+/// whole report.
 #[test]
 fn a_removal_that_cannot_open_the_destination_does_not_warn() {
     let _ = standout::warnings::drain_warnings();
@@ -301,9 +289,6 @@ fn a_destination_that_is_not_there_fails_with_status_one() {
     assert_eq!(external.exit_status().code(), exit::FAILURE);
 }
 
-/// A destination that is not there fails whether or not the invocation named
-/// a state directory, and the failure is the whole report: nothing warns about
-/// a directory the classification never got as far as reading.
 #[test]
 fn a_destination_that_is_not_there_warns_about_no_state_directory() {
     let _ = standout::warnings::drain_warnings();

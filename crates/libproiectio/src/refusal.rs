@@ -15,22 +15,16 @@ pub enum Refusal {
     /// [`contained_join`](crate::contained_join), it lies beneath a symlink
     /// that outlives the plan, or it overlaps the state directory.
     Containment {
-        /// The ancestor that is a symlink, where that is what put the path out
-        /// of reach: a path spelled entirely of ordinary components still
-        /// resolves somewhere else, and a message that only says "containment"
-        /// reads as an accusation against the spelling. `None` where the
-        /// spelling itself is what containment declines, or where the stage
-        /// that refused knows no link.
+        /// The ancestor symlink that put the path out of reach, where one
+        /// did; `None` where the spelling itself is what containment
+        /// declines, or where the stage that refused knows no link.
         through: Option<Utf8PathBuf>,
     },
-    /// One plan claims a single on-disk location more than once: this key
-    /// shares a normalized path with another desired key, its path lies
-    /// beneath another desired path, or it is a removal that — following a
-    /// recorded link — acts where another action acts. Both sides of a
-    /// conflict are refused.
+    /// One plan claims a single on-disk location more than once. Both sides
+    /// of a conflict are refused.
     TreeConflict {
-        /// The other keys, verbatim, whose claims land on the same or an
-        /// overlapping location.
+        /// The other keys, verbatim, claiming the same or an overlapping
+        /// location.
         paths: BTreeSet<Utf8PathBuf>,
     },
     /// A removal whose ancestry walk followed a recorded link came out on a
@@ -55,13 +49,11 @@ pub enum Refusal {
     /// nothing: what the directory holds is not the projection's to unlink.
     DirectoryInTheWay {
         /// What keeps the directory standing, each with the owners recording
-        /// it — empty where nothing records it. An empty map is a directory
-        /// holding nothing the run may remove: one somebody made by hand.
+        /// it. An empty map is a directory holding nothing the run may
+        /// remove: one somebody made by hand.
         holding: BTreeMap<Utf8PathBuf, BTreeSet<String>>,
         /// The directory itself, or ones beneath it, holding a name that is
-        /// not UTF-8. Observation cannot represent such an entry, so nothing
-        /// may conclude the directory empties, and the run refuses rather
-        /// than remove on a premise it cannot check.
+        /// not UTF-8 — nothing may conclude such a directory empties.
         unreadable: BTreeSet<Utf8PathBuf>,
     },
     /// The desired entry — bytes, kind, or executable bit — differs from what
@@ -231,27 +223,18 @@ impl Refusal {
 /// it in this list; nothing else ranks it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum RefusalKind {
-    /// [`Refusal::Containment`].
     Containment,
-    /// [`Refusal::TreeConflict`].
     TreeConflict,
-    /// [`Refusal::RecordedLanding`].
     RecordedLanding,
-    /// [`Refusal::Foreign`].
     Foreign,
-    /// [`Refusal::Drift`].
     Drift,
-    /// [`Refusal::DirectoryInTheWay`]. Ranked below [`Drift`](Self::Drift) so
-    /// that a drifted node beneath the directory — the one thing `--force`
-    /// clears out of the way — is the message a run states first.
+    /// Ranked below [`Drift`](Self::Drift) so that a drifted node beneath
+    /// the directory — the one thing `--force` clears out of the way — is
+    /// the message a run states first.
     DirectoryInTheWay,
-    /// [`Refusal::OwnerConflict`].
     OwnerConflict,
-    /// [`Refusal::ExternalTarget`].
     ExternalTarget,
-    /// [`Refusal::InvalidTarget`].
     InvalidTarget,
-    /// [`Refusal::Block`].
     Block,
 }
 
@@ -280,38 +263,14 @@ impl RefusalKind {
         }
     }
 
-    /// What lifts a refusal of this kind, in the invocation's own vocabulary:
-    /// the flag the caller passes, or — where no flag lifts it — what the
-    /// caller does instead. `None` for the kinds a caller answers by naming
-    /// different paths, which the paths themselves already say.
-    ///
-    /// The flag names are this crate's on purpose: the policies
-    /// [`DriftPolicy`](crate::DriftPolicy) and
-    /// [`ExternalTargetPolicy`](crate::ExternalTargetPolicy) are spelled one
-    /// way on every command line that drives this engine, and a message that
-    /// names the policy without naming the flag leaves the reader to guess.
-    ///
-    /// One kind's hint serves every command that can raise it, so it says what
-    /// passing the flag permits rather than what the command then does with the
-    /// path: `--force` overwrites a drifted path under `write` and removes it
-    /// under `rm`, and a hint naming either verb would lie under the other.
-    ///
-    /// A hint may not send the reader somewhere the engine will refuse them
-    /// again, and it may never send them somewhere destructive. Two kinds
-    /// carry a qualifier for that reason, and both qualifiers are load-bearing:
-    ///
-    /// - `--force` does not lift every [`Drift`](Self::Drift). A drifted node
-    ///   the projection cannot pin a signature on — a directory or a device
-    ///   standing where a file was, or a region among duplicate markers —
-    ///   refuses under
-    ///   [`DriftPolicy::Overwrite`](crate::DriftPolicy::Overwrite) too, since
-    ///   the engine will not replace what it cannot first identify.
-    /// - Removing a [`Foreign`](Self::Foreign) path is right for a node the
-    ///   projection wanted to write whole, and wrong for a block: a block owns
-    ///   a region, not the container holding it, and never creates a container.
-    ///   Deleting the container destroys the author's file and leaves the next
-    ///   run refusing
-    ///   [`ContainerMissing`](crate::BlockFault::ContainerMissing).
+    /// What lifts a refusal of this kind — the flag the caller passes, or
+    /// what they do instead; `None` for kinds answered by naming different
+    /// paths. Hints name flags, not policies, and serve every command that
+    /// can raise the kind, so they say what the flag permits rather than
+    /// what one command does with it. Both qualifiers below are load-bearing:
+    /// `--force` cannot lift a drift the projection cannot pin a signature
+    /// on, and hand-removing a foreign block's *container* would destroy the
+    /// author's file.
     pub fn override_hint(self) -> Option<&'static str> {
         match self {
             RefusalKind::Drift => Some(
@@ -346,11 +305,9 @@ pub struct Refused {
 /// One refused key's reason and provenance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RefusedPath {
-    /// Why the key is refused.
     pub refusal: Refusal,
-    /// Which source named the key: the one the plan records for it — or,
-    /// for an ancestor refused while acting on a planned key, for that key
-    /// — and [`Origin::Caller`] where the caller named it directly.
+    /// Which source named the key — for an ancestor refused while acting on
+    /// a planned key, the source of that key.
     pub origin: Origin,
 }
 
@@ -434,8 +391,6 @@ impl fmt::Display for Refused {
                 named => write!(f, " ({named})")?,
             }
         }
-        // Once, after the paths: a `Refused` carries one kind, so the way out
-        // is the same for every key in it.
         match self.kind().override_hint() {
             Some(hint) => write!(f, "; {hint}"),
             None => Ok(()),

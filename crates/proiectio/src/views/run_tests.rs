@@ -90,7 +90,6 @@ fn only(document: RunLines) -> RowView {
     rows.remove(0)
 }
 
-/// Every verdict a plan and a real run report reads as one style and one verb.
 #[test]
 fn each_verdict_spells_one_style_and_one_verb() {
     for (verdict, style, verb) in [
@@ -122,11 +121,9 @@ fn each_verdict_spells_one_style_and_one_verb() {
     }
 }
 
-/// The verdicts above are spelled from string literals, which agree with the
-/// library only as long as nobody renames a variant. This drives the same
-/// mapping from the enums themselves: the `match` fails to compile when a
-/// verdict is added, and the assertion fails when one is renamed, since a
-/// name `spelling` does not know renders as itself.
+/// Drives the spelling from the enums themselves: the `match` fails to
+/// compile when a verdict is added, and the assertion fails when one is
+/// renamed, since a name `spelling` does not know renders as itself.
 #[test]
 fn every_verdict_the_library_declares_reads_as_one_spelling() {
     for verdict in [
@@ -205,8 +202,6 @@ fn every_verdict_the_library_declares_reads_as_one_spelling() {
     }
 }
 
-/// A symlink this run writes reads as a link; every other verdict keeps the
-/// style its own name earned.
 #[test]
 fn a_symlink_reads_as_a_link_only_where_the_run_writes_it() {
     for (verdict, style, verb) in [
@@ -220,8 +215,6 @@ fn a_symlink_reads_as_a_link_only_where_the_run_writes_it() {
     }
 }
 
-/// A verdict this CLI does not know renders its own name, unstyled by any
-/// family the stylesheet spells.
 #[test]
 fn an_unknown_verdict_renders_its_own_name() {
     let row = only(planned(json!({ "one": file(json!("Ponder")) })));
@@ -229,11 +222,8 @@ fn an_unknown_verdict_renders_its_own_name() {
     assert_eq!((row.style, row.verb.as_str()), ("unknown", "Ponder"));
 }
 
-/// The library spells a directory refusal's payload in `Refusal`'s own
-/// message, and this view spells it again from the serialized payload, so the
-/// two say the same thing only as long as somebody keeps them saying it. That
-/// is what this checks: whatever clauses the view writes, the library's own
-/// message ends with them, for each shape the payload takes.
+/// The view's clauses agree with `Refusal`'s own message only as long as
+/// somebody keeps them agreeing; this checks the message ends with them.
 #[test]
 fn a_directory_refusal_reads_the_same_from_the_view_and_from_the_library() {
     let held = |path: &str| (Utf8PathBuf::from(path), BTreeSet::new());
@@ -271,9 +261,6 @@ fn a_directory_refusal_reads_the_same_from_the_view_and_from_the_library() {
     }
 }
 
-/// A refused row names the refusal it carries, in the vocabulary the exit
-/// table names the kinds with; one this CLI does not know reads as the name
-/// the library spelled, escaped.
 #[test]
 fn a_refused_row_names_the_refusal() {
     for (refusal, note) in [
@@ -288,10 +275,8 @@ fn a_refused_row_names_the_refusal() {
     }
 }
 
-/// Every kind the library declares reads as one spelling: the arms are matched
-/// over `RefusalKind` itself, so a kind added there stops this compiling until
-/// the view spells it, and each kind is fed in as the library serializes it, so
-/// a renamed one fails here rather than falling through to the unknown arm.
+/// Matched over `RefusalKind` itself, so an added kind stops this compiling
+/// and a renamed one fails here rather than falling through to unknown.
 #[test]
 fn every_refusal_kind_the_library_declares_reads_as_one_spelling() {
     for kind in [
@@ -324,9 +309,6 @@ fn every_refusal_kind_the_library_declares_reads_as_one_spelling() {
     }
 }
 
-/// A refusal carrying a payload renders it, in the words the library's own
-/// message renders it with, every payload string escaped like any other value
-/// a run did not write.
 #[test]
 fn a_refused_row_renders_the_payload_its_refusal_carries() {
     for (refusal, note) in [
@@ -420,11 +402,8 @@ fn a_refused_row_renders_the_payload_its_refusal_carries() {
     }
 }
 
-/// Every fault the library declares reads as the sentence its own message
-/// spells rather than the name it serializes under; the arms are matched over
-/// `BlockFault` itself, so a fault added there stops this compiling until this
-/// list carries it, and each fault is fed in as the library serializes it, so
-/// a renamed one fails here rather than reaching the view's unknown arm.
+/// Matched over `BlockFault` itself, so an added fault stops this compiling
+/// and a renamed one fails here rather than reaching the unknown arm.
 #[test]
 fn every_block_fault_reads_as_the_message_the_library_spells() {
     for fault in [
@@ -461,8 +440,6 @@ fn every_block_fault_reads_as_the_message_the_library_spells() {
     }
 }
 
-/// A fault this CLI does not know reads as the name the library spelled,
-/// escaped.
 #[test]
 fn an_unknown_block_fault_reads_as_its_own_name() {
     let row = only(refused(&json!({ "Block": { "fault": "[Pondered]" } })));
@@ -470,11 +447,8 @@ fn an_unknown_block_fault_reads_as_its_own_name() {
     assert_eq!(row.note.as_deref(), Some("(block) (\\[Pondered\\])"));
 }
 
-/// A refused row names the source that named the path, in the phrase the
-/// library's own refusal message names it with: the arms are matched over
-/// `Origin` itself, so a source added there stops this compiling, and the
-/// phrase is the origin's own message rather than a copy of it. A path the
-/// caller named itself states only its refusal.
+/// Matched over `Origin` itself, so an added source stops this compiling;
+/// the phrase is the origin's own message rather than a copy of it.
 #[test]
 fn a_refused_row_names_the_source_that_named_the_path() {
     for origin in [
@@ -512,8 +486,6 @@ fn a_refused_row_names_the_source_that_named_the_path() {
     }
 }
 
-/// A source path spelled like markup reaches the terminal as the characters
-/// it is.
 #[test]
 fn a_refused_rows_source_path_is_escaped() {
     let row = only(refused_by(
@@ -529,7 +501,6 @@ fn a_refused_rows_source_path_is_escaped() {
     );
 }
 
-/// A name spelled like markup reaches the terminal as the characters it is.
 #[test]
 fn an_unknown_verdict_spelled_like_a_tag_is_escaped() {
     let row = only(planned(json!({ "one": file(json!("[wrote]")) })));
@@ -537,8 +508,6 @@ fn an_unknown_verdict_spelled_like_a_tag_is_escaped() {
     assert_eq!(row.verb, "\\[wrote\\]");
 }
 
-/// A link names its target, an overwrite says why, and a file left with
-/// neither says only that it is executable.
 #[test]
 fn a_note_states_the_target_the_reason_or_the_executable_bit() {
     let target = only(planned(
@@ -568,8 +537,6 @@ fn a_note_states_the_target_the_reason_or_the_executable_bit() {
     assert_eq!(plain.note, None);
 }
 
-/// A target this run would overwrite carries both, and a link target spelled
-/// like markup is escaped like any other value.
 #[test]
 fn a_drifted_link_states_its_target_and_why_it_would_be_overwritten() {
     let row = only(planned(json!({
@@ -579,8 +546,6 @@ fn a_drifted_link_states_its_target_and_why_it_would_be_overwritten() {
     assert_eq!(row.note.as_deref(), Some("-> \\[x\\]  (content changed)"));
 }
 
-/// The path column is measured in terminal columns, so an escaped bracket and
-/// a wide character leave every note at the same offset.
 #[test]
 fn the_path_column_pads_to_the_widest_path_in_display_width() {
     let document = planned(json!({
@@ -602,8 +567,6 @@ fn the_path_column_pads_to_the_widest_path_in_display_width() {
     );
 }
 
-/// The verb column is the widest verb the run can spell: a plan's, then a
-/// real run's.
 #[test]
 fn the_verb_column_pads_to_the_widest_verb_the_run_spells() {
     let plan = only(planned(json!({ "one": file(json!("Write")) })));
@@ -613,9 +576,6 @@ fn the_verb_column_pads_to_the_widest_verb_the_run_spells() {
     assert_eq!(real.verb.len() + real.verb_pad.len(), 9);
 }
 
-/// An unknown verdict reads as its own name, which can be longer than any verb
-/// this CLI spells. The column widens to hold it, so the paths stay in one
-/// place instead of the long row pushing its own out of line.
 #[test]
 fn a_verb_longer_than_the_column_widens_it_for_every_row() {
     let document = applied(json!({
@@ -631,9 +591,6 @@ fn a_verb_longer_than_the_column_widens_it_for_every_row() {
     assert_eq!(widths, vec!["SomethingUnheardOf".len(); 2]);
 }
 
-/// A plan states no count; a real run counts what it did. A pass that
-/// projected leads with the written/skipped pair, one that only cleared paths
-/// counts what it cleared, and one that touched nothing says so.
 #[test]
 fn a_real_run_counts_what_it_did_and_a_plan_counts_nothing() {
     assert_eq!(
@@ -691,8 +648,6 @@ fn a_real_run_counts_what_it_did_and_a_plan_counts_nothing() {
     }
 }
 
-/// A document naming no rows prints nothing: the injected context is resolved
-/// for every command, and only `write` and `rm` read it.
 #[test]
 fn a_document_that_names_no_rows_prints_nothing() {
     assert_eq!(
@@ -701,11 +656,6 @@ fn a_document_that_names_no_rows_prints_nothing() {
     );
 }
 
-/// A member `strip` left no path prints its own row naming the archive that
-/// carried it and the strip count that erased it. The path column is the
-/// member as the archive spells it, not a location in the destination.
-///
-/// The drop rides beside the rows in every tense, so both documents print it.
 #[test]
 fn a_dropped_member_prints_a_row_naming_the_archive() {
     let dropped = json!([serialized(Dropped {
@@ -732,9 +682,8 @@ fn a_dropped_member_prints_a_row_naming_the_archive() {
     }
 }
 
-/// Two archives dropping the same member name print two rows, each naming
-/// the archive that carried it: a member name is unique only inside its own
-/// archive, so one drop cannot stand for the other.
+/// A member name is unique only inside its own archive, so one drop cannot
+/// stand for the other.
 #[test]
 fn two_archives_dropping_the_same_member_print_both_rows() {
     let carried_by = |archive: &str| {
@@ -772,9 +721,6 @@ fn two_archives_dropping_the_same_member_print_both_rows() {
     );
 }
 
-/// One archive named by two mapping entries drops the same member twice, and
-/// the two rows differ only in what the entries asked for: where the archive
-/// was bound for, and how much of each member name it stripped.
 #[test]
 fn one_archive_under_two_prefixes_prints_a_row_per_entry() {
     let asked_by = |prefix: &str, strip: u32| {
@@ -812,8 +758,6 @@ fn one_archive_under_two_prefixes_prints_a_row_per_entry() {
     );
 }
 
-/// A dropped member takes the same path column as the rows beside it, so the
-/// notes line up.
 #[test]
 fn dropped_members_share_the_path_column_with_the_rows() {
     let document = json!({
@@ -842,9 +786,6 @@ fn dropped_members_share_the_path_column_with_the_rows() {
     );
 }
 
-/// The document a refusal met past the plan renders: one row per refused key,
-/// carrying the refusal and the source the error names, in the same shape a
-/// plan's own refused row has — a null shape, and a verdict under `Refuse`.
 #[test]
 fn a_refusal_renders_the_row_shape_a_refused_plan_renders() {
     let origin = Origin::Mapping {
@@ -882,9 +823,6 @@ fn a_refusal_renders_the_row_shape_a_refused_plan_renders() {
     );
 }
 
-/// Every refused key the error names gets a row, each stating the source that
-/// named it, and a refusal strips no archive so the document carries no
-/// `dropped`.
 #[test]
 fn a_refusal_of_several_keys_renders_a_row_for_each() {
     let held_by = |owner: &str| Refusal::OwnerConflict {
@@ -931,9 +869,6 @@ fn a_refusal_of_several_keys_renders_a_row_for_each() {
     );
 }
 
-/// A refused row states the owners the manifest records at the path, which is
-/// what a plan's own refused row states: a caller reading the two documents
-/// reads one shape, whichever stage refused.
 #[test]
 fn a_refused_row_states_the_owners_the_manifest_records() {
     let refused = Refused::one(
@@ -952,12 +887,6 @@ fn a_refused_row_states_the_owners_the_manifest_records() {
     assert_eq!(document["rows"][0]["facts"]["owners"], json!(["site"]));
 }
 
-/// A run that stopped part-way states both halves as one sequence of rows, in
-/// path order: a refused key sorting before an applied one comes before it, as
-/// it would in any other report, and a reader of `rows` alone reads every path
-/// the run has a verdict for. A refused row states its refusal in the words a
-/// plan states one in. Each row renders in the tense of what happened to it,
-/// and the summary says the run stopped.
 #[test]
 fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
     let refused = Refused::one(
@@ -1014,10 +943,6 @@ fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
     assert!(rendered.stopped.is_empty());
 }
 
-/// A failure rather than a refusal stops a run on the same terms: the rows it
-/// applied, and the diagnostic that would otherwise have replaced them, which
-/// reaches the reader in the document because a rendered run leaves nothing on
-/// stderr.
 #[test]
 fn a_run_a_failure_stopped_states_its_rows_and_the_failure() {
     let document = published_abort(AbortedRun::new(
@@ -1038,10 +963,6 @@ fn a_run_a_failure_stopped_states_its_rows_and_the_failure() {
     );
 }
 
-/// A run whose manifest never reached the state directory says so in the
-/// document and in `recorded`: the destination holds writes nothing on disk
-/// records, which is the one thing a reader of these rows must not assume
-/// away. The one failure stopped one half of the run, so it is stated once.
 #[test]
 fn a_run_that_could_not_record_what_it_applied_says_so() {
     let document = published_abort(AbortedRun::new(
@@ -1062,9 +983,6 @@ fn a_run_that_could_not_record_what_it_applied_says_so() {
     );
 }
 
-/// Every action of such a run applied, so its summary says that rather than
-/// that it stopped part-way: a reader told a plan is half applied goes looking
-/// for a destination missing the rest of it, and this one is missing nothing.
 #[test]
 fn a_run_that_only_its_record_stopped_is_not_called_part_way() {
     let document = published_abort(AbortedRun::new(
@@ -1081,9 +999,6 @@ fn a_run_that_only_its_record_stopped_is_not_called_part_way() {
     );
 }
 
-/// A run that lost both halves states both: the keys it refused as rows, and
-/// the record it could not write as a line. The refusal states itself in the
-/// rows, so only the record is spelled out.
 #[test]
 fn a_run_that_refused_and_could_not_record_states_the_rows_and_the_record() {
     let refused = Refused::one(
@@ -1124,11 +1039,6 @@ fn a_run_that_refused_and_could_not_record_states_the_rows_and_the_record() {
     );
 }
 
-/// The sentences a stopped run states past its records: how far it got, what
-/// stopped it, and — where the manifest never landed — what the destination is
-/// left holding. A record is one path and none of these is about a path, so a
-/// caller reading the records alone would take a run that lost half its plan,
-/// or lost the manifest for the whole of it, for one that finished.
 #[test]
 fn a_stopped_run_states_past_its_records_how_far_it_got_and_what_that_left() {
     let refused = Refused::one(
@@ -1201,9 +1111,6 @@ fn a_stopped_run_states_past_its_records_how_far_it_got_and_what_that_left() {
     );
 }
 
-/// A run that finished has no such sentence, and neither has a plan: the
-/// channel opens on the one tense whose rows do not say the whole of what
-/// happened.
 #[test]
 fn a_plan_and_a_run_that_finished_state_nothing_past_their_rows() {
     let refused = Refused::one(
@@ -1223,11 +1130,6 @@ fn a_plan_and_a_run_that_finished_state_nothing_past_their_rows() {
     }
 }
 
-/// Where the rows sit is what tells the tenses apart, and nothing else in the
-/// document does: a plan and a run that stopped both state their stripped
-/// archive members at the top level, so a plan carrying drops still reads as a
-/// plan and a stopped run carrying them still reads in the tense it applied
-/// its rows in.
 #[test]
 fn drops_at_the_top_level_leave_each_document_in_its_own_tense() {
     let erased = Dropped {
@@ -1269,10 +1171,6 @@ fn drops_at_the_top_level_leave_each_document_in_its_own_tense() {
     assert_eq!(verbs(&stopped), vec!["wrote", "dropped"]);
 }
 
-/// Each of the three tenses names itself and states its rows at `rows`: what a
-/// reader branches on is the phase, and where the rows sit never moves. The
-/// keys past those two are what the tense has to state — a plan has none, an
-/// apply the manifest it wrote, and a stopped run what stopped it.
 #[test]
 fn every_tense_names_its_phase_and_states_its_rows_at_the_same_key() {
     let refused = Refused::one(
@@ -1319,11 +1217,6 @@ fn every_tense_names_its_phase_and_states_its_rows_at_the_same_key() {
     }
 }
 
-/// The CSV columns over the rows of a plan and of the run that applied it: one
-/// record per path under a header that does not move, in either tense. The
-/// verdict vocabulary is the tense's own — `Write` against `Written` — and the
-/// last cell names the tense, so a reader of the records alone tells the two
-/// apart rather than inferring them from a vocabulary they share verdicts with.
 #[test]
 fn csv_writes_one_record_per_path_under_one_header_in_either_tense() {
     let planned = published_plan(PlannedRun {
@@ -1359,11 +1252,6 @@ fn csv_writes_one_record_per_path_under_one_header_in_either_tense() {
     );
 }
 
-/// The two tenses that spell one verdict alike, which is what the phase cell is
-/// there for: a dry run and a real one both state `NotRecorded` at a path no
-/// manifest records, and both rows carry the same facts. Without the last cell
-/// the two records are the same bytes, and a reader of a CSV alone could not
-/// say whether the removal happened.
 #[test]
 fn the_phase_cell_parts_the_two_tenses_that_spell_a_verdict_alike() {
     let record = |phase: &str, verdict: JsonValue| {
@@ -1387,10 +1275,6 @@ fn the_phase_cell_parts_the_two_tenses_that_spell_a_verdict_alike() {
     );
 }
 
-/// A stopped run's CSV names the keys it refused beside the rows it applied,
-/// each with the refusal in `detail`: a reader of the CSV alone learns which
-/// paths the run failed on and why, which is the half of the run that matters
-/// most and the half the rows were once missing.
 #[test]
 fn csv_over_a_stopped_run_states_the_keys_it_refused() {
     let refused = Refused::one(
@@ -1416,11 +1300,6 @@ fn csv_over_a_stopped_run_states_the_keys_it_refused() {
     );
 }
 
-/// The renderer tells the planning tense from the acting ones by matching
-/// `phase` against [`PLANNED`], and serde spells that field from the variant
-/// name: renaming the variant would part the two without a word, and every
-/// plan would then be laid out as an apply. Each arm is serialized here and
-/// checked against the constant the renderer matches on.
 #[test]
 fn the_phase_the_renderer_matches_on_is_the_one_serde_writes() {
     let refused = Refused::one(
@@ -1448,10 +1327,6 @@ fn the_phase_the_renderer_matches_on_is_the_one_serde_writes() {
     }
 }
 
-/// A verdict carrying a payload fills two cells: its own name, and what it
-/// carries. Neither `Overwrite`'s reason nor `Refuse`'s refusal has a column of
-/// its own — a refusal carries a different payload per kind — so `detail` holds
-/// the JSON, and a verdict carrying nothing leaves it empty.
 #[test]
 fn a_verdict_carrying_a_payload_names_itself_and_states_what_it_carries() {
     let detailed = |verdict: JsonValue| {
@@ -1482,8 +1357,6 @@ fn a_verdict_carrying_a_payload_names_itself_and_states_what_it_carries() {
     );
 }
 
-/// A link row states where it points, which a status row never does: a run
-/// decides the target, and the manifest records only that the node is a link.
 #[test]
 fn a_link_row_states_the_target_it_writes() {
     let document = json!({
@@ -1498,15 +1371,6 @@ fn a_link_row_states_the_target_it_writes() {
     );
 }
 
-/// A dropped archive member takes no record: it reached no path in the
-/// destination, so it has no path cell to fill and is no row of the report.
-/// Neither the manifest nor what stopped a run is a row either.
-///
-/// A document whose rows are empty is a header and nothing else, in every
-/// tense: the phase cell rides on records the rows mint, and a run that
-/// reached no path mints none. Naming the tense in a record of its own would
-/// be a record standing for no path, which is the shape the path column
-/// promises against.
 #[test]
 fn a_dropped_member_takes_no_csv_record() {
     let document = published_plan(PlannedRun {
@@ -1533,7 +1397,6 @@ fn a_dropped_member_takes_no_csv_record() {
     assert_eq!(projected(&stopped), header);
 }
 
-/// The CSV a write pass writes for one document.
 fn projected(document: &JsonValue) -> String {
     csv()
         .csv_projection()
@@ -1541,7 +1404,6 @@ fn projected(document: &JsonValue) -> String {
         .expect("a CSV projection")
 }
 
-/// An `ApplyReport` writing the paths named.
 fn wrote(paths: &[&str]) -> ApplyReport {
     ApplyReport {
         report: Report {
@@ -1563,14 +1425,12 @@ fn wrote(paths: &[&str]) -> ApplyReport {
     }
 }
 
-/// A failure that is not a refusal, and carries no `io::Error` to build.
 fn held(path: &str) -> Error {
     Error::LockHeld {
         path: Utf8PathBuf::from(path),
     }
 }
 
-/// A manifest recording one path under the owners named.
 fn holding(path: &str, owners: &[&str]) -> Manifest {
     let mut manifest = Manifest::new();
     manifest.entries.insert(
@@ -1585,10 +1445,6 @@ fn holding(path: &str, owners: &[&str]) -> Manifest {
     manifest
 }
 
-/// A containment refusal whose cause is a symlinked ancestor names the link,
-/// in the words the library's own message names it with: a key spelled
-/// entirely of ordinary components otherwise reads as an accusation against
-/// its spelling. A containment refusal carrying no link names none.
 #[test]
 fn a_containment_row_names_the_symlink_ancestor_the_refusal_carries() {
     let through_config = Refusal::Containment {
@@ -1616,9 +1472,6 @@ fn a_containment_row_names_the_symlink_ancestor_the_refusal_carries() {
     assert_eq!(row.note.as_deref(), Some("(containment)"));
 }
 
-/// What lifts a refusal is stated once per kind, under the rows: fifty
-/// drifted paths are one `--force` away, and fifty copies of the sentence
-/// would bury the paths it is about.
 #[test]
 fn the_rows_close_with_what_lifts_each_kind_of_refusal_among_them_once() {
     let refuse = |refusal: JsonValue| json!({ "facts": null, "verdict": { "Refuse": { "refusal": refusal } } });
@@ -1638,11 +1491,6 @@ fn the_rows_close_with_what_lifts_each_kind_of_refusal_among_them_once() {
     );
 }
 
-/// A run that already carried `--force` and refused drift anyway has met the
-/// drift no policy lifts, so the line naming the flag goes: the reader took
-/// that advice before the run, and repeating it sends them back where they
-/// are. The hints for the other kinds are untouched — `--force` says nothing
-/// about a symlink leaving the destination.
 #[test]
 fn a_run_that_already_passed_force_is_not_told_to_pass_force() {
     let refuse = |refusal: JsonValue| json!({ "facts": null, "verdict": { "Refuse": { "refusal": refusal } } });
@@ -1665,8 +1513,6 @@ fn a_run_that_already_passed_force_is_not_told_to_pass_force() {
     assert_eq!(document(false).hints.len(), 2, "and stays without the flag");
 }
 
-/// A refusal nothing lifts closes with nothing, and neither does a run that
-/// refused none: the line is there to say what to do, not to fill a slot.
 #[test]
 fn rows_nothing_lifts_close_with_nothing() {
     let document = refused(&serialized(Refusal::Containment { through: None }));
@@ -1676,18 +1522,6 @@ fn rows_nothing_lifts_close_with_nothing() {
     assert!(document.hints.is_empty());
 }
 
-/// The hints come from the library rather than from strings spelled here, so
-/// the CLI and the library say one thing: each kind is looked up by the name
-/// the library serializes it under, and a kind whose name this view cannot
-/// find would silently lose its hint.
-///
-/// The kinds are spelled out here rather than read off `REFUSAL_KINDS`,
-/// because that array is the very thing under test: a loop over it can only
-/// ever agree with itself, and a kind the array left out would go unvisited
-/// and unmissed. The match is over `RefusalKind` itself, so a kind added to
-/// the library stops this compiling until somebody comes here — where this
-/// list and the array in `run.rs` are both in view — and the two assertions
-/// below then hold the array to it.
 #[test]
 fn every_kind_the_library_lifts_finds_its_hint_through_the_serialized_name() {
     let declared = [
@@ -1728,8 +1562,6 @@ fn every_kind_the_library_lifts_finds_its_hint_through_the_serialized_name() {
     assert_eq!(REFUSAL_KINDS.len(), declared.len());
 }
 
-/// A kind this CLI does not know carries no hint rather than one belonging to
-/// another kind.
 #[test]
 fn an_unknown_refusal_kind_carries_no_hint() {
     assert_eq!(hinting("Pondered", false), None);

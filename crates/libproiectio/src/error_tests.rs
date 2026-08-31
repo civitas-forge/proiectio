@@ -193,14 +193,10 @@ fn every_variant() -> Vec<Error> {
     every
 }
 
-// Every kind tag [`Error`] can serialize under, which is what the tests
-// below hold `every_variant` to. It is spelled out rather than counted off
-// the list, because a count taken from the list can only ever agree with
-// itself: `SourceTooLarge` sat in the enum unlisted through two rounds of
-// this pull request while both count assertions passed.
-//
-// The eight refusals all serialize as `refused`, so this is one tag shorter
-// than the list is long.
+// Every kind tag [`Error`] can serialize under, spelled out rather than
+// counted off the list — a count taken from the list can only agree with
+// itself. The refusals all serialize as `refused`, so this is one tag
+// shorter than the list is long.
 const EVERY_KIND: [&str; 35] = [
     "refused",
     "io",
@@ -239,10 +235,8 @@ const EVERY_KIND: [&str; 35] = [
     "owner_not_named",
 ];
 
-// What keeps `EVERY_KIND` honest in the other direction: this match names
-// every variant, so a variant added to `Error` stops these tests compiling
-// until whoever added it comes here — where the list above and
-// `every_variant` are both in view.
+// A variant added to `Error` stops this compiling until it is named here,
+// beside `EVERY_KIND`.
 fn is_named_above(error: &Error) -> bool {
     match error {
         Error::Refused(_)
@@ -306,13 +300,6 @@ fn refusals_exit_2_and_failures_exit_1() {
     assert_eq!(exit_code(Ok(())), 0);
 }
 
-// A source tree carrying something a desired tree cannot express fails the
-// load rather than declining a destination path, so these are exit-1
-// failures — and each names where in the source the trouble sits. The
-// undecodable pieces are quoted so their edges show — a name is otherwise
-// free to start or end in a space, or to render as nothing at all. Quoting
-// does not recover what the lossy decode dropped: a replacement character
-// stands for bytes with no UTF-8 spelling and for itself alike.
 #[test]
 fn tree_source_messages_name_the_node_and_exit_1() {
     let name = Error::TreeNameNotUtf8 {
@@ -357,10 +344,6 @@ fn tree_source_messages_name_the_node_and_exit_1() {
     );
 }
 
-// An archive carrying something a desired tree cannot express fails the
-// load the same way a source tree does — exit 1, and the message names both
-// the archive and the member, since a member path alone says nothing about
-// which archive to open.
 #[test]
 fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
     let unknown = Error::ArchiveFormatUnknown {
@@ -427,9 +410,6 @@ fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
          load may hold in memory"
     );
 
-    // The zip exception reads differently on purpose: it weighs the file
-    // rather than the expansion, so it says which file, how big it is, and
-    // what bound it is being held to.
     let on_disk = Error::ArchiveFileTooLarge {
         path: Utf8PathBuf::from("/assets/vendor.zip"),
         size: 70_000_000,
@@ -444,8 +424,6 @@ fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
          bytes are left of the 67108864 bytes one load may hold in memory"
     );
 
-    // The same bound over a file read outside an archive: the message names
-    // the file the load was reading, and the bound the whole load shares.
     let source = Error::SourceTooLarge {
         path: Utf8PathBuf::from("/assets/blob.bin"),
         limit: Limits::DEFAULT_MAX_SOURCE_BYTES,
@@ -457,10 +435,6 @@ fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
          hold in memory"
     );
 
-    // The count is what tells the operator the strip is wrong rather than the
-    // archive being empty, so the message carries both it and the strip. It
-    // claims only what it counts: members that would have projected and were
-    // erased, not every member the archive holds.
     let stripped = Error::ArchiveFullyStripped {
         path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
         strip: 3,
@@ -474,10 +448,6 @@ fn archive_messages_name_the_archive_and_the_member_and_exit_1() {
     );
 }
 
-// The destination's depth error is the source tree's bound applied to the
-// other tree, and it says so: same limit, different tree, and a path spelled
-// relative to the destination rather than absolutely. Both are exit-1
-// failures — nothing is being declined, the walk cannot be taken at all.
 #[test]
 fn a_destination_too_deep_names_the_directory_and_exits_1() {
     let deep = Error::DestinationTooDeep {
@@ -492,9 +462,6 @@ fn a_destination_too_deep_names_the_directory_and_exits_1() {
     );
 }
 
-// The paths a caller hands the library are absolutized before anything
-// opens them, and the three ways that can fail are exit-1 failures naming
-// what could not be resolved.
 #[test]
 fn path_resolution_failures_name_the_path_and_exit_1() {
     let cwd = Error::CurrentDirectory {
@@ -540,11 +507,8 @@ fn io_messages_keep_the_os_error_visible() {
     assert_eq!(error.to_string(), "bin/tool: disk full");
 }
 
-// An OS error says what went wrong and where, and nothing about which of a
-// run's arguments the path was — the same sentence for a destination, a
-// mapping, and a tree. The role is the word that tells them apart. Matched
-// over `IoRole` itself, so a role added there stops this compiling until it
-// has a word.
+// Matched over `IoRole` itself, so a role added there stops this compiling
+// until it has a word.
 #[test]
 fn every_role_opens_the_message_with_the_word_that_places_the_path() {
     for role in [
@@ -578,9 +542,6 @@ fn every_role_opens_the_message_with_the_word_that_places_the_path() {
     }
 }
 
-// A directory named where a mapping belongs is a `--tree` the caller spelled
-// as a positional, not a broken mapping, and the message says so rather than
-// reporting whichever OS error a read of a directory happens to raise.
 #[test]
 fn a_directory_named_as_a_mapping_names_the_option_it_belongs_to() {
     let error = Error::MappingIsDirectory {
@@ -594,10 +555,6 @@ fn a_directory_named_as_a_mapping_names_the_option_it_belongs_to() {
     );
 }
 
-// The single-writer lock's contention variant is exit-1 territory: not a
-// refusal, and its message names the lock file where it lies — the operator
-// has to go look at it, and the bare name does not say which state directory
-// holds it.
 #[test]
 fn lock_held_exits_1_and_names_the_lock_path() {
     let lock = Utf8PathBuf::from("/srv/site/.proiectio/proiectio.lock");
@@ -701,9 +658,7 @@ fn every_variant_serializes_under_a_kind_of_its_own() {
     let refusals = 10;
     assert!(kinds[..refusals].iter().all(|kind| kind == "refused"));
 
-    // Not a count of the list against itself: the kinds the list produces
-    // have to be exactly the kinds the enum declares, so a variant nobody
-    // listed is named here rather than passing unnoticed.
+    // A variant nobody listed is named here rather than passing unnoticed.
     let found: BTreeSet<&str> = kinds.iter().map(String::as_str).collect();
     let declared: BTreeSet<&str> = EVERY_KIND.into_iter().collect();
     assert_eq!(
@@ -720,8 +675,7 @@ fn every_variant_serializes_under_a_kind_of_its_own() {
     assert_eq!(kinds.len(), refusals + EVERY_KIND.len() - 1);
 }
 
-// The list is exhaustive by construction: this match refuses to compile
-// until every variant of `Error` is named beside it.
+// This match refuses to compile until every variant of `Error` is named beside it.
 #[test]
 fn every_variant_of_the_enum_is_one_the_tests_name() {
     assert!(every_variant().iter().all(is_named_above));

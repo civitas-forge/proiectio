@@ -17,7 +17,6 @@ fn link(target: &str) -> Entry {
     }
 }
 
-// The signature of a disk node holding exactly `entry`.
 fn signature(entry: &Entry) -> NodeSignature {
     NodeSignature {
         kind: entry.kind(),
@@ -26,7 +25,6 @@ fn signature(entry: &Entry) -> NodeSignature {
     }
 }
 
-// The manifest entry recording exactly `entry`, held by `owners`.
 fn recorded(entry: &Entry, owners: &[&str]) -> ManifestEntry {
     ManifestEntry {
         kind: entry.kind(),
@@ -36,7 +34,6 @@ fn recorded(entry: &Entry, owners: &[&str]) -> ManifestEntry {
     }
 }
 
-// The observation of a disk node holding exactly `entry`.
 fn on_disk(entry: &Entry) -> Observation {
     match entry {
         Entry::File {
@@ -50,8 +47,7 @@ fn on_disk(entry: &Entry) -> Observation {
             hash: sha256_hex(target.as_bytes()),
             target: Some(target.clone()),
         },
-        // A region on disk: the author's side ends at the marker's line
-        // start, which is newline-terminated by construction.
+        // The author's side ends at the marker's line start, newline-terminated by construction.
         Entry::Block { body, .. } => Observation::Block {
             hash: Some(sha256_hex(body)),
             newline_terminated: true,
@@ -61,7 +57,6 @@ fn on_disk(entry: &Entry) -> Observation {
     }
 }
 
-// The marker every block test uses.
 const MARKER: &str = "# proiectio";
 
 fn block(body: &str, placement: Placement) -> Entry {
@@ -72,8 +67,7 @@ fn block(body: &str, placement: Placement) -> Entry {
     }
 }
 
-// The observation of a container the region is gone from, whose author's
-// side is newline-terminated or not.
+// A container the region is gone from; `terminated` picks the author's final newline.
 fn no_region(newline_terminated: bool) -> Observation {
     Observation::Block {
         hash: None,
@@ -83,8 +77,7 @@ fn no_region(newline_terminated: bool) -> Observation {
     }
 }
 
-// The observation of a region whose body was edited on disk, under a
-// container holding the marker on `occurrences` lines.
+// A region edited on disk, under a container holding the marker on `occurrences` lines.
 fn edited_region(body: &str, occurrences: usize) -> Observation {
     Observation::Block {
         hash: Some(sha256_hex(body.as_bytes())),
@@ -113,9 +106,8 @@ fn manifest_of(entries: &[(&str, ManifestEntry)]) -> Manifest {
     }
 }
 
-// The walk descends every directory it meets, so a nested path it observed
-// was reached through directories: an ancestor no case declares is one, and
-// a case that means something else there declares it.
+// An ancestor no case declares is an observed directory; a case meaning
+// something else there declares it.
 fn observed(paths: &[(&str, Observation)]) -> Observations {
     let mut observed: BTreeMap<Utf8PathBuf, Observation> = paths
         .iter()
@@ -136,8 +128,7 @@ fn observed(paths: &[(&str, Observation)]) -> Observations {
     }
 }
 
-// [`observed`], plus the directories whose contents the walk could not state
-// in full: each held a name that is not UTF-8.
+// [`observed`], plus directories holding a name that is not UTF-8.
 fn observed_with_unreadable(paths: &[(&str, Observation)], unreadable: &[&str]) -> Observations {
     Observations {
         unreadable: unreadable.iter().map(Utf8PathBuf::from).collect(),
@@ -145,8 +136,6 @@ fn observed_with_unreadable(paths: &[(&str, Observation)], unreadable: &[&str]) 
     }
 }
 
-// [`decide`] for [`OWNER`] with no in-dest state prefix, under `policy`
-// and the default (refusing) external-target policy.
 fn plan(
     desired: &Desired,
     manifest: &Manifest,
@@ -164,7 +153,6 @@ fn plan(
     )
 }
 
-// [`plan`] under options the test chooses whole.
 fn plan_with(
     desired: &Desired,
     manifest: &Manifest,
@@ -257,8 +245,6 @@ fn missing_when_a_recorded_path_is_gone() {
 
 #[test]
 fn missing_when_the_snapshot_lacks_a_recorded_path() {
-    // observe completes the union with Absent; classify does not depend
-    // on it and treats an unmentioned recorded path the same way.
     let manifest = manifest_of(&[("a.txt", recorded(&file("alpha\n", false), &[OWNER]))]);
     let observations = observed(&[]);
 
@@ -285,9 +271,6 @@ fn foreign_when_on_disk_and_unrecorded() {
 
 #[test]
 fn an_unrecorded_directory_classifies_foreign() {
-    // The manifest records no directories, so every observed directory is
-    // unrecorded; planning refuses it only where the desired tree names
-    // that exact path.
     let status = classify(
         &Manifest::new(),
         &observed(&[("existing", Observation::Directory)]),
@@ -339,8 +322,6 @@ fn a_link_with_a_matching_target_classifies_clean_and_a_changed_one_drifted() {
 fn a_link_target_edited_to_non_utf8_classifies_drifted() {
     let entry = link("ok");
     let manifest = manifest_of(&[("l", recorded(&entry, &[OWNER]))]);
-    // observe hashes the raw target bytes and reports `target: None`; the
-    // hash can match no recorded UTF-8 target, so classification is drift.
     let observations = observed(&[(
         "l",
         Observation::Symlink {
@@ -356,9 +337,6 @@ fn a_link_target_edited_to_non_utf8_classifies_drifted() {
 
 #[test]
 fn a_recorded_block_classifies_over_its_region() {
-    // The region is the node: the container's other bytes enter no
-    // comparison, and a container the marker line is gone from reads as a
-    // node gone from disk.
     let entry = block("managed\n", Placement::Append);
     let manifest = manifest_of(&[("conf", recorded(&entry, &[OWNER]))]);
     let cases: &[(Observation, PathState)] = &[
@@ -366,7 +344,6 @@ fn a_recorded_block_classifies_over_its_region() {
         (edited_region("edited\n", 1), PathState::Drifted),
         (no_region(true), PathState::Missing),
         (Observation::Absent, PathState::Missing),
-        // The container is no longer a file at all: drift of kind.
         (Observation::Directory, PathState::Drifted),
     ];
     for (observation, want) in cases {
@@ -378,9 +355,6 @@ fn a_recorded_block_classifies_over_its_region() {
         );
     }
 
-    // The manifest and the observations are two separate inputs of this pure
-    // stage, so a region observed at a path recorded as a whole node is the
-    // kind mismatch every other pairing is, not an absence.
     let whole = manifest_of(&[("conf", recorded(&file("whole\n", false), &[OWNER]))]);
     for observation in [no_region(true), on_disk(&entry)] {
         let status = classify(&whole, &observed(&[("conf", observation.clone())]), None);
@@ -416,8 +390,6 @@ fn the_state_subtree_never_classifies() {
 
 #[test]
 fn disk_already_equal_to_desired_skips() {
-    // Row 1: disk already equals desired — skip, so re-applying is a
-    // no-op and mtimes survive.
     let entry = file("alpha\n", false);
     let manifest = manifest_of(&[("a.txt", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[("a.txt", on_disk(&entry))]);
@@ -441,8 +413,6 @@ fn disk_already_equal_to_desired_skips() {
 
 #[test]
 fn clean_disk_with_changed_desired_overwrites() {
-    // Row 2: disk equals recorded and desired differs — overwrite,
-    // expecting the recorded hash at apply time.
     let old = file("v1\n", false);
     let new = file("v2\n", false);
     let manifest = manifest_of(&[("a.txt", recorded(&old, &[OWNER]))]);
@@ -467,7 +437,6 @@ fn clean_disk_with_changed_desired_overwrites() {
 
 #[test]
 fn a_drifted_path_refuses_and_names_it() {
-    // Row 3: drifted — refuse and name the path.
     let manifest = manifest_of(&[("a.txt", recorded(&file("v1\n", false), &[OWNER]))]);
     let observations = observed(&[("a.txt", on_disk(&file("edited\n", false)))]);
 
@@ -488,9 +457,6 @@ fn a_drifted_path_refuses_and_names_it() {
 
 #[test]
 fn drift_policy_overwrite_lifts_the_drift_refusal() {
-    // Row 3, lifted: the overwrite expects the hash of the *drifted*
-    // bytes observed at plan time, not the recorded ones, so apply's
-    // re-check runs against what the lift was granted for.
     let drifted = file("edited\n", false);
     let new = file("v2\n", false);
     let manifest = manifest_of(&[("a.txt", recorded(&file("v1\n", false), &[OWNER]))]);
@@ -515,8 +481,6 @@ fn drift_policy_overwrite_lifts_the_drift_refusal() {
 
 #[test]
 fn a_path_edited_into_agreement_with_desired_skips() {
-    // Row 1 beats row 3: the user edited the file to exactly the desired
-    // bytes — disk already equals desired, so nothing needs writing.
     let entry = file("v2\n", false);
     let manifest = manifest_of(&[("a.txt", recorded(&file("v1\n", false), &[OWNER]))]);
     let observations = observed(&[("a.txt", on_disk(&entry))]);
@@ -539,10 +503,6 @@ fn a_path_edited_into_agreement_with_desired_skips() {
 
 #[test]
 fn an_agreement_skip_carries_the_desired_signature() {
-    // The recorded entry differs from the desired one (here in the
-    // executable bit alone), so the skip must carry the full desired
-    // signature for apply to record — the hash by itself could not tell
-    // apply the bit changed.
     let agreed = file("x\n", true);
     let manifest = manifest_of(&[("bin/tool", recorded(&file("x\n", false), &[OWNER]))]);
     let observations = observed(&[("bin/tool", on_disk(&agreed))]);
@@ -569,7 +529,6 @@ fn an_agreement_skip_carries_the_desired_signature() {
 
 #[test]
 fn a_foreign_path_refuses_always() {
-    // Row 4: foreign — refuse; no policy lifts it.
     let manifest = Manifest::new();
     let observations = observed(&[("notes.txt", on_disk(&file("mine\n", false)))]);
 
@@ -592,8 +551,6 @@ fn a_foreign_path_refuses_always() {
 
 #[test]
 fn a_foreign_path_with_identical_bytes_still_refuses() {
-    // Skipping would adopt the file — record it, and put it on the
-    // removal path of a later plan the user never signed it up for.
     let entry = file("same\n", false);
     let observations = observed(&[("notes.txt", on_disk(&entry))]);
 
@@ -612,8 +569,6 @@ fn a_foreign_path_with_identical_bytes_still_refuses() {
     );
 }
 
-// An empty directory nothing recorded was made by somebody else, so it is
-// not the projection's scaffolding to clear, and forcing does not reach it.
 #[test]
 fn a_desired_path_over_an_empty_foreign_directory_refuses() {
     let plan = plan(
@@ -636,7 +591,6 @@ fn a_desired_path_over_an_empty_foreign_directory_refuses() {
 
 #[test]
 fn an_orphan_removes_when_disk_matches_the_recorded_hash() {
-    // Row 5: recorded under this owner, absent from the desired tree.
     let entry = file("old\n", false);
     let manifest = manifest_of(&[("old.txt", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[("old.txt", on_disk(&entry))]);
@@ -653,7 +607,6 @@ fn an_orphan_removes_when_disk_matches_the_recorded_hash() {
 
 #[test]
 fn a_drifted_orphan_refuses() {
-    // Row 5: refused as drifted when the disk no longer matches.
     let manifest = manifest_of(&[("old.txt", recorded(&file("old\n", false), &[OWNER]))]);
     let observations = observed(&[("old.txt", on_disk(&file("edited\n", false)))]);
 
@@ -685,9 +638,6 @@ fn drift_policy_overwrite_lifts_a_drifted_orphan_to_removal() {
 
 #[test]
 fn a_missing_orphan_still_plans_removal() {
-    // Already gone from disk: the Remove expects nothing, so apply drops
-    // the manifest entry alone — and refuses if a node has appeared at
-    // the path since the plan, even one matching the recorded signature.
     let entry = file("old\n", false);
     let manifest = manifest_of(&[("old.txt", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[("old.txt", Observation::Absent)]);
@@ -699,8 +649,6 @@ fn a_missing_orphan_still_plans_removal() {
 
 #[test]
 fn a_shared_orphan_releases_the_departing_owner() {
-    // Row 5: when another owner still holds the path, the departing owner
-    // is released and the disk is left alone.
     let entry = file("shared\n", false);
     let manifest = manifest_of(&[(".zshrc", recorded(&entry, &[OWNER, "other"]))]);
     let observations = observed(&[(".zshrc", on_disk(&entry))]);
@@ -839,8 +787,6 @@ fn a_desired_entry_differing_from_a_shared_recorded_one_refuses() {
 
 #[test]
 fn a_sharing_owner_changing_a_shared_path_refuses_with_the_other_owners() {
-    // This owner holds the path too; changing it still needs the other
-    // owner's tree to agree first.
     let held = file("agreed\n", false);
     let manifest = manifest_of(&[(".zshrc", recorded(&held, &[OWNER, "other"]))]);
     let observations = observed(&[(".zshrc", on_disk(&held))]);
@@ -916,7 +862,6 @@ fn desired_paths_enter_through_contained_join() {
         DriftPolicy::Refuse,
     );
 
-    // Refusals are keyed by the desired key verbatim.
     for refused in ["../escape", "/absolute", "a/./b"] {
         assert_eq!(
             action(&plan, refused),
@@ -954,9 +899,6 @@ fn a_denormalized_desired_key_unifies_with_its_recorded_path() {
 
 #[test]
 fn two_desired_keys_normalizing_to_one_path_refuse_both() {
-    // The tree claims one location twice; there is no deterministic entry
-    // to prefer, so both claims refuse, keyed verbatim, each naming the
-    // other. An unrelated key still plans.
     let entry = file("x\n", false);
     let plan = plan(
         &tree(&[
@@ -991,9 +933,6 @@ fn two_desired_keys_normalizing_to_one_path_refuse_both() {
 
 #[test]
 fn a_desired_path_beneath_another_refuses_both() {
-    // Every desired entry is a non-directory, so a tree naming both `a`
-    // and `a/b` cannot be applied in any order: whichever lands first
-    // makes the other impossible. Both claims refuse.
     let plan = plan(
         &tree(&[
             ("a", &file("whole\n", false)),
@@ -1026,8 +965,6 @@ fn a_desired_path_beneath_another_refuses_both() {
 
 #[test]
 fn a_chain_of_overlapping_desired_paths_refuses_every_claimant() {
-    // `a`, `a/b`, and `a/b/c` overlap pairwise; each refusal names every
-    // key it collides with, ancestors and descendants alike.
     let plan = plan(
         &tree(&[
             ("a", &file("1\n", false)),
@@ -1067,9 +1004,6 @@ fn a_chain_of_overlapping_desired_paths_refuses_every_claimant() {
 
 #[test]
 fn a_recorded_path_under_a_tree_conflict_is_not_an_orphan() {
-    // The desired tree still names the location — conflictedly — so the
-    // orphan pass must not treat it as dropped and overwrite the refusal
-    // with a removal (or a release, for a shared entry).
     let entry = file("v1\n", false);
     let manifest = manifest_of(&[
         ("a", recorded(&entry, &[OWNER])),
@@ -1135,27 +1069,16 @@ fn a_desired_path_entering_the_state_dir_refuses_containment() {
             "expected a containment refusal at {refused}"
         );
     }
-    // The prefix confines a subtree, not a name: the same name elsewhere
-    // is an ordinary path.
     assert_eq!(
         action(&plan, "elsewhere/.proiectio"),
         &Action::Write { entry }
     );
 }
 
-// A state directory nested inside the destination, so the destination
-// holds locations the state subtree lies *beneath* as well as locations
-// inside it.
 const NESTED_STATE: &str = ".local/state/proiectio";
 
 #[test]
 fn a_desired_path_the_state_dir_sits_beneath_refuses_containment() {
-    // The admission test is symmetric: a desired file at `.local` would
-    // stand where the directory holding the manifest stands, so it refuses
-    // as Containment here, at plan time. Admitting it would send it to
-    // apply, whose walk meets a file-versus-directory mismatch and refuses
-    // it as Foreign or Drift — a later stage naming a different rule,
-    // against a plan a dry run had already reported.
     let entry = file("x\n", false);
 
     let plan = decide(
@@ -1186,19 +1109,11 @@ fn a_desired_path_the_state_dir_sits_beneath_refuses_containment() {
             "expected a containment refusal at {refused}"
         );
     }
-    // A location off to the side of the state subtree is an ordinary one.
     assert_eq!(action(&plan, ".local/share/rc"), &Action::Write { entry });
 }
 
 #[test]
 fn a_recorded_path_the_state_dir_sits_beneath_is_refused_not_removed() {
-    // A location an earlier configuration recorded, which the state
-    // directory now sits beneath. The orphan loop reaches it — it reads the
-    // prefix the other way, so `.local` is its business — and must not act
-    // on it: removing `.local` unlinks the node the manifest hangs from,
-    // and the next run reads no manifest and calls every projected file
-    // foreign. Every scope gets the containment refusal, so the verdict does
-    // not turn on how the removal was spelled.
     let entry = file("alpha\n", false);
     let manifest = manifest_of(&[(".local", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[(".local", on_disk(&entry))]);
@@ -1226,10 +1141,6 @@ fn a_recorded_path_the_state_dir_sits_beneath_is_refused_not_removed() {
     );
     assert_eq!(action(&by_name, ".local"), &refused);
 
-    // And a desired entry at that same recorded location keeps the refusal
-    // admission gave it, keyed once: an orphan removal planned over it would
-    // leave a plan carrying nothing to refuse, which apply executes in full
-    // — deleting the file the tree just asked for.
     let plan = decide(
         OWNER,
         &tree(&[("d/../.local", &entry)]),
@@ -1248,11 +1159,6 @@ fn a_recorded_path_the_state_dir_sits_beneath_is_refused_not_removed() {
 
 #[test]
 fn a_path_the_state_dir_sits_beneath_still_classifies() {
-    // Classification reads the prefix the other way, and on purpose:
-    // `.local` is not the projection's state, it is a directory the state
-    // directory sits in, holding whatever else the destination puts there.
-    // Excluding it would hide from status a node the destination holds and
-    // the projection is merely refusing to touch.
     let entry = file("alpha\n", false);
     let manifest = manifest_of(&[(".local", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[
@@ -1275,7 +1181,6 @@ fn a_path_the_state_dir_sits_beneath_still_classifies() {
             .map(|(path, row)| (Utf8PathBuf::from(path), row.verdict))
             .collect::<BTreeMap<_, _>>(),
         BTreeMap::from([
-            // Recorded as a file, a directory on disk: drift of kind.
             (".local".into(), PathState::Drifted),
             (".local/share".into(), PathState::Foreign),
             (".local/share/rc".into(), PathState::Foreign),
@@ -1286,13 +1191,6 @@ fn a_path_the_state_dir_sits_beneath_still_classifies() {
 
 #[test]
 fn the_state_subtree_is_invisible_to_planning() {
-    // The state directory's own files observe as on-disk nodes, but never
-    // classify — so they are not foreign and get no action. A manifest entry
-    // inside the subtree is passed over the same way, sweep included: the
-    // subtree is out of planning's sight, not a location planning refuses.
-    // That is where the two readings of the prefix part company — a request
-    // naming such a path is refused at admission, since a caller naming a
-    // location is asking about that location.
     let entry = file("alpha\n", false);
     let manifest = manifest_of(&[
         ("a.txt", recorded(&entry, &[OWNER])),
@@ -1355,7 +1253,6 @@ fn the_state_subtree_is_invisible_to_planning() {
 
 // --- symlink target grading (`docs/security.lex` section 3) ---
 
-// The options permitting external targets, drift refused as usual.
 fn allowing_external() -> PlanOptions {
     PlanOptions {
         external_targets: ExternalTargetPolicy::Allow,
@@ -1365,9 +1262,6 @@ fn allowing_external() -> PlanOptions {
 
 #[test]
 fn target_grading_admits_in_dest_targets_and_refuses_escaping_ones() {
-    // (link path, target, resolves in-dest). The destination here holds
-    // nothing, so the chain has no hop to follow and every verdict is the
-    // one pure lexical resolution from the link's parent gives.
     let table = [
         ("rc", "shared/rc", true),
         ("rc", "./shared/rc", true),
@@ -1386,8 +1280,7 @@ fn target_grading_admits_in_dest_targets_and_refuses_escaping_ones() {
         ("rc", "C:/escape", false),
         ("rc", "C:escape", false),
         ("rc", "..\\..\\escape", false),
-        // A colon that is a name, not a drive: an NTFS stream of a sibling
-        // under the destination.
+        // A colon that is a name, not a drive.
         ("rc", "victim:stream", true),
     ];
 
@@ -1424,8 +1317,6 @@ fn target_grading_admits_in_dest_targets_and_refuses_escaping_ones() {
             &expected,
             "grading {path} -> {target}"
         );
-        // The permission lifts exactly the external refusal; an in-dest
-        // target never needed it.
         assert_eq!(
             action(&allowing, path),
             &Action::Write {
@@ -1438,9 +1329,6 @@ fn target_grading_admits_in_dest_targets_and_refuses_escaping_ones() {
 
 #[test]
 fn a_target_that_is_not_a_pathname_refuses_under_either_policy() {
-    // Judged before grading, and not lifted by the external-target
-    // permission: the empty string names nothing and a NUL cannot appear
-    // in a pathname, so there is no pointer for a policy to permit.
     for target in ["", "\0", "shared/\0rc"] {
         let entry = link(target);
         let desired = tree(&[("rc", &entry)]);
@@ -1463,8 +1351,6 @@ fn a_target_that_is_not_a_pathname_refuses_under_either_policy() {
 
 #[test]
 fn an_external_target_refuses_even_where_the_link_is_already_recorded_and_clean() {
-    // Nothing about the disk lifts the refusal: the permission is the
-    // invoker's, and it is the same link either way.
     let entry = link("/opt/toolchain");
     let manifest = manifest_of(&[("toolchain", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[("toolchain", on_disk(&entry))]);
@@ -1495,8 +1381,6 @@ fn an_external_target_refuses_even_where_the_link_is_already_recorded_and_clean(
 
 #[test]
 fn a_recorded_external_link_the_tree_dropped_is_removed_without_permission() {
-    // Grading judges what the tree asks for. An orphan asks for nothing —
-    // removal unlinks the pointer and reads nothing through it.
     let entry = link("/opt/toolchain");
     let manifest = manifest_of(&[("toolchain", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[("toolchain", on_disk(&entry))]);
@@ -1515,11 +1399,6 @@ fn a_recorded_external_link_the_tree_dropped_is_removed_without_permission() {
 
 #[test]
 fn a_target_reaching_outside_through_a_link_in_the_destination_grades_external() {
-    // The pivot case: the destination already holds `pivot -> /etc`, so
-    // the pointer `evil -> pivot/passwd` dereferences to /etc/passwd. The
-    // projection could not have created that hop — `pivot` itself would
-    // have needed the permission — but it may not plant a pointer through
-    // one either.
     let evil = link("pivot/passwd");
     let observations = observed(&[("pivot", on_disk(&link("/etc")))]);
     let desired = tree(&[("evil", &evil)]);
@@ -1555,10 +1434,6 @@ fn a_target_reaching_outside_through_a_link_in_the_destination_grades_external()
 
 #[test]
 fn an_ordinary_in_dest_chain_needs_no_permission() {
-    // `shared -> real` is an in-dest link like any other, so `rc`
-    // pointing through it lands in-dest and is written under the default
-    // policy. Refusing every target with a symlink ancestor would break
-    // exactly this shape.
     let rc = link("shared/rc");
     let observations = observed(&[
         ("real", Observation::Directory),
@@ -1577,9 +1452,6 @@ fn an_ordinary_in_dest_chain_needs_no_permission() {
 
 #[test]
 fn a_hop_pointing_at_nothing_keeps_the_chain_in_dest() {
-    // The chain runs out at a link pointing nowhere. A pointer to nothing
-    // is still a pointer inside the destination, so no permission is
-    // needed — the same reading that makes a dangling target legal.
     let rc = link("shared/rc");
     let observations = observed(&[("shared", on_disk(&link("gone")))]);
 
@@ -1595,9 +1467,6 @@ fn a_hop_pointing_at_nothing_keeps_the_chain_in_dest() {
 
 #[test]
 fn a_target_chaining_into_a_cycle_refuses_rather_than_looping() {
-    // Deciding terminates: the visited set ends the resolution at the
-    // second visit to a link, and a chain that never lands grades
-    // external.
     let rc = link("l1");
     let observations = observed(&[("l1", on_disk(&link("l2"))), ("l2", on_disk(&link("l1")))]);
 
@@ -1620,9 +1489,6 @@ fn a_target_chaining_into_a_cycle_refuses_rather_than_looping() {
 
 #[test]
 fn a_hop_whose_on_disk_target_is_not_utf8_grades_the_chain_external() {
-    // Nothing can say where such a link points, so nothing can say the
-    // chain through it stays inside — the same conservatism apply's walk
-    // applies when it refuses to follow one.
     let rc = link("pivot/rc");
     let observations = observed(&[(
         "pivot",
@@ -1651,10 +1517,6 @@ fn a_hop_whose_on_disk_target_is_not_utf8_grades_the_chain_external() {
 
 #[test]
 fn a_link_this_plan_removes_is_not_a_hop_the_chain_resolves_through() {
-    // Removals run before anything is written, so by the time the pointer
-    // is published the pivot is gone and the chain ends at an absent
-    // path. Grading reads the destination the run will leave, exactly as
-    // the no-alias rule does for an ancestor the plan unlinks.
     let pivot = link("/etc");
     let evil = link("pivot/passwd");
     let manifest = manifest_of(&[("pivot", recorded(&pivot, &[OWNER]))]);
@@ -1683,8 +1545,6 @@ fn a_link_this_plan_removes_is_not_a_hop_the_chain_resolves_through() {
 
 #[test]
 fn a_plan_carries_the_external_target_permission_it_was_decided_under() {
-    // Apply reads it to know whether a re-graded target has a plan-time
-    // verdict to be held to.
     let desired = tree(&[]);
     let refusing = plan(
         &desired,
@@ -1705,12 +1565,6 @@ fn a_plan_carries_the_external_target_permission_it_was_decided_under() {
 
 #[test]
 fn a_target_escaping_through_a_link_the_same_tree_projects_grades_external() {
-    // Both links grade in-dest read one at a time: "." lands on the
-    // destination itself, and "b/../escape" lands on "escape" where "b" is
-    // an ordinary name. Together they are a pointer to the destination's
-    // *parent*, because "b/.." pops the directory "b" resolved to. Grading
-    // reads the destination the run leaves, so the second link is the first
-    // one's hop and the pointer grades external.
     let root = link(".");
     let out = link("b/../escape");
 
@@ -1739,11 +1593,6 @@ fn a_target_escaping_through_a_link_the_same_tree_projects_grades_external() {
 
 #[test]
 fn a_cycle_among_the_links_a_tree_projects_grades_external_on_the_first_run() {
-    // A tree the run has not written yet is still the destination the run
-    // leaves, so a cycle among its own links is graded like one already on
-    // disk. Reading only the snapshot would write the cycle on the first
-    // run and refuse the identical tree on the second, once the links it
-    // wrote were observable.
     let itself = link("self");
     let there = link("l2");
     let back = link("l1");
@@ -1770,8 +1619,6 @@ fn a_cycle_among_the_links_a_tree_projects_grades_external_on_the_first_run() {
 
 #[test]
 fn an_ordinary_chain_through_a_link_the_same_tree_projects_needs_no_permission() {
-    // The chain that must not start needing the permission, with the pivot
-    // projected by this run rather than already on disk.
     let shared = link("real");
     let rc = link("shared/rc");
 
@@ -1793,10 +1640,6 @@ fn an_ordinary_chain_through_a_link_the_same_tree_projects_needs_no_permission()
 
 #[test]
 fn a_pivot_this_run_replaces_is_graded_as_the_link_it_becomes() {
-    // The destination holds an escaping pivot and the tree replaces it with
-    // an in-dest link. The pointer through it is graded against the link
-    // the run leaves, not the one it displaces, so nothing about the run's
-    // finished destination reaches outside and the permission is not needed.
     let escaping = link("/etc");
     let landing = link("real");
     let through = link("pivot/x");
@@ -1832,8 +1675,6 @@ fn a_pivot_this_run_replaces_is_graded_as_the_link_it_becomes() {
 
 #[test]
 fn a_desired_path_beneath_a_desired_link_refuses_both_as_a_tree_conflict() {
-    // The nesting is expressible on disk — apply would follow the link —
-    // but the write would land at a path the plan never names.
     let plan = plan(
         &tree(&[
             ("logs", &link("real")),
@@ -1864,9 +1705,6 @@ fn a_desired_path_beneath_a_desired_link_refuses_both_as_a_tree_conflict() {
 
 #[test]
 fn a_desired_path_beneath_a_surviving_on_disk_link_refuses_containment() {
-    // The link is on disk and stays there — recorded under another owner
-    // here, but an unowned one refuses the same way, since observation
-    // never descends either.
     let held_elsewhere = manifest_of(&[("logs", recorded(&link("real"), &["other"]))]);
     let observations = observed(&[
         ("logs", on_disk(&link("real"))),
@@ -1890,9 +1728,6 @@ fn a_desired_path_beneath_a_surviving_on_disk_link_refuses_containment() {
 
 #[test]
 fn a_desired_path_beneath_a_link_this_plan_removes_is_written() {
-    // The orphan removal runs first, so the link is not an ancestor the
-    // write will meet: the path plans as the ordinary directory write it
-    // becomes.
     let entry = file("a real file\n", false);
     let manifest = manifest_of(&[("logs", recorded(&link("real"), &[OWNER]))]);
     let observations = observed(&[
@@ -1918,8 +1753,6 @@ fn a_desired_path_beneath_a_link_this_plan_removes_is_written() {
 
 #[test]
 fn a_desired_path_beneath_a_link_the_plan_only_releases_still_refuses() {
-    // A release leaves the link on disk for its other owner, so the path
-    // beneath it still resolves through a link.
     let manifest = manifest_of(&[("logs", recorded(&link("real"), &[OWNER, "other"]))]);
     let observations = observed(&[
         ("logs", on_disk(&link("real"))),
@@ -1944,15 +1777,10 @@ fn a_desired_path_beneath_a_link_the_plan_only_releases_still_refuses() {
     );
 }
 
-// --- grading recorded ancestry: the arms act's no-follow walk grades, read
-// off the snapshot so a dry run reaches them too (issue #129) ---
+// --- grading recorded ancestry: the arms act's no-follow walk grades, read off the snapshot ---
 
 #[test]
 fn a_removal_beneath_a_hand_made_link_refuses_containment() {
-    // Issue #116: observation does not descend the link, so the recorded path
-    // reads absent and its removal would forget it — while apply's walk meets
-    // the unrecorded link and refuses. Grading the ancestry is what makes the
-    // two agree.
     let manifest = manifest_of(&[(
         "logs/deep/file.txt",
         recorded(&file("kept\n", false), &[OWNER]),
@@ -2004,9 +1832,6 @@ fn a_removal_beneath_a_recorded_link_whose_target_moved_refuses_drift() {
 
 #[test]
 fn a_removal_beneath_a_recorded_link_expects_the_node_the_walk_resolves_to() {
-    // A removal follows an owned link (`docs/implementation.lex` section 3),
-    // so the node it re-checks stands at the resolved location — not at the
-    // action key, which observation reads as absent.
     let kept = file("kept\n", false);
     let manifest = manifest_of(&[
         ("logs", recorded(&link("real"), &["other"])),
@@ -2034,8 +1859,6 @@ fn a_removal_beneath_a_recorded_link_expects_the_node_the_walk_resolves_to() {
 
 #[test]
 fn a_removal_whose_ancestry_is_gone_still_forgets_the_path() {
-    // Nothing stands in the way of a removal whose directories a hand already
-    // deleted: the walk stops short, which is not a refusal.
     let manifest = manifest_of(&[("gone/x.txt", recorded(&file("kept\n", false), &[OWNER]))]);
 
     let plan = removal(
@@ -2053,8 +1876,6 @@ fn a_removal_whose_ancestry_is_gone_still_forgets_the_path() {
 
 #[test]
 fn a_release_beneath_a_link_walks_nothing_and_is_not_refused() {
-    // A release reads no disk at all — it drops one owner from a manifest
-    // entry — so the link over its path grades nothing.
     let manifest = manifest_of(&[(
         "logs/x.txt",
         recorded(&file("kept\n", false), &[OWNER, "other"]),
@@ -2073,8 +1894,6 @@ fn a_release_beneath_a_link_walks_nothing_and_is_not_refused() {
 
 #[test]
 fn a_recorded_link_the_walk_meets_twice_refuses_containment() {
-    // The visited set ends a resolution that revisits a hop, the way it ends
-    // one for a link target (`docs/security.lex` section 3).
     let looping = link("a");
     let manifest = manifest_of(&[
         ("a", recorded(&looping, &["other"])),
@@ -2101,9 +1920,6 @@ fn a_recorded_link_the_walk_meets_twice_refuses_containment() {
 
 #[test]
 fn a_desired_path_beneath_a_node_that_is_not_a_directory_refuses() {
-    // A creating walk cannot make a directory where a node already stands, so
-    // it refuses it as what the manifest says it is: another owner's record
-    // drifted, nobody's record foreign.
     let entry = file("settings\n", false);
     let theirs = manifest_of(&[("conf", recorded(&file("theirs\n", false), &["other"]))]);
     let observations = observed(&[("conf", on_disk(&file("theirs\n", false)))]);
@@ -2128,9 +1944,6 @@ fn a_desired_path_beneath_a_node_that_is_not_a_directory_refuses() {
 
 #[test]
 fn a_removal_whose_link_lands_in_the_state_subtree_refuses_containment() {
-    // The state subtree is out of reach however a walk arrives at it: a
-    // recorded link into it plus a record beneath that link would otherwise
-    // aim the removal at a node `Projection` promises no run touches.
     let secret = file("secret\n", false);
     let manifest = manifest_of(&[
         ("logs", recorded(&link(".proiectio"), &["other"])),
@@ -2162,9 +1975,6 @@ fn a_removal_whose_link_lands_in_the_state_subtree_refuses_containment() {
 
 #[test]
 fn a_removal_landing_where_a_desired_path_stands_refuses_both() {
-    // Two keys, one node: applying would unlink it through the link and then
-    // meet the skip's signature check over a path it had just deleted. Which
-    // key owns the node is answered by nothing, so both refuse.
     let kept = file("kept\n", false);
     let manifest = manifest_of(&[
         ("logs", recorded(&link("real"), &["other"])),
@@ -2203,8 +2013,6 @@ fn a_removal_landing_where_a_desired_path_stands_refuses_both() {
 
 #[test]
 fn two_removals_landing_on_one_node_refuse_the_conflict() {
-    // The same collision between two removals: the second would meet the
-    // node the first unlinked and refuse half-way through the run.
     let kept = file("kept\n", false);
     let manifest = manifest_of(&[
         ("logs", recorded(&link("real"), &["other"])),
@@ -2237,9 +2045,6 @@ fn two_removals_landing_on_one_node_refuse_the_conflict() {
 
 #[test]
 fn a_removal_landing_on_another_owners_record_refuses() {
-    // The walk follows `a` out to a node `p` records and this plan never
-    // judges: unlinking it would leave `p` holding a record for a node that
-    // is gone (issue #137).
     let kept = file("kept\n", false);
     let manifest = manifest_of(&[
         ("a", recorded(&link("real"), &["p"])),
@@ -2272,9 +2077,6 @@ fn a_removal_landing_on_another_owners_record_refuses() {
 
 #[test]
 fn a_scoped_removal_landing_on_a_record_outside_its_scope_refuses() {
-    // The same owner holds both nodes, and the scope names only the key: the
-    // landing is a record this plan reaches no verdict about, so the removal
-    // refuses rather than unlink it.
     let kept = file("kept\n", false);
     let manifest = manifest_of(&[
         ("a", recorded(&link("real"), &["other"])),
@@ -2308,9 +2110,7 @@ fn a_scoped_removal_landing_on_a_record_outside_its_scope_refuses() {
 
 #[test]
 fn a_removal_landing_on_a_record_this_plan_only_releases_refuses() {
-    // A release drops one owner from the record and leaves the node standing,
-    // so the plan acting at the landing's key is not the plan removing it: the
-    // key that walks there still refuses.
+    // A release leaves the node standing, so it does not vacate the landing.
     let kept = file("kept\n", false);
     let manifest = manifest_of(&[
         ("a", recorded(&link("real"), &["other"])),
@@ -2344,10 +2144,7 @@ fn a_removal_landing_on_a_record_this_plan_only_releases_refuses() {
 
 #[test]
 fn a_removal_landing_on_a_record_with_nothing_on_disk_forgets_it() {
-    // Nothing stands where the walk comes out, so the removal verifies absence
-    // and drops its own record: it unlinks no node, and the landing's owner
-    // keeps whatever record it holds. Refusing here would strip the projection
-    // of its only way to clean a stale record.
+    // Refusing an absence-only removal would strand a stale record.
     let kept = file("kept\n", false);
     let manifest = manifest_of(&[
         ("a", recorded(&link("real"), &["p"])),
@@ -2371,10 +2168,7 @@ fn a_removal_landing_on_a_record_with_nothing_on_disk_forgets_it() {
 
 #[test]
 fn a_removal_landing_on_a_record_whose_own_removal_refuses_refuses_too() {
-    // The two records disagree about the node, so the plan removes one and
-    // refuses the other as drifted. A refusal takes no node, so it claims the
-    // location for nothing: the key that walks there is graded against the
-    // manifest as it would be against a landing this plan never named.
+    // A refusal takes no node, so it claims the landing for nothing.
     let kept = file("kept\n", false);
     let old = file("old\n", false);
     let manifest = manifest_of(&[
@@ -2414,10 +2208,6 @@ fn a_removal_landing_on_a_record_whose_own_removal_refuses_refuses_too() {
 
 #[test]
 fn a_write_walks_through_the_location_a_removal_vacates() {
-    // The removal of `logs/x` unlinks `real/x`, so the write beneath it walks
-    // through a location the run leaves empty. Filed under the key instead,
-    // the walk met the old file still standing at `real/x` and refused it as
-    // Foreign, which applying — removals first — does not do.
     let old = file("old\n", false);
     let fresh = file("fresh\n", false);
     let manifest = manifest_of(&[
@@ -2449,9 +2239,6 @@ fn a_write_walks_through_the_location_a_removal_vacates() {
 
 #[test]
 fn an_absence_only_removal_claims_no_node() {
-    // Nothing stands where the walk comes out, so the removal only verifies
-    // that and forgets the record: it neither unlinks nor owns the location,
-    // which leaves a desired key free to write there rather than colliding.
     let old = file("old\n", false);
     let fresh = file("fresh\n", false);
     let manifest = manifest_of(&[
@@ -2481,9 +2268,6 @@ fn an_absence_only_removal_claims_no_node() {
 
 #[test]
 fn a_removal_landing_on_its_own_key_conflicts_with_nothing() {
-    // The check names collisions, not walks: a removal the walk resolved to
-    // the key it was already aimed at claims one node, and so does every
-    // removal beside it.
     let kept = file("kept\n", false);
     let manifest = manifest_of(&[
         ("a.txt", recorded(&kept, &[OWNER])),
@@ -2508,21 +2292,12 @@ fn a_removal_landing_on_its_own_key_conflicts_with_nothing() {
     }
 }
 
-// The two tests below are why deciding may grade a target from the lexical
-// `link.parent()` while apply grades it from the parent its walk resolved
-// to. The two disagree only for a link with a symlink ancestor, and the
-// tree that would exhibit the disagreement is refused from both directions:
-// a desired ancestor link by the overlap check, an observed one by the
-// no-alias rule. Each test states the divergent verdict alongside the
-// refusal, so removing either guard turns the refusal into a `Write` here
-// and fails, rather than leaving apply to catch the escape.
+// Lexical and resolved-parent grading disagree only under a symlink ancestor,
+// refused from both directions; each test asserts the divergent verdict beside
+// the refusal so removing either guard fails here.
 
 #[test]
 fn a_desired_link_beneath_a_desired_link_refuses_before_the_verdicts_diverge() {
-    // `b/c/x` spells two climbs. From `b/c`, where the tree writes it, they
-    // pop `c` and `b` and land on `escape` inside the destination. From
-    // `real`, where apply's walk would follow `b/c` to, the second climb
-    // pops past the destination root.
     let pivot = link("real");
     let escaping = link("../../escape");
 
@@ -2553,10 +2328,6 @@ fn a_desired_link_beneath_a_desired_link_refuses_before_the_verdicts_diverge() {
 
 #[test]
 fn a_desired_link_beneath_an_observed_link_refuses_before_the_verdicts_diverge() {
-    // The same target and the same divergence, with the ancestor link
-    // already on disk instead of in the tree. The second assertion is the
-    // verdict apply would reach: written at the location `b/c` resolves to,
-    // the identical target grades external.
     let escaping = link("../../escape");
     let observations = observed(&[
         ("b/c", on_disk(&link("real"))),
@@ -2638,8 +2409,6 @@ fn a_changed_desired_link_target_overwrites_a_clean_link() {
 
 #[test]
 fn a_desired_file_over_a_recorded_link_is_drift_of_kind_when_the_link_moved() {
-    // Recorded link, disk target edited: drifted; the desired kind change
-    // rides the same drift rules as byte edits.
     let manifest = manifest_of(&[("rc", recorded(&link("v1"), &[OWNER]))]);
     let observations = observed(&[("rc", on_disk(&link("moved")))]);
 
@@ -2660,9 +2429,6 @@ fn a_desired_file_over_a_recorded_link_is_drift_of_kind_when_the_link_moved() {
 
 // --- unhashable drift is never lifted ---
 
-// A directory has no signature, so forcing re-checks it by removing it — and
-// only an empty one goes, since what a directory holds is unrecorded at that
-// location and no policy reaches it.
 #[test]
 fn drift_to_an_empty_directory_is_replaced_under_overwrite_policy() {
     let manifest = manifest_of(&[("a", recorded(&file("v1\n", false), &[OWNER]))]);
@@ -2697,10 +2463,6 @@ fn a_drifted_orphan_now_a_directory_stays_refused_under_overwrite_policy() {
         }
     );
 
-    // `--force` is already on and the path refused anyway, so the hint may not
-    // promise the flag lifts it. Its qualifier is what keeps the message true
-    // here: a device stands where the file was, and nothing pins a signature
-    // on that.
     assert_eq!(
         plan.refused().expect("a refused path").to_string(),
         "refusing to touch drifted paths (edited on disk): old; pass --force to touch them \
@@ -2710,9 +2472,6 @@ fn a_drifted_orphan_now_a_directory_stays_refused_under_overwrite_policy() {
 
 // --- a directory standing where a file or a link belongs ---
 
-// The projection's own scaffolding: every node under the directory is a
-// record this same plan removes, so the removals empty it, pruning takes it,
-// and the write lands — in one run, with no drift for a force to lift.
 #[test]
 fn a_directory_the_runs_own_removals_empty_becomes_the_desired_file() {
     let inside = file("scaffolding\n", false);
@@ -2771,8 +2530,6 @@ fn a_node_nothing_records_holds_the_directory_and_the_refusal_names_it() {
     );
 }
 
-// Clearing the directory would orphan the other owner's record, so it holds
-// the directory as firmly as an unrecorded node, and the message says whose.
 #[test]
 fn another_owners_record_beneath_holds_the_directory_and_names_the_owner() {
     let mine = file("scaffolding\n", false);
@@ -2808,9 +2565,6 @@ fn another_owners_record_beneath_holds_the_directory_and_names_the_owner() {
     );
 }
 
-// Nothing recorded lies under a hand-made directory nested in the
-// scaffolding, so no removal empties it and pruning keeps it standing — which
-// would leave the write meeting a directory mid-run had planning not said so.
 #[test]
 fn an_empty_directory_nested_in_the_scaffolding_holds_it() {
     let inside = file("scaffolding\n", false);
@@ -2839,8 +2593,6 @@ fn an_empty_directory_nested_in_the_scaffolding_holds_it() {
     );
 }
 
-// Removing a block strips its region and republishes the container, so the
-// file stays and the directory never empties.
 #[test]
 fn a_block_beneath_the_directory_holds_it_because_its_container_survives() {
     let region = block("managed\n", Placement::Append);
@@ -2877,8 +2629,6 @@ fn a_block_beneath_the_directory_holds_it_because_its_container_survives() {
     );
 }
 
-// A drifted node beneath the directory blocks it, and forcing is what clears
-// it, so the drift is the message the run states first.
 #[test]
 fn a_drifted_node_beneath_the_directory_is_the_refusal_the_run_states() {
     let recorded_inside = file("v1\n", false);
@@ -2921,11 +2671,6 @@ fn a_desired_block_over_a_directory_stays_foreign() {
     );
 }
 
-// A container the author owns, already carrying the desired marker over a
-// body this projection did not write, is foreign — and removing it is the one
-// thing that does not help, since a block never creates its container. Both
-// halves are asserted here because the pair is what the `Foreign` message may
-// not tell the reader to do.
 #[test]
 fn a_foreign_block_container_is_refused_and_removing_it_refuses_too() {
     let desired = tree(&[("rc", &block("ours\n", Placement::Append))]);
@@ -2954,8 +2699,6 @@ fn a_foreign_block_container_is_refused_and_removing_it_refuses_too() {
         }
     );
 
-    // The reader takes the removal advice: the container is gone, and with it
-    // whatever else the author kept in the file.
     let removed = plan(
         &desired,
         &Manifest::new(),
@@ -2973,8 +2716,6 @@ fn a_foreign_block_container_is_refused_and_removing_it_refuses_too() {
         "removing a block's container does not let the projection write it"
     );
 
-    // What the `Foreign` hint sends the reader to do instead: the marker
-    // region goes and the container stays, and the projection writes.
     let region_gone = plan(
         &desired,
         &Manifest::new(),
@@ -2991,8 +2732,6 @@ fn a_foreign_block_container_is_refused_and_removing_it_refuses_too() {
     );
 }
 
-// What a directory drifted over a record holds is unrecorded at that
-// location, so no policy reaches it and the refusal says as much.
 #[test]
 fn drift_to_a_directory_holding_anything_refuses_under_either_policy() {
     let manifest = manifest_of(&[("a", recorded(&file("v1\n", false), &[OWNER]))]);
@@ -3031,10 +2770,6 @@ fn drift_to_a_directory_holding_anything_refuses_under_either_policy() {
     }
 }
 
-// Both rules that refuse a directory name what holds it the same way: the
-// node itself, not the directory it sits in. A drifted directory holding
-// `a/sub/note.md` names the file, since naming `a/sub` would only say that
-// something is in there without saying what.
 #[test]
 fn a_drifted_directory_names_what_holds_it_rather_than_the_directory_between() {
     let manifest = manifest_of(&[("a", recorded(&file("v1\n", false), &[OWNER]))]);
@@ -3062,8 +2797,6 @@ fn a_drifted_directory_names_what_holds_it_rather_than_the_directory_between() {
     );
 }
 
-// An empty one is the case forcing does clear, so the unforced refusal stays
-// the ordinary drift, which is the one that names the flag.
 #[test]
 fn drift_to_an_empty_directory_refuses_as_drift_until_forced() {
     let manifest = manifest_of(&[("a", recorded(&file("v1\n", false), &[OWNER]))]);
@@ -3101,9 +2834,6 @@ fn an_orphan_drifted_to_an_empty_directory_is_removed_under_overwrite_policy() {
     assert_eq!(action(&forced, "old"), &Action::RemoveDirectory);
 }
 
-// A record another owner holds alone is that owner's whether or not it
-// drifted into a directory: the kind swap is not a way past the boundary
-// every other kind of drifted node is held to.
 #[test]
 fn a_directory_drifted_over_another_owners_record_is_an_owner_conflict() {
     let manifest = manifest_of(&[("a", recorded(&file("theirs\n", false), &["other"]))]);
@@ -3122,7 +2852,6 @@ fn a_directory_drifted_over_another_owners_record_is_an_owner_conflict() {
     }
 }
 
-// The record is shared, so no owner's forcing decides the kind swap alone.
 #[test]
 fn a_directory_drifted_over_a_shared_record_is_an_owner_conflict() {
     let manifest = manifest_of(&[("a", recorded(&file("agreed\n", false), &[OWNER, "other"]))]);
@@ -3141,9 +2870,6 @@ fn a_directory_drifted_over_a_shared_record_is_an_owner_conflict() {
     }
 }
 
-// The child directory is itself removed, not merely emptied, so what holds
-// the parent open is nothing: `rmdir` of the child, then pruning, then the
-// write, in the one run.
 #[test]
 fn a_child_directory_the_run_removes_does_not_hold_its_parent() {
     let manifest = manifest_of(&[("build.sh/main", recorded(&file("v1\n", false), &[OWNER]))]);
@@ -3170,10 +2896,6 @@ fn a_child_directory_the_run_removes_does_not_hold_its_parent() {
 
 // --- a directory holding more than observation can state ---
 
-// The removals would empty everything the walk could name, but the walk could
-// not name everything: pruning would meet a directory that is not empty and
-// keep it, and the write would then meet a directory mid-run, after the
-// removals landed. So the run refuses before it removes anything.
 #[test]
 fn a_name_the_walk_cannot_read_keeps_the_directory_from_clearing() {
     let inside = file("scaffolding\n", false);
@@ -3204,8 +2926,6 @@ fn a_name_the_walk_cannot_read_keeps_the_directory_from_clearing() {
     );
 }
 
-// The unreadable name is a level down, in a directory this run's removals
-// would otherwise empty. Emptying is exactly what it cannot be known to do.
 #[test]
 fn a_name_the_walk_cannot_read_below_the_directory_holds_it_too() {
     let inside = file("scaffolding\n", false);
@@ -3237,9 +2957,6 @@ fn a_name_the_walk_cannot_read_below_the_directory_holds_it_too() {
     );
 }
 
-// The drifted side asks the same question of the same fact: `rmdir` would
-// fail on a directory holding a name the walk skipped, so the refusal says so
-// at plan time instead of failing mid-run.
 #[test]
 fn a_name_the_walk_cannot_read_refuses_the_drifted_directory_under_either_policy() {
     let manifest = manifest_of(&[("a", recorded(&file("v1\n", false), &[OWNER]))]);
@@ -3265,8 +2982,6 @@ fn a_name_the_walk_cannot_read_refuses_the_drifted_directory_under_either_policy
     }
 }
 
-// An unreadable name somewhere else in the destination says nothing about
-// this directory.
 #[test]
 fn a_name_the_walk_cannot_read_elsewhere_leaves_the_directory_clearable() {
     let inside = file("scaffolding\n", false);
@@ -3299,10 +3014,6 @@ fn a_name_the_walk_cannot_read_elsewhere_leaves_the_directory_clearable() {
 
 #[test]
 fn a_desired_block_over_an_unrecorded_container_writes() {
-    // Writing into a file it does not own whole is what a block is for, so
-    // an unrecorded container is not a foreign refusal. Only apply's read of
-    // the bytes can tell an untouched container from one already carrying a
-    // region, so the plan is a write either way.
     let entry = block("managed\n", Placement::Append);
     let container = file("author\n", false);
 
@@ -3343,9 +3054,6 @@ fn a_desired_block_over_an_unrecorded_non_file_refuses_as_foreign() {
 
 #[test]
 fn a_block_never_creates_its_container() {
-    // Neither over a path nothing was ever at, nor over a recorded region
-    // whose container was deleted: a projection that made the file would own
-    // it whole, which is what a `File` entry is for.
     let entry = block("managed\n", Placement::Append);
     let recorded_block = manifest_of(&[("conf", recorded(&entry, &[OWNER]))]);
     let cases: &[(Manifest, Observations)] = &[
@@ -3374,7 +3082,6 @@ fn a_block_never_creates_its_container() {
 
 #[test]
 fn a_region_gone_from_a_standing_container_is_written_again() {
-    // Missing, so write heals — the container is still there to splice into.
     let entry = block("managed\n", Placement::Append);
     let manifest = manifest_of(&[("conf", recorded(&entry, &[OWNER]))]);
 
@@ -3445,8 +3152,6 @@ fn the_marker_and_body_rules_refuse_before_any_classification() {
 
 #[test]
 fn appending_needs_an_author_side_that_ends_with_a_newline() {
-    // Neither side's bytes get normalized to make room, so a container whose
-    // last line has no terminator refuses rather than gaining one.
     let entry = block("managed\n", Placement::Append);
     let manifest = manifest_of(&[("conf", recorded(&entry, &[OWNER]))]);
 
@@ -3471,15 +3176,11 @@ fn appending_needs_an_author_side_that_ends_with_a_newline() {
             },
         }
     );
-    // Prepending puts the author's side last, so its terminator is theirs.
     assert!(matches!(action(&prepended, "conf"), Action::Write { .. }));
 }
 
 #[test]
 fn a_changed_marker_overwrites_the_recorded_region() {
-    // The desired kind carries the marker, so changing it makes the desired
-    // entry differ from the recorded one: apply strips the region the old
-    // marker locates and splices the new one in a single publish.
     let was = block("managed\n", Placement::Append);
     let now = Entry::Block {
         body: b"managed\n".to_vec(),
@@ -3528,10 +3229,6 @@ fn a_region_matching_desired_skips() {
 
 #[test]
 fn a_drifted_region_lifts_under_force_and_a_lost_container_does_not() {
-    // The crate's ordinary rule: a drift lifts where the observed node
-    // carries a signature apply can re-verify, which for a block is the body
-    // the recorded marker locates. A container that became a directory
-    // carries no such signature, so `--force` still refuses it.
     let entry = block("v2\n", Placement::Append);
     let manifest = manifest_of(&[(
         "conf",
@@ -3577,14 +3274,6 @@ fn a_drifted_region_lifts_under_force_and_a_lost_container_does_not() {
 
 #[test]
 fn a_second_marker_line_costs_the_region_its_identity_and_every_action_refuses() {
-    // The region is found by taking the last occurrence, which is the
-    // projection's own only while every other one is a line outside it. A
-    // second bare marker line leaves nothing saying which is which, so there
-    // is no range apply could be told to strip — and acting on a guess would
-    // leave the other region in the container with the manifest recording
-    // only one. The extreme occurrence's body decides nothing here: whether
-    // it hashes to the record, to the desired body, or to neither, the
-    // container identifies no region and every action refuses.
     let entry = block("v2\n", Placement::Append);
     let manifest = manifest_of(&[(
         "conf",
@@ -3614,7 +3303,6 @@ fn a_second_marker_line_costs_the_region_its_identity_and_every_action_refuses()
                 );
             }
         }
-        // And it is drift that says so, at the classification.
         assert_eq!(
             classify(&manifest, &observations, None).rows[Utf8Path::new("conf")].verdict,
             PathState::Drifted,
@@ -3682,8 +3370,6 @@ fn an_orphaned_region_is_removed_and_a_vanished_one_expects_nothing() {
 
 // --- removal: whole owner, or a subset by path ---
 
-// [`decide_removal`] for [`OWNER`] with no in-dest state prefix, under
-// `policy` and the default (refusing) external-target policy.
 fn removal(
     scope: RemovalScope<'_>,
     manifest: &Manifest,
@@ -3739,7 +3425,6 @@ fn removing_a_whole_owner_is_deciding_against_an_empty_tree() {
                     expected: Some(signature(&entry)),
                 },
             ),
-            // Another owner still holds it: the disk is left alone.
             ("shared.txt".into(), Action::Release),
         ])
     );
@@ -3766,8 +3451,6 @@ fn a_subset_removal_names_the_only_paths_it_judges() {
         DriftPolicy::Refuse,
     );
 
-    // a.txt is not named: no action at all, so its entry and its node
-    // both survive the run.
     assert_eq!(
         plan.actions,
         BTreeMap::from([
@@ -3788,8 +3471,6 @@ fn a_subset_removal_naming_no_path_plans_nothing() {
     let manifest = manifest_of(&[("a.txt", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[("a.txt", on_disk(&entry))]);
 
-    // Clearing the owner is `Everything`, never an empty list: a caller
-    // passing along a path list that came up empty removes nothing.
     let plan = removal(
         RemovalScope::Paths(&BTreeSet::new()),
         &manifest,
@@ -3842,8 +3523,6 @@ fn requested_paths_pass_the_same_containment_gateway_as_desired_keys() {
         DriftPolicy::Refuse,
     );
 
-    // Refusals are keyed by the request verbatim, exactly as a refused
-    // desired key is.
     for path in [
         "../escape",
         "/etc/passwd",
@@ -3868,9 +3547,6 @@ fn requested_paths_pass_the_same_containment_gateway_as_desired_keys() {
 
 #[test]
 fn a_removal_request_the_state_dir_sits_beneath_refuses_containment() {
-    // Same gateway as a desired key, symmetric prefix test included: a
-    // request naming a location the state directory sits beneath is a
-    // request to act where the projection's own state lives.
     let entry = file("alpha\n", false);
     let manifest = manifest_of(&[(".local/share/rc", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[(".local/share/rc", on_disk(&entry))]);
@@ -3900,11 +3576,6 @@ fn a_removal_request_the_state_dir_sits_beneath_refuses_containment() {
 
 #[test]
 fn a_removal_request_that_escapes_the_destination_refuses_rather_than_reading_as_unheld() {
-    // Admission screens every request before the plan fills in the paths the
-    // owner turns out not to hold, so no spelling that leaves the
-    // destination can come back as the friendly verdict for one it does not
-    // hold. The manifest records none of these, which is the state that
-    // reaches the fill.
     let manifest = manifest_of(&[("a.txt", recorded(&file("alpha\n", false), &[OWNER]))]);
     let observations = observed(&[("a.txt", on_disk(&file("alpha\n", false)))]);
     let escaping = [
@@ -3931,9 +3602,6 @@ fn a_removal_request_that_escapes_the_destination_refuses_rather_than_reading_as
             "expected {path} refused"
         );
     }
-    // `./a.txt` names the recorded file the long way round and is refused
-    // for its spelling, so the plan holds the five refusals and nothing at
-    // the key itself.
     assert_eq!(plan.actions.len(), escaping.len());
 }
 
@@ -3946,11 +3614,6 @@ fn naming_a_path_this_owner_does_not_hold_says_so_and_changes_nothing() {
         ("foreign.txt", on_disk(&entry)),
     ]);
 
-    // Never recorded, recorded under another owner alone, and a directory
-    // (which the manifest never records): a removal owes nothing at any of
-    // them, so re-running one that already succeeded still writes nothing.
-    // Each one is named all the same — an owner asking to remove a path it
-    // never recorded learns that from the plan rather than from silence.
     let plan = removal(
         RemovalScope::Paths(&requested(&["gone.txt", "foreign.txt", "theirs.txt", "b"])),
         &manifest,
@@ -3971,10 +3634,6 @@ fn naming_a_path_this_owner_does_not_hold_says_so_and_changes_nothing() {
 
 #[test]
 fn a_manifest_key_that_escapes_the_destination_refuses_rather_than_planning_a_removal() {
-    // A forged manifest is the only way to reach these keys, and applying one
-    // refuses on containment. Deciding refuses on the same terms, so a dry
-    // run previews the verdict the real run reaches instead of announcing a
-    // removal outside the destination.
     let entry = file("alpha\n", false);
     let manifest = manifest_of(&[
         ("../ESCAPE/x", recorded(&entry, &[OWNER])),
@@ -4006,8 +3665,6 @@ fn a_manifest_key_that_escapes_the_destination_refuses_rather_than_planning_a_re
             expected: Some(signature(&entry)),
         }
     );
-    // The same keys reached through a write, whose orphans come off the same
-    // manifest side of the table.
     let projected = plan(
         &tree(&[("a.txt", &entry)]),
         &manifest,
@@ -4043,8 +3700,6 @@ fn removing_a_drifted_path_refuses_and_the_policy_lifts_it() {
                 refusal: Refusal::Drift,
             }
         );
-        // Overwrite lifts it to a removal expecting the *drifted* node, so
-        // apply still refuses if the file changes again after the plan.
         assert_eq!(
             action(
                 &removal(scope, &manifest, &observations, DriftPolicy::Overwrite),

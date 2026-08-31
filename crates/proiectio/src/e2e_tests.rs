@@ -81,10 +81,8 @@ const CLEARED: &str = "removed    bin/tool              (exec)\n\
                        removed    current\n\
                        3 removed\n";
 
-/// What the plan reads once `bin/tool` is edited underneath it and `current`
-/// removed: the refused row names its reason and the source that named the
-/// path, the rest of the plan stands, as `docs/cli-tour.lex` section 2 prints
-/// it.
+/// The plan once `bin/tool` is edited underneath it and `current` removed,
+/// as `docs/cli-tour.lex` section 2 prints it.
 fn refused_plan(deploy: &Utf8Path) -> String {
     format!(
         "would refuse     bin/tool              (drifted) (from mapping {deploy})\n\
@@ -165,8 +163,7 @@ fn a_destination_is_projected_re_projected_refused_forced_and_cleared() {
     assert!(manifest_of(&dest).entries.is_empty());
 }
 
-/// The transcript `docs/cli-tour.lex` section 4 prints for a whole owner: the
-/// invocation names the destination and the owner, never the manifest.
+/// The transcript `docs/cli-tour.lex` section 4 prints for a whole owner.
 #[test]
 #[serial]
 fn rm_clears_everything_the_named_owner_holds() {
@@ -191,7 +188,6 @@ fn rm_clears_everything_the_named_owner_holds() {
     assert_eq!(entries(&dest), vec![".proiectio".to_owned()]);
 }
 
-/// An owner the invocation does not name holds its paths still.
 #[test]
 #[serial]
 fn rm_leaves_the_paths_another_owner_holds() {
@@ -231,8 +227,7 @@ fn rm_leaves_the_paths_another_owner_holds() {
     );
 }
 
-/// The transcript `docs/cli-tour.lex` section 4 prints for a subset: the
-/// positionals name recorded paths, and the rest of the owner's tree stays.
+/// The transcript `docs/cli-tour.lex` section 4 prints for a subset.
 #[test]
 #[serial]
 fn rm_of_a_path_subset_leaves_the_rest() {
@@ -254,7 +249,6 @@ fn rm_of_a_path_subset_leaves_the_rest() {
     assert_eq!(remaining.stdout(), "clean    bin/tool\nclean    current\n");
 }
 
-/// A directory the removal emptied is pruned; one still holding a path is not.
 #[test]
 #[serial]
 fn removal_prunes_the_directories_it_empties() {
@@ -281,8 +275,6 @@ fn removal_prunes_the_directories_it_empties() {
     );
 }
 
-/// A drifted path refuses in a row that names it, and stays on disk until the
-/// invocation lifts the policy.
 #[test]
 #[serial]
 fn rm_of_a_drifted_path_refuses_until_force_lifts_the_policy() {
@@ -320,8 +312,6 @@ fn rm_of_a_drifted_path_refuses_until_force_lifts_the_policy() {
     assert!(!dest.join("bin/tool").exists());
 }
 
-/// A positional that climbs out of the destination is refused before anything
-/// is read, in a row naming the path and the containment rule it broke.
 #[test]
 #[serial]
 fn rm_refuses_a_path_that_leaves_the_destination() {
@@ -344,8 +334,6 @@ fn rm_refuses_a_path_that_leaves_the_destination() {
     assert_eq!(result.error(), None);
 }
 
-/// A dry run reports the plan and removes nothing, on the same exit contract
-/// as the real run.
 #[test]
 #[serial]
 fn a_dry_run_of_rm_reports_the_plan_and_removes_nothing() {
@@ -371,10 +359,8 @@ fn a_dry_run_of_rm_reports_the_plan_and_removes_nothing() {
     assert!(dest.join("bin/tool").exists());
 }
 
-/// Forges the manifest at `dest` so it records `paths` under the owner
-/// `write` recorded with, each carrying the entry already recorded for
-/// `borrowed`. Only a hand-edited manifest holds keys like these; the
-/// library never writes one.
+/// Forges the manifest so it records `paths` under the write's owner. Only a
+/// hand-edited manifest holds keys like these; the library never writes one.
 fn forge_manifest_keys(dest: &Utf8Path, borrowed: &str, paths: &[&str]) {
     let mut manifest = manifest_of(dest);
     let entry = manifest.entries[Utf8Path::new(borrowed)].clone();
@@ -393,10 +379,8 @@ fn forge_manifest_keys(dest: &Utf8Path, borrowed: &str, paths: &[&str]) {
 /// The keys a forged manifest escapes the destination with.
 const ESCAPING: [&str; 2] = ["../ESCAPE/x", "/etc/passwd"];
 
-/// A dry run reaches the verdict the real run reaches, which for a manifest
-/// key outside the destination is a containment refusal — not a preview of a
-/// removal there — and reports it in the same rows. Both leave the destination
-/// as it stands.
+/// A manifest key outside the destination is a containment refusal in both
+/// tenses — not a preview of a removal there.
 #[test]
 #[serial]
 fn a_dry_run_of_rm_refuses_the_escaping_keys_the_real_run_refuses() {
@@ -437,12 +421,8 @@ fn a_dry_run_of_rm_refuses_the_escaping_keys_the_real_run_refuses() {
     assert!(dest.join("bin/tool").exists());
 }
 
-/// Issue #116 through the shell. A hand-made symlink standing where recorded
-/// ancestry was puts the recorded path out of reach: observation does not
-/// descend the link, so the path reads absent, and only grading the ancestry
-/// it is spelled of reaches the containment refusal the real run's walk
-/// raises. Both runs refuse it, name the link, and leave the destination as
-/// it stands.
+/// A hand-made symlink standing where recorded ancestry was puts the recorded
+/// path out of reach; only grading the spelled ancestry reaches the refusal.
 #[test]
 #[serial]
 fn rm_beneath_a_hand_made_link_refuses_on_the_dry_run_and_the_real_one() {
@@ -487,9 +467,6 @@ fn rm_beneath_a_hand_made_link_refuses_on_the_dry_run_and_the_real_one() {
     assert!(dest.join("logs").symlink_metadata().is_ok());
 }
 
-/// A path deleted by hand before the removal leaves the destination as the
-/// write found it — the directories it held open included — and the row says
-/// the record was dropped rather than claiming a file was removed.
 #[test]
 #[serial]
 fn rm_of_a_hand_deleted_path_prunes_its_dirs_and_says_it_forgot_it() {
@@ -524,10 +501,7 @@ fn rm_of_a_hand_deleted_path_prunes_its_dirs_and_says_it_forgot_it() {
 }
 
 /// A named path the owner never recorded is reported as such rather than
-/// disappearing into `nothing to do`; the run still succeeds, since a
-/// removal clears this owner's record and the owner has no record here to
-/// clear. It promises nothing about what stands at the path: one this owner
-/// does not hold is left where it is, whether or not anything is there.
+/// disappearing into `nothing to do`; the run promises nothing about the path.
 #[test]
 #[serial]
 fn rm_of_a_path_the_owner_never_recorded_says_so_and_still_succeeds() {
@@ -564,9 +538,6 @@ fn rm_of_a_path_the_owner_never_recorded_says_so_and_still_succeeds() {
     assert_eq!(stated(&value["rows"], "typo.txt")["verdict"], "NotRecorded");
 }
 
-/// A path another owner holds alone is one this owner does not hold, so the
-/// removal reports it and leaves it where it stands. The row's facts name the
-/// owner that does hold it, which is what tells the two states apart.
 #[test]
 #[serial]
 fn rm_of_a_path_another_owner_holds_reports_it_and_leaves_it_alone() {
@@ -626,9 +597,6 @@ fn rm_of_a_path_another_owner_holds_reports_it_and_leaves_it_alone() {
     assert_eq!(row["facts"]["owners"], serde_json::json!(["them"]));
 }
 
-/// A refused dry run of `rm` renders the whole plan too: the rows it would
-/// remove beside the row it refuses, on stdout and with the refusal status,
-/// and structured output states the same rows under the planned phase.
 #[test]
 #[serial]
 fn a_refused_dry_run_of_rm_renders_the_whole_plan() {
@@ -667,8 +635,6 @@ fn a_refused_dry_run_of_rm_renders_the_whole_plan() {
     );
 }
 
-/// With nothing recorded under the owner there is nothing to remove, and the
-/// run still succeeds.
 #[test]
 #[serial]
 fn rm_of_an_owner_holding_nothing_succeeds() {
@@ -681,8 +647,6 @@ fn rm_of_an_owner_holding_nothing_succeeds() {
     assert_eq!(result.stdout(), "nothing to do\n");
 }
 
-/// Structured output is the library's own rows, as `write`'s is, under the
-/// phase naming the tense they read in.
 #[test]
 #[serial]
 fn rm_publishes_the_librarys_own_rows() {
@@ -726,7 +690,6 @@ fn rm_names_only_styles_the_stylesheet_declares_and_the_theme_resolves() {
     assert_styles_resolved("rm", term.stdout());
 }
 
-/// A projected path is data, not markup, on the way out as on the way in.
 #[test]
 #[serial]
 fn a_removed_path_spelled_like_a_style_tag_renders_as_itself() {
@@ -745,7 +708,6 @@ fn a_removed_path_spelled_like_a_style_tag_renders_as_itself() {
     result.assert_stdout_contains("removed    [removed]tool[/removed]");
 }
 
-/// The manifest owner the invocation names wins over the configured one.
 #[test]
 #[serial]
 fn rm_falls_back_to_the_configured_owner() {
@@ -762,8 +724,6 @@ fn rm_falls_back_to_the_configured_owner() {
     assert!(manifest_of(&dest).entries.is_empty());
 }
 
-/// The state directory is the manifest's home wherever the invocation puts
-/// it, and a removal reads and rewrites the one it names.
 #[test]
 #[serial]
 fn rm_reads_the_manifest_the_state_dir_flag_names() {
@@ -794,10 +754,7 @@ fn rm_reads_the_manifest_the_state_dir_flag_names() {
 const REFUSED_LANDING: &str = "would refuse     a/x.txt  (recorded landing) \
                                (through the symlink a, onto real/x.txt, held by p)";
 
-/// A removal whose ancestry walk follows a recorded link onto a node another
-/// owner records refuses, dry and real alike: the link, the landing and the
-/// owner holding it are all in the message, nothing is unlinked, and the
-/// directory the landing sits in survives (issue #137).
+/// The #137 transcript: two owners, one hand deletion, no manifest editing.
 #[test]
 #[serial]
 fn rm_refuses_where_a_recorded_link_resolves_onto_another_owners_node() {

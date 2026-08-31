@@ -308,8 +308,7 @@ fn diagnostics_reach_stderr_with_exactly_one_newline() {
     assert!(text.ends_with('\n') && !text.ends_with("\n\n"), "{text:?}");
 }
 
-/// A handler that returns bytes has them written, not dropped: the wildcard
-/// arm this seam used to end in exited 0 with nothing on stdout.
+/// A handler that returns bytes has them written, not dropped.
 #[test]
 fn binary_output_reaches_stdout_byte_for_byte() {
     let mut out = Vec::new();
@@ -477,10 +476,8 @@ fn a_warning_that_cannot_be_written_exits_one() {
     );
 }
 
-/// A destination-relative filename reaches the diagnostic, and a Unix filename
-/// may hold an escape sequence. It leaves as the characters it is: an OSC that
-/// writes the clipboard is text the shell shows, not a command the terminal
-/// runs, and no message can end a line the shell did not.
+/// A Unix filename may hold an escape sequence; it leaves as the characters
+/// it is, and no message can end a line the shell did not.
 #[test]
 fn a_diagnostic_carrying_control_characters_reaches_stderr_as_escapes() {
     const OSC: &str = "\u{1b}]52;c;cGF5bG9hZA==\u{7}";
@@ -534,9 +531,8 @@ fn a_warning_carrying_control_characters_reaches_stderr_as_escapes() {
     );
 }
 
-/// Clap spells a usage error over several lines, and those line breaks are the
-/// message's own layout rather than anything a filename smuggled in. They
-/// survive, and the shell still ends the message exactly once.
+/// Clap spells a usage error over several lines; they survive, and the
+/// shell still ends the message exactly once.
 #[test]
 fn a_diagnostic_clap_spelled_over_several_lines_keeps_them() {
     let usage = RunResult::Error(RunError::new(
@@ -566,9 +562,8 @@ fn an_unrecorded_verdict_leaves_the_emitted_status_alone() {
     }
 }
 
-/// A refused dry run rendered its plan, so the refusal it recorded is what
-/// the process leaves with — and a failed write of that plan still raises the
-/// run without lowering the refusal.
+/// A refused dry run rendered its plan, so the recorded refusal is what the
+/// process leaves with; a failed write raises the run without lowering it.
 #[test]
 fn a_recorded_refusal_survives_whatever_emitting_the_run_reported() {
     let verdict = Verdict::default();

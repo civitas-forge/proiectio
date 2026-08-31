@@ -11,9 +11,7 @@ use crate::{
     decide, load_manifest, observe,
 };
 
-// Opens a capability handle at a fixture root. Ambient authority is the
-// test's to spend; the library itself opens only the source tree it is
-// handed.
+// Ambient authority is the test's to spend; the library opens only the tree it is handed.
 fn dir_at(root: &Utf8Path) -> Utf8Dir {
     Utf8Dir::open_ambient_dir(root, cap_std::ambient_authority()).expect("open fixture root")
 }
@@ -35,8 +33,6 @@ fn refused(source: &Fixture, names: &[&str]) -> BTreeMap<Utf8PathBuf, Origin> {
         .collect()
 }
 
-// One observe → decide → apply run of `desired` into a fresh destination,
-// under the strict default policies.
 fn project(dest: &Fixture, state: &Fixture, desired: &Desired) -> ApplyReport {
     let dest_dir = dir_at(dest.root());
     let state_dir = state_at(state.root());
@@ -55,8 +51,6 @@ fn project(dest: &Fixture, state: &Fixture, desired: &Desired) -> ApplyReport {
     apply(&dest_dir, &state_dir, &manifest, &plan).expect("apply the plan")
 }
 
-// The action the strict default plan gives each desired path, against an
-// empty destination — how a test asks what deciding makes of a loaded tree.
 fn actions_for(desired: &Desired) -> BTreeMap<Utf8PathBuf, Action> {
     let dest = Tree::new().materialize();
     let dest_dir = dir_at(dest.root());
@@ -77,8 +71,6 @@ fn actions_for(desired: &Desired) -> BTreeMap<Utf8PathBuf, Action> {
 
 #[test]
 fn a_tree_of_files_exec_bits_and_an_in_tree_link_round_trips() {
-    // The definition of done: the tree projects, and the relative link
-    // still resolves at the destination because the layout came along.
     let declared = Tree::new()
         .file("config/settings.toml", "listen = \":8080\"\n")
         .executable("bin/tool", "#!/bin/sh\necho tool\n")
@@ -101,9 +93,7 @@ fn a_tree_of_files_exec_bits_and_an_in_tree_link_round_trips() {
 
 #[test]
 fn a_link_out_of_the_tree_is_carried_verbatim_and_graded_external() {
-    // The link points at a file the walk can read and must not: what
-    // reaches the tree is the pointer, never the pointed-at bytes. Grading
-    // is deciding's, so the verdict is read off the plan.
+    // What reaches the tree is the pointer, never the pointed-at bytes.
     let outside = Tree::new()
         .file("secret.txt", "not the projection's")
         .materialize();
@@ -152,8 +142,7 @@ fn a_link_out_of_the_tree_is_carried_verbatim_and_graded_external() {
 
 #[test]
 fn a_directory_link_out_of_the_tree_is_carried_not_walked_into() {
-    // The `/etc` case: descending the link would copy a subtree the caller
-    // never named into the projection.
+    // Descending the link would copy a subtree the caller never named.
     let outside = Tree::new()
         .file("secrets/key.txt", "private")
         .file("secrets/deeper/more.txt", "private")
@@ -223,9 +212,6 @@ fn an_archive_inside_the_tree_is_a_file_copied_byte_for_byte() {
 
 #[test]
 fn empty_directories_carry_no_entry() {
-    // `Entry` has no directory variant, so an empty directory has nothing
-    // to project — a tree of nothing but empty directories is an empty
-    // desired tree.
     let source = Tree::new()
         .dir("empty")
         .dir("also/empty")
@@ -279,8 +265,6 @@ fn names_the_containment_gateway_refuses_are_reported_together_verbatim() {
         &source,
         &["NUL", "dir\\sub", "weird:name", "sub/trailing.", "sub/COM1"],
     );
-    // A walked key is spelled relative to the source root, so the refusal
-    // names the root it is spelled against.
     assert!(matches!(
         load_tree(source.root(), crate::Limits::default()).unwrap_err(),
         Error::Refused(refused) if refused.kind() == RefusalKind::Containment && origins_of(&refused) == want
@@ -289,9 +273,6 @@ fn names_the_containment_gateway_refuses_are_reported_together_verbatim() {
 
 #[test]
 fn a_directory_the_gateway_refuses_is_named_instead_of_its_descendants() {
-    // Every key under `COM1` would carry it as a component, so the whole
-    // subtree is unprojectable and the refusal says so once, naming the
-    // directory. Nothing under it is opened or read.
     let source = Tree::new()
         .file("COM1/a.txt", "a")
         .file("COM1/deeper/b.txt", "b")
@@ -307,9 +288,6 @@ fn a_directory_the_gateway_refuses_is_named_instead_of_its_descendants() {
 
 #[test]
 fn a_refused_directory_holding_nothing_is_still_refused() {
-    // An empty directory bearing an ordinary name projects nothing; one the
-    // gateway refuses fails the load, because the caller named a path the
-    // projection may not create.
     let source = Tree::new().dir("weird:name").materialize();
 
     let want = refused(&source, &["weird:name"]);
@@ -319,10 +297,8 @@ fn a_refused_directory_holding_nothing_is_still_refused() {
     ));
 }
 
-// Nests `depth` directories under `root` and returns the deepest one.
-// `create_dir_all` spells the whole chain in one path, which stays well
-// inside the host's path limit at these depths — the walk itself is bound
-// by no such limit, which is the point of `MAX_WALK_DEPTH`.
+// Nests `depth` directories under `root` and returns the deepest one;
+// the chain stays inside the host's path limit at these depths.
 fn nest(root: &Utf8Path, depth: usize) -> Utf8PathBuf {
     let deep = root.join(vec!["d"; depth].join("/"));
     fs::create_dir_all(&deep).expect("nest directories");
@@ -331,9 +307,7 @@ fn nest(root: &Utf8Path, depth: usize) -> Utf8PathBuf {
 
 #[test]
 fn a_tree_at_the_depth_limit_loads_and_one_past_it_is_named() {
-    // The walk spends a stack frame per level, so a tree the source chose
-    // to nest without end has to come back as an error rather than as a
-    // stack the walk runs off the end of.
+    // The walk spends a stack frame per level; past the limit it must error, not overflow.
     let source = Tree::new().materialize();
     let deepest = nest(source.root(), MAX_WALK_DEPTH);
     fs::write(deepest.join("marker"), "deep").expect("write the deepest file");
@@ -448,8 +422,6 @@ fn a_missing_source_is_an_io_error_naming_it() {
 
 #[test]
 fn a_source_that_is_a_file_is_an_io_error_naming_it() {
-    // `--tree` pointed at an archive extracts it; pointed at an
-    // ordinary file, this loader has no tree to walk.
     let fixture = Tree::new().file("notes.txt", "x").materialize();
     let file = fixture.path("notes.txt");
 
@@ -477,8 +449,6 @@ fn a_relative_source_path_resolves_against_the_current_directory() {
     ));
 }
 
-// The bound covers a walked tree's files, not just archives: the walk holds
-// every file it reads in the tree at once, so the same budget meters it.
 #[test]
 fn a_tree_whose_files_outweigh_the_bound_fails_the_load() {
     let source = Tree::new()
@@ -498,10 +468,6 @@ fn a_tree_whose_files_outweigh_the_bound_fails_the_load() {
     load_tree(source.root(), Limits::default()).expect("load under the default bound");
 }
 
-// File bytes are not all a walk holds. A tree of empty files carries no
-// contents at all and still costs a key apiece, so the keys are spent too —
-// otherwise a directory of a million empty names would walk clean under any
-// bound, the zero-byte one included.
 #[test]
 fn a_tree_of_empty_files_spends_the_bound_on_the_names_it_holds() {
     let mut source = Tree::new();
@@ -521,9 +487,7 @@ fn a_tree_of_empty_files_spends_the_bound_on_the_names_it_holds() {
 }
 
 // Whichever charge runs the budget out, the refusal names the node it was
-// on — not the directory holding it. A review read `self.absolute(&rel)` as
-// the parent; `rel` is `prefix.join(&name)`, so it is the node itself, and
-// this pins that rather than leaving it to be re-read.
+// on — not the directory holding it.
 #[test]
 fn the_refusal_names_the_node_the_budget_ran_out_on() {
     let source = Tree::new()
@@ -546,9 +510,6 @@ fn the_refusal_names_the_node_the_budget_ran_out_on() {
     assert_eq!(refused_at(610), source.root().join("nested/big.bin"));
 }
 
-// A name containment refuses is held to the end of the walk as surely as an
-// admitted one — every refusal is reported together — so it is spent too.
-// Nothing else bounds how many names a walk may refuse.
 #[test]
 fn refused_names_spend_the_bound_they_are_held_against() {
     let mut source = Tree::new();
@@ -563,16 +524,12 @@ fn refused_names_spend_the_bound_they_are_held_against() {
         load_tree(source.root(), Limits::default().with_max_source_bytes(200)).unwrap_err(),
         Error::SourceTooLarge { limit, .. } if limit == 200
     ));
-    // With room for every refused name, the walk reaches the refusal it was
-    // always going to report.
     assert!(matches!(
         load_tree(source.root(), Limits::default()).unwrap_err(),
         Error::Refused(refused) if refused.kind() == RefusalKind::Containment
     ));
 }
 
-// A symlink's target is read out of the source tree and held as long as the
-// tree is, so it is spent like a file's bytes.
 #[test]
 fn a_symlink_target_spends_the_bound() {
     let source = Tree::new().symlink("current", "releases/v1").materialize();

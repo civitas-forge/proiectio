@@ -69,7 +69,6 @@ pub struct Plan {
     /// Whether the caller permitted external symlink targets when this plan
     /// was decided; apply re-grades each target against this.
     pub external_targets: ExternalTargetPolicy,
-    /// The per-path actions.
     pub actions: BTreeMap<Utf8PathBuf, Action>,
     /// Archive members `strip` erased on the way to the desired tree, which
     /// no action can state: they reach no path in the destination, so there
@@ -138,12 +137,10 @@ fn facts_of(
         Action::Remove {
             expected: Some(expected),
         } => Some(recorded_shape(&expected.kind, expected.executable)),
-        // None of these four names a node of its own, so each row states what
-        // the manifest records at the path — the shape and the owners,
-        // including the owner a release drops, the other owner a path this one
-        // does not hold turns out to have, and the file a directory drifted
-        // over. Apply's row for the same path draws on the same entry, so a
-        // dry run and a real run state alike.
+        // None of these four names a node of its own, so each row states
+        // what the manifest records at the path; apply's row for the same
+        // path draws on the same entry, so a dry run and a real run state
+        // alike.
         Action::Release
         | Action::NotRecorded
         | Action::RemoveDirectory
@@ -151,9 +148,6 @@ fn facts_of(
             let recorded = recorded?;
             Some(recorded_shape(&recorded.kind, recorded.executable))
         }
-        // A refusal decides no node either, but no apply row follows it: a
-        // plan holding one refuses whole. Its row states the source that
-        // named the path, plus the owners already recorded there.
         Action::Refuse { .. } => None,
     };
     Some(PathFacts {
@@ -186,14 +180,11 @@ fn verdict_of(action: &Action) -> PlannedAction {
     }
 }
 
-/// Whether `action` changes the node it comes out at, which decides whether
-/// the landing is graded at all: every removal carrying a signature — a whole
-/// node, or a block region whose strip rewrites the container's bytes right
-/// there — and the two directory removals. A removal expecting nothing
-/// verifies absence and drops its record; a release, a skip, a not-recorded
-/// and a refusal leave the disk alone. A write goes down at its key or
-/// nowhere, so no walk of one ends anywhere to grade. This is the one reading
-/// of "this action reaches the landing" both stages ask by.
+/// Whether `action` changes the node its walk comes out at — the one reading
+/// of "this action reaches the landing" both stages grade by. True of every
+/// removal carrying a signature and of the two directory removals; an
+/// absence-only removal, a release, a skip, a not-recorded and a refusal
+/// leave the disk alone, and a write goes down at its key or nowhere.
 pub(crate) fn acts_at_landing(action: &Action) -> bool {
     matches!(
         action,
@@ -203,14 +194,11 @@ pub(crate) fn acts_at_landing(action: &Action) -> bool {
     )
 }
 
-/// Whether `action` vacates the whole node standing where it acts, which is
-/// the only thing that stands a landing's refusal down: the whole-node
-/// removal, the directory removal, and the removal half of
-/// [`Action::OverwriteDirectory`]. A removal carrying a block signature
-/// strips one region and republishes the container, so the node it acts at is
-/// still there afterwards and no other removal may unlink it. Everything
-/// [`acts_at_landing`] already rules out leaves the node standing too. This is
-/// the one reading of "the plan takes this node" both stages ask by.
+/// Whether `action` vacates the whole node standing where it acts — the one
+/// reading of "the plan takes this node" both stages grade by, and the only
+/// thing that stands a landing's refusal down. Narrower than
+/// [`acts_at_landing`]: a block strip republishes the container, so the node
+/// it acts at still stands for its owners.
 pub(crate) fn vacates_node(action: &Action) -> bool {
     match action {
         Action::Remove {
@@ -233,13 +221,9 @@ pub enum Action {
     /// Create a path that is not on disk: one never recorded, or one recorded
     /// but gone that the desired tree still wants. For an [`Entry::Block`]
     /// entry, "on disk" means the region, not the container.
-    Write {
-        /// What to write.
-        entry: Entry,
-    },
+    Write { entry: Entry },
     /// Replace a recorded path.
     Overwrite {
-        /// What to write.
         entry: Entry,
         /// The node the disk must still hold at apply time: the recorded
         /// signature, or the drifted node observed at plan time when
@@ -271,10 +255,7 @@ pub enum Action {
     /// [`Refusal::Drift`]. Planned only under [`DriftPolicy::Overwrite`], and
     /// never over a directory holding anything, which is not the projection's
     /// to unlink.
-    OverwriteDirectory {
-        /// What to write where the directory stood.
-        entry: Entry,
-    },
+    OverwriteDirectory { entry: Entry },
     /// Drop a recorded path whose node drifted into an empty directory,
     /// removing that directory. Re-checked and planned on the same terms as
     /// [`OverwriteDirectory`](Action::OverwriteDirectory); the directories
@@ -289,10 +270,7 @@ pub enum Action {
     NotRecorded,
     /// The path is named and left untouched. Applying a plan containing
     /// refusals fails with [`Error::Refused`](crate::Error::Refused).
-    Refuse {
-        /// Why the path is refused.
-        refusal: Refusal,
-    },
+    Refuse { refusal: Refusal },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]

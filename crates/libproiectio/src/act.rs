@@ -1,8 +1,32 @@
 //! The write stage: executes a [`Plan`] verbatim against the destination and
 //! persists the [`Manifest`] into the state directory.
 //!
-//! All I/O goes through two capability handles: a `Dir` rooted at the
-//! destination and the [`StateDir`] holding the manifest. Unix-only.
+//! The design in brief:
+//!
+//! - All I/O goes through two capability handles: a `Dir` rooted at the
+//!   destination and the [`StateDir`] holding the manifest. Unix-only.
+//! - [`validate`] re-derives every refusal a plan can carry before anything
+//!   is written, so a stale or forged plan is refused whole, up front. Two
+//!   things can still stop a run midway: a block whose container the
+//!   manifest does not record (what it holds is unknown until this stage
+//!   reads it) and the disk moving under the run — no lock reaches past this
+//!   projection. Either way [`Aborted`] carries the rows the run applied
+//!   before the error, beside the error itself, and the manifest recording
+//!   them is persisted whenever anything was applied: the rows are on the
+//!   destination whether or not the record reaches the state directory.
+//! - Every path is reached through [`verified_parent`], a no-follow ancestor
+//!   walk that follows only recorded, hash-verified links and restarts from
+//!   the destination root when it does. A write is then held to its action
+//!   key ([`at_action_key`]): a walk that comes out anywhere else refuses as
+//!   containment, naming the link it followed.
+//! - Every publish is atomic — tempfile or temporary link created in the
+//!   final directory, then renamed over the path. The rename replaces the
+//!   inode, so ownership, ACLs, extended attributes and other hard links do
+//!   not survive an overwrite; the mode does.
+//! - Ordering: removals first (deepest first, then pruning the directories
+//!   they emptied), then files and blocks, then symlinks last
+//!   ([`settle_links`]) — each link held until its target resolves in-dest
+//!   against the destination as published so far.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Write as _;
@@ -70,14 +94,8 @@ pub(crate) fn save_manifest(state: &StateDir, manifest: &Manifest) -> Result<()>
 
 /// Executes `plan` verbatim against `dest` and persists the updated
 /// manifest into `state`, reporting what each action did. Nothing is
-/// written when the plan cannot be honored whole ([`validate`]).
-///
-/// A block over a container the manifest does not record is the exception:
-/// what that container holds is unknown until this stage reads it, so its
-/// refusals arrive mid-run, after whatever the plan already applied. The
-/// disk moving under a run does the same, no lock reaching past this
-/// projection. Either way [`Aborted`] carries the rows the run applied
-/// before the error, beside the error itself.
+/// written when the plan cannot be honored whole ([`validate`]); a run
+/// stopped midway aborts with the rows it applied first ([`Aborted`]).
 pub(crate) fn apply(
     dest: &Dir,
     state: &StateDir,
@@ -97,13 +115,9 @@ pub(crate) fn apply(
     let mut manifest = manifest.clone();
     let mut rows = BTreeMap::new();
     let stopped = match run(dest, &mut manifest, plan, &mut rows) {
-        // Every action applied, so only the record can still stop the run.
         Ok(()) => save_manifest(state, &manifest)
             .err()
             .map(Stopped::Recording),
-        // The rows before the error are on the destination whether or not the
-        // manifest saying so reaches the state directory, and a run that
-        // wrote nothing has nothing to record.
         Err(applying) if rows.is_empty() => Some(Stopped::Applying(applying)),
         Err(applying) => Some(match save_manifest(state, &manifest) {
             Ok(()) => Stopped::Applying(applying),
@@ -125,9 +139,8 @@ pub(crate) fn apply(
 }
 
 /// The up-front whole-plan check behind [`apply`]'s "nothing is written"
-/// promise: every refusal in `plan` — the ones it carries and the ones a
-/// forged plan would slip past — reduced by [`Refused::aggregate`] to one
-/// error, with a too-deep destination reported only when nothing refused.
+/// promise, reducing every refusal by [`Refused::aggregate`]; a too-deep
+/// destination is reported only when nothing refused.
 fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
     let mut refused: Vec<(Utf8PathBuf, Refusal, Origin)> = plan
         .refused()
@@ -227,8 +240,6 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                     block(BlockFault::KindChange);
                 }
             }
-            // A directory is a whole node and a block record never stands for
-            // one, so a plan aiming this at a block is one no deciding built.
             Action::RemoveDirectory => {
                 if record_is_block {
                     block(BlockFault::KindChange);
@@ -274,9 +285,9 @@ fn entry_block_fault(entry: &Entry) -> Option<BlockFault> {
     }
 }
 
-/// Executes a validated plan's actions, recording into `manifest` and
-/// `rows` as each one lands, so a mid-run error leaves both holding
-/// exactly what was applied.
+/// Executes a validated plan's actions in the module's order, recording into
+/// `manifest` and `rows` as each one lands, so a mid-run error leaves both
+/// holding exactly what was applied.
 fn run(
     dest: &Dir,
     manifest: &mut Manifest,
@@ -285,20 +296,15 @@ fn run(
 ) -> Result<()> {
     let mut removed_dirs_candidates: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, action) in plan.actions.iter().rev() {
-        // A directory the plan replaces goes here rather than among the
-        // writes: the write at the same path needs the location free, and
-        // removals run before pruning and the writes both.
+        // An OverwriteDirectory's removal half runs with the removals so the
+        // location is free for its write a whole pass later; it is recorded
+        // and pruned like any removal, so a run that never reaches the write
+        // leaves no empty directory of its own making behind.
         if matches!(action, Action::OverwriteDirectory { .. }) {
             let recorded = manifest.entries.get(path).cloned();
             let vacated = acting_on(plan, path, || {
                 remove_directory(dest, manifest, plan, path, action)
             })?;
-            // The write that replaces the directory is a whole pass away, and
-            // anything failing in between ends the run with the directory
-            // gone. So the removal is recorded where it lands, and the ancestry
-            // it emptied is pruned as any removal's is: the write below
-            // recreates whatever it needs, and a run that never reaches it
-            // leaves no empty directory of its own making behind.
             prune_above(&vacated, &mut removed_dirs_candidates);
             manifest.entries.remove(path);
             rows.insert(
@@ -334,9 +340,8 @@ fn run(
                 {
                     remove_block(dest, manifest, plan, path, action)?;
                 } else {
-                    // A hand deletion that took the walk's own ancestry with
-                    // it leaves no resolved location to prune upwards from;
-                    // the action key names the directories still standing.
+                    // With the walk's own ancestry hand-deleted there is no
+                    // resolved location; prune from the action key instead.
                     let vacated =
                         remove(dest, manifest, plan, path, action)?.unwrap_or_else(|| path.clone());
                     prune_above(&vacated, &mut removed_dirs_candidates);
@@ -427,8 +432,6 @@ fn run(
                     entry_row(manifest, plan, path, entry, ApplyOutcome::Overwritten),
                 );
             }
-            // The directory went with the removals above, so the location is
-            // free and this writes into it as a fresh path would.
             Action::OverwriteDirectory { entry } => {
                 acting_on(plan, path, || {
                     write(dest, manifest, path, entry, true, plan, &unpublished)
@@ -657,11 +660,9 @@ fn regrade_recorded_link(
 }
 
 /// Executes one [`Action::Remove`], returning the *resolved* location the
-/// path vacated — the action key unless the walk followed an owned link — for
-/// the caller to prune the directories above. A path the plan expected
-/// nothing at vacates its location too, having been deleted by hand before
-/// the run; only ancestry that is not there answers `None`. The entry leaves
-/// the manifest either way.
+/// path vacated, for the caller to prune the directories above. `None` only
+/// when the ancestry itself is gone — a hand deletion that took the walk's
+/// own path with it leaves nothing to prune upwards from.
 fn remove(
     dest: &Dir,
     manifest: &Manifest,
@@ -830,8 +831,6 @@ enum Written {
     Held,
 }
 
-/// Publishes `contents` at `leaf` inside `dir` atomically: tempfile, mode
-/// set on the open handle, then rename over the path.
 fn persist(
     dir: &Dir,
     leaf: &str,
@@ -861,15 +860,11 @@ fn persist_mode(dir: &Dir, leaf: &str, path: &Utf8Path, contents: &[u8], mode: u
     temp.replace(leaf).map_err(io_error(path))
 }
 
-/// Opens the container of the block at `path` through the no-follow ancestor
-/// walk and reads it once. `None` means nothing stands at the path; a node
-/// that is not a regular file refuses.
-///
-/// The run's guard does not cover the gap between this read and the rename
-/// that republishes the container: a write by anything else in that window
-/// is silently lost. The rename replaces the inode, so ownership, ACLs,
-/// extended attributes and any other hard link to the file do not survive
-/// it; the mode does.
+/// Opens the container of the block at `path` and reads it once. `None`
+/// means nothing stands at the path; a node that is not a regular file
+/// refuses. The run's guard does not cover the gap between this read and
+/// the rename republishing the container: a write by anything else in that
+/// window is silently lost.
 fn read_block_container(
     dest: &Dir,
     manifest: &Manifest,
@@ -908,10 +903,8 @@ struct OpenContainer {
     leaf: String,
     bytes: Vec<u8>,
     mode: u32,
-    /// Where the no-follow walk came out, relative to the destination: the
-    /// action key unless the walk followed an owned link.
+    /// Where the walk came out — [`Walked::resolved_parent`] plus the leaf.
     landing: Utf8PathBuf,
-    /// The link the walk followed to land there, where it followed any —
     /// [`Walked::through`].
     through: Option<Utf8PathBuf>,
 }
@@ -1169,9 +1162,8 @@ fn hop_on_disk(dest: &Dir, path: &Utf8Path) -> Result<Hop> {
     }
 }
 
-/// Publishes the symlink `leaf -> target` inside `dir` atomically: created
-/// under a temporary name in that same directory and renamed over the leaf.
-/// `target` reaches disk verbatim, an absolute one included.
+/// Publishes the symlink `leaf -> target`; `target` reaches disk verbatim,
+/// an absolute one included.
 fn publish_link(dir: &Dir, leaf: &str, path: &Utf8Path, target: &str) -> Result<()> {
     let dir = dir.as_cap_std();
     let temp = create_temp_link(dir, path, target)?;
@@ -1184,9 +1176,8 @@ fn publish_link(dir: &Dir, leaf: &str, path: &Utf8Path, target: &str) -> Result<
     }
 }
 
-/// Creates the link under a temporary name in `dir` and returns that name.
-/// `symlink_contents` creates exclusively, so a name already taken fails
-/// with `EEXIST` and is retried under a fresh one.
+/// Creates the link under a temporary name in `dir` and returns that name;
+/// a name already taken fails with `EEXIST` and is retried under a fresh one.
 fn create_temp_link(
     dir: &cap_std::fs::Dir,
     path: &Utf8Path,
@@ -1332,11 +1323,9 @@ struct Walked {
     /// The prefix the walk actually traversed, which differs from `path`'s
     /// parent where the walk followed an owned link.
     resolved_parent: Utf8PathBuf,
-    /// The first owned link the walk followed, where it followed any. It is
-    /// the one link that is an ancestor of `path` as spelled — the walk
-    /// restarts from the destination on following it, so any later link lies
-    /// under the resolved prefix instead — which makes it the one that
-    /// explains a `resolved_parent` the caller did not ask for.
+    /// The first owned link the walk followed, where it followed any — the
+    /// one link that is an ancestor of `path` as spelled, and so the one
+    /// that explains a `resolved_parent` the caller did not ask for.
     through: Option<Utf8PathBuf>,
 }
 
@@ -1469,14 +1458,9 @@ fn open_nofollow(dir: &Dir, name: &str) -> std::io::Result<Dir> {
     Ok(Dir::from_std_file(opened))
 }
 
-/// Holds a write to its action key: `landing` is where [`verified_parent`]'s
-/// walk came out, and anywhere but `path` refuses as [`Refusal::Containment`].
+/// Holds a write to its action key: a `landing` anywhere but `path` refuses
+/// as [`Refusal::Containment`], carrying the owned link the walk followed.
 /// Removals are held to no key.
-///
-/// A landing that is not the key means the walk followed an owned link, so
-/// [`Walked::through`] names it and the refusal carries it: the key here is
-/// spelled entirely of ordinary components, and the link is the whole of why
-/// it lands elsewhere.
 fn at_action_key(path: &Utf8Path, landing: &Utf8Path, through: Option<&Utf8Path>) -> Result<()> {
     if landing == path {
         Ok(())
@@ -1490,14 +1474,9 @@ fn at_action_key(path: &Utf8Path, landing: &Utf8Path, through: Option<&Utf8Path>
     }
 }
 
-/// Holds `acting` to a landing this plan vacates: a walk that followed a
-/// recorded link onto a path the manifest records refuses unless this plan's
-/// own action there takes that node, rather than changing one its owners
-/// still hold. [`acts_at_landing`] says whether to grade the landing at all,
-/// and it is the same question `plan_actions` asks of the landing it reads off
-/// the observations. [`vacates_node`] then stands the refusal down where this
-/// plan removes the node itself; deciding meets that case as two keys claiming
-/// one location, which is a tree conflict rather than a landing to grade.
+/// Refuses `acting` where its walk came out on a recorded landing this plan
+/// does not itself vacate ([`acts_at_landing`] / [`vacates_node`], the same
+/// two questions deciding grades by).
 fn held_landing(
     manifest: &Manifest,
     plan: &Plan,
@@ -1537,9 +1516,8 @@ fn drift(path: &Utf8Path) -> Error {
     refuse(path, Refusal::Drift)
 }
 
-/// A containment refusal the walk to `path` raised over the ancestor `through`,
-/// which is a symlink: the key is spelled entirely of ordinary components, so
-/// the link is the whole of why it is out of reach.
+/// A containment refusal the walk to `path` raised over the symlink ancestor
+/// `through`, which is the whole of why the key is out of reach.
 fn containment_through(path: &Utf8Path, through: &Utf8Path) -> Error {
     refuse(
         path,

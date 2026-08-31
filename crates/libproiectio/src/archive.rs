@@ -129,11 +129,8 @@ pub(crate) fn expand(
             let mut decoder = zstd::stream::read::Decoder::new(reader)
                 .map_err(|e| decode_error(source, format, e))?;
             // A zstd frame header names a window buffer allocated inside the
-            // decoder, which no `Budgeted` reader sees; the reference
-            // library's default would let a small archive ask for 128 MiB.
-            // The cap comes off what the load has left rather than the bound
-            // it opened at: a mapping that has already retained most of its
-            // budget would otherwise let a last archive allocate the whole
+            // decoder, which no `Budgeted` reader sees; cap it to what the
+            // load has left, so a last archive cannot allocate the whole
             // bound over again.
             decoder
                 .window_log_max(window_log_max(budget.remaining()))
@@ -167,12 +164,9 @@ pub(crate) fn expand(
         .expect("refused is not empty")
         .into());
     }
-    // A drop is tolerable among members that survive; one that leaves the
-    // expansion with nothing to project is a `strip` deeper than the archive.
-    // Letting it through would project an empty tree, and an empty desired
-    // tree plans a removal — so a mistyped `strip` would clear everything the
-    // owner holds. An archive that drops nothing never reaches this: one
-    // carrying only directories projects nothing on its own terms.
+    // An empty desired tree plans a removal, so letting a fully-stripped
+    // expansion through would have a mistyped `strip` clear everything the
+    // owner holds.
     if expansion.tree.is_empty() && expansion.dropped_members > 0 {
         return Err(Error::ArchiveFullyStripped {
             path: source.to_owned(),
@@ -224,19 +218,11 @@ pub struct Dropped {
 }
 
 /// The window cap `limit` names, spelled the way zstd takes it: the base-2
-/// exponent of a window size, rounded **up** to the power of two that covers
-/// `limit` and clamped to the exponents the format spells.
-///
-/// A frame's own window is not a power of two — its header carries an
-/// exponent and a three-bit mantissa — so a 300 MiB body compressed in one
-/// frame declares a window of 320 MiB. Rounding the exponent down would cap
-/// the decoder at 2^28, or 256 MiB, and refuse that frame even though both
-/// its window and its body fit the 500 MiB default. Rounding up pays for
-/// that in the other direction: the window a decoder may hold reaches the
-/// next power of two past `limit` rather than stopping at `limit` itself.
-/// The clamp is the format's own range — a limit under 1 KiB would otherwise
-/// name a window no decoder accepts, failing every zstd archive rather than
-/// the oversized one.
+/// exponent rounded **up** to the power of two covering `limit` — a frame's
+/// window is not itself a power of two, and rounding down would refuse
+/// frames whose window and body both fit the bound — and clamped to the
+/// exponents the format spells, so a tiny limit fails the oversized archive
+/// rather than every zstd archive.
 fn window_log_max(limit: u64) -> u32 {
     let limit = limit.max(1);
     (limit.ilog2() + u32::from(!limit.is_power_of_two())).clamp(10, 31)
@@ -344,21 +330,12 @@ impl Expansion<'_> {
         Ok(())
     }
 
-    /// `on_disk` is the archive file's own byte size, which is checked
-    /// against the budget before the parser runs. Unlike a tar, whose every
-    /// byte reaches the expansion through a [`Budgeted`] reader,
-    /// `ZipArchive::new` reads the central directory itself and keeps every
-    /// member's name, extra field, and comment before a single body is read —
-    /// so a zip of nothing but maximum-length names would allocate freely
-    /// under a bound it never spent. That directory cannot outgrow the file
-    /// carrying it, so a file already larger than the budget's remainder is
-    /// refused here instead, and what the parser retains stays proportional
-    /// to the bound.
-    ///
-    /// This is the one place a source's compressed size is weighed at all,
-    /// so [`Limits::max_source_bytes`] names it as the exception it is, and
-    /// [`Error::ArchiveFileTooLarge`] names the file's size beside the bound
-    /// rather than reporting the expansion budget as spent.
+    /// `on_disk` is the archive file's own byte size, checked against the
+    /// budget before the parser runs: `ZipArchive::new` reads the whole
+    /// central directory before a single body, so a zip of nothing but
+    /// maximum-length names would otherwise allocate freely under a bound it
+    /// never spent. The directory cannot outgrow the file carrying it. This
+    /// is the one place a source's compressed size is weighed at all.
     fn read_zip(&mut self, reader: impl Read + Seek, on_disk: u64) -> Result<()> {
         if on_disk > self.budget.remaining() {
             return Err(Error::ArchiveFileTooLarge {

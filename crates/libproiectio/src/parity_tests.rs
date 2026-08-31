@@ -2,10 +2,9 @@
 // applying refuse only what the disk did after the observation; every case
 // here builds a destination, decides against it, touches nothing, and applies,
 // so any refusal apply raises that the plan did not is this file's failure.
-//
 // The table covers the refusal families act owns — `validate`'s whole-plan
 // check, `verified_parent`'s no-follow ancestor walk, and `check_expected`'s
-// signature re-check — with the scenario of issue #116 as its first row.
+// signature re-check.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -18,10 +17,8 @@ use crate::{
     Projection, Refusal, RemovalScope,
 };
 
-// The owner every case projects under.
 const OWNER: &str = "site";
 
-// The marker the block cases splice under.
 const MARKER: &str = "# proiectio";
 
 // A desired tree of one block region at `path`, which no `Tree` declares.
@@ -163,13 +160,8 @@ fn outcome_of(verdict: &PlannedAction) -> ApplyOutcome {
     }
 }
 
-// The setup behind the two cases where `a/rc` and `b/rc` name regions of one
-// file: each is recorded over a container of its own, since a block the
-// projection has never recorded cannot be first written through a link, and
-// the two containers are then collapsed by hand onto the one file the links
-// reach. `b/rc` prepends and `a/rc` appends because an append region runs to
-// the end of the bytes, which leaves the prepend end as the only room for a
-// second region.
+// Two regions of one file: each recorded over its own container, then the
+// containers collapsed by hand onto the one file the links reach.
 fn two_regions_one_container(case: Case) -> Case {
     let mut entries = marked_block_at("a/rc", "# alpha", Placement::Append, "alpha\n");
     entries.extend(marked_block_at(
@@ -212,8 +204,6 @@ fn recorded_landing(through: &str, at: &str, owners: &[&str]) -> Refusal {
     }
 }
 
-// Runs one case: the recording passes, the hand edit, then one decide and one
-// apply with nothing in between.
 fn parity(case: &Case) {
     let what = case.what;
     let dest = Tree::new().materialize();
@@ -334,11 +324,6 @@ fn dry_and_real_runs_reach_the_same_verdict() {
 fn cases() -> Vec<Case> {
     vec![
         // --- act's no-follow ancestor walk (`verified_parent`) ---
-        //
-        // Issue #116: observation never descends the hand-made link, so the
-        // recorded path beneath it reads absent. Grading the ancestry the
-        // path is spelled of is what lets the dry run refuse where the real
-        // run does.
         Case::new("a removal beneath a hand-made link", Op::Remove)
             .recording(OWNER, Tree::new().file("logs/deep/file.txt", "kept\n"))
             .by_hand(|root| {
@@ -358,8 +343,6 @@ fn cases() -> Vec<Case> {
                 .expect("plant the hand-made link");
         })
         .refuses("logs/deep/file.txt", containment("logs")),
-        // A recorded link the walk would follow, whose target was edited: the
-        // walk refuses drift at the link rather than resolving through it.
         Case::new(
             "a write beneath a recorded link whose target moved",
             Op::Write(
@@ -377,8 +360,6 @@ fn cases() -> Vec<Case> {
         })
         .plans("real/keep.txt", PlannedAction::Skip)
         .refuses("pivot/new.txt", Refusal::Drift),
-        // The same, forced. Nothing in the ancestor walk consults the drift
-        // policy, so the two runs agree under `--force` as they do without it.
         Case::new(
             "a forced write beneath a recorded link whose target moved",
             Op::Write(
@@ -397,8 +378,6 @@ fn cases() -> Vec<Case> {
         .forcing()
         .plans("real/keep.txt", PlannedAction::Skip)
         .refuses("pivot/new.txt", Refusal::Drift),
-        // An ancestor that is a node and not a directory: the walk refuses it
-        // as what the manifest says it is.
         Case::new(
             "a write beneath a hand-made file",
             Op::Write(Tree::new().file("conf/rc", "settings\n")),
@@ -415,8 +394,6 @@ fn cases() -> Vec<Case> {
         )
         .recording("other", Tree::new().file("conf", "theirs\n"))
         .refuses("conf/rc", Refusal::Drift),
-        // The same shape one owner projects whole: the run's own removal
-        // clears the file out of the way before the write walks through it.
         Case::new(
             "a write beneath a file the same run removes",
             Op::Write(Tree::new().file("conf/rc", "settings\n")),
@@ -424,10 +401,6 @@ fn cases() -> Vec<Case> {
         .recording(OWNER, Tree::new().file("conf", "mine\n"))
         .plans("conf", PlannedAction::Remove)
         .plans("conf/rc", PlannedAction::Write),
-        // A recorded link the walk follows out to a node another action of
-        // the same plan claims. Applying runs the removal first, so the skip
-        // would meet a path the run had just deleted; both keys refuse
-        // instead (issue #129).
         Case::new(
             "a removal landing where a desired path stands",
             Op::Write(Tree::new().file("real/x.txt", "kept\n")),
@@ -454,10 +427,6 @@ fn cases() -> Vec<Case> {
                 paths: BTreeSet::from([Utf8PathBuf::from("logs/x.txt")]),
             },
         ),
-        // The landing, not the key, is what the run leaves empty: the write
-        // walks through `real/x`, which the removal of `logs/x` unlinks. Keyed
-        // by `logs/x` instead, the walk met the old file still standing there
-        // and refused it as Foreign, which applying does not do.
         Case::new(
             "a write walking through what a removal vacates elsewhere",
             Op::Write(Tree::new().file("real/x/child.txt", "fresh\n")),
@@ -469,9 +438,6 @@ fn cases() -> Vec<Case> {
         .recording("other", Tree::new().symlink("logs", "real"))
         .plans("logs/x", PlannedAction::Remove)
         .plans("real/x/child.txt", PlannedAction::Write),
-        // A removal expecting nothing unlinks nothing, so the location it
-        // verifies empty is free for a desired key to write: forgetting the
-        // record and writing the path are one run, not two claims on one node.
         Case::new(
             "a write where an absence-only removal lands",
             Op::Write(Tree::new().file("real/x", "fresh\n")),
@@ -484,10 +450,6 @@ fn cases() -> Vec<Case> {
         .recording("other", Tree::new().symlink("logs", "real"))
         .plans("logs/x", PlannedAction::Forget)
         .plans("real/x", PlannedAction::Write),
-        // A desired path standing on a directory this run empties from
-        // elsewhere: the only node `real` holds is the one the removal keyed
-        // `logs/x` unlinks, so pruning takes the directory and the write has
-        // the location. Read off the keys, the directory looked held.
         Case::new(
             "a write over a directory a removal empties through a link",
             Op::Write(Tree::new().file("real", "fresh\n")),
@@ -499,11 +461,6 @@ fn cases() -> Vec<Case> {
         .recording("other", Tree::new().symlink("logs", "real"))
         .plans("logs/x", PlannedAction::Remove)
         .plans("real", PlannedAction::Write),
-        // A block whose container the walk reaches through a recorded link.
-        // Observation parses a region under the manifest key standing at the
-        // path it walks, so the container reads as an ordinary file where it
-        // actually sits; grading the record against that file made every such
-        // removal drift, while applying strips the region and succeeds.
         Case::new(
             "a block removal landing beneath a recorded link",
             Op::Remove,
@@ -517,10 +474,6 @@ fn cases() -> Vec<Case> {
         })
         .recording("other", Tree::new().symlink("logs", "real"))
         .plans("logs/x", PlannedAction::Remove),
-        // The removal above, run as a write instead. A write goes down at its
-        // key or nowhere, so the same walk that lets a removal act at the
-        // landing refuses the write outright — which is why nothing the
-        // relocated observation says about desired text ever reaches a splice.
         Case::new(
             "a block write beneath a recorded link",
             Op::WriteEntries(marked_block_at(
@@ -541,29 +494,17 @@ fn cases() -> Vec<Case> {
         })
         .recording("other", Tree::new().symlink("logs", "real"))
         .refuses("logs/rc", containment("logs")),
-        // Two records reaching one container through two links. Each parses
-        // the container under its own marker, so removing one grades it on its
-        // own region: stated at the landing, the two parses overwrote each
-        // other and the survivor's hash made the other record read drifted.
         two_regions_one_container(Case::new(
             "one of two records sharing a container, removed",
             Op::RemovePaths(&["a/rc"]),
         ))
         .plans("a/rc", PlannedAction::Remove),
-        // Both of them, removed in one plan. A block removal strips its own
-        // marker's region and republishes the container, so the two act on
-        // different nodes however much of one file they share — claiming the
-        // whole container for each refused a pair applying carries out.
         two_regions_one_container(Case::new(
             "both records sharing a container, removed",
             Op::Remove,
         ))
         .plans("a/rc", PlannedAction::Remove)
         .plans("b/rc", PlannedAction::Remove),
-        // The walk follows the link out to a node another owner records and
-        // this plan never judges. Unlinking it left that owner holding a
-        // record for a node that was gone, and pruning took `real` with it
-        // (issue #137).
         Case::new("a removal landing on another owner's record", Op::Remove)
             .recording(OWNER, Tree::new().file("a/x.txt", "kept\n"))
             .recording("other", Tree::new().file("real/x.txt", "kept\n"))
@@ -577,8 +518,6 @@ fn cases() -> Vec<Case> {
                     .symlink("a", "real"),
             )
             .refuses("a/x.txt", recorded_landing("a", "real/x.txt", &["other"])),
-        // The same landing, recorded by the removing owner and left out of the
-        // removal's scope: no verdict of this plan is about that node either.
         Case::new(
             "a scoped removal landing outside its own scope",
             Op::RemovePaths(&["a/x.txt"]),
@@ -594,11 +533,6 @@ fn cases() -> Vec<Case> {
         })
         .recording("other", Tree::new().symlink("a", "real"))
         .refuses("a/x.txt", recorded_landing("a", "real/x.txt", &[OWNER])),
-        // The same walk onto a record whose node somebody deleted by hand. The
-        // removal takes no node there: it re-checks that its own location is
-        // empty and drops its record, which is the projection's only way to
-        // clean a stale one, so the landing is no business of its and neither
-        // stage grades it (issue #137).
         Case::new("an aliased forget over a recorded landing", Op::Remove)
             .recording(OWNER, Tree::new().file("a/x.txt", "kept\n"))
             .recording(
@@ -621,10 +555,6 @@ fn cases() -> Vec<Case> {
                 fs::remove_file(root.join("real/x.txt")).expect("delete the landing's node");
             })
             .plans("a/x.txt", PlannedAction::Forget),
-        // A block strip landing on a record this plan reaches no verdict
-        // about. Stripping the region rewrites the container that record
-        // stands for, leaving its owner holding a hash for bytes that are
-        // gone, so the strip refuses even though it unlinks nothing.
         Case::new(
             "a block strip landing on another owner's record",
             Op::Remove,
@@ -647,10 +577,6 @@ fn cases() -> Vec<Case> {
                 .symlink("a", "real"),
         )
         .refuses("a/rc", recorded_landing("a", "real/rc", &["other"])),
-        // The same walk, landing inside the state subtree. Before deciding
-        // graded the landing, the plan aimed a removal at the state file and
-        // applying deleted it: act knows no state prefix, so nothing behind
-        // deciding would have stopped it (issue #129).
         Case::new("a removal landing inside the state subtree", Op::Remove)
             .with_state_in_dest()
             .recording(OWNER, Tree::new().file("logs/private-state", "secret\n"))
@@ -662,9 +588,6 @@ fn cases() -> Vec<Case> {
             .recording("other", Tree::new().symlink("logs", ".proiectio"))
             .refuses("logs/private-state", containment("logs")),
         // --- act's signature re-check (`check_expected`) ---
-        //
-        // Nothing moved between the plan and the apply, so every re-check
-        // passes and each verdict comes out as the outcome it predicted.
         Case::new(
             "a projection over paths it already holds",
             Op::Write(
@@ -717,9 +640,6 @@ fn cases() -> Vec<Case> {
             },
         ),
         // --- act's whole-plan check (`validate`) ---
-        //
-        // A plan carrying a refusal is declined whole and writes nothing, so
-        // the keys the dry run named are the keys the real run names.
         Case::new(
             "a projection over an edit no force lifts",
             Op::Write(Tree::new().file("a.txt", "two\n")),

@@ -24,14 +24,9 @@ fn only(document: StatusLines) -> StateView {
     rows.remove(0)
 }
 
-/// One classified path reads as one word in one style, for every state the
-/// library declares.
-///
-/// `spelling` matches the names states serialize under, which agree with the
-/// library only as long as nobody renames a variant. This drives the mapping
-/// from the enum itself, as `run_tests.rs` does for its own verdicts: the
+/// Drives the spelling from the enum itself, as `run_tests.rs` does: the
 /// `match` fails to compile when a state is added, and the assertion fails
-/// when one is renamed, since a name `spelling` does not know reads as itself.
+/// when one is renamed.
 #[test]
 fn each_state_spells_one_style_and_one_word() {
     for state in [
@@ -94,9 +89,8 @@ fn an_unknown_state_reads_as_its_own_name() {
     assert_eq!((row.style, row.state.as_str()), ("unknown", "Invented"));
 }
 
-/// An unknown verdict reads as its own name, which can be longer than any
-/// word this CLI spells. The column widens to hold it, so the paths stay in
-/// one place instead of the long row pushing its own out of line.
+/// An unknown verdict's own name can outgrow the column; it widens rather
+/// than pushing its path out of line.
 #[test]
 fn a_state_longer_than_the_column_widens_it_for_every_row() {
     let document = status(json!({
@@ -185,9 +179,8 @@ fn csv_writes_one_row_per_path_under_a_fixed_header() {
     );
 }
 
-/// The verdict cell is the name the printed line reads. A verdict carrying
-/// fields fills the column with its name rather than with the JSON object the
-/// row states it as, so the two outputs agree about the row.
+/// A verdict carrying fields fills the column with its name, so the
+/// rendered and CSV outputs agree about the row.
 #[test]
 fn the_verdict_cell_reads_the_name_a_verdict_carrying_fields_states() {
     let document = json!({
@@ -209,9 +202,8 @@ fn the_verdict_cell_reads_the_name_a_verdict_carrying_fields_states() {
     );
 }
 
-/// The owners cell is the JSON array, so two owner sets that a joined cell
-/// would spell alike stay two cells. An owner name is opaque: nothing stops
-/// one from carrying whatever character a join would use.
+/// The owners cell is the JSON array: an owner name is opaque, so a joined
+/// cell could spell two owner sets alike.
 #[test]
 fn owner_names_carrying_a_separator_stay_the_owners_they_are() {
     let cells = |owners| {
@@ -264,8 +256,7 @@ fn a_link_row_states_the_target_it_carries() {
 }
 
 /// A shape with no executable bit leaves that column empty rather than
-/// claiming a value the row does not state, and a link the row names no
-/// target for leaves the target column empty the same way.
+/// claiming a value the row does not state.
 #[test]
 fn a_link_row_states_its_shape_and_no_executable_bit() {
     let document = json!({
