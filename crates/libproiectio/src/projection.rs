@@ -74,6 +74,21 @@ impl Projection {
         Ok(status(&manifest, &observations, self.state_prefix()))
     }
 
+    /// Whether the directory holding the manifest is there.
+    ///
+    /// Every read treats an absent state directory as the empty
+    /// [`Manifest`], which is right for a destination nothing has been
+    /// projected onto and wrong for a caller who named the directory and
+    /// misspelled it. The two reports are identical, so this states the fact
+    /// and leaves the caller — who knows which of the two it named — to
+    /// decide what the fact means.
+    pub fn state_dir_exists(&self) -> Result<bool> {
+        match self.open_state(None) {
+            Some(state) => state.map(|_| true),
+            None => Ok(false),
+        }
+    }
+
     /// The recorded state: what the projection wrote, per path, with its
     /// owners. A missing state directory or manifest file reads as the empty
     /// [`Manifest`].

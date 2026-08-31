@@ -42,6 +42,23 @@ fn the_destination_defaults_to_the_working_directory() {
     assert_eq!(status.get_one::<String>("state-dir"), None);
 }
 
+/// `--check` is a flag on the leaf and it is off unless the invocation spells
+/// it, so a status nobody asked to gate on keeps exiting 0.
+#[test]
+fn status_reads_its_check_off_the_command_line() {
+    for (argv, check) in [
+        (vec!["proiectio", "status"], false),
+        (vec!["proiectio", "status", "--check"], true),
+    ] {
+        let matches = command()
+            .try_get_matches_from(&argv)
+            .unwrap_or_else(|error| panic!("{argv:?}: {error}"));
+        let status = matches.subcommand_matches("status").expect("the leaf");
+
+        assert_eq!(status.get_flag("check"), check, "{argv:?}");
+    }
+}
+
 /// Standout dispatches on the parsed subcommand path, so the config leaves
 /// must parse under the canonical name whichever spelling names the group.
 #[test]

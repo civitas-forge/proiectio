@@ -12,7 +12,8 @@ use clapfig::ConfigCommand;
         Exit codes: 0 success, 1 error, 2 refused. A refusal (2) is a deliberate \
         safety \"no\" — drift, a foreign path, or a containment violation — and is \
         distinct from an error (1). Where a refusal has an override, re-run with \
-        --force (drift) or --allow-external-targets (a symlink leaving the destination)."
+        --force (drift) or --allow-external-targets (a symlink leaving the destination). \
+        `status --check` reports those same findings on the same 2 without acting on them."
 )]
 pub(crate) struct Cli {
     /// Target directory; default cwd.
@@ -109,9 +110,20 @@ pub(crate) enum Commands {
     ///
     /// Verdicts: clean (matches the manifest), drifted (edited on disk),
     /// missing (recorded but absent from disk), foreign (present but
-    /// unrecorded). `status` always exits 0 regardless of the verdicts; to gate
-    /// CI on drift, use `write --dry-run`, which exits 2 when it would refuse.
-    Status,
+    /// unrecorded). Plain `status` exits 0 whatever the verdicts; --check
+    /// exits 2 on anything but a clean destination, so a CI job can fail on
+    /// drift without running a write.
+    Status {
+        /// Exit 2 unless every path is clean.
+        ///
+        /// A drifted, missing or foreign path exits 2, and so does a
+        /// --state-dir that is not there, which reads as the empty manifest
+        /// and would otherwise report a whole destination as foreign and
+        /// pass. Everything clean exits 0. The report itself is the same
+        /// either way; the exit code is the verdict.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 /// Clapfig's config command group (list, get, set, unset, gen, schema).
