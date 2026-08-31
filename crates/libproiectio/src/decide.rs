@@ -7,9 +7,9 @@ use crate::block;
 use crate::containment::{Hop, contained_normalize, contained_target_chain, is_pathname};
 use crate::{
     Action, BlockFault, Desired, DriftPolicy, Entry, EntryKind, Error, ExternalTargetPolicy,
-    MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations, Origin,
-    OverwriteReason, PathFacts, PathShape, PathState, Placement, Plan, PlanOptions, Refusal,
-    Report, Result, Row, Status, sha256_hex, walked_ancestry,
+    Landing, MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations,
+    Origin, OverwriteReason, PathFacts, PathShape, PathState, Placement, Plan, PlanOptions,
+    Refusal, Report, Result, Row, Status, recorded_landing, sha256_hex, walked_ancestry,
 };
 
 /// One row per path in the union of the manifest and the observations,
@@ -325,6 +325,10 @@ fn plan_actions(
     // below came out somewhere else; an action that touches no node carries
     // none.
     let mut orphans: Vec<(Utf8PathBuf, Action, Option<Utf8PathBuf>)> = Vec::new();
+    // The removals whose walk came out somewhere other than their key, each
+    // with the link that took it there: what `recorded_landing` below grades
+    // once the plan's own claims are known.
+    let mut followed: BTreeMap<Utf8PathBuf, Landing> = BTreeMap::new();
     for (path, recorded) in &manifest.entries {
         if named.contains(path)
             || in_state(path, state_prefix)
@@ -358,7 +362,15 @@ fn plan_actions(
                     None,
                 ),
                 Ok(landing) => {
-                    let at = landing.map_or_else(|| path.clone(), |landing| landing.at);
+                    let at = match landing {
+                        Some(landing) if landing.at != *path => {
+                            let at = landing.at.clone();
+                            followed.insert(path.clone(), landing);
+                            at
+                        }
+                        Some(landing) => landing.at,
+                        None => path.clone(),
+                    };
                     // A block owns a region of the container, not the
                     // container, and two keys can reach one container: the
                     // region parsed under this record's own marker is stated
@@ -450,7 +462,17 @@ fn plan_actions(
     // so only the whole-node removals empty anything.
     let mut vacated: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, action, at) in orphans {
-        let action = collided.get(&path).map_or(action, &conflict);
+        // A landing no other action of this plan claims, but the manifest
+        // records: unlinking it would take a node its owners still hold, and
+        // no verdict of this plan is about that node. Graded after the
+        // collisions above, which are the landings this plan does act on.
+        let action = match collided.get(&path) {
+            Some(paths) => conflict(paths),
+            None => followed
+                .get(&path)
+                .and_then(|landing| recorded_landing(landing, manifest))
+                .map_or(action, refuse),
+        };
         let whole_node = !manifest
             .entries
             .get(&path)

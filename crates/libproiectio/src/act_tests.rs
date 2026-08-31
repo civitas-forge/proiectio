@@ -1415,6 +1415,76 @@ fn a_write_target_appearing_in_the_gap_refuses_as_foreign() {
     assert_tree(dest.root(), &Tree::new().file("a.txt", "squatter"));
 }
 
+// A link standing where a directory stood when the plan was decided: the
+// walk now resolves onto a node another owner records, and the signature
+// check passes because the bytes are the same on both sides. Unlinking there
+// would take that owner's node, so the removal refuses instead (issue #137).
+#[test]
+fn a_removal_whose_link_appears_in_the_gap_refuses_the_landing_another_owner_holds() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("a/x.txt", "kept\n")
+        .file("real/x.txt", "kept\n")
+        .write_under(dest.root());
+    let kept = sha256_hex(b"kept\n");
+    let manifest = Manifest {
+        version: MANIFEST_VERSION,
+        entries: BTreeMap::from([
+            (
+                "a".into(),
+                recorded(EntryKind::Symlink, sha256_hex(b"real"), &["other"]),
+            ),
+            (
+                "a/x.txt".into(),
+                recorded(EntryKind::File, kept.clone(), &["own"]),
+            ),
+            (
+                "real/x.txt".into(),
+                recorded(EntryKind::File, kept.clone(), &["other"]),
+            ),
+        ]),
+    };
+    let plan = Plan {
+        dropped: BTreeSet::new(),
+        owner: "own".to_owned(),
+        origins: BTreeMap::new(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([(
+            "a/x.txt".into(),
+            Action::Remove {
+                expected: Some(NodeSignature {
+                    kind: EntryKind::File,
+                    hash: kept,
+                    executable: false,
+                }),
+            },
+        )]),
+    };
+    fs::remove_dir_all(dest.path("a")).expect("the directory the plan walked through");
+    std::os::unix::fs::symlink("real", dest.path("a")).expect("the link that appears in the gap");
+
+    let error = apply_at(&dest, &state, &manifest, &plan).expect_err("never unlink through it");
+
+    match error {
+        Error::Refused(refused) => assert_eq!(
+            refusals_of(&refused),
+            BTreeMap::from([(
+                Utf8PathBuf::from("a/x.txt"),
+                Refusal::RecordedLanding {
+                    through: Utf8PathBuf::from("a"),
+                    at: Utf8PathBuf::from("real/x.txt"),
+                    owners: BTreeSet::from(["other".to_owned()]),
+                },
+            )])
+        ),
+        other => panic!("expected RecordedLanding, got {other:?}"),
+    }
+    assert_eq!(
+        fs::read(dest.path("real/x.txt")).expect("the node the other owner records"),
+        b"kept\n"
+    );
+}
+
 // A drop is not an action, so apply performs nothing for it and records
 // nothing in the manifest. It rides the report beside the rows rather than
 // among them, which is what leaves a run whose only news is a dropped member

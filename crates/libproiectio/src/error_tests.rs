@@ -18,6 +18,11 @@ fn every_variant() -> Vec<Error> {
             RefusalKind::TreeConflict => Refusal::TreeConflict {
                 paths: BTreeSet::new(),
             },
+            RefusalKind::RecordedLanding => Refusal::RecordedLanding {
+                through: Utf8PathBuf::from("bin"),
+                at: Utf8PathBuf::from("real/tool"),
+                owners: BTreeSet::from(["other".to_owned()]),
+            },
             RefusalKind::OwnerConflict => Refusal::OwnerConflict {
                 owners: BTreeSet::new(),
             },
@@ -36,6 +41,7 @@ fn every_variant() -> Vec<Error> {
     let mut every: Vec<Error> = [
         RefusalKind::Containment,
         RefusalKind::TreeConflict,
+        RefusalKind::RecordedLanding,
         RefusalKind::Foreign,
         RefusalKind::Drift,
         RefusalKind::DirectoryInTheWay,
@@ -293,7 +299,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    let (refusals, failures) = (9, EVERY_KIND.len() - 1);
+    let (refusals, failures) = (10, EVERY_KIND.len() - 1);
     assert_eq!(codes.len(), refusals + failures);
     assert!(codes[..refusals].iter().all(|&code| code == 2));
     assert!(codes[refusals..].iter().all(|&code| code == 1));
@@ -692,7 +698,7 @@ fn every_variant_serializes_under_a_kind_of_its_own() {
         })
         .collect();
 
-    let refusals = 9;
+    let refusals = 10;
     assert!(kinds[..refusals].iter().all(|kind| kind == "refused"));
 
     // Not a count of the list against itself: the kinds the list produces

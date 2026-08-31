@@ -33,6 +33,18 @@ pub enum Refusal {
         /// overlapping location.
         paths: BTreeSet<Utf8PathBuf>,
     },
+    /// A removal whose ancestry walk followed a recorded link came out on a
+    /// path the manifest records and this plan acts on nowhere — another
+    /// owner's record, or this owner's own outside the removal's scope.
+    /// Unlinking there would take a node its owners still hold.
+    RecordedLanding {
+        /// The first recorded link the walk followed.
+        through: Utf8PathBuf,
+        /// Where the walk came out.
+        at: Utf8PathBuf,
+        /// The owners recording the landing.
+        owners: BTreeSet<String>,
+    },
     /// The path is on disk but absent from the manifest.
     Foreign,
     /// The recorded path was edited on disk. Lifted per-plan by
@@ -143,6 +155,7 @@ impl Refusal {
             Refusal::Foreign => RefusalKind::Foreign,
             Refusal::Containment { .. } => RefusalKind::Containment,
             Refusal::TreeConflict { .. } => RefusalKind::TreeConflict,
+            Refusal::RecordedLanding { .. } => RefusalKind::RecordedLanding,
             Refusal::OwnerConflict { .. } => RefusalKind::OwnerConflict,
             Refusal::ExternalTarget { .. } => RefusalKind::ExternalTarget,
             Refusal::InvalidTarget { .. } => RefusalKind::InvalidTarget,
@@ -186,6 +199,15 @@ impl Refusal {
                 " (with {})",
                 join(paths.iter().map(|path| path.as_str()), ", ")
             ),
+            Refusal::RecordedLanding {
+                through,
+                at,
+                owners,
+            } => write!(
+                f,
+                " (through the symlink {through}, onto {at}, held by {})",
+                join(owners.iter().map(String::as_str), "+")
+            ),
             Refusal::OwnerConflict { owners } => {
                 write!(
                     f,
@@ -213,6 +235,8 @@ pub enum RefusalKind {
     Containment,
     /// [`Refusal::TreeConflict`].
     TreeConflict,
+    /// [`Refusal::RecordedLanding`].
+    RecordedLanding,
     /// [`Refusal::Foreign`].
     Foreign,
     /// [`Refusal::Drift`].
@@ -244,6 +268,9 @@ impl RefusalKind {
             }
             RefusalKind::Containment => "refusing paths that violate containment",
             RefusalKind::TreeConflict => "refusing paths that claim overlapping locations",
+            RefusalKind::RecordedLanding => {
+                "refusing removals that resolve through a link onto a path another record holds"
+            }
             RefusalKind::OwnerConflict => {
                 "refusing paths whose desired entries conflict with another owner's"
             }
@@ -298,6 +325,7 @@ impl RefusalKind {
             RefusalKind::ExternalTarget => Some("pass --allow-external-targets to write them"),
             RefusalKind::Containment
             | RefusalKind::TreeConflict
+            | RefusalKind::RecordedLanding
             | RefusalKind::DirectoryInTheWay
             | RefusalKind::OwnerConflict
             | RefusalKind::InvalidTarget

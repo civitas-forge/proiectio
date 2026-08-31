@@ -362,6 +362,20 @@ pub(crate) struct Landing {
     pub(crate) through: Option<Utf8PathBuf>,
 }
 
+/// The refusal a landing raises where the manifest records it: acting there
+/// takes a node the landing's owners hold, and no caller of this reaches a
+/// landing its own plan acts on. `None` where the walk followed no link, or
+/// where nothing records where it came out.
+pub(crate) fn recorded_landing(landing: &Landing, manifest: &Manifest) -> Option<Refusal> {
+    let through = landing.through.clone()?;
+    let recorded = manifest.entries.get(&landing.at)?;
+    Some(Refusal::RecordedLanding {
+        through,
+        at: landing.at.clone(),
+        owners: recorded.owners.clone(),
+    })
+}
+
 fn through_link(link: Utf8PathBuf) -> Refusal {
     Refusal::Containment {
         through: Some(link),

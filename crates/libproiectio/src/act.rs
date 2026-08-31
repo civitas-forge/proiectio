@@ -18,7 +18,9 @@ use crate::block;
 use crate::containment::{
     Hop, contained_normalize, contained_target, contained_target_chain, is_pathname,
 };
-use crate::observe::{Container, io_error, read_container, sha256_hex_of_reader};
+use crate::observe::{
+    Container, Landing, io_error, read_container, recorded_landing, sha256_hex_of_reader,
+};
 use crate::report::recorded_shape;
 use crate::{
     Aborted, Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error,
@@ -297,7 +299,7 @@ fn run(
         // removals run before pruning and the writes both.
         if matches!(action, Action::OverwriteDirectory { .. }) {
             let recorded = manifest.entries.get(path).cloned();
-            let vacated = acting_on(plan, path, || remove_directory(dest, manifest, path))?;
+            let vacated = acting_on(plan, path, || remove_directory(dest, manifest, plan, path))?;
             // The write that replaces the directory is a whole pass away, and
             // anything failing in between ends the run with the directory
             // gone. So the removal is recorded where it lands, and the ancestry
@@ -316,7 +318,7 @@ fn run(
         }
         if matches!(action, Action::RemoveDirectory) {
             let recorded = manifest.entries.get(path).cloned();
-            let vacated = acting_on(plan, path, || remove_directory(dest, manifest, path))?;
+            let vacated = acting_on(plan, path, || remove_directory(dest, manifest, plan, path))?;
             prune_above(&vacated, &mut removed_dirs_candidates);
             manifest.entries.remove(path);
             rows.insert(
@@ -340,7 +342,7 @@ fn run(
                     // A hand deletion that took the walk's own ancestry with
                     // it leaves no resolved location to prune upwards from;
                     // the action key names the directories still standing.
-                    let vacated = remove(dest, manifest, path, expected.as_ref())?
+                    let vacated = remove(dest, manifest, plan, path, expected.as_ref())?
                         .unwrap_or_else(|| path.clone());
                     prune_above(&vacated, &mut removed_dirs_candidates);
                 }
@@ -668,21 +670,23 @@ fn regrade_recorded_link(
 fn remove(
     dest: &Dir,
     manifest: &Manifest,
+    plan: &Plan,
     path: &Utf8Path,
     expected: Option<&NodeSignature>,
 ) -> Result<Option<Utf8PathBuf>> {
-    let Some(Walked {
-        parent,
-        leaf,
-        resolved_parent,
-        ..
-    }) = verified_parent(dest, manifest, path, false)?
-    else {
+    let Some(walked) = verified_parent(dest, manifest, path, false)? else {
         return match expected {
             Some(_) => Err(drift(path)),
             None => Ok(None),
         };
     };
+    held_landing(manifest, plan, path, &walked)?;
+    let Walked {
+        parent,
+        leaf,
+        resolved_parent,
+        ..
+    } = walked;
     match expected {
         Some(expected) => {
             check_leaf(&parent, &leaf, path, expected)?;
@@ -701,17 +705,23 @@ fn remove(
 /// [`Action::OverwriteDirectory`], returning the resolved location the
 /// directory vacated. The `rmdir` itself is the re-check no signature can
 /// carry: anything but an empty directory at `path` is [`Refusal::Drift`].
-fn remove_directory(dest: &Dir, manifest: &Manifest, path: &Utf8Path) -> Result<Utf8PathBuf> {
+fn remove_directory(
+    dest: &Dir,
+    manifest: &Manifest,
+    plan: &Plan,
+    path: &Utf8Path,
+) -> Result<Utf8PathBuf> {
     use std::io::ErrorKind;
-    let Some(Walked {
+    let Some(walked) = verified_parent(dest, manifest, path, false)? else {
+        return Err(drift(path));
+    };
+    held_landing(manifest, plan, path, &walked)?;
+    let Walked {
         parent,
         leaf,
         resolved_parent,
         ..
-    }) = verified_parent(dest, manifest, path, false)?
-    else {
-        return Err(drift(path));
-    };
+    } = walked;
     match parent.remove_dir(&leaf) {
         Ok(()) => Ok(resolved_parent.join(leaf)),
         Err(e)
@@ -1452,6 +1462,25 @@ fn at_action_key(path: &Utf8Path, landing: &Utf8Path, through: Option<&Utf8Path>
                 through: through.map(Utf8Path::to_path_buf),
             },
         ))
+    }
+}
+
+/// Holds a removal to a landing this plan is about: a walk that followed a
+/// recorded link onto a path the manifest records and the plan carries no
+/// action for refuses, rather than unlinking a node its owners still hold.
+/// The deciding side of the same grade is `plan_actions`'s, which reads the
+/// landing off the observations.
+fn held_landing(manifest: &Manifest, plan: &Plan, path: &Utf8Path, walked: &Walked) -> Result<()> {
+    let landing = Landing {
+        at: walked.resolved_parent.join(&walked.leaf),
+        through: walked.through.clone(),
+    };
+    if landing.at == *path || plan.actions.contains_key(&landing.at) {
+        return Ok(());
+    }
+    match recorded_landing(&landing, manifest) {
+        Some(refusal) => Err(refuse(path, refusal)),
+        None => Ok(()),
     }
 }
 

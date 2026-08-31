@@ -204,6 +204,14 @@ fn containment(link: &str) -> Refusal {
     }
 }
 
+fn recorded_landing(through: &str, at: &str, owners: &[&str]) -> Refusal {
+    Refusal::RecordedLanding {
+        through: Utf8PathBuf::from(through),
+        at: Utf8PathBuf::from(at),
+        owners: owners.iter().map(|owner| (*owner).to_owned()).collect(),
+    }
+}
+
 // Runs one case: the recording passes, the hand edit, then one decide and one
 // apply with nothing in between.
 fn parity(case: &Case) {
@@ -552,6 +560,40 @@ fn cases() -> Vec<Case> {
         ))
         .plans("a/rc", PlannedAction::Remove)
         .plans("b/rc", PlannedAction::Remove),
+        // The walk follows the link out to a node another owner records and
+        // this plan never judges. Unlinking it left that owner holding a
+        // record for a node that was gone, and pruning took `real` with it
+        // (issue #137).
+        Case::new("a removal landing on another owner's record", Op::Remove)
+            .recording(OWNER, Tree::new().file("a/x.txt", "kept\n"))
+            .recording("other", Tree::new().file("real/x.txt", "kept\n"))
+            .then_by_hand(|root| {
+                fs::remove_dir_all(root.join("a")).expect("remove the recorded directory");
+            })
+            .recording(
+                "other",
+                Tree::new()
+                    .file("real/x.txt", "kept\n")
+                    .symlink("a", "real"),
+            )
+            .refuses("a/x.txt", recorded_landing("a", "real/x.txt", &["other"])),
+        // The same landing, recorded by the removing owner and left out of the
+        // removal's scope: no verdict of this plan is about that node either.
+        Case::new(
+            "a scoped removal landing outside its own scope",
+            Op::RemovePaths(&["a/x.txt"]),
+        )
+        .recording(
+            OWNER,
+            Tree::new()
+                .file("a/x.txt", "kept\n")
+                .file("real/x.txt", "kept\n"),
+        )
+        .then_by_hand(|root| {
+            fs::remove_dir_all(root.join("a")).expect("remove the recorded directory");
+        })
+        .recording("other", Tree::new().symlink("a", "real"))
+        .refuses("a/x.txt", recorded_landing("a", "real/x.txt", &[OWNER])),
         // The same walk, landing inside the state subtree. Before deciding
         // graded the landing, the plan aimed a removal at the state file and
         // applying deleted it: act knows no state prefix, so nothing behind
