@@ -1,8 +1,8 @@
 # proiectio
 
-Proiectio projects a computed set of files onto a directory owned by someone else. It writes the files, records what it wrote in a manifest (`<dest>/.proiectio` by default), and on a later run makes the directory match the caller's new tree: updating what changed, removing what is no longer wanted, and refusing to touch what it did not write.
+Proiectio projects a computed set of files onto a directory owned by someone else. It writes the files, records what it wrote in a manifest under `<dest>/.proiectio`, and on a later run makes the directory match the caller's new tree: updating what changed, removing what is no longer wanted, and refusing to touch what it did not write.
 
-It is built for tools that render managed files into a checkout or a workspace — a harness placing skills and hooks into a repository, an environment placing runtime configuration into a working directory. It ships as the `proiectio` CLI and the `libproiectio` Rust library, with feature parity between them.
+It is built for tools that render managed files into a checkout or a workspace — a harness placing skills and hooks into a repository, an environment placing runtime configuration into a working directory. It ships as the `proiectio` CLI and the `libproiectio` Rust library.
 
 ## Install
 
@@ -74,7 +74,7 @@ wrote      share/guide.txt
 
 Two or more file positionals project those files under their basenames; a single positional is always read as a mapping.
 
-## Check and remove
+## Check
 
 `status` reads the manifest, classifies every recorded path, and writes nothing.
 
@@ -100,23 +100,6 @@ clean    config/settings.toml
 missing  current
 $ echo $?
 2
-```
-
-`rm` removes everything the manifest records under an owner. Directories emptied by removal are pruned.
-
-```console
-$ proiectio rm --dest ./site --owner site
-removed    config/settings.toml
-removed    current               -> releases/1.2.3
-2 removed
-```
-
-Or a subset, by path:
-
-```console
-$ proiectio rm share/guide.txt --dest ./tree-dest --owner rel
-removed    share/guide.txt
-1 removed
 ```
 
 ## When it says no
@@ -147,6 +130,35 @@ linked     current               -> releases/1.2.3
 Permission lives on the invocation, never in the mapping: a symlink whose target leaves the destination needs `--allow-external-targets` on every run that projects it.
 
 The full catalogue of refusals and how to resolve each is in [docs/refusals.md](docs/refusals.md).
+
+## Remove
+
+A write already removes: dropping an entry from the mapping removes it on the next run.
+
+```console
+$ proiectio write deploy-v2.toml --dest ./site --owner site
+removed    bin/tool              (exec)
+skipped    config/settings.toml
+skipped    current               -> releases/1.2.3
+0 written, 2 skipped, 1 removed
+```
+
+`rm` removes everything the manifest records under an owner. Directories emptied by removal are pruned.
+
+```console
+$ proiectio rm --dest ./site --owner site
+removed    config/settings.toml
+removed    current               -> releases/1.2.3
+2 removed
+```
+
+Or a subset, by path:
+
+```console
+$ proiectio rm share/guide.txt --dest ./tree-dest --owner rel
+removed    share/guide.txt
+1 removed
+```
 
 ## Machine output
 

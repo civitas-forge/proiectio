@@ -2,9 +2,10 @@
 
 Exit 0 means the run applied, or had nothing to do. Exit 1 is a usage or I/O
 error. Exit 2 is a refusal: acting would touch something the projection does not
-own or cannot verify. A refused run writes nothing — a plan containing any
-refusal is refused whole — and the refusal message names the flag that overrides
-it, where a flag exists.
+own or cannot verify. A plan containing any refusal is refused whole and writes
+nothing. A refusal met during apply — the disk changed between planning and
+acting — stops the run there, and the report carries the rows applied before
+it. The refusal message names the flag that overrides it, where a flag exists.
 
 ## The status vocabulary
 
@@ -179,13 +180,17 @@ removed    current               -> releases/1.2.3
 
 ## Gating CI
 
-Both gates spend exit 2 on the same findings: a dry run refuses the plan, and
-`status --check` refuses the disk.
+Two gates, asking different questions:
 
 ```console
 $ proiectio write deploy.toml --dest ./site --owner site --dry-run
 $ proiectio status --dest ./site --check
 ```
+
+A dry run asks whether one desired tree still applies: it refuses drift on the
+paths it claims, plans a rewrite for a missing one, and ignores foreign paths
+it does not claim. `status --check` holds the whole destination to its
+manifest: any drifted, missing, or foreign row exits 2.
 
 `--output json` and `--output csv` carry the same verdicts for tooling.
 

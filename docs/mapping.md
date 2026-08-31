@@ -197,11 +197,9 @@ max_source_size = 524288000
 owner = "default"
 ```
 
-`proiectio config get <key>` shows a key's resolved value with its
-documentation. `proiectio config set <key> <value>` persists one to the user
-config file — the platform config directory — and `proiectio config unset <key>`
-removes it. Values resolve as compiled defaults, then config files, then
-`PROIECTIO__*` environment variables; `PROIECTIO__OWNER` sets `owner`.
+`proiectio config get`, `set` and `unset` read and write these two keys;
+[docs/dev/cli-tour.lex](dev/cli-tour.lex) section 7 states the command and how
+values resolve.
 
 `max_source_size` is how many bytes one write may read from its sources,
 default 500 MiB. An archive counts what it expands to rather than its size on

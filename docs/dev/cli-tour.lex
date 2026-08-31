@@ -1,8 +1,7 @@
 The CLI
 
-    Proiectio ships as a Rust library and a CLI with feature parity;
-    every command is a thin wrapper over the plan/apply/status API
-    ([./design.lex]). The split that shapes every invocation: the
+    Proiectio ships as a Rust library and a CLI; every command is a
+    thin wrapper over the plan/apply/status API ([./design.lex]). The split that shapes every invocation: the
     mapping or tree says *what* is projected, the invocation says
     *where* and *how much* — destination, owner, and every
     permission-granting flag live on the command line, never in the
@@ -238,3 +237,18 @@ The CLI
         | --max-source-size <b>    | most bytes one write may read from sources     |
 
     :: table header=0 ::
+
+7. Configuration
+
+    config reads, writes and documents the configuration: list, get,
+    set, unset, plus gen (a commented sample file) and schema (a JSON
+    Schema of the config struct). Two keys exist: owner and
+    max_source_size, the defaults behind --owner and
+    --max-source-size; the flags always win.
+
+    Values resolve as compiled defaults, then config files, then
+    PROIECTIO__* environment variables — a doubled underscore
+    separates key segments, keys are case-insensitive, so
+    PROIECTIO__OWNER sets owner. The user scope is the platform
+    config directory, which is also the search path; set and unset
+    with no --scope write there.
