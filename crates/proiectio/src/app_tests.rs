@@ -1735,7 +1735,8 @@ fn a_refused_dry_run_renders_the_whole_plan() {
         format!(
             "would refuse     bin/tool              (drifted) (from mapping {deploy})\n\
              would overwrite  config/settings.toml  (content changed)\n\
-             would skip       current               -> releases/1.2.3\n"
+             would skip       current               -> releases/1.2.3\n\
+             pass --force to overwrite them\n"
         )
     );
     assert_eq!(result.error(), None);
@@ -1853,7 +1854,8 @@ fn a_refused_rm_renders_the_document_its_dry_run_renders() {
         rendered.stdout(),
         "would refuse     bin/tool              (drifted)\n\
          would remove     config/settings.toml\n\
-         would remove     current\n"
+         would remove     current\n\
+         pass --force to overwrite them\n"
     );
     assert!(dest.join("bin/tool").exists());
 }
@@ -2057,7 +2059,8 @@ fn a_refusal_before_the_first_action_prints_the_members_strip_erased() {
         format!(
             "would refuse     top             (drifted) (from archive {archive})\n\
              dropped          ._skeleton-1.2  (no path left after strip 1) \
-             (from archive {archive})\n"
+             (from archive {archive})\n\
+             pass --force to overwrite them\n"
         )
     );
 }
@@ -2242,7 +2245,7 @@ fn the_document_a_run_that_stopped_part_way_renders_is_not_a_plan() {
     );
     assert_eq!(
         stated(&value["refused"]["rows"], "pivot/x.txt")["verdict"]["Refuse"]["refusal"],
-        "Containment"
+        serde_json::json!({ "Containment": { "through": JsonValue::Null } })
     );
 }
 
@@ -2265,7 +2268,8 @@ fn a_refusal_met_while_applying_renders_the_keys_the_error_names() {
     assert_eq!(rendered.error(), None);
     assert_eq!(
         rendered.stdout(),
-        "would refuse     bin/tool  (drifted) (from mapping /srv/deploy.toml)\n"
+        "would refuse     bin/tool  (drifted) (from mapping /srv/deploy.toml)\n\
+         pass --force to overwrite them\n"
     );
 }
 

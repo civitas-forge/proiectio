@@ -29,12 +29,16 @@ use crate::{
 
 /// Loads the manifest from `state`'s [`MANIFEST_FILE_NAME`]; a state
 /// directory holding no manifest file loads as the empty [`Manifest`].
-pub(crate) fn load_manifest(state: &Dir) -> Result<Manifest> {
-    let path = Utf8Path::new(MANIFEST_FILE_NAME);
-    let bytes = match state.read(path) {
+///
+/// `state_dir` is where the handle is rooted, and only the messages use it: a
+/// manifest that does not parse is one the operator has to open, and the file
+/// name alone does not say which state directory holds it.
+pub(crate) fn load_manifest(state: &Dir, state_dir: &Utf8Path) -> Result<Manifest> {
+    let path = state_dir.join(MANIFEST_FILE_NAME);
+    let bytes = match state.read(MANIFEST_FILE_NAME) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Manifest::new()),
-        Err(e) => return Err(io_error(path)(e)),
+        Err(e) => return Err(io_error(&path)(e)),
     };
     #[derive(Deserialize)]
     struct VersionProbe {
@@ -42,20 +46,17 @@ pub(crate) fn load_manifest(state: &Dir) -> Result<Manifest> {
     }
     let probe: VersionProbe =
         serde_json::from_slice(&bytes).map_err(|source| Error::ManifestFormat {
-            path: path.to_owned(),
+            path: path.clone(),
             source,
         })?;
     if probe.version != MANIFEST_VERSION {
         return Err(Error::ManifestVersion {
-            path: path.to_owned(),
+            path,
             found: probe.version,
             supported: MANIFEST_VERSION,
         });
     }
-    serde_json::from_slice(&bytes).map_err(|source| Error::ManifestFormat {
-        path: path.to_owned(),
-        source,
-    })
+    serde_json::from_slice(&bytes).map_err(|source| Error::ManifestFormat { path, source })
 }
 
 /// Atomically persists `manifest` as `state`'s [`MANIFEST_FILE_NAME`],
@@ -153,7 +154,7 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
         match contained_normalize(path) {
             Some(normalized) if normalized == *path => {}
             _ => {
-                refuse(Refusal::Containment);
+                refuse(Refusal::Containment { through: None });
                 continue;
             }
         }
@@ -1317,7 +1318,7 @@ fn verified_parent(
                     .get(&here)
                     .filter(|recorded| recorded.kind == EntryKind::Symlink);
                 let Some(recorded) = recorded else {
-                    return Err(containment(path));
+                    return Err(containment_through(path, &here));
                 };
                 let target = dir
                     .as_cap_std()
@@ -1328,13 +1329,13 @@ fn verified_parent(
                     return Err(drift(&here));
                 }
                 let Ok(target) = std::str::from_utf8(bytes) else {
-                    return Err(containment(path));
+                    return Err(containment_through(path, &here));
                 };
                 let Some(resolved) = contained_target(&prefix, target) else {
-                    return Err(containment(path));
+                    return Err(containment_through(path, &here));
                 };
-                if !visited.insert(here) {
-                    return Err(containment(path));
+                if !visited.insert(here.clone()) {
+                    return Err(containment_through(path, &here));
                 }
                 let mut restarted: VecDeque<String> = resolved
                     .components()
@@ -1405,8 +1406,20 @@ fn drift(path: &Utf8Path) -> Error {
     refuse(path, Refusal::Drift)
 }
 
+/// A containment refusal the walk to `path` raised over the ancestor `through`,
+/// which is a symlink: the key is spelled entirely of ordinary components, so
+/// the link is the whole of why it is out of reach.
+fn containment_through(path: &Utf8Path, through: &Utf8Path) -> Error {
+    refuse(
+        path,
+        Refusal::Containment {
+            through: Some(through.to_owned()),
+        },
+    )
+}
+
 fn containment(path: &Utf8Path) -> Error {
-    refuse(path, Refusal::Containment)
+    refuse(path, Refusal::Containment { through: None })
 }
 
 #[cfg(test)]

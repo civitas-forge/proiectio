@@ -7,6 +7,56 @@ use crate::Refused;
 /// The crate-wide result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// What a path was to the run that met an OS error on it.
+///
+/// An OS error says what went wrong and where, and nothing about which of a
+/// run's inputs the path was: `/no/such/dir: No such file or directory` is the
+/// same sentence whether the run was opening the destination, reading a
+/// mapping, or walking a source tree. This is the word an [`Error::Io`]
+/// message opens with, so a reader knows which argument to fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IoRole {
+    /// The destination directory itself.
+    Destination,
+    /// The state directory holding the manifest.
+    StateDirectory,
+    /// A mapping file.
+    Mapping,
+    /// A source tree, or a node inside one.
+    SourceTree,
+    /// An archive file.
+    Archive,
+    /// A file a load reads as the body of an entry: one a mapping's `source`
+    /// names, or one whose kind is not known until it is read.
+    Source,
+    /// A file named on its own, projected under its basename.
+    NamedFile,
+    /// A path inside the destination, or one the state directory holds — the
+    /// run's own working paths, which the run's other lines already place.
+    /// The message names no role for these.
+    Unstated,
+}
+
+impl std::fmt::Display for IoRole {
+    /// The word, with its trailing space, and nothing at all for
+    /// [`Unstated`](IoRole::Unstated): a message reads `destination /srv: …`
+    /// or `/srv: …`, never `  /srv: …`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let word = match self {
+            IoRole::Destination => "destination ",
+            IoRole::StateDirectory => "state directory ",
+            IoRole::Mapping => "mapping ",
+            IoRole::SourceTree => "source tree ",
+            IoRole::Archive => "archive ",
+            IoRole::Source => "source ",
+            IoRole::NamedFile => "named file ",
+            IoRole::Unstated => "",
+        };
+        f.write_str(word)
+    }
+}
+
 /// How deep below its root a directory walk descends, counted in directories.
 /// Measured on a debug build, a walk exhausts a 2 MiB stack past ~200 levels.
 /// A bind mount making a directory its own ancestor gives a tree no bottom,
@@ -36,8 +86,10 @@ pub enum Error {
     #[error(transparent)]
     Refused(#[from] Refused),
     /// A filesystem operation failed. Not a refusal.
-    #[error("{path}: {source}")]
+    #[error("{role}{path}: {source}")]
     Io {
+        /// What the path was to the run that met the error.
+        role: IoRole,
         /// The path the operation touched.
         path: Utf8PathBuf,
         /// The OS error, unchanged.
@@ -96,6 +148,18 @@ pub enum Error {
         /// The parse error, unchanged.
         #[serde(serialize_with = "display_string")]
         source: toml::de::Error,
+    },
+    /// The path named as a mapping is a directory. Reported before the file is
+    /// opened, so the message names the option a directory belongs to rather
+    /// than the OS error one read of a directory happens to raise. Not a
+    /// refusal.
+    #[error(
+        "mapping {path} is a directory: a mapping is a TOML file; pass a directory as --tree \
+         to project the tree it holds"
+    )]
+    MappingIsDirectory {
+        /// The directory's location.
+        path: Utf8PathBuf,
     },
     /// The mapping parses but declares a version this crate does not support.
     /// Not a refusal.

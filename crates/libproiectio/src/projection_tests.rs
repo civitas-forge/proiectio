@@ -115,3 +115,33 @@ fn the_default_state_directory_is_absent_until_something_creates_it() {
     std::fs::create_dir(projection.state_dir()).expect("a state directory");
     assert!(projection.state_dir_exists().expect("a state directory"));
 }
+
+/// A destination that is not there fails as the destination rather than as an
+/// unplaced path: `--dest`, a mapping, and a `--tree` all report the same OS
+/// error, and the role is what tells the reader which argument to fix.
+#[test]
+fn a_destination_that_is_not_there_is_named_as_the_destination() {
+    use crate::test_support::Tree;
+
+    let dest = Tree::new().materialize();
+    let gone = dest.path("gone");
+    let projection = Projection::new(&gone, None).expect("a projection");
+
+    let error = projection.status().expect_err("no such destination");
+
+    assert!(
+        matches!(
+            &error,
+            Error::Io {
+                role: IoRole::Destination,
+                path,
+                source,
+            } if *path == gone && source.kind() == std::io::ErrorKind::NotFound
+        ),
+        "got {error:?}"
+    );
+    assert_eq!(
+        error.to_string(),
+        format!("destination {gone}: No such file or directory (os error 2)")
+    );
+}

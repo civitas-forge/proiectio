@@ -2,6 +2,9 @@
 {%- for row in run.rows -%}
 {{ row.verb|style_as(row.style) }}{{ row.verb_pad }}  {% if row.note %}{{ row.path }}{{ row.path_pad }}  {{ row.note }}{% else %}{{ row.path }}{% endif %}
 {% endfor -%}
+{#- What lifts the refusals among the rows, once per kind. -#}
+{%- for hint in run.hints %}{{ hint }}
+{% endfor -%}
 {%- if run.summary %}{{ run.summary }}
 {% endif -%}
 {#- What a run that stopped says past its counts, in the style a refusal

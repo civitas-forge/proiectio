@@ -385,7 +385,7 @@ fn refused_reduces_the_plans_refusals_to_one_kind() {
     plan.actions.insert(
         Utf8PathBuf::from("../escape"),
         Action::Refuse {
-            refusal: Refusal::Containment,
+            refusal: Refusal::Containment { through: None },
         },
     );
     plan.actions.insert(

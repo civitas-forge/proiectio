@@ -171,7 +171,11 @@ fn a_path_that_is_not_there_fails_at_the_path_it_names() {
 
     assert!(matches!(
         load_files(std::slice::from_ref(&missing), crate::Limits::default()).unwrap_err(),
-        Error::Io { path, source } if path == missing
+        Error::Io {
+            role: IoRole::NamedFile,
+            path,
+            source,
+        } if path == missing
             && source.kind() == std::io::ErrorKind::NotFound
     ));
 }

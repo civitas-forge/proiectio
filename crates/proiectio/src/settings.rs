@@ -4,7 +4,7 @@ use camino::Utf8PathBuf;
 use clapfig::error::ClapfigError;
 use clapfig::runtime::{LeafType, Shape};
 use clapfig::{Clapfig, ConfigAction, Schema, SearchPath, TypedBuilder, UnknownKeyDecision};
-use libproiectio::{Error, OWNER_RULE, names_an_owner};
+use libproiectio::{Error, IoRole, OWNER_RULE, names_an_owner};
 use serde::{Deserialize, Serialize};
 
 /// Projection settings as `proiectio.toml` declares them.
@@ -105,6 +105,7 @@ pub(crate) fn is_comment_key(key: &str) -> bool {
 /// [`SearchPath::Platform`] itself, which is the scope the builder registers.
 fn user_config_path() -> Result<Utf8PathBuf, Error> {
     let dirs = directories::ProjectDirs::from("", "", APP).ok_or_else(|| Error::Io {
+        role: IoRole::Unstated,
         path: Utf8PathBuf::from(FILE),
         source: std::io::Error::new(
             std::io::ErrorKind::NotFound,

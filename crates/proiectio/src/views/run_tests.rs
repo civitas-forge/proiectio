@@ -1163,3 +1163,98 @@ fn holding(path: &str, owners: &[&str]) -> Manifest {
     );
     manifest
 }
+
+/// A containment refusal whose cause is a symlinked ancestor names the link,
+/// in the words the library's own message names it with: a key spelled
+/// entirely of ordinary components otherwise reads as an accusation against
+/// its spelling. A containment refusal carrying no link names none.
+#[test]
+fn a_containment_row_names_the_symlink_ancestor_the_refusal_carries() {
+    let through_config = Refusal::Containment {
+        through: Some(Utf8PathBuf::from("config")),
+    };
+    let from_library = Refused::one(
+        Utf8PathBuf::from("config/app.toml"),
+        through_config.clone(),
+        Origin::Caller,
+    )
+    .to_string();
+    let row = only(refused(&serialized(&through_config)));
+
+    assert_eq!(
+        row.note.as_deref(),
+        Some("(containment) (below the symlink config)")
+    );
+    assert!(
+        from_library.ends_with("(below the symlink config)"),
+        "the library's own message says it too: {from_library}"
+    );
+
+    let row = only(refused(&serialized(Refusal::Containment { through: None })));
+
+    assert_eq!(row.note.as_deref(), Some("(containment)"));
+}
+
+/// What lifts a refusal is stated once per kind, under the rows: fifty
+/// drifted paths are one `--force` away, and fifty copies of the sentence
+/// would bury the paths it is about.
+#[test]
+fn the_rows_close_with_what_lifts_each_kind_of_refusal_among_them_once() {
+    let refuse = |refusal: JsonValue| json!({ "facts": null, "verdict": { "Refuse": { "refusal": refusal } } });
+    let document = planned(json!({
+        "bin/tool": refuse(serialized(Refusal::Drift)),
+        "etc/rc": refuse(serialized(Refusal::Drift)),
+        "link": refuse(serialized(Refusal::ExternalTarget { target: "/opt".to_owned() })),
+    }));
+
+    assert_eq!(
+        document.hints,
+        [
+            "pass --force to overwrite them",
+            "pass --allow-external-targets to write them",
+        ]
+    );
+}
+
+/// A refusal nothing lifts closes with nothing, and neither does a run that
+/// refused none: the line is there to say what to do, not to fill a slot.
+#[test]
+fn rows_nothing_lifts_close_with_nothing() {
+    let document = refused(&serialized(Refusal::Containment { through: None }));
+    assert!(document.hints.is_empty());
+
+    let document = planned(json!({ "one": file(json!("Write")) }));
+    assert!(document.hints.is_empty());
+}
+
+/// The hints come from the library rather than from strings spelled here, so
+/// the CLI and the library say one thing: each kind is looked up by the name
+/// the library serializes it under, and a kind whose name this view cannot
+/// find would silently lose its hint. The match is over `RefusalKind` itself,
+/// so a kind added there stops this compiling.
+#[test]
+fn every_kind_the_library_lifts_finds_its_hint_through_the_serialized_name() {
+    for kind in REFUSAL_KINDS {
+        match kind {
+            RefusalKind::Containment
+            | RefusalKind::TreeConflict
+            | RefusalKind::Foreign
+            | RefusalKind::Drift
+            | RefusalKind::DirectoryInTheWay
+            | RefusalKind::OwnerConflict
+            | RefusalKind::ExternalTarget
+            | RefusalKind::InvalidTarget
+            | RefusalKind::Block => {}
+        }
+        let name = kind_name(kind).expect("a kind serializes as its name");
+
+        assert_eq!(hinting(&name), kind.override_hint(), "{kind:?}");
+    }
+}
+
+/// A kind this CLI does not know carries no hint rather than one belonging to
+/// another kind.
+#[test]
+fn an_unknown_refusal_kind_carries_no_hint() {
+    assert_eq!(hinting("Pondered"), None);
+}

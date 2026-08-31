@@ -55,9 +55,10 @@ fn plan_for_with(
     desired: &BTreeMap<Utf8PathBuf, Entry>,
     options: PlanOptions,
 ) -> (Manifest, Plan) {
+    let state_root = state.root();
     let dest = dir_at(dest.root());
     let state = dir_at(state.root());
-    let manifest = load_manifest(&state).expect("load manifest");
+    let manifest = load_manifest(&state, state_root).expect("load manifest");
     let desired = Desired::from_caller(desired.clone());
     let observations =
         observe(&dest, &manifest, &block_markers(&desired)).expect("observe destination");
@@ -142,7 +143,7 @@ fn pipeline_with(
 
 // The manifest as persisted in the state fixture.
 fn persisted(state: &Fixture) -> Manifest {
-    load_manifest(&dir_at(state.root())).expect("load persisted manifest")
+    load_manifest(&dir_at(state.root()), state.root()).expect("load persisted manifest")
 }
 
 // A hand-built manifest entry under the given owners.
@@ -350,8 +351,16 @@ fn an_unrecorded_symlinked_ancestor_is_refused() {
             .expect_err("no write through an unowned link");
 
         match error {
+            // The link, not the key: `logs/x.txt` is spelled entirely of
+            // ordinary components, so a message that only said "containment"
+            // would read as an accusation against the spelling.
             Error::Refused(refused) if refused.kind() == RefusalKind::Containment => {
-                assert_eq!(paths_of(&refused), BTreeSet::from(["logs/x.txt".into()]))
+                assert_eq!(paths_of(&refused), BTreeSet::from(["logs/x.txt".into()]));
+                assert_eq!(
+                    refused.to_string(),
+                    "refusing paths that violate containment: \
+                     logs/x.txt (below the symlink logs)"
+                );
             }
             other => panic!("expected Containment for target {target}, got {other:?}"),
         }
@@ -360,6 +369,46 @@ fn an_unrecorded_symlinked_ancestor_is_refused() {
             "nothing may land through the link"
         );
     }
+}
+
+// The same fact met on the other side of the plan: a directory the plan
+// walked through, replaced by a link before apply reached it. The walk knows
+// which component it met the link at, and says so.
+#[test]
+fn a_directory_swapped_for_a_link_after_the_plan_names_the_link_it_met() {
+    let (dest, state) = fixtures();
+    Tree::new().dir("logs").write_under(dest.root());
+    let desired = Tree::new().file("logs/x.txt", "written").entries();
+
+    let (manifest, plan) = plan_for(&dest, &state, "own", &desired, DriftPolicy::Refuse);
+    assert!(
+        matches!(
+            plan.actions[Utf8Path::new("logs/x.txt")],
+            Action::Write { .. }
+        ),
+        "the plan walked an ordinary directory"
+    );
+
+    // The gap between the two calls: `logs` is a link nobody recorded.
+    std::fs::remove_dir(dest.path("logs")).expect("clear the directory");
+    Tree::new()
+        .dir("real")
+        .symlink("logs", "real")
+        .write_under(dest.root());
+    let error = apply_at(&dest, &state, &manifest, &plan)
+        .expect_err("no write through a link nobody recorded");
+
+    match error {
+        Error::Refused(refused) if refused.kind() == RefusalKind::Containment => assert_eq!(
+            refused.to_string(),
+            "refusing paths that violate containment: logs/x.txt (below the symlink logs)"
+        ),
+        other => panic!("expected Containment, got {other:?}"),
+    }
+    assert!(
+        !dest.path("real").join("x.txt").exists(),
+        "nothing may land through the link"
+    );
 }
 
 // A leftover tempfile fails this test: assert_tree reports any entry it
@@ -453,9 +502,10 @@ fn removal_plan_for(
     scope: RemovalScope<'_>,
     policy: DriftPolicy,
 ) -> (Manifest, Plan) {
+    let state_root = state.root();
     let dest = dir_at(dest.root());
     let state = dir_at(state.root());
-    let manifest = load_manifest(&state).expect("load manifest");
+    let manifest = load_manifest(&state, state_root).expect("load manifest");
     let observations =
         observe(&dest, &manifest, &BlockMarkers::new()).expect("observe destination");
     let plan = decide_removal(owner, scope, &manifest, &observations, None, policy);
@@ -1412,7 +1462,7 @@ fn applying_a_plan_with_two_refusal_kinds_reports_the_one_precedence_ranks_first
             (
                 "z/escape".into(),
                 Action::Refuse {
-                    refusal: Refusal::Containment,
+                    refusal: Refusal::Containment { through: None },
                 },
             ),
         ]),
@@ -1430,7 +1480,10 @@ fn applying_a_plan_with_two_refusal_kinds_reports_the_one_precedence_ranks_first
             assert_eq!(refused.kind(), RefusalKind::Containment);
             assert_eq!(
                 sourced_of(&refused),
-                BTreeMap::from([("z/escape".into(), (Refusal::Containment, Origin::Files))])
+                BTreeMap::from([(
+                    "z/escape".into(),
+                    (Refusal::Containment { through: None }, Origin::Files)
+                )])
             );
         }
         other => panic!("expected Containment, got {other:?}"),
@@ -2510,7 +2563,7 @@ fn a_sourced_key_reports_its_source_at_the_path_the_action_lands_on() {
     );
     let dest_dir = dir_at(dest.root());
     let state_dir = dir_at(state.root());
-    let manifest = load_manifest(&state_dir).expect("load manifest");
+    let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
     let observations =
         observe(&dest_dir, &manifest, &block_markers(&desired)).expect("observe destination");
     let plan = decide(
@@ -3184,7 +3237,8 @@ fn a_refused_ancestor_is_attributed_to_the_planned_key_beneath_it() {
     assert_eq!(
         error.to_string(),
         "refusing to touch foreign paths (not written by this projection): \
-         dir (from mapping /maps/deploy.toml)"
+         dir (from mapping /maps/deploy.toml); no flag overrides this: remove the paths by \
+         hand to let the projection write them"
     );
     match error {
         Error::Refused(refused) => assert_eq!(
@@ -3237,7 +3291,8 @@ fn an_apply_time_refusal_names_the_plans_source_for_its_key() {
     assert_eq!(
         error.to_string(),
         "refusing symlinks with targets outside the destination: \
-         rc -> pivot/rc (from mapping /maps/deploy.toml)"
+         rc -> pivot/rc (from mapping /maps/deploy.toml); pass --allow-external-targets to \
+         write them"
     );
 
     // The link is already on disk and the plan only skips it; the key is
@@ -3277,7 +3332,8 @@ fn an_apply_time_refusal_names_the_plans_source_for_its_key() {
     assert_eq!(
         error.to_string(),
         "refusing symlinks with targets outside the destination: \
-         rc -> pivot/x (from mapping /maps/deploy.toml)"
+         rc -> pivot/x (from mapping /maps/deploy.toml); pass --allow-external-targets to \
+         write them"
     );
 }
 
@@ -3641,7 +3697,7 @@ fn removing_a_block_leaves_the_container_byte_identical_apart_from_the_region() 
         let (manifest, plan) = {
             let dest_dir = dir_at(dest.root());
             let state_dir = dir_at(state.root());
-            let manifest = load_manifest(&state_dir).expect("load manifest");
+            let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
             let observations =
                 observe(&dest_dir, &manifest, &BlockMarkers::new()).expect("observe");
             let plan = decide_removal(
@@ -4115,7 +4171,7 @@ fn the_bytes_outside_a_region_are_never_interpreted() {
     let (manifest, plan) = {
         let dest_dir = dir_at(dest.root());
         let state_dir = dir_at(state.root());
-        let manifest = load_manifest(&state_dir).expect("load manifest");
+        let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
         let observations = observe(&dest_dir, &manifest, &BlockMarkers::new()).expect("observe");
         let plan = decide_removal(
             "own",
@@ -4237,7 +4293,7 @@ fn a_second_marker_line_past_the_edge_refuses_and_strands_nothing() {
         let (manifest, plan) = {
             let dest_dir = dir_at(dest.root());
             let state_dir = dir_at(state.root());
-            let manifest = load_manifest(&state_dir).expect("load manifest");
+            let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
             let observations =
                 observe(&dest_dir, &manifest, &BlockMarkers::new()).expect("observe");
             let plan = decide_removal(
@@ -4411,9 +4467,11 @@ fn load_manifest_reads_an_absent_file_as_empty() {
 fn load_manifest_reports_format_and_version_defects() {
     let (_, state) = fixtures();
     fs::write(state.path(MANIFEST_FILE_NAME), "not json").expect("write garbage");
-    match load_manifest(&dir_at(state.root())) {
+    match load_manifest(&dir_at(state.root()), state.root()) {
+        // Absolute: the operator has to open the file, and the bare name
+        // does not say which state directory holds it.
         Err(Error::ManifestFormat { path, .. }) => {
-            assert_eq!(path, Utf8PathBuf::from(MANIFEST_FILE_NAME))
+            assert_eq!(path, state.path(MANIFEST_FILE_NAME))
         }
         other => panic!("expected ManifestFormat, got {other:?}"),
     }
@@ -4423,7 +4481,7 @@ fn load_manifest_reports_format_and_version_defects() {
         r#"{"version": 9, "entries": {}}"#,
     )
     .expect("write a future version");
-    match load_manifest(&dir_at(state.root())) {
+    match load_manifest(&dir_at(state.root()), state.root()) {
         Err(Error::ManifestVersion {
             found, supported, ..
         }) => {
@@ -4457,7 +4515,7 @@ fn plan_result(
 ) -> (Manifest, Result<Plan>) {
     let dest_dir = dir_at(dest.root());
     let state_dir = dir_at(state.root());
-    let manifest = load_manifest(&state_dir).expect("load manifest");
+    let manifest = load_manifest(&state_dir, state.root()).expect("load manifest");
     let desired = Desired::from_caller(desired.clone());
     let observations =
         observe(&dest_dir, &manifest, &block_markers(&desired)).expect("observe destination");

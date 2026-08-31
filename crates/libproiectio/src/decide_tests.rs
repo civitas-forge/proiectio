@@ -908,7 +908,7 @@ fn desired_paths_enter_through_contained_join() {
         assert_eq!(
             action(&plan, refused),
             &Action::Refuse {
-                refusal: Refusal::Containment,
+                refusal: Refusal::Containment { through: None },
             },
             "expected a containment refusal at {refused}"
         );
@@ -1117,7 +1117,7 @@ fn a_desired_path_entering_the_state_dir_refuses_containment() {
         assert_eq!(
             action(&plan, refused),
             &Action::Refuse {
-                refusal: Refusal::Containment,
+                refusal: Refusal::Containment { through: None },
             },
             "expected a containment refusal at {refused}"
         );
@@ -1168,7 +1168,7 @@ fn a_desired_path_the_state_dir_sits_beneath_refuses_containment() {
         assert_eq!(
             action(&plan, refused),
             &Action::Refuse {
-                refusal: Refusal::Containment,
+                refusal: Refusal::Containment { through: None },
             },
             "expected a containment refusal at {refused}"
         );
@@ -1190,7 +1190,7 @@ fn a_recorded_path_the_state_dir_sits_beneath_is_refused_not_removed() {
     let manifest = manifest_of(&[(".local", recorded(&entry, &[OWNER]))]);
     let observations = observed(&[(".local", on_disk(&entry))]);
     let refused = Action::Refuse {
-        refusal: Refusal::Containment,
+        refusal: Refusal::Containment { through: None },
     };
 
     let sweep = decide_removal(
@@ -1333,7 +1333,7 @@ fn the_state_subtree_is_invisible_to_planning() {
     assert_eq!(
         action(&by_name, ".proiectio/old"),
         &Action::Refuse {
-            refusal: Refusal::Containment,
+            refusal: Refusal::Containment { through: None },
         }
     );
 }
@@ -1865,7 +1865,9 @@ fn a_desired_path_beneath_a_surviving_on_disk_link_refuses_containment() {
         assert_eq!(
             action(&plan, "logs/x.txt"),
             &Action::Refuse {
-                refusal: Refusal::Containment,
+                refusal: Refusal::Containment {
+                    through: Some(Utf8PathBuf::from("logs")),
+                },
             }
         );
     }
@@ -1920,7 +1922,9 @@ fn a_desired_path_beneath_a_link_the_plan_only_releases_still_refuses() {
     assert_eq!(
         action(&plan, "logs/x.txt"),
         &Action::Refuse {
-            refusal: Refusal::Containment,
+            refusal: Refusal::Containment {
+                through: Some(Utf8PathBuf::from("logs")),
+            },
         }
     );
 }
@@ -1990,7 +1994,9 @@ fn a_desired_link_beneath_an_observed_link_refuses_before_the_verdicts_diverge()
     assert_eq!(
         action(&plan, "b/c/x"),
         &Action::Refuse {
-            refusal: Refusal::Containment,
+            refusal: Refusal::Containment {
+                through: Some(Utf8PathBuf::from("b/c")),
+            },
         }
     );
     assert_eq!(
@@ -3188,7 +3194,7 @@ fn requested_paths_pass_the_same_containment_gateway_as_desired_keys() {
         assert_eq!(
             action(&plan, path),
             &Action::Refuse {
-                refusal: Refusal::Containment,
+                refusal: Refusal::Containment { through: None },
             },
             "expected {path} refused"
         );
@@ -3222,7 +3228,7 @@ fn a_removal_request_the_state_dir_sits_beneath_refuses_containment() {
     assert_eq!(
         action(&plan, ".local"),
         &Action::Refuse {
-            refusal: Refusal::Containment,
+            refusal: Refusal::Containment { through: None },
         }
     );
     assert_eq!(
@@ -3261,7 +3267,7 @@ fn a_removal_request_that_escapes_the_destination_refuses_rather_than_reading_as
         assert_eq!(
             action(&plan, path),
             &Action::Refuse {
-                refusal: Refusal::Containment,
+                refusal: Refusal::Containment { through: None },
             },
             "expected {path} refused"
         );
@@ -3330,7 +3336,7 @@ fn a_manifest_key_that_escapes_the_destination_refuses_rather_than_planning_a_re
         assert_eq!(
             action(&swept, path),
             &Action::Refuse {
-                refusal: Refusal::Containment,
+                refusal: Refusal::Containment { through: None },
             },
             "expected {path} refused"
         );
@@ -3353,7 +3359,7 @@ fn a_manifest_key_that_escapes_the_destination_refuses_rather_than_planning_a_re
         assert_eq!(
             action(&projected, path),
             &Action::Refuse {
-                refusal: Refusal::Containment,
+                refusal: Refusal::Containment { through: None },
             },
             "expected {path} refused"
         );

@@ -6,7 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::Deserialize;
 
 use crate::limits::Budget;
-use crate::{Desired, Entry, Error, Limits, Origin, Refusal, Refused, Result};
+use crate::{Desired, Entry, Error, IoRole, Limits, Origin, Refusal, Refused, Result};
 
 /// The mapping format version this crate accepts.
 pub const MAPPING_VERSION: u32 = 1;
@@ -33,9 +33,18 @@ pub fn load_mapping(path: &Utf8Path, limits: Limits) -> Result<Desired> {
 /// caller did not write, and its `contents` values are the bytes it carries.
 fn read_mapping(path: &Utf8Path, budget: &Budget) -> Result<String> {
     let io = |source| Error::Io {
+        role: IoRole::Mapping,
         path: path.to_owned(),
         source,
     };
+    // Judged before the open, because what a read of a directory reports is
+    // the host's business: Linux refuses the open, macOS opens it and fails
+    // the read, and neither sentence says which option a directory belongs to.
+    if path.is_dir() {
+        return Err(Error::MappingIsDirectory {
+            path: path.to_owned(),
+        });
+    }
     let mut file = fs::File::open(path).map_err(io)?;
     let bytes =
         budget
@@ -105,11 +114,13 @@ fn parse(path: &Utf8Path, text: &str, budget: &Rc<Budget>) -> Result<Desired> {
         }
     }
     if !refused.is_empty() {
-        return Err(Refused::aggregate(
-            refused
-                .into_iter()
-                .map(|key| (key, Refusal::Containment, mapping_origin.clone())),
-        )
+        return Err(Refused::aggregate(refused.into_iter().map(|key| {
+            (
+                key,
+                Refusal::Containment { through: None },
+                mapping_origin.clone(),
+            )
+        }))
         .expect("refused is not empty")
         .into());
     }
@@ -167,6 +178,7 @@ fn parse(path: &Utf8Path, text: &str, budget: &Rc<Budget>) -> Result<Desired> {
                 // same file even if the path is swapped mid-read.
                 let source_path = dir.join(source);
                 let io = |source| Error::Io {
+                    role: IoRole::Source,
                     path: source_path.clone(),
                     source,
                 };

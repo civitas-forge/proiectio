@@ -89,7 +89,8 @@ fn refused_plan(deploy: &Utf8Path) -> String {
     format!(
         "would refuse     bin/tool              (drifted) (from mapping {deploy})\n\
          would skip       config/settings.toml\n\
-         would link       current               -> releases/1.2.3\n"
+         would link       current               -> releases/1.2.3\n\
+         pass --force to overwrite them\n"
     )
 }
 
@@ -297,7 +298,10 @@ fn rm_of_a_drifted_path_refuses_until_force_lifts_the_policy() {
     );
 
     assert_eq!(leaving(&refused, &verdict), exit::REFUSAL);
-    assert_eq!(refused.stdout(), "would refuse     bin/tool  (drifted)\n");
+    assert_eq!(
+        refused.stdout(),
+        "would refuse     bin/tool  (drifted)\npass --force to overwrite them\n"
+    );
     assert_eq!(refused.error(), None);
     assert_eq!(
         std::fs::read(dest.join("bin/tool")).expect("the edited file"),
@@ -592,7 +596,8 @@ fn a_refused_dry_run_of_rm_renders_the_whole_plan() {
         result.stdout(),
         "would refuse     bin/tool              (drifted)\n\
          would remove     config/settings.toml\n\
-         would remove     current\n"
+         would remove     current\n\
+         pass --force to overwrite them\n"
     );
     assert_eq!(result.error(), None);
     assert!(dest.join("bin/tool").exists());

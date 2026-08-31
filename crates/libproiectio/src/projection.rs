@@ -6,7 +6,7 @@ use cap_std::ambient_authority;
 use cap_std::fs_utf8::Dir;
 
 use crate::{
-    BlockMarkers, Desired, DriftPolicy, Error, Manifest, Plan, PlanOptions, PlannedAction,
+    BlockMarkers, Desired, DriftPolicy, Error, IoRole, Manifest, Plan, PlanOptions, PlannedAction,
     RemovalScope, Report, Result, Status, absolutize, block_markers, decide, decide_removal,
     load_manifest, observe, require_owner, status,
 };
@@ -94,7 +94,7 @@ impl Projection {
     /// [`Manifest`].
     pub fn manifest(&self) -> Result<Manifest> {
         match self.open_state(None) {
-            Some(state) => load_manifest(&state?),
+            Some(state) => load_manifest(&state?, &self.state_dir),
             None => Ok(Manifest::new()),
         }
     }
@@ -106,7 +106,7 @@ impl Projection {
     /// manifest.
     fn manifest_under(&self, dest: &Dir) -> Result<Manifest> {
         match self.open_state(Some(dest)) {
-            Some(state) => load_manifest(&state?),
+            Some(state) => load_manifest(&state?, &self.state_dir),
             None => Ok(Manifest::new()),
         }
     }
@@ -160,6 +160,7 @@ impl Projection {
     /// A handle on the destination directory, which must already exist.
     pub(crate) fn open_target(&self) -> Result<Dir> {
         Dir::open_ambient_dir(&self.target, ambient_authority()).map_err(|source| Error::Io {
+            role: IoRole::Destination,
             path: self.target.clone(),
             source,
         })
@@ -190,6 +191,7 @@ impl Projection {
             Ok(state) => Some(Ok(state)),
             Err(source) if source.kind() == NotFound => None,
             Err(source) => Some(Err(Error::Io {
+                role: IoRole::StateDirectory,
                 path: self.state_dir.clone(),
                 source,
             })),
