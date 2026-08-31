@@ -186,6 +186,21 @@ fn verdict_of(action: &Action) -> PlannedAction {
     }
 }
 
+/// Whether `action` vacates the whole node standing where it acts: the two
+/// unlinking removals, and the removal half of [`Action::OverwriteDirectory`].
+/// A removal expecting nothing verifies absence, a release, a skip and a
+/// not-recorded leave the disk alone, and a refusal does nothing — none of
+/// them take the node. This is the one reading of "the plan claims this
+/// location" both stages grade a landing by.
+pub(crate) fn vacates_node(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Remove { expected: Some(_) }
+            | Action::RemoveDirectory
+            | Action::OverwriteDirectory { .. }
+    )
+}
+
 /// One planned per-path action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {

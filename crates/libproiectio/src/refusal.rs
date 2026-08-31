@@ -34,9 +34,9 @@ pub enum Refusal {
         paths: BTreeSet<Utf8PathBuf>,
     },
     /// A removal whose ancestry walk followed a recorded link came out on a
-    /// path the manifest records and this plan acts on nowhere — another
-    /// owner's record, or this owner's own outside the removal's scope.
-    /// Unlinking there would take a node its owners still hold.
+    /// path the manifest records — another owner's record, or this owner's own
+    /// outside the removal's scope — and this plan does not itself vacate that
+    /// node. Unlinking there would take a node its owners still hold.
     RecordedLanding {
         /// The first recorded link the walk followed.
         through: Utf8PathBuf,

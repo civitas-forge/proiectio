@@ -26,7 +26,7 @@ use crate::{
     Aborted, Action, ApplyOutcome, ApplyReport, BlockFault, Entry, EntryKind, Error,
     ExternalTargetPolicy, MANIFEST_FILE_NAME, MANIFEST_VERSION, MAX_WALK_DEPTH, Manifest,
     ManifestEntry, NodeSignature, Origin, PathFacts, PathShape, Placement, Plan, Refusal, Refused,
-    Report, Result, Row, Stopped, sha256_hex,
+    Report, Result, Row, Stopped, sha256_hex, vacates_node,
 };
 
 /// Loads the manifest from `state`'s [`MANIFEST_FILE_NAME`]; a state
@@ -1465,17 +1465,18 @@ fn at_action_key(path: &Utf8Path, landing: &Utf8Path, through: Option<&Utf8Path>
     }
 }
 
-/// Holds a removal to a landing this plan is about: a walk that followed a
-/// recorded link onto a path the manifest records and the plan carries no
-/// action for refuses, rather than unlinking a node its owners still hold.
-/// The deciding side of the same grade is `plan_actions`'s, which reads the
-/// landing off the observations.
+/// Holds a removal to a landing this plan vacates: a walk that followed a
+/// recorded link onto a path the manifest records refuses unless this plan's
+/// own action there takes that node, rather than unlinking one its owners
+/// still hold. [`vacates_node`] is the claim both stages read; the deciding
+/// side of the same grade is `plan_actions`'s, which reads the landing off
+/// the observations.
 fn held_landing(manifest: &Manifest, plan: &Plan, path: &Utf8Path, walked: &Walked) -> Result<()> {
     let landing = Landing {
         at: walked.resolved_parent.join(&walked.leaf),
         through: walked.through.clone(),
     };
-    if landing.at == *path || plan.actions.contains_key(&landing.at) {
+    if landing.at == *path || plan.actions.get(&landing.at).is_some_and(vacates_node) {
         return Ok(());
     }
     match recorded_landing(&landing, manifest) {

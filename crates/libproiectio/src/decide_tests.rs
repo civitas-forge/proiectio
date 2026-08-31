@@ -2343,6 +2343,33 @@ fn a_removal_landing_on_a_record_this_plan_only_releases_refuses() {
 }
 
 #[test]
+fn a_removal_landing_on_a_record_with_nothing_on_disk_forgets_it() {
+    // Nothing stands where the walk comes out, so the removal verifies absence
+    // and drops its own record: it unlinks no node, and the landing's owner
+    // keeps whatever record it holds. Refusing here would strip the projection
+    // of its only way to clean a stale record.
+    let kept = file("kept\n", false);
+    let manifest = manifest_of(&[
+        ("a", recorded(&link("real"), &["p"])),
+        ("a/x.txt", recorded(&kept, &[OWNER])),
+        ("real/x.txt", recorded(&kept, &["p"])),
+    ]);
+    let observations = observed(&[
+        ("a", on_disk(&link("real"))),
+        ("real", Observation::Directory),
+    ]);
+
+    let plan = removal(
+        RemovalScope::Everything,
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(action(&plan, "a/x.txt"), &Action::Remove { expected: None });
+}
+
+#[test]
 fn a_write_walks_through_the_location_a_removal_vacates() {
     // The removal of `logs/x` unlinks `real/x`, so the write beneath it walks
     // through a location the run leaves empty. Filed under the key instead,

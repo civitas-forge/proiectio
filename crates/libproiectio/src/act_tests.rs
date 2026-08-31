@@ -1485,6 +1485,79 @@ fn a_removal_whose_link_appears_in_the_gap_refuses_the_landing_another_owner_hol
     );
 }
 
+// The plan carries an action at the landing, but a release leaves the node
+// standing: only an action that vacates the node is this plan claiming it, so
+// the removal walking there through the link refuses as it does where the plan
+// says nothing at all (issue #137).
+#[test]
+fn a_removal_landing_on_a_node_this_plan_only_releases_refuses() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .file("a/x.txt", "kept\n")
+        .file("real/x.txt", "kept\n")
+        .write_under(dest.root());
+    let kept = sha256_hex(b"kept\n");
+    let manifest = Manifest {
+        version: MANIFEST_VERSION,
+        entries: BTreeMap::from([
+            (
+                "a".into(),
+                recorded(EntryKind::Symlink, sha256_hex(b"real"), &["other"]),
+            ),
+            (
+                "a/x.txt".into(),
+                recorded(EntryKind::File, kept.clone(), &["own"]),
+            ),
+            (
+                "real/x.txt".into(),
+                recorded(EntryKind::File, kept.clone(), &["own", "p"]),
+            ),
+        ]),
+    };
+    let plan = Plan {
+        dropped: BTreeSet::new(),
+        owner: "own".to_owned(),
+        origins: BTreeMap::new(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([
+            (
+                "a/x.txt".into(),
+                Action::Remove {
+                    expected: Some(NodeSignature {
+                        kind: EntryKind::File,
+                        hash: kept,
+                        executable: false,
+                    }),
+                },
+            ),
+            ("real/x.txt".into(), Action::Release),
+        ]),
+    };
+    fs::remove_dir_all(dest.path("a")).expect("the directory the plan walked through");
+    std::os::unix::fs::symlink("real", dest.path("a")).expect("the link that appears in the gap");
+
+    let error = apply_at(&dest, &state, &manifest, &plan).expect_err("never unlink through it");
+
+    match error {
+        Error::Refused(refused) => assert_eq!(
+            refusals_of(&refused),
+            BTreeMap::from([(
+                Utf8PathBuf::from("a/x.txt"),
+                Refusal::RecordedLanding {
+                    through: Utf8PathBuf::from("a"),
+                    at: Utf8PathBuf::from("real/x.txt"),
+                    owners: BTreeSet::from(["own".to_owned(), "p".to_owned()]),
+                },
+            )])
+        ),
+        other => panic!("expected RecordedLanding, got {other:?}"),
+    }
+    assert_eq!(
+        fs::read(dest.path("real/x.txt")).expect("the node the release leaves standing"),
+        b"kept\n"
+    );
+}
+
 // A drop is not an action, so apply performs nothing for it and records
 // nothing in the manifest. It rides the report beside the rows rather than
 // among them, which is what leaves a run whose only news is a dropped member

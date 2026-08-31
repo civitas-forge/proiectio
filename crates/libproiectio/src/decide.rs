@@ -9,7 +9,8 @@ use crate::{
     Action, BlockFault, Desired, DriftPolicy, Entry, EntryKind, Error, ExternalTargetPolicy,
     Landing, MAX_WALK_DEPTH, Manifest, ManifestEntry, NodeSignature, Observation, Observations,
     Origin, OverwriteReason, PathFacts, PathShape, PathState, Placement, Plan, PlanOptions,
-    Refusal, Report, Result, Row, Status, recorded_landing, sha256_hex, walked_ancestry,
+    Refusal, Report, Result, Row, Status, recorded_landing, sha256_hex, vacates_node,
+    walked_ancestry,
 };
 
 /// One row per path in the union of the manifest and the observations,
@@ -465,13 +466,16 @@ fn plan_actions(
         // A landing no other action of this plan claims, but the manifest
         // records: unlinking it would take a node its owners still hold, and
         // no verdict of this plan is about that node. Graded after the
-        // collisions above, which are the landings this plan does act on.
+        // collisions above, which are the landings this plan does act on, and
+        // only over the actions that take the node — a removal expecting
+        // nothing forgets a record without unlinking anyone's node.
         let action = match collided.get(&path) {
             Some(paths) => conflict(paths),
-            None => followed
+            None if vacates_node(&action) => followed
                 .get(&path)
                 .and_then(|landing| recorded_landing(landing, manifest))
                 .map_or(action, refuse),
+            None => action,
         };
         let whole_node = !manifest
             .entries
