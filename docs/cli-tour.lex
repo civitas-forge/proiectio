@@ -128,6 +128,21 @@ The CLI
 
     :: shell ::
 
+    Plain status always exits 0 — the report is the product. --check
+    is the gate: it exits 2 when any row is not clean, the same 2 a
+    dry run spends on the same finding, so CI can gate on either. A
+    named --state-dir that does not exist warns on stderr, and under
+    --check fails, so a typo cannot read as healthy.
+
+        $ proiectio status --dest ~/apps/site --check
+        drifted  bin/tool
+        clean    config/settings.toml
+        missing  current
+        $ echo $?
+        2
+
+    :: shell ::
+
 4. Removal
 
     rm removes what the manifest owns. A drifted file refuses (exit 2)
@@ -217,6 +232,7 @@ The CLI
         | --dry-run                | plan and report, write nothing                 |
         | --force                  | overwrite drifted files; remove them under rm  |
         | --allow-external-targets | permit symlink targets outside dest            |
+        | --check                  | status only: exit 2 when anything is not clean |
         | --tree <path>            | project a directory or archive                 |
         | --strip <n>              | drop n leading components (archive trees)      |
 
