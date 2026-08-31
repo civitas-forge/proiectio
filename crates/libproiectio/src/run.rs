@@ -4,7 +4,7 @@ use cap_std::ambient_authority;
 use cap_std::fs_utf8::Dir;
 
 use crate::{
-    ApplyReport, BlockMarkers, Desired, DriftPolicy, Error, Manifest, Plan, PlanOptions,
+    Aborted, ApplyReport, BlockMarkers, Desired, DriftPolicy, Error, Manifest, Plan, PlanOptions,
     Projection, RemovalScope, Report, Result, StateLock, apply, block_markers, decide,
     decide_removal, load_manifest, observe,
 };
@@ -124,12 +124,14 @@ impl Run {
     }
 
     /// Executes the plan this run decided and persists the manifest,
-    /// releasing the guard as the run is consumed.
+    /// releasing the guard as the run is consumed. A run that stops part-way
+    /// fails with [`Aborted`], which carries the rows it applied before it
+    /// stopped.
     ///
     /// ```no_run
     /// # use camino::Utf8PathBuf;
-    /// # use libproiectio::{Desired, PlanOptions, Projection, Result};
-    /// # fn write(projection: &Projection) -> Result<()> {
+    /// # use libproiectio::{Desired, PlanOptions, Projection};
+    /// # fn write(projection: &Projection) -> Result<(), Box<dyn std::error::Error>> {
     /// let desired = Desired::new();
     /// let mut run = projection.begin()?;
     /// run.plan("harness", &desired, PlanOptions::default())?;
@@ -144,8 +146,8 @@ impl Run {
     ///
     /// ```compile_fail
     /// # use camino::Utf8PathBuf;
-    /// # use libproiectio::{Desired, PlanOptions, Projection, Result};
-    /// # fn write(projection: &Projection) -> Result<()> {
+    /// # use libproiectio::{Desired, PlanOptions, Projection};
+    /// # fn write(projection: &Projection) -> Result<(), Box<dyn std::error::Error>> {
     /// let desired = Desired::new();
     /// let plan = projection.plan("harness", &desired, PlanOptions::default())?.plan;
     /// let run = projection.begin()?;
@@ -157,7 +159,7 @@ impl Run {
     ///
     /// A run that decided no plan writes nothing and reports the manifest as
     /// loaded.
-    pub fn apply(self) -> Result<ApplyReport> {
+    pub fn apply(self) -> std::result::Result<ApplyReport, Box<Aborted>> {
         let Some(plan) = &self.plan else {
             return Ok(ApplyReport {
                 report: Report::default(),

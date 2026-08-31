@@ -4,7 +4,8 @@ use std::collections::BTreeSet;
 
 use camino::Utf8PathBuf;
 use libproiectio::{
-    ApplyOutcome, BlockFault, Dropped, Origin, OverwriteReason, Refusal, RefusalKind,
+    ApplyOutcome, BlockFault, Dropped, EntryKind, Error, ManifestEntry, Origin, OverwriteReason,
+    Refusal, RefusalKind,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -169,7 +170,7 @@ fn every_verdict_the_library_declares_reads_as_one_spelling() {
         let document = applied(json!({ "one": file(serialized(verdict)) }));
         let row = only(RunLines {
             rows: document.rows,
-            summary: None,
+            ..RunLines::default()
         });
 
         assert_eq!((row.style, row.verb.as_str()), spelled, "{verdict:?}");
@@ -728,4 +729,354 @@ fn dropped_members_share_the_path_column_with_the_rows() {
              named by mapping /srv/deploy.toml)"
         )
     );
+}
+
+/// The document a refusal met past the plan renders: one row per refused key,
+/// carrying the refusal and the source the error names, in the same shape a
+/// plan's own refused row has — a null shape, and a verdict under `Refuse`.
+#[test]
+fn a_refusal_renders_the_row_shape_a_refused_plan_renders() {
+    let origin = Origin::Mapping {
+        path: Utf8PathBuf::from("/srv/deploy.toml"),
+    };
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        origin.clone(),
+    );
+
+    let document = serialized(PlannedRun::refused(
+        &refused,
+        &Manifest::new(),
+        BTreeSet::new(),
+    ));
+
+    assert_eq!(
+        document,
+        json!({
+            "rows": [{
+                "path": "bin/tool",
+                "verdict": { "Refuse": { "refusal": "Drift" } },
+                "facts": { "shape": null, "owners": [], "origin": serialized(&origin) },
+            }],
+        })
+    );
+    let row = only(lines(&document, AmbiguousWidth::Narrow));
+    assert_eq!((row.style, row.verb.as_str()), ("refused", "would refuse"));
+    assert_eq!(row.path, "bin/tool");
+    assert_eq!(
+        row.note.as_deref(),
+        Some("(drifted) (from mapping /srv/deploy.toml)")
+    );
+}
+
+/// Every refused key the error names gets a row, each stating the source that
+/// named it, and a refusal strips no archive so the document carries no
+/// `dropped`.
+#[test]
+fn a_refusal_of_several_keys_renders_a_row_for_each() {
+    let held_by = |owner: &str| Refusal::OwnerConflict {
+        owners: BTreeSet::from([owner.to_owned()]),
+    };
+    let aggregated = Refused::aggregate([
+        (
+            Utf8PathBuf::from("bin/tool"),
+            held_by("site"),
+            Origin::Files,
+        ),
+        (
+            Utf8PathBuf::from("config/settings.toml"),
+            held_by("other"),
+            Origin::Caller,
+        ),
+    ])
+    .expect("a refusal over two keys");
+
+    let document = serialized(PlannedRun::refused(
+        &aggregated,
+        &Manifest::new(),
+        BTreeSet::new(),
+    ));
+
+    assert_eq!(document.get("dropped"), None);
+    let rows = lines(&document, AmbiguousWidth::Narrow).rows;
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.path.as_str(), row.verb.as_str(), row.note.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "bin/tool",
+                "would refuse",
+                Some("(owner conflict) (held by site) (from individually named files)")
+            ),
+            (
+                "config/settings.toml",
+                "would refuse",
+                Some("(owner conflict) (held by other)")
+            ),
+        ]
+    );
+}
+
+/// A refused row states the owners the manifest records at the path, which is
+/// what a plan's own refused row states: a caller reading the two documents
+/// reads one shape, whichever stage refused.
+#[test]
+fn a_refused_row_states_the_owners_the_manifest_records() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+
+    let document = serialized(PlannedRun::refused(
+        &refused,
+        &holding("bin/tool", &["site"]),
+        BTreeSet::new(),
+    ));
+
+    assert_eq!(document["rows"][0]["path"], json!("bin/tool"));
+    assert_eq!(document["rows"][0]["facts"]["owners"], json!(["site"]));
+}
+
+/// A run that stopped part-way renders both halves at once, in one table laid
+/// out in path order: a refused key sorting before an applied one prints
+/// before it, as it would in any other report. Each row reads in the tense of
+/// what happened to it, and the summary says the run stopped.
+#[test]
+fn a_run_that_stopped_part_way_states_what_it_applied_and_what_it_refused() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+
+    let document = serialized(AbortedRun::new(
+        wrote(&["config/settings.toml"]),
+        refused_rows(&refused, &Manifest::new()),
+        &Stopped::Applying(Error::Refused(refused.clone())),
+    ));
+
+    assert_eq!(document["aborted"], json!(true));
+    assert_eq!(document["recorded"], json!(true));
+    assert_eq!(document["stopped_at"], json!("applying"));
+    assert_eq!(document.get("stopped"), None);
+    let rendered = lines(&document, AmbiguousWidth::Narrow);
+    assert_eq!(
+        rendered
+            .rows
+            .iter()
+            .map(|row| (row.path.as_str(), row.verb.as_str(), row.style))
+            .collect::<Vec<_>>(),
+        vec![
+            ("bin/tool", "refused", "refused"),
+            ("config/settings.toml", "wrote", "wrote"),
+        ]
+    );
+    assert_eq!(
+        rendered.summary.as_deref(),
+        Some(
+            "1 written, 0 skipped, 1 refused — the run stopped part-way \
+             through the plan, and what it applied stands"
+        )
+    );
+    assert!(rendered.stopped.is_empty());
+}
+
+/// A failure rather than a refusal stops a run on the same terms: the rows it
+/// applied, and the diagnostic that would otherwise have replaced them, which
+/// reaches the reader in the document because a rendered run leaves nothing on
+/// stderr.
+#[test]
+fn a_run_a_failure_stopped_states_its_rows_and_the_failure() {
+    let document = serialized(AbortedRun::new(
+        wrote(&["bin/tool"]),
+        Report::default(),
+        &Stopped::Applying(held("lock")),
+    ));
+
+    assert_eq!(document["aborted"], json!(true));
+    assert_eq!(document["recorded"], json!(true));
+    assert_eq!(document.get("refused"), None);
+    let rendered = lines(&document, AmbiguousWidth::Narrow);
+    assert_eq!(rendered.rows.len(), 1);
+    assert_eq!(
+        rendered.stopped,
+        vec!["state lock lock is held by another writer"]
+    );
+}
+
+/// A run whose manifest never reached the state directory says so in the
+/// document and in `recorded`: the destination holds writes nothing on disk
+/// records, which is the one thing a reader of these rows must not assume
+/// away. The one failure stopped one half of the run, so it is stated once.
+#[test]
+fn a_run_that_could_not_record_what_it_applied_says_so() {
+    let document = serialized(AbortedRun::new(
+        wrote(&["bin/tool"]),
+        Report::default(),
+        &Stopped::Recording(held("state.lock")),
+    ));
+
+    assert_eq!(document["recorded"], json!(false));
+    assert_eq!(document["stopped_at"], json!("recording"));
+    let rendered = lines(&document, AmbiguousWidth::Narrow);
+    assert_eq!(
+        rendered.stopped,
+        vec![
+            "the state directory does not record what the run applied: \
+             state lock state.lock is held by another writer",
+        ]
+    );
+}
+
+/// Every action of such a run applied, so its summary says that rather than
+/// that it stopped part-way: a reader told a plan is half applied goes looking
+/// for a destination missing the rest of it, and this one is missing nothing.
+#[test]
+fn a_run_that_only_its_record_stopped_is_not_called_part_way() {
+    let document = serialized(AbortedRun::new(
+        wrote(&["bin/tool"]),
+        Report::default(),
+        &Stopped::Recording(held("state.lock")),
+    ));
+
+    assert_eq!(
+        lines(&document, AmbiguousWidth::Narrow).summary.as_deref(),
+        Some("1 written, 0 skipped — the run applied its whole plan and could not record it")
+    );
+}
+
+/// A run that lost both halves states both: the keys it refused as rows, and
+/// the record it could not write as a line. The refusal states itself in the
+/// rows, so only the record is spelled out.
+#[test]
+fn a_run_that_refused_and_could_not_record_states_the_rows_and_the_record() {
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+
+    let document = serialized(AbortedRun::new(
+        wrote(&["config/settings.toml"]),
+        refused_rows(&refused, &Manifest::new()),
+        &Stopped::ApplyingAndRecording {
+            applying: Error::Refused(refused.clone()),
+            recording: held("state.lock"),
+        },
+    ));
+
+    assert_eq!(document["recorded"], json!(false));
+    assert_eq!(document["stopped_at"], json!("applying_and_recording"));
+    let rendered = lines(&document, AmbiguousWidth::Narrow);
+    assert_eq!(rendered.rows.len(), 2);
+    // An action stopped this one, so the plan is half applied and the summary
+    // says so, whatever became of the record.
+    assert!(
+        rendered
+            .summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("stopped part-way through the plan")),
+        "{:?}",
+        rendered.summary
+    );
+    assert_eq!(
+        rendered.stopped,
+        vec![
+            "the state directory does not record what the run applied: \
+             state lock state.lock is held by another writer"
+        ]
+    );
+}
+
+/// Where the rows sit is what tells the tenses apart, and nothing else in the
+/// document does: a plan and a run that stopped both state their stripped
+/// archive members at the top level, so a plan carrying drops still reads as a
+/// plan and a stopped run carrying them still reads in the tense it applied
+/// its rows in.
+#[test]
+fn drops_at_the_top_level_leave_each_document_in_its_own_tense() {
+    let erased = Dropped {
+        member: Utf8PathBuf::from("._pkg"),
+        prefix: Utf8PathBuf::new(),
+        strip: 1,
+        origin: Origin::Archive {
+            path: Utf8PathBuf::from("/assets/vendor.tar.gz"),
+            via: None,
+        },
+    };
+    let refused = Refused::one(
+        Utf8PathBuf::from("bin/tool"),
+        Refusal::Drift,
+        Origin::Caller,
+    );
+    let mut applied = wrote(&["bin/tool"]);
+    applied.dropped = BTreeSet::from([erased.clone()]);
+
+    let plan = serialized(PlannedRun::refused(
+        &refused,
+        &Manifest::new(),
+        BTreeSet::from([erased]),
+    ));
+    let stopped = serialized(AbortedRun::new(
+        applied,
+        Report::default(),
+        &Stopped::Applying(held("lock")),
+    ));
+
+    let verbs = |document: &JsonValue| {
+        lines(document, AmbiguousWidth::Narrow)
+            .rows
+            .into_iter()
+            .map(|row| row.verb)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(verbs(&plan), vec!["would refuse", "dropped"]);
+    assert_eq!(verbs(&stopped), vec!["wrote", "dropped"]);
+}
+
+/// An `ApplyReport` writing the paths named.
+fn wrote(paths: &[&str]) -> ApplyReport {
+    ApplyReport {
+        report: Report {
+            rows: paths
+                .iter()
+                .map(|path| {
+                    (
+                        Utf8PathBuf::from(*path),
+                        Row {
+                            facts: None,
+                            verdict: ApplyOutcome::Written,
+                        },
+                    )
+                })
+                .collect(),
+        },
+        dropped: BTreeSet::new(),
+        manifest: Manifest::new(),
+    }
+}
+
+/// A failure that is not a refusal, and carries no `io::Error` to build.
+fn held(path: &str) -> Error {
+    Error::LockHeld {
+        path: Utf8PathBuf::from(path),
+    }
+}
+
+/// A manifest recording one path under the owners named.
+fn holding(path: &str, owners: &[&str]) -> Manifest {
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        Utf8PathBuf::from(path),
+        ManifestEntry {
+            kind: EntryKind::File,
+            hash: String::new(),
+            executable: false,
+            owners: owners.iter().map(|owner| (*owner).to_owned()).collect(),
+        },
+    );
+    manifest
 }

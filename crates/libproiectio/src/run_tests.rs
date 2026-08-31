@@ -7,7 +7,7 @@ use super::*;
 use crate::test_support::{Fixture, Tree, assert_tree, origins_of};
 use crate::{
     Action, ApplyOutcome, Desired, Entry, Error, LOCK_FILE_NAME, MANIFEST_FILE_NAME, Manifest,
-    Origin, PathState, Refusal, RefusalKind, RemovalScope,
+    Origin, PathState, Refusal, RefusalKind, RemovalScope, Stopped,
 };
 
 // A projection over two fixture directories, the state directory outside
@@ -317,11 +317,11 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
         })
     );
 
-    let error = run
+    let stopped = run
         .apply()
         .expect_err("a plan carrying a refusal applies nothing");
 
-    match &error {
+    match stopped.stopped.error() {
         Error::Refused(refused) => {
             assert_eq!(
                 origins_of(refused),
@@ -333,8 +333,10 @@ fn a_refusal_raised_by_applying_names_the_plans_origin() {
         }
         other => panic!("expected Containment, got {other:?}"),
     }
+    // Nothing was applied, so the stop says only what the refusal says.
+    assert!(!stopped.applied_anything());
     assert_eq!(
-        error.to_string(),
+        stopped.to_string(),
         "refusing paths that violate containment: \
          ../escape (from mapping /etc/harness/skills.toml)"
     );
@@ -359,13 +361,14 @@ fn the_plans_refused_is_the_error_applying_it_raises() {
         .refused()
         .expect("the foreign path is refused");
 
-    let error = run
+    let stopped = run
         .apply()
         .expect_err("a plan carrying a refusal applies nothing");
 
-    match error {
-        Error::Refused(raised) => assert_eq!(raised, refused),
-        other => panic!("expected a refusal, got {other:?}"),
+    assert!(!stopped.applied_anything());
+    match stopped.stopped {
+        Stopped::Applying(Error::Refused(raised)) => assert_eq!(raised, refused),
+        other => panic!("expected a refusal met while applying, got {other:?}"),
     }
     assert_eq!(refused.kind(), RefusalKind::Foreign);
     assert_eq!(
