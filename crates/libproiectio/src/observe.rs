@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use camino::Utf8PathBuf;
@@ -43,10 +43,17 @@ pub(crate) fn sha256_hex_of_reader(mut reader: impl std::io::Read) -> std::io::R
 
 /// What observe saw at every path in the union of the destination directory
 /// and the manifest, keyed by path relative to the destination. Paths whose
-/// on-disk names are not UTF-8 never appear.
+/// on-disk names are not UTF-8 never appear in [`paths`](Self::paths); the
+/// directories holding them appear in [`unreadable`](Self::unreadable), so a
+/// reader can tell an inventory that is complete from one that is not.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct Observations {
     pub paths: BTreeMap<Utf8PathBuf, Observation>,
+    /// Every directory the walk met a name in that it cannot represent, so
+    /// [`paths`](Self::paths) is not the whole of what stands there. Keyed
+    /// like every other path, which makes the destination root the empty
+    /// path. Nothing may conclude such a directory empties.
+    pub unreadable: BTreeSet<Utf8PathBuf>,
 }
 
 /// What one path looked like on disk, with lstat semantics: a symlink is
@@ -146,21 +153,6 @@ pub(crate) fn read_container(dir: &Dir, name: &str, path: &Utf8Path) -> Result<C
     })
 }
 
-/// Walks the union of the destination directory and the manifest and
-/// snapshots what is on disk into [`Observations`], reading everything
-/// through the capability handle `dest`.
-///
-/// cap-std has no read-only handle type, so "this stage writes nothing"
-/// (`docs/implementation.lex` section 1) is a discipline the walk keeps and
-/// its tests check, not a guarantee the types carry.
-///
-/// Symlinks are observed as themselves and never entered, so a recorded path
-/// beneath one observes [`Observation::Absent`]. Entries whose names are not
-/// UTF-8 are skipped; any other unreadable entry is an [`Error::Io`] carrying
-/// the path relative to the destination (`.` for the destination itself).
-/// A destination nesting more than [`MAX_WALK_DEPTH`] directories below
-/// `dest` is [`Error::DestinationTooDeep`] naming the directory a level past
-/// that. The projection's own state subtree is not excluded here.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct DesiredRegion {
     pub(crate) occurrences: usize,
@@ -182,17 +174,37 @@ pub(crate) fn block_markers(desired: &crate::Desired) -> BlockMarkers {
         .collect()
 }
 
+/// Walks the union of the destination directory and the manifest and
+/// snapshots what is on disk into [`Observations`], reading everything
+/// through the capability handle `dest`.
+///
+/// cap-std has no read-only handle type, so "this stage writes nothing"
+/// (`docs/implementation.lex` section 1) is a discipline the walk keeps and
+/// its tests check, not a guarantee the types carry.
+///
+/// Symlinks are observed as themselves and never entered, so a recorded path
+/// beneath one observes [`Observation::Absent`]. An entry whose name is not
+/// UTF-8 has no key to be observed under, so it is skipped and the directory
+/// holding it is named in [`Observations::unreadable`] — the walk saying that
+/// more stands there than it can state. An entry that cannot be read at all
+/// is an [`Error::Io`] carrying the path relative to the destination (`.` for
+/// the destination itself). A destination nesting more than
+/// [`MAX_WALK_DEPTH`] directories below `dest` is
+/// [`Error::DestinationTooDeep`] naming the directory a level past that. The
+/// projection's own state subtree is not excluded here.
 pub(crate) fn observe(
     dest: &Dir,
     manifest: &Manifest,
     wanted: &BlockMarkers,
 ) -> Result<Observations> {
-    let mut paths = BTreeMap::new();
-    walk(dest, Utf8Path::new(""), 0, manifest, wanted, &mut paths)?;
+    let mut into = Observations::default();
+    walk(dest, Utf8Path::new(""), 0, manifest, wanted, &mut into)?;
     for path in manifest.entries.keys() {
-        paths.entry(path.clone()).or_insert(Observation::Absent);
+        into.paths
+            .entry(path.clone())
+            .or_insert(Observation::Absent);
     }
-    Ok(Observations { paths })
+    Ok(into)
 }
 
 /// Observes every entry of `dir` — the destination subdirectory at `prefix`,
@@ -204,7 +216,7 @@ fn walk(
     depth: usize,
     manifest: &Manifest,
     wanted: &BlockMarkers,
-    into: &mut BTreeMap<Utf8PathBuf, Observation>,
+    into: &mut Observations,
 ) -> Result<()> {
     let dir_path = if prefix.as_str().is_empty() {
         Utf8Path::new(".")
@@ -221,6 +233,9 @@ fn walk(
     for entry in entries {
         let entry = entry.map_err(io_error(dir_path))?;
         let Ok(name) = entry.file_name() else {
+            // No key names this entry, so the directory holding it is one
+            // whose contents these observations do not state in full.
+            into.unreadable.insert(prefix.to_owned());
             continue;
         };
         let rel = prefix.join(&name);
@@ -240,7 +255,7 @@ fn walk(
             }
         } else if file_type.is_dir() {
             let sub = entry.open_dir().map_err(io_error(&rel))?;
-            into.insert(rel.clone(), Observation::Directory);
+            into.paths.insert(rel.clone(), Observation::Directory);
             walk(&sub, &rel, depth + 1, manifest, wanted, into)?;
             continue;
         } else if file_type.is_file() {
@@ -266,7 +281,7 @@ fn walk(
         } else {
             Observation::Other
         };
-        into.insert(rel, observation);
+        into.paths.insert(rel, observation);
     }
     Ok(())
 }

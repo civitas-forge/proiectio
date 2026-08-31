@@ -165,7 +165,9 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
             continue;
         }
         let written = match action {
-            Action::Write { entry } | Action::Overwrite { entry, .. } => Some(entry),
+            Action::Write { entry }
+            | Action::Overwrite { entry, .. }
+            | Action::OverwriteDirectory { entry } => Some(entry),
             _ => None,
         };
         if let Some(Entry::Symlink { target }) = written {
@@ -215,6 +217,23 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
             } => {
                 if let Some(fault) = signature_block_fault(recorded_kind, &expected.kind) {
                     block(fault);
+                }
+            }
+            Action::OverwriteDirectory { entry } => {
+                if let Some(fault) = entry_block_fault(entry) {
+                    block(fault);
+                }
+                // A directory is a whole node, so a block on either side of
+                // this action is the whole-node/block change no path makes.
+                if record_is_block || entry.kind().is_block() {
+                    block(BlockFault::KindChange);
+                }
+            }
+            // A directory is a whole node and a block record never stands for
+            // one, so a plan aiming this at a block is one no deciding built.
+            Action::RemoveDirectory => {
+                if record_is_block {
+                    block(BlockFault::KindChange);
                 }
             }
             Action::Remove { expected: None } | Action::Release => {}
@@ -268,6 +287,41 @@ fn run(
 ) -> Result<()> {
     let mut removed_dirs_candidates: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, action) in plan.actions.iter().rev() {
+        // A directory the plan replaces goes here rather than among the
+        // writes: the write at the same path needs the location free, and
+        // removals run before pruning and the writes both.
+        if matches!(action, Action::OverwriteDirectory { .. }) {
+            let recorded = manifest.entries.get(path).cloned();
+            let vacated = acting_on(plan, path, || remove_directory(dest, manifest, path))?;
+            // The write that replaces the directory is a whole pass away, and
+            // anything failing in between ends the run with the directory
+            // gone. So the removal is recorded where it lands, and the ancestry
+            // it emptied is pruned as any removal's is: the write below
+            // recreates whatever it needs, and a run that never reaches it
+            // leaves no empty directory of its own making behind.
+            prune_above(&vacated, &mut removed_dirs_candidates);
+            manifest.entries.remove(path);
+            rows.insert(
+                path.clone(),
+                Row {
+                    facts: recorded_facts(recorded.as_ref(), plan.origin_of(path)),
+                    verdict: ApplyOutcome::Removed,
+                },
+            );
+        }
+        if matches!(action, Action::RemoveDirectory) {
+            let recorded = manifest.entries.get(path).cloned();
+            let vacated = acting_on(plan, path, || remove_directory(dest, manifest, path))?;
+            prune_above(&vacated, &mut removed_dirs_candidates);
+            manifest.entries.remove(path);
+            rows.insert(
+                path.clone(),
+                Row {
+                    facts: recorded_facts(recorded.as_ref(), plan.origin_of(path)),
+                    verdict: ApplyOutcome::Removed,
+                },
+            );
+        }
         if let Action::Remove { expected } = action {
             let recorded = manifest.entries.get(path).cloned();
             acting_on(plan, path, || {
@@ -283,11 +337,7 @@ fn run(
                     // the action key names the directories still standing.
                     let vacated = remove(dest, manifest, path, expected.as_ref())?
                         .unwrap_or_else(|| path.clone());
-                    for ancestor in vacated.ancestors().skip(1) {
-                        if !ancestor.as_str().is_empty() {
-                            removed_dirs_candidates.insert(ancestor.to_owned());
-                        }
-                    }
+                    prune_above(&vacated, &mut removed_dirs_candidates);
                 }
                 Ok(())
             })?;
@@ -310,7 +360,9 @@ fn run(
     let mut unpublished: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, action) in &plan.actions {
         match action {
-            Action::Write { entry } | Action::Overwrite { entry, .. }
+            Action::Write { entry }
+            | Action::Overwrite { entry, .. }
+            | Action::OverwriteDirectory { entry }
                 if matches!(entry, Entry::Symlink { .. }) =>
             {
                 links.push((path, action));
@@ -324,8 +376,10 @@ fn run(
     }
     for (path, action) in &plan.actions {
         match action {
-            Action::Remove { .. } | Action::Refuse { .. } => {}
-            Action::Write { entry } | Action::Overwrite { entry, .. }
+            Action::Remove { .. } | Action::RemoveDirectory | Action::Refuse { .. } => {}
+            Action::Write { entry }
+            | Action::Overwrite { entry, .. }
+            | Action::OverwriteDirectory { entry }
                 if matches!(entry, Entry::Symlink { .. }) => {}
             Action::Skip { expected, .. } if expected.kind == EntryKind::Symlink => {}
             Action::Write { entry } if matches!(entry, Entry::Block { .. }) => {
@@ -364,6 +418,18 @@ fn run(
                 acting_on(plan, path, || {
                     check_expected(dest, manifest, path, expected)?;
                     write(dest, manifest, path, entry, false, plan, &unpublished)
+                })?;
+                record(manifest, path, entry, &plan.owner);
+                rows.insert(
+                    path.clone(),
+                    entry_row(manifest, plan, path, entry, ApplyOutcome::Overwritten),
+                );
+            }
+            // The directory went with the removals above, so the location is
+            // free and this writes into it as a fresh path would.
+            Action::OverwriteDirectory { entry } => {
+                acting_on(plan, path, || {
+                    write(dest, manifest, path, entry, true, plan, &unpublished)
                 })?;
                 record(manifest, path, entry, &plan.owner);
                 rows.insert(
@@ -492,6 +558,7 @@ fn settle_links(
             let (entry, fresh, outcome) = match action {
                 Action::Write { entry } => (entry, true, ApplyOutcome::Written),
                 Action::Overwrite { entry, .. } => (entry, false, ApplyOutcome::Overwritten),
+                Action::OverwriteDirectory { entry } => (entry, true, ApplyOutcome::Overwritten),
                 _ => unreachable!("only writes and overwrites are pending here"),
             };
             let written = acting_on(plan, path, || {
@@ -613,6 +680,40 @@ fn remove(
         },
     }
     Ok(Some(resolved_parent.join(leaf)))
+}
+
+/// Executes one [`Action::RemoveDirectory`] or the removal half of one
+/// [`Action::OverwriteDirectory`], returning the resolved location the
+/// directory vacated. The `rmdir` itself is the re-check no signature can
+/// carry: anything but an empty directory at `path` is [`Refusal::Drift`].
+fn remove_directory(dest: &Dir, manifest: &Manifest, path: &Utf8Path) -> Result<Utf8PathBuf> {
+    use std::io::ErrorKind;
+    let Some((parent, leaf, resolved_parent)) = verified_parent(dest, manifest, path, false)?
+    else {
+        return Err(drift(path));
+    };
+    match parent.remove_dir(&leaf) {
+        Ok(()) => Ok(resolved_parent.join(leaf)),
+        Err(e)
+            if matches!(
+                e.kind(),
+                ErrorKind::DirectoryNotEmpty | ErrorKind::NotFound | ErrorKind::NotADirectory
+            ) =>
+        {
+            Err(drift(path))
+        }
+        Err(e) => Err(io_error(path)(e)),
+    }
+}
+
+/// Adds every directory standing above a vacated location to the candidates
+/// [`prune`] judges.
+fn prune_above(vacated: &Utf8Path, candidates: &mut BTreeSet<Utf8PathBuf>) {
+    for ancestor in vacated.ancestors().skip(1) {
+        if !ancestor.as_str().is_empty() {
+            candidates.insert(ancestor.to_owned());
+        }
+    }
 }
 
 /// Prunes directories emptied by this run's removals, deepest first. A

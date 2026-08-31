@@ -1,11 +1,11 @@
 use super::*;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camino::Utf8PathBuf;
 use libproiectio::{
     ApplyOutcome, BlockFault, Dropped, EntryKind, Error, ManifestEntry, Origin, OverwriteReason,
-    Refusal, RefusalKind,
+    Refusal, RefusalKind, Refused,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -213,6 +213,48 @@ fn an_unknown_verdict_renders_its_own_name() {
     assert_eq!((row.style, row.verb.as_str()), ("unknown", "Ponder"));
 }
 
+/// The library spells a directory refusal's payload in `Refusal`'s own
+/// message, and this view spells it again from the serialized payload, so the
+/// two say the same thing only as long as somebody keeps them saying it. That
+/// is what this checks: whatever clauses the view writes, the library's own
+/// message ends with them, for each shape the payload takes.
+#[test]
+fn a_directory_refusal_reads_the_same_from_the_view_and_from_the_library() {
+    let held = |path: &str| (Utf8PathBuf::from(path), BTreeSet::new());
+    for refusal in [
+        Refusal::DirectoryInTheWay {
+            holding: BTreeMap::from([held("build.sh/notes.md")]),
+            unreadable: BTreeSet::new(),
+        },
+        Refusal::DirectoryInTheWay {
+            holding: BTreeMap::new(),
+            unreadable: BTreeSet::from([Utf8PathBuf::from("build.sh")]),
+        },
+        Refusal::DirectoryInTheWay {
+            holding: BTreeMap::from([held("build.sh/notes.md")]),
+            unreadable: BTreeSet::from([Utf8PathBuf::from("build.sh/nested")]),
+        },
+    ] {
+        let from_library = Refused::one(
+            Utf8PathBuf::from("build.sh"),
+            refusal.clone(),
+            Origin::Caller,
+        )
+        .to_string();
+        let from_view = refusing(&serialized(&refusal));
+        let clauses = from_view
+            .strip_prefix("(directory in the way)")
+            .expect("the view names the kind first")
+            .trim();
+
+        assert!(!clauses.is_empty(), "{refusal:?} renders a payload");
+        assert!(
+            from_library.ends_with(clauses),
+            "the view writes {clauses:?}, which the library's {from_library:?} does not end with"
+        );
+    }
+}
+
 /// A refused row names the refusal it carries, in the vocabulary the exit
 /// table names the kinds with; one this CLI does not know reads as the name
 /// the library spelled, escaped.
@@ -241,6 +283,7 @@ fn every_refusal_kind_the_library_declares_reads_as_one_spelling() {
         RefusalKind::TreeConflict,
         RefusalKind::Foreign,
         RefusalKind::Drift,
+        RefusalKind::DirectoryInTheWay,
         RefusalKind::OwnerConflict,
         RefusalKind::ExternalTarget,
         RefusalKind::InvalidTarget,
@@ -251,6 +294,7 @@ fn every_refusal_kind_the_library_declares_reads_as_one_spelling() {
             RefusalKind::TreeConflict => "tree conflict",
             RefusalKind::Foreign => "foreign",
             RefusalKind::Drift => "drifted",
+            RefusalKind::DirectoryInTheWay => "directory in the way",
             RefusalKind::OwnerConflict => "owner conflict",
             RefusalKind::ExternalTarget => "external target",
             RefusalKind::InvalidTarget => "invalid target",
@@ -279,6 +323,45 @@ fn a_refused_row_renders_the_payload_its_refusal_carries() {
                 owners: BTreeSet::from(["base".to_owned(), "site".to_owned()]),
             },
             "(owner conflict) (held by base+site)",
+        ),
+        (
+            Refusal::DirectoryInTheWay {
+                holding: BTreeMap::from([
+                    (Utf8PathBuf::from("build.sh/notes.md"), BTreeSet::new()),
+                    (
+                        Utf8PathBuf::from("build.sh/theirs"),
+                        BTreeSet::from(["base".to_owned(), "site".to_owned()]),
+                    ),
+                ]),
+                unreadable: BTreeSet::new(),
+            },
+            "(directory in the way) (holding build.sh/notes.md, \
+             build.sh/theirs (held by base+site), which --force does not remove)",
+        ),
+        (
+            Refusal::DirectoryInTheWay {
+                holding: BTreeMap::new(),
+                unreadable: BTreeSet::new(),
+            },
+            "(directory in the way)",
+        ),
+        (
+            Refusal::DirectoryInTheWay {
+                holding: BTreeMap::new(),
+                unreadable: BTreeSet::from([Utf8PathBuf::from("build.sh/nested")]),
+            },
+            "(directory in the way) (holding names that are not UTF-8 in build.sh/nested)",
+        ),
+        (
+            Refusal::DirectoryInTheWay {
+                holding: BTreeMap::from([(
+                    Utf8PathBuf::from("build.sh/notes.md"),
+                    BTreeSet::new(),
+                )]),
+                unreadable: BTreeSet::from([Utf8PathBuf::from("build.sh")]),
+            },
+            "(directory in the way) (holding build.sh/notes.md, which --force does not remove, \
+             and holding names that are not UTF-8 in build.sh)",
         ),
         (
             Refusal::ExternalTarget {

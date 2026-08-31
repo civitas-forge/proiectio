@@ -324,6 +324,7 @@ fn refusing(refusal: &JsonValue) -> String {
         "TreeConflict" => "tree conflict",
         "Foreign" => "foreign",
         "Drift" => "drifted",
+        "DirectoryInTheWay" => "directory in the way",
         "OwnerConflict" => "owner conflict",
         "ExternalTarget" => "external target",
         "InvalidTarget" => "invalid target",
@@ -349,6 +350,16 @@ fn detailing(kind: &str, payload: &JsonValue) -> Option<String> {
             "(held by {})",
             listed(payload.get("owners")?, "+")?
         )),
+        "DirectoryInTheWay" => {
+            let mut clauses = Vec::new();
+            if let Some(held) = payload.get("holding").and_then(holding) {
+                clauses.push(format!("holding {held}, which --force does not remove"));
+            }
+            if let Some(names) = payload.get("unreadable").and_then(|it| listed(it, ", ")) {
+                clauses.push(format!("holding names that are not UTF-8 in {names}"));
+            }
+            (!clauses.is_empty()).then(|| format!("({})", clauses.join(", and ")))
+        }
         "ExternalTarget" => Some(format!("-> {}", verbatim(string("target")?))),
         "InvalidTarget" => Some(format!(
             "-> {}",
@@ -389,6 +400,21 @@ fn fault_name(fault: BlockFault) -> Option<String> {
         Ok(JsonValue::String(name)) => Some(name),
         _ => None,
     }
+}
+
+/// What a directory holds, in the words the library spells it with: each
+/// node, escaped, with the owners recording it where any do. `None` where the
+/// directory holds nothing, which the library says by saying nothing.
+fn holding(nodes: &JsonValue) -> Option<String> {
+    let items: Vec<String> = nodes
+        .as_object()?
+        .iter()
+        .map(|(node, owners)| match listed(owners, "+") {
+            Some(owners) => format!("{} (held by {owners})", verbatim(node)),
+            None => verbatim(node),
+        })
+        .collect();
+    (!items.is_empty()).then(|| items.join(", "))
 }
 
 /// One payload's list of strings, each escaped, joined the way the library

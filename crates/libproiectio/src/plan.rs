@@ -123,26 +123,31 @@ fn facts_of(
     recorded: Option<&ManifestEntry>,
 ) -> Option<PathFacts> {
     let shape = match action {
-        Action::Write { entry } | Action::Overwrite { entry, .. } | Action::Skip { entry, .. } => {
-            Some(match entry {
-                Entry::File { executable, .. } => PathShape::File {
-                    executable: *executable,
-                },
-                Entry::Symlink { target } => PathShape::Symlink {
-                    target: Some(target.clone()),
-                },
-                Entry::Block { .. } => PathShape::Block,
-            })
-        }
+        Action::Write { entry }
+        | Action::Overwrite { entry, .. }
+        | Action::OverwriteDirectory { entry }
+        | Action::Skip { entry, .. } => Some(match entry {
+            Entry::File { executable, .. } => PathShape::File {
+                executable: *executable,
+            },
+            Entry::Symlink { target } => PathShape::Symlink {
+                target: Some(target.clone()),
+            },
+            Entry::Block { .. } => PathShape::Block,
+        }),
         Action::Remove {
             expected: Some(expected),
         } => Some(recorded_shape(&expected.kind, expected.executable)),
-        // None of these three decides a node, so each row states what the
-        // manifest records at the path — the shape and the owners, including
-        // the owner a release drops and the other owner a path this one does
-        // not hold turns out to have. Apply's row for the same path draws on
-        // the same entry, so a dry run and a real run state alike.
-        Action::Release | Action::NotRecorded | Action::Remove { expected: None } => {
+        // None of these four names a node of its own, so each row states what
+        // the manifest records at the path — the shape and the owners,
+        // including the owner a release drops, the other owner a path this one
+        // does not hold turns out to have, and the file a directory drifted
+        // over. Apply's row for the same path draws on the same entry, so a
+        // dry run and a real run state alike.
+        Action::Release
+        | Action::NotRecorded
+        | Action::RemoveDirectory
+        | Action::Remove { expected: None } => {
             let recorded = recorded?;
             Some(recorded_shape(&recorded.kind, recorded.executable))
         }
@@ -164,10 +169,14 @@ fn verdict_of(action: &Action) -> PlannedAction {
     match action {
         Action::Write { .. } => PlannedAction::Write,
         Action::Overwrite { reason, .. } => PlannedAction::Overwrite { reason: *reason },
+        Action::OverwriteDirectory { .. } => PlannedAction::Overwrite {
+            reason: OverwriteReason::ForcedDrift,
+        },
         Action::Skip { .. } => PlannedAction::Skip,
         Action::Remove {
             expected: Some(_), ..
-        } => PlannedAction::Remove,
+        }
+        | Action::RemoveDirectory => PlannedAction::Remove,
         Action::Remove { expected: None } => PlannedAction::Forget,
         Action::Release => PlannedAction::Release,
         Action::NotRecorded => PlannedAction::NotRecorded,
@@ -215,6 +224,21 @@ pub enum Action {
         /// path leaves empty — and refuses if a node has appeared since.
         expected: Option<NodeSignature>,
     },
+    /// Replace the empty directory a recorded path drifted into. No
+    /// [`NodeSignature`] names a directory, so apply re-checks this one by
+    /// removing it, and anything but an empty directory there refuses as
+    /// [`Refusal::Drift`]. Planned only under [`DriftPolicy::Overwrite`], and
+    /// never over a directory holding anything, which is not the projection's
+    /// to unlink.
+    OverwriteDirectory {
+        /// What to write where the directory stood.
+        entry: Entry,
+    },
+    /// Drop a recorded path whose node drifted into an empty directory,
+    /// removing that directory. Re-checked and planned on the same terms as
+    /// [`OverwriteDirectory`](Action::OverwriteDirectory); the directories
+    /// above it are pruned as any removal's are.
+    RemoveDirectory,
     /// Drop this owner from the path's manifest entry and leave the disk
     /// alone: other owners still hold it. Apply re-checks nothing on disk.
     Release,

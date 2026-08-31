@@ -7,7 +7,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs_utf8::Dir;
 
 use super::*;
-use crate::test_support::{Fixture, Tree, assert_tree};
+use crate::test_support::{Fixture, Tree, assert_tree, plant};
 use crate::{BlockMarkers, EntryKind, ManifestEntry, Placement};
 
 // Opens the destination handle observe takes, rooted at the fixture.
@@ -234,30 +234,48 @@ fn external_target_is_returned_verbatim_and_not_followed() {
 }
 
 #[test]
-fn non_utf8_entry_name_is_skipped_not_an_error() {
-    let fixture = Tree::new().file("named.txt", "fine").materialize();
+fn non_utf8_entry_name_is_skipped_and_names_its_directory_unreadable() {
+    let fixture = Tree::new()
+        .file("named.txt", "fine")
+        .file("scaffolding/kept.txt", "kept")
+        .materialize();
     let bad_name = fixture
         .root()
         .as_std_path()
+        .join("scaffolding")
         .join(OsStr::from_bytes(b"bad-\xff-name"));
-    if fs::write(&bad_name, b"unnameable").is_err() {
-        // The filesystem refuses non-UTF-8 names outright (APFS on macOS
-        // enforces UTF-8), so the entry this test skips cannot exist here.
-        // CI runs on Linux, where it can.
+    if !plant(&bad_name) {
         return;
     }
 
-    let paths = observed(&fixture, &Manifest::new());
+    let observations =
+        observe(&dest(&fixture), &Manifest::new(), &BlockMarkers::new()).expect("observe succeeds");
 
-    let expected: BTreeMap<Utf8PathBuf, Observation> = [(
-        "named.txt".into(),
-        Observation::File {
-            hash: sha256_hex(b"fine"),
-            executable: false,
-        },
-    )]
+    let expected: BTreeMap<Utf8PathBuf, Observation> = [
+        (
+            "named.txt".into(),
+            Observation::File {
+                hash: sha256_hex(b"fine"),
+                executable: false,
+            },
+        ),
+        ("scaffolding".into(), Observation::Directory),
+        (
+            "scaffolding/kept.txt".into(),
+            Observation::File {
+                hash: sha256_hex(b"kept"),
+                executable: false,
+            },
+        ),
+    ]
     .into();
-    assert_eq!(paths, expected);
+    assert_eq!(observations.paths, expected);
+    // No key names the skipped entry, so the directory says the inventory
+    // above is not the whole of what stands in it.
+    assert_eq!(
+        observations.unreadable,
+        BTreeSet::from([Utf8PathBuf::from("scaffolding")])
+    );
 }
 
 // Nests `depth` directories under `root` and returns the deepest one's

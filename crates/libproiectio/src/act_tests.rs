@@ -6,7 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs_utf8::Dir;
 
 use super::*;
-use crate::test_support::{Fixture, Tree, assert_tree, paths_of, refusals_of, sourced_of};
+use crate::test_support::{Fixture, Tree, assert_tree, paths_of, plant, refusals_of, sourced_of};
 use crate::{
     BlockMarkers, Desired, DriftPolicy, Dropped, EntryKind, ExternalTargetPolicy, Origin,
     OverwriteReason, PlanOptions, RefusalKind, RemovalScope, block_markers, decide, decide_removal,
@@ -621,6 +621,382 @@ fn a_named_path_the_owner_does_not_hold_is_reported_and_nothing_else() {
     assert!(persisted(&state).entries.is_empty());
 }
 
+// --- a directory standing where a file or a link belongs ---
+
+// The mirror the projection has always managed: a recorded file the next tree
+// wants as a directory. It reconciles because the file is recorded and the
+// directories above the new path are implied.
+#[test]
+fn a_recorded_file_becomes_a_directory_in_one_run() {
+    let (dest, state) = fixtures();
+    let flat = Tree::new().file("build", "one file\n");
+    pipeline(&dest, &state, "own", &flat.entries(), DriftPolicy::Refuse).expect("project");
+
+    let nested = Tree::new().file("build/main.rs", "fn main() {}\n");
+    pipeline(&dest, &state, "own", &nested.entries(), DriftPolicy::Refuse)
+        .expect("a file becomes a directory in one run");
+
+    assert_tree(dest.root(), &nested);
+}
+
+// The other direction, which used to refuse as foreign: the directory is the
+// projection's own, its only child is orphaned by this same plan, and the run
+// removes, prunes, and writes without a force in sight.
+#[test]
+fn a_directory_the_projection_wrote_becomes_a_file_in_one_run() {
+    let (dest, state) = fixtures();
+    let nested = Tree::new().file("build.sh/main.sh", "#!/bin/sh\n");
+    pipeline(&dest, &state, "own", &nested.entries(), DriftPolicy::Refuse).expect("project");
+
+    let flat = Tree::new().executable("build.sh", "#!/bin/sh\nmake\n");
+    let report = pipeline(&dest, &state, "own", &flat.entries(), DriftPolicy::Refuse)
+        .expect("a directory becomes a file in one run");
+
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([
+            ("build.sh".into(), ApplyOutcome::Written),
+            ("build.sh/main.sh".into(), ApplyOutcome::Removed),
+        ])
+    );
+    assert_tree(dest.root(), &flat);
+    assert_eq!(
+        persisted(&state).entries.keys().collect::<Vec<_>>(),
+        [Utf8Path::new("build.sh")]
+    );
+}
+
+// The record standing for the directory was deleted by hand, so nothing is
+// unlinked — but forgetting it still prunes the ancestry it held open, which
+// is what frees the location for the write.
+#[test]
+fn a_directory_left_empty_by_a_hand_deletion_becomes_the_desired_file() {
+    let (dest, state) = fixtures();
+    let nested = Tree::new().file("build.sh/main.sh", "#!/bin/sh\n");
+    pipeline(&dest, &state, "own", &nested.entries(), DriftPolicy::Refuse).expect("project");
+    fs::remove_file(dest.path("build.sh/main.sh")).expect("delete the file by hand");
+
+    let flat = Tree::new().executable("build.sh", "#!/bin/sh\nmake\n");
+    let report = pipeline(&dest, &state, "own", &flat.entries(), DriftPolicy::Refuse)
+        .expect("the emptied directory gives way");
+
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([
+            ("build.sh".into(), ApplyOutcome::Written),
+            ("build.sh/main.sh".into(), ApplyOutcome::Forgot),
+        ])
+    );
+    assert_tree(dest.root(), &flat);
+}
+
+#[test]
+fn a_node_nothing_records_holds_the_directory_and_the_run_names_it() {
+    let (dest, state) = fixtures();
+    let nested = Tree::new().file("build.sh/main.sh", "#!/bin/sh\n");
+    pipeline(&dest, &state, "own", &nested.entries(), DriftPolicy::Refuse).expect("project");
+    fs::write(dest.path("build.sh/notes.md"), "mine").expect("plant a foreign file");
+
+    let flat = Tree::new().executable("build.sh", "#!/bin/sh\nmake\n");
+    for policy in [DriftPolicy::Refuse, DriftPolicy::Overwrite] {
+        let error = pipeline(&dest, &state, "own", &flat.entries(), policy)
+            .expect_err("the foreign file holds the directory");
+        assert!(
+            matches!(
+                &error,
+                Error::Refused(refused)
+                    if refused.kind() == RefusalKind::DirectoryInTheWay
+                        && paths_of(refused) == BTreeSet::from([Utf8PathBuf::from("build.sh")])
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("build.sh/notes.md"), "{error}");
+    }
+    // Refused whole: the orphan the same plan would have removed is still
+    // where the projection wrote it.
+    assert_tree(
+        dest.root(),
+        &nested.clone().file("build.sh/notes.md", "mine"),
+    );
+}
+
+// The empty directory nested in the projection's own scaffolding: pruning
+// leaves it standing, so planning refuses rather than meeting it mid-run.
+#[test]
+fn an_empty_directory_nested_in_the_scaffolding_holds_it() {
+    let (dest, state) = fixtures();
+    let nested = Tree::new().file("build.sh/main.sh", "#!/bin/sh\n");
+    pipeline(&dest, &state, "own", &nested.entries(), DriftPolicy::Refuse).expect("project");
+    fs::create_dir(dest.path("build.sh/scratch")).expect("make a directory by hand");
+
+    let flat = Tree::new().executable("build.sh", "#!/bin/sh\nmake\n");
+    let error = pipeline(
+        &dest,
+        &state,
+        "own",
+        &flat.entries(),
+        DriftPolicy::Overwrite,
+    )
+    .expect_err("the hand-made directory holds it");
+
+    assert!(
+        matches!(
+            &error,
+            Error::Refused(refused) if refused.kind() == RefusalKind::DirectoryInTheWay
+        ),
+        "{error}"
+    );
+    assert!(error.to_string().contains("build.sh/scratch"), "{error}");
+    assert_tree(dest.root(), &nested.clone().dir("build.sh/scratch"));
+}
+
+// A name the walk cannot represent is one no plan may reason about: pruning
+// would keep the directory, the write would meet it after the removal landed,
+// and the manifest would be saved having forgotten a file still on disk. So
+// the refusal comes first and nothing moves.
+#[test]
+fn a_name_the_walk_cannot_read_holds_the_directory_and_nothing_is_written() {
+    let (dest, state) = fixtures();
+    let nested = Tree::new().file("build.sh/main.sh", "#!/bin/sh\n");
+    pipeline(&dest, &state, "own", &nested.entries(), DriftPolicy::Refuse).expect("project");
+    let unnameable = dest
+        .path("build.sh")
+        .as_std_path()
+        .join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"bad-\xff-name"));
+    if !plant(&unnameable) {
+        return;
+    }
+
+    let flat = Tree::new().executable("build.sh", "#!/bin/sh\nmake\n");
+    for policy in [DriftPolicy::Refuse, DriftPolicy::Overwrite] {
+        let error = pipeline(&dest, &state, "own", &flat.entries(), policy)
+            .expect_err("the unreadable name holds the directory");
+        assert!(
+            matches!(
+                &error,
+                Error::Refused(refused)
+                    if refused.kind() == RefusalKind::DirectoryInTheWay
+                        && paths_of(refused) == BTreeSet::from([Utf8PathBuf::from("build.sh")])
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("not UTF-8"), "{error}");
+    }
+
+    // Neither side moved: the orphan the plan would have removed is still on
+    // disk, and the manifest still records it.
+    assert_eq!(
+        fs::read_to_string(dest.path("build.sh/main.sh")).expect("the orphan is still there"),
+        "#!/bin/sh\n"
+    );
+    assert_eq!(
+        persisted(&state).entries.keys().collect::<Vec<_>>(),
+        [Utf8Path::new("build.sh/main.sh")]
+    );
+}
+
+// A recorded path replaced by hand with an empty directory: no signature
+// describes it, so forcing re-checks it by removing it and writes in its
+// place.
+#[test]
+fn a_recorded_path_drifted_to_an_empty_directory_is_forced_over() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new().file("g.txt", "projected\n");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    fs::remove_file(dest.path("g.txt")).expect("remove the file");
+    fs::create_dir(dest.path("g.txt")).expect("put a directory there");
+
+    let refused = pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse)
+        .expect_err("the unforced run states the drift");
+    assert!(
+        matches!(
+            &refused,
+            Error::Refused(refused) if refused.kind() == RefusalKind::Drift
+        ),
+        "{refused}"
+    );
+
+    let report = pipeline(
+        &dest,
+        &state,
+        "own",
+        &tree.entries(),
+        DriftPolicy::Overwrite,
+    )
+    .expect("forcing replaces the empty directory");
+
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([("g.txt".into(), ApplyOutcome::Overwritten)])
+    );
+    assert_tree(dest.root(), &tree);
+}
+
+// The `rmdir` half of an `OverwriteDirectory` lands in the removal pass and
+// the write half in the write pass, so an action failing between them ends a
+// run with the directory gone. What the run then states about that path is
+// what the next run has to work from, so the removal is recorded where it
+// lands rather than at the end.
+#[test]
+fn a_directory_overwrite_interrupted_before_its_write_states_the_removal() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new().file("b.txt", "projected\n").file("z", "one\n");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    // `z` drifts into an empty directory and `b.txt` is edited, so forcing
+    // plans `OverwriteDirectory` at `z` and `Overwrite` at `b.txt`.
+    fs::remove_file(dest.path("z")).expect("remove the file");
+    fs::create_dir(dest.path("z")).expect("put a directory there");
+    fs::write(dest.path("b.txt"), "edited\n").expect("edit in place");
+
+    let next = Tree::new().file("b.txt", "wanted\n").file("z", "two\n");
+    let (manifest, plan) = plan_for(
+        &dest,
+        &state,
+        "own",
+        &next.entries(),
+        DriftPolicy::Overwrite,
+    );
+    // The gap: `b.txt` changes again, so its re-check fails. `b.txt` sorts
+    // before `z`, so the write pass gives up before `z`'s write — after the
+    // removal pass already took `z`'s directory.
+    fs::write(dest.path("b.txt"), "tampered\n").expect("tamper in the gap");
+
+    let error = apply_at(&dest, &state, &manifest, &plan).expect_err("the re-check refuses");
+    assert!(
+        matches!(&error, Error::Refused(refused) if refused.kind() == RefusalKind::Drift),
+        "{error}"
+    );
+
+    // The directory is gone whatever the run says, so the run must say so:
+    // the record that stood for it is dropped, which is what the removal did.
+    assert!(!dest.path("z").exists(), "the directory was removed");
+    assert_eq!(
+        persisted(&state).entries.keys().collect::<Vec<_>>(),
+        [Utf8Path::new("b.txt")]
+    );
+
+    // And the state it left reconciles: nothing records `z`, nothing stands
+    // there, so the next run writes it as the fresh path it now is.
+    fs::write(dest.path("b.txt"), "wanted\n").expect("settle the drift by hand");
+    let report = pipeline(&dest, &state, "own", &next.entries(), DriftPolicy::Refuse)
+        .expect("the next run reconciles");
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([
+            ("b.txt".into(), ApplyOutcome::Skipped),
+            ("z".into(), ApplyOutcome::Written),
+        ])
+    );
+    assert_tree(dest.root(), &next);
+}
+
+// The same interruption one directory down. Removing the drifted directory
+// empties the directory above it, which nothing records once the removal is
+// recorded, so the run prunes it rather than leaving an empty directory of
+// its own making that the next run would meet as somebody else's.
+#[test]
+fn a_directory_overwrite_interrupted_before_its_write_leaves_no_empty_ancestor() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new()
+        .file("b.txt", "projected\n")
+        .file("only/z", "one\n");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    fs::remove_file(dest.path("only/z")).expect("remove the file");
+    fs::create_dir(dest.path("only/z")).expect("put a directory there");
+    fs::write(dest.path("b.txt"), "edited\n").expect("edit in place");
+
+    let next = Tree::new()
+        .file("b.txt", "wanted\n")
+        .file("only/z", "two\n");
+    let (manifest, plan) = plan_for(
+        &dest,
+        &state,
+        "own",
+        &next.entries(),
+        DriftPolicy::Overwrite,
+    );
+    fs::write(dest.path("b.txt"), "tampered\n").expect("tamper in the gap");
+
+    apply_at(&dest, &state, &manifest, &plan).expect_err("the re-check refuses");
+
+    // `only` held nothing but the directory that was removed, so it goes too.
+    assert!(!dest.path("only").exists(), "no empty ancestor is left");
+    assert_eq!(
+        persisted(&state).entries.keys().collect::<Vec<_>>(),
+        [Utf8Path::new("b.txt")]
+    );
+
+    // The write recreates the ancestry it needs, so the next run reconciles.
+    fs::write(dest.path("b.txt"), "wanted\n").expect("settle the drift by hand");
+    pipeline(&dest, &state, "own", &next.entries(), DriftPolicy::Refuse)
+        .expect("the next run reconciles");
+    assert_tree(dest.root(), &next);
+}
+
+#[test]
+fn a_removal_clears_a_path_drifted_to_an_empty_directory_under_force() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new().file("only/g.txt", "projected\n");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    fs::remove_file(dest.path("only/g.txt")).expect("remove the file");
+    fs::create_dir(dest.path("only/g.txt")).expect("put a directory there");
+
+    let report = removal_pipeline(
+        &dest,
+        &state,
+        "own",
+        RemovalScope::Everything,
+        DriftPolicy::Overwrite,
+    )
+    .expect("forcing clears the empty directory");
+
+    assert_eq!(
+        verdicts(&report),
+        BTreeMap::from([("only/g.txt".into(), ApplyOutcome::Removed)])
+    );
+    // The directory above it is pruned as any removal's ancestry is.
+    assert_tree(dest.root(), &Tree::new());
+    assert!(persisted(&state).entries.is_empty());
+}
+
+// What a drifted directory holds was never this projection's, so `--force`
+// reaches none of it, and the message says so rather than sending the caller
+// back for another flag.
+#[test]
+fn a_path_drifted_to_a_directory_holding_anything_refuses_however_it_is_run() {
+    let (dest, state) = fixtures();
+    let tree = Tree::new().file("g.txt", "projected\n");
+    pipeline(&dest, &state, "own", &tree.entries(), DriftPolicy::Refuse).expect("project");
+    fs::remove_file(dest.path("g.txt")).expect("remove the file");
+    fs::create_dir(dest.path("g.txt")).expect("put a directory there");
+    fs::write(dest.path("g.txt/note.md"), "theirs").expect("plant a file inside it");
+
+    for policy in [DriftPolicy::Refuse, DriftPolicy::Overwrite] {
+        let writing =
+            pipeline(&dest, &state, "own", &tree.entries(), policy).expect_err("the write refuses");
+        let removing = removal_pipeline(&dest, &state, "own", RemovalScope::Everything, policy)
+            .expect_err("the removal refuses");
+        for error in [writing, removing] {
+            assert!(
+                matches!(
+                    &error,
+                    Error::Refused(refused)
+                        if refused.kind() == RefusalKind::DirectoryInTheWay
+                            && paths_of(refused) == BTreeSet::from([Utf8PathBuf::from("g.txt")])
+                ),
+                "{error}"
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains("holding g.txt/note.md, which --force does not remove"),
+                "{error}"
+            );
+        }
+    }
+    assert_tree(dest.root(), &Tree::new().file("g.txt/note.md", "theirs"));
+}
+
 // The no-alias rule is what lets a removal prune from its action key when
 // the walk dies on missing ancestry: no manifest this library writes holds a
 // recorded link above a recorded key, so the ancestry above a removal is
@@ -653,8 +1029,9 @@ fn no_write_records_a_key_beneath_an_owned_link() {
     );
 
     // The other order, where the link would have to go down over the
-    // directory a recorded key stands in. Forcing lifts the drift policy,
-    // not this.
+    // directory a recorded key stands in. Clearing that directory would
+    // orphan the record beneath it, which the refusal names; forcing lifts
+    // the drift policy, not this.
     let (dest, state) = fixtures();
     pipeline(
         &dest,
@@ -670,8 +1047,16 @@ fn no_write_records_a_key_beneath_an_owned_link() {
         assert!(
             matches!(
                 &error,
-                Error::Refused(refused) if refused.kind() == RefusalKind::Foreign
+                Error::Refused(refused)
+                    if refused.kind() == RefusalKind::DirectoryInTheWay
+                        && paths_of(refused) == BTreeSet::from([Utf8PathBuf::from("logs")])
             ),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("logs/deep/file.txt (held by own)"),
             "{error}"
         );
     }
@@ -1379,6 +1764,51 @@ fn a_hand_built_plan_replacing_a_region_with_a_whole_file_fails_up_front() {
             .file("a.txt", "old")
             .file("conf", "author\n# proiectio\nbody\n"),
     );
+}
+
+// A block record stands for a region inside a container, never for a whole
+// node, so nothing deciding builds points a directory removal at one. The
+// check is here because forged plans are what `validate` is for: without it
+// the action would reach `rmdir` and fail as drift, naming the wrong thing.
+#[test]
+fn a_hand_built_directory_removal_of_a_block_record_fails_up_front() {
+    let (dest, state) = fixtures();
+    let container = "author\n# proiectio\nbody\n";
+    Tree::new().file("conf", container).write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "conf".into(),
+        recorded(
+            block_kind(Placement::Append),
+            sha256_hex(b"body\n"),
+            &["own"],
+        ),
+    );
+    let plan = Plan {
+        dropped: BTreeSet::new(),
+        owner: "own".to_owned(),
+        origins: BTreeMap::new(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([("conf".into(), Action::RemoveDirectory)]),
+    };
+
+    let error = apply_at(&dest, &state, &manifest, &plan)
+        .expect_err("a block record never stands for a directory");
+
+    match error {
+        Error::Refused(refused) => assert_eq!(
+            refusals_of(&refused),
+            BTreeMap::from([(
+                "conf".into(),
+                Refusal::Block {
+                    fault: BlockFault::KindChange
+                }
+            )])
+        ),
+        other => panic!("expected Block, got {other:?}"),
+    }
+    assert_tree(dest.root(), &Tree::new().file("conf", container));
+    assert_eq!(persisted(&state), Manifest::new());
 }
 
 #[test]

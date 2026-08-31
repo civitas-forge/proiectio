@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Desired, Origin};
+use crate::{Desired, Origin, RefusalKind};
 
 // The owner every test plans for unless it says otherwise.
 const OWNER: &str = "site";
@@ -119,6 +119,16 @@ fn observed(paths: &[(&str, Observation)]) -> Observations {
             .iter()
             .map(|(path, observation)| (Utf8PathBuf::from(*path), observation.clone()))
             .collect(),
+        ..Observations::default()
+    }
+}
+
+// [`observed`], plus the directories whose contents the walk could not state
+// in full: each held a name that is not UTF-8.
+fn observed_with_unreadable(paths: &[(&str, Observation)], unreadable: &[&str]) -> Observations {
+    Observations {
+        unreadable: unreadable.iter().map(Utf8PathBuf::from).collect(),
+        ..observed(paths)
     }
 }
 
@@ -589,8 +599,10 @@ fn a_foreign_path_with_identical_bytes_still_refuses() {
     );
 }
 
+// An empty directory nothing recorded was made by somebody else, so it is
+// not the projection's scaffolding to clear, and forcing does not reach it.
 #[test]
-fn a_desired_path_over_a_foreign_directory_refuses() {
+fn a_desired_path_over_an_empty_foreign_directory_refuses() {
     let plan = plan(
         &tree(&[("existing", &file("now a file\n", false))]),
         &Manifest::new(),
@@ -601,7 +613,10 @@ fn a_desired_path_over_a_foreign_directory_refuses() {
     assert_eq!(
         action(&plan, "existing"),
         &Action::Refuse {
-            refusal: Refusal::Foreign,
+            refusal: Refusal::DirectoryInTheWay {
+                holding: BTreeMap::new(),
+                unreadable: BTreeSet::new(),
+            },
         }
     );
 }
@@ -2060,8 +2075,11 @@ fn a_desired_file_over_a_recorded_link_is_drift_of_kind_when_the_link_moved() {
 
 // --- unhashable drift is never lifted ---
 
+// A directory has no signature, so forcing re-checks it by removing it — and
+// only an empty one goes, since what a directory holds is unrecorded at that
+// location and no policy reaches it.
 #[test]
-fn drift_to_a_directory_stays_refused_under_overwrite_policy() {
+fn drift_to_an_empty_directory_is_replaced_under_overwrite_policy() {
     let manifest = manifest_of(&[("a", recorded(&file("v1\n", false), &[OWNER]))]);
     let observations = observed(&[("a", Observation::Directory)]);
 
@@ -2074,8 +2092,8 @@ fn drift_to_a_directory_stays_refused_under_overwrite_policy() {
 
     assert_eq!(
         action(&plan, "a"),
-        &Action::Refuse {
-            refusal: Refusal::Drift,
+        &Action::OverwriteDirectory {
+            entry: file("v2\n", false),
         }
     );
 }
@@ -2091,6 +2109,523 @@ fn a_drifted_orphan_now_a_directory_stays_refused_under_overwrite_policy() {
         action(&plan, "old"),
         &Action::Refuse {
             refusal: Refusal::Drift,
+        }
+    );
+}
+
+// --- a directory standing where a file or a link belongs ---
+
+// The projection's own scaffolding: every node under the directory is a
+// record this same plan removes, so the removals empty it, pruning takes it,
+// and the write lands — in one run, with no drift for a force to lift.
+#[test]
+fn a_directory_the_runs_own_removals_empty_becomes_the_desired_file() {
+    let inside = file("scaffolding\n", false);
+    let manifest = manifest_of(&[("build.sh/main", recorded(&inside, &[OWNER]))]);
+    let observations = observed(&[
+        ("build.sh", Observation::Directory),
+        ("build.sh/main", on_disk(&inside)),
+    ]);
+
+    let plan = plan(
+        &tree(&[("build.sh", &file("#!/bin/sh\n", true))]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "build.sh/main"),
+        &Action::Remove {
+            expected: Some(signature(&inside)),
+        }
+    );
+    assert_eq!(
+        action(&plan, "build.sh"),
+        &Action::Write {
+            entry: file("#!/bin/sh\n", true),
+        }
+    );
+}
+
+#[test]
+fn a_node_nothing_records_holds_the_directory_and_the_refusal_names_it() {
+    let inside = file("scaffolding\n", false);
+    let manifest = manifest_of(&[("build.sh/main", recorded(&inside, &[OWNER]))]);
+    let observations = observed(&[
+        ("build.sh", Observation::Directory),
+        ("build.sh/main", on_disk(&inside)),
+        ("build.sh/notes.md", on_disk(&file("mine\n", false))),
+    ]);
+
+    let plan = plan(
+        &tree(&[("build.sh", &file("#!/bin/sh\n", true))]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "build.sh"),
+        &Action::Refuse {
+            refusal: Refusal::DirectoryInTheWay {
+                holding: BTreeMap::from([("build.sh/notes.md".into(), BTreeSet::new())]),
+                unreadable: BTreeSet::new(),
+            },
+        }
+    );
+}
+
+// Clearing the directory would orphan the other owner's record, so it holds
+// the directory as firmly as an unrecorded node, and the message says whose.
+#[test]
+fn another_owners_record_beneath_holds_the_directory_and_names_the_owner() {
+    let mine = file("scaffolding\n", false);
+    let theirs = file("site\n", false);
+    let manifest = manifest_of(&[
+        ("build.sh/main", recorded(&mine, &[OWNER])),
+        ("build.sh/theirs", recorded(&theirs, &["other"])),
+    ]);
+    let observations = observed(&[
+        ("build.sh", Observation::Directory),
+        ("build.sh/main", on_disk(&mine)),
+        ("build.sh/theirs", on_disk(&theirs)),
+    ]);
+
+    let plan = plan(
+        &tree(&[("build.sh", &file("#!/bin/sh\n", true))]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "build.sh"),
+        &Action::Refuse {
+            refusal: Refusal::DirectoryInTheWay {
+                holding: BTreeMap::from([(
+                    "build.sh/theirs".into(),
+                    BTreeSet::from(["other".to_owned()]),
+                )]),
+                unreadable: BTreeSet::new(),
+            },
+        }
+    );
+}
+
+// Nothing recorded lies under a hand-made directory nested in the
+// scaffolding, so no removal empties it and pruning keeps it standing — which
+// would leave the write meeting a directory mid-run had planning not said so.
+#[test]
+fn an_empty_directory_nested_in_the_scaffolding_holds_it() {
+    let inside = file("scaffolding\n", false);
+    let manifest = manifest_of(&[("build.sh/main", recorded(&inside, &[OWNER]))]);
+    let observations = observed(&[
+        ("build.sh", Observation::Directory),
+        ("build.sh/main", on_disk(&inside)),
+        ("build.sh/scratch", Observation::Directory),
+    ]);
+
+    let plan = plan(
+        &tree(&[("build.sh", &file("#!/bin/sh\n", true))]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "build.sh"),
+        &Action::Refuse {
+            refusal: Refusal::DirectoryInTheWay {
+                holding: BTreeMap::from([("build.sh/scratch".into(), BTreeSet::new())]),
+                unreadable: BTreeSet::new(),
+            },
+        }
+    );
+}
+
+// Removing a block strips its region and republishes the container, so the
+// file stays and the directory never empties.
+#[test]
+fn a_block_beneath_the_directory_holds_it_because_its_container_survives() {
+    let region = block("managed\n", Placement::Append);
+    let manifest = manifest_of(&[("build.sh/conf", recorded(&region, &[OWNER]))]);
+    let observations = observed(&[
+        ("build.sh", Observation::Directory),
+        ("build.sh/conf", on_disk(&region)),
+    ]);
+
+    let plan = plan(
+        &tree(&[("build.sh", &file("#!/bin/sh\n", true))]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "build.sh/conf"),
+        &Action::Remove {
+            expected: Some(signature(&region)),
+        }
+    );
+    assert_eq!(
+        action(&plan, "build.sh"),
+        &Action::Refuse {
+            refusal: Refusal::DirectoryInTheWay {
+                holding: BTreeMap::from([(
+                    "build.sh/conf".into(),
+                    BTreeSet::from([OWNER.to_owned()]),
+                )]),
+                unreadable: BTreeSet::new(),
+            },
+        }
+    );
+}
+
+// A drifted node beneath the directory blocks it, and forcing is what clears
+// it, so the drift is the message the run states first.
+#[test]
+fn a_drifted_node_beneath_the_directory_is_the_refusal_the_run_states() {
+    let recorded_inside = file("v1\n", false);
+    let manifest = manifest_of(&[("build.sh/main", recorded(&recorded_inside, &[OWNER]))]);
+    let observations = observed(&[
+        ("build.sh", Observation::Directory),
+        ("build.sh/main", on_disk(&file("edited\n", false))),
+    ]);
+    let desired = tree(&[("build.sh", &file("#!/bin/sh\n", true))]);
+
+    let refusing = plan(&desired, &manifest, &observations, DriftPolicy::Refuse);
+    assert_eq!(
+        refusing.refused().expect("refusals").kind(),
+        RefusalKind::Drift
+    );
+
+    let forced = plan(&desired, &manifest, &observations, DriftPolicy::Overwrite);
+    assert_eq!(
+        action(&forced, "build.sh"),
+        &Action::Write {
+            entry: file("#!/bin/sh\n", true),
+        }
+    );
+}
+
+#[test]
+fn a_desired_block_over_a_directory_stays_foreign() {
+    let plan = plan(
+        &tree(&[("conf", &block("managed\n", Placement::Append))]),
+        &Manifest::new(),
+        &observed(&[("conf", Observation::Directory)]),
+        DriftPolicy::Overwrite,
+    );
+
+    assert_eq!(
+        action(&plan, "conf"),
+        &Action::Refuse {
+            refusal: Refusal::Foreign,
+        }
+    );
+}
+
+// What a directory drifted over a record holds is unrecorded at that
+// location, so no policy reaches it and the refusal says as much.
+#[test]
+fn drift_to_a_directory_holding_anything_refuses_under_either_policy() {
+    let manifest = manifest_of(&[("a", recorded(&file("v1\n", false), &[OWNER]))]);
+    let observations = observed(&[
+        ("a", Observation::Directory),
+        ("a/inside", on_disk(&file("theirs\n", false))),
+    ]);
+    let refusal = Refusal::DirectoryInTheWay {
+        holding: BTreeMap::from([("a/inside".into(), BTreeSet::new())]),
+        unreadable: BTreeSet::new(),
+    };
+
+    for policy in [DriftPolicy::Refuse, DriftPolicy::Overwrite] {
+        let desired = plan(
+            &tree(&[("a", &file("v2\n", false))]),
+            &manifest,
+            &observations,
+            policy,
+        );
+        assert_eq!(
+            action(&desired, "a"),
+            &Action::Refuse {
+                refusal: refusal.clone(),
+            },
+            "{policy:?}"
+        );
+
+        let orphaned = plan(&tree(&[]), &manifest, &observations, policy);
+        assert_eq!(
+            action(&orphaned, "a"),
+            &Action::Refuse {
+                refusal: refusal.clone(),
+            },
+            "{policy:?}"
+        );
+    }
+}
+
+// Both rules that refuse a directory name what holds it the same way: the
+// node itself, not the directory it sits in. A drifted directory holding
+// `a/sub/note.md` names the file, since naming `a/sub` would only say that
+// something is in there without saying what.
+#[test]
+fn a_drifted_directory_names_what_holds_it_rather_than_the_directory_between() {
+    let manifest = manifest_of(&[("a", recorded(&file("v1\n", false), &[OWNER]))]);
+    let observations = observed(&[
+        ("a", Observation::Directory),
+        ("a/sub", Observation::Directory),
+        ("a/sub/note.md", on_disk(&file("theirs\n", false))),
+    ]);
+
+    let plan = plan(
+        &tree(&[("a", &file("v2\n", false))]),
+        &manifest,
+        &observations,
+        DriftPolicy::Overwrite,
+    );
+
+    assert_eq!(
+        action(&plan, "a"),
+        &Action::Refuse {
+            refusal: Refusal::DirectoryInTheWay {
+                holding: BTreeMap::from([("a/sub/note.md".into(), BTreeSet::new())]),
+                unreadable: BTreeSet::new(),
+            },
+        }
+    );
+}
+
+// An empty one is the case forcing does clear, so the unforced refusal stays
+// the ordinary drift, which is the one that names the flag.
+#[test]
+fn drift_to_an_empty_directory_refuses_as_drift_until_forced() {
+    let manifest = manifest_of(&[("a", recorded(&file("v1\n", false), &[OWNER]))]);
+    let observations = observed(&[("a", Observation::Directory)]);
+
+    let plan = plan(
+        &tree(&[("a", &file("v2\n", false))]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "a"),
+        &Action::Refuse {
+            refusal: Refusal::Drift,
+        }
+    );
+}
+
+#[test]
+fn an_orphan_drifted_to_an_empty_directory_is_removed_under_overwrite_policy() {
+    let manifest = manifest_of(&[("old", recorded(&file("v1\n", false), &[OWNER]))]);
+    let observations = observed(&[("old", Observation::Directory)]);
+
+    let refusing = plan(&tree(&[]), &manifest, &observations, DriftPolicy::Refuse);
+    assert_eq!(
+        action(&refusing, "old"),
+        &Action::Refuse {
+            refusal: Refusal::Drift,
+        }
+    );
+
+    let forced = plan(&tree(&[]), &manifest, &observations, DriftPolicy::Overwrite);
+    assert_eq!(action(&forced, "old"), &Action::RemoveDirectory);
+}
+
+// A record another owner holds alone is that owner's whether or not it
+// drifted into a directory: the kind swap is not a way past the boundary
+// every other kind of drifted node is held to.
+#[test]
+fn a_directory_drifted_over_another_owners_record_is_an_owner_conflict() {
+    let manifest = manifest_of(&[("a", recorded(&file("theirs\n", false), &["other"]))]);
+    let observations = observed(&[("a", Observation::Directory)]);
+    let desired = tree(&[("a", &file("mine\n", false))]);
+
+    for policy in [DriftPolicy::Refuse, DriftPolicy::Overwrite] {
+        assert_eq!(
+            action(&plan(&desired, &manifest, &observations, policy), "a"),
+            &Action::Refuse {
+                refusal: Refusal::OwnerConflict {
+                    owners: BTreeSet::from(["other".to_owned()]),
+                },
+            }
+        );
+    }
+}
+
+// The record is shared, so no owner's forcing decides the kind swap alone.
+#[test]
+fn a_directory_drifted_over_a_shared_record_is_an_owner_conflict() {
+    let manifest = manifest_of(&[("a", recorded(&file("agreed\n", false), &[OWNER, "other"]))]);
+    let observations = observed(&[("a", Observation::Directory)]);
+    let desired = tree(&[("a", &file("changed\n", false))]);
+
+    for policy in [DriftPolicy::Refuse, DriftPolicy::Overwrite] {
+        assert_eq!(
+            action(&plan(&desired, &manifest, &observations, policy), "a"),
+            &Action::Refuse {
+                refusal: Refusal::OwnerConflict {
+                    owners: BTreeSet::from(["other".to_owned()]),
+                },
+            }
+        );
+    }
+}
+
+// The child directory is itself removed, not merely emptied, so what holds
+// the parent open is nothing: `rmdir` of the child, then pruning, then the
+// write, in the one run.
+#[test]
+fn a_child_directory_the_run_removes_does_not_hold_its_parent() {
+    let manifest = manifest_of(&[("build.sh/main", recorded(&file("v1\n", false), &[OWNER]))]);
+    let observations = observed(&[
+        ("build.sh", Observation::Directory),
+        ("build.sh/main", Observation::Directory),
+    ]);
+
+    let plan = plan(
+        &tree(&[("build.sh", &file("#!/bin/sh\n", true))]),
+        &manifest,
+        &observations,
+        DriftPolicy::Overwrite,
+    );
+
+    assert_eq!(action(&plan, "build.sh/main"), &Action::RemoveDirectory);
+    assert_eq!(
+        action(&plan, "build.sh"),
+        &Action::Write {
+            entry: file("#!/bin/sh\n", true),
+        }
+    );
+}
+
+// --- a directory holding more than observation can state ---
+
+// The removals would empty everything the walk could name, but the walk could
+// not name everything: pruning would meet a directory that is not empty and
+// keep it, and the write would then meet a directory mid-run, after the
+// removals landed. So the run refuses before it removes anything.
+#[test]
+fn a_name_the_walk_cannot_read_keeps_the_directory_from_clearing() {
+    let inside = file("scaffolding\n", false);
+    let manifest = manifest_of(&[("build.sh/main", recorded(&inside, &[OWNER]))]);
+    let observations = observed_with_unreadable(
+        &[
+            ("build.sh", Observation::Directory),
+            ("build.sh/main", on_disk(&inside)),
+        ],
+        &["build.sh"],
+    );
+
+    let plan = plan(
+        &tree(&[("build.sh", &file("#!/bin/sh\n", true))]),
+        &manifest,
+        &observations,
+        DriftPolicy::Overwrite,
+    );
+
+    assert_eq!(
+        action(&plan, "build.sh"),
+        &Action::Refuse {
+            refusal: Refusal::DirectoryInTheWay {
+                holding: BTreeMap::new(),
+                unreadable: BTreeSet::from(["build.sh".into()]),
+            },
+        }
+    );
+}
+
+// The unreadable name is a level down, in a directory this run's removals
+// would otherwise empty. Emptying is exactly what it cannot be known to do.
+#[test]
+fn a_name_the_walk_cannot_read_below_the_directory_holds_it_too() {
+    let inside = file("scaffolding\n", false);
+    let manifest = manifest_of(&[("build.sh/nested/main", recorded(&inside, &[OWNER]))]);
+    let observations = observed_with_unreadable(
+        &[
+            ("build.sh", Observation::Directory),
+            ("build.sh/nested", Observation::Directory),
+            ("build.sh/nested/main", on_disk(&inside)),
+        ],
+        &["build.sh/nested"],
+    );
+
+    let plan = plan(
+        &tree(&[("build.sh", &file("#!/bin/sh\n", true))]),
+        &manifest,
+        &observations,
+        DriftPolicy::Overwrite,
+    );
+
+    assert_eq!(
+        action(&plan, "build.sh"),
+        &Action::Refuse {
+            refusal: Refusal::DirectoryInTheWay {
+                holding: BTreeMap::new(),
+                unreadable: BTreeSet::from(["build.sh/nested".into()]),
+            },
+        }
+    );
+}
+
+// The drifted side asks the same question of the same fact: `rmdir` would
+// fail on a directory holding a name the walk skipped, so the refusal says so
+// at plan time instead of failing mid-run.
+#[test]
+fn a_name_the_walk_cannot_read_refuses_the_drifted_directory_under_either_policy() {
+    let manifest = manifest_of(&[("a", recorded(&file("v1\n", false), &[OWNER]))]);
+    let observations = observed_with_unreadable(&[("a", Observation::Directory)], &["a"]);
+    let expected = Action::Refuse {
+        refusal: Refusal::DirectoryInTheWay {
+            holding: BTreeMap::new(),
+            unreadable: BTreeSet::from(["a".into()]),
+        },
+    };
+
+    for policy in [DriftPolicy::Refuse, DriftPolicy::Overwrite] {
+        let writing = plan(
+            &tree(&[("a", &file("v2\n", false))]),
+            &manifest,
+            &observations,
+            policy,
+        );
+        assert_eq!(action(&writing, "a"), &expected);
+
+        let removing = plan(&tree(&[]), &manifest, &observations, policy);
+        assert_eq!(action(&removing, "a"), &expected);
+    }
+}
+
+// An unreadable name somewhere else in the destination says nothing about
+// this directory.
+#[test]
+fn a_name_the_walk_cannot_read_elsewhere_leaves_the_directory_clearable() {
+    let inside = file("scaffolding\n", false);
+    let manifest = manifest_of(&[("build.sh/main", recorded(&inside, &[OWNER]))]);
+    let observations = observed_with_unreadable(
+        &[
+            ("build.sh", Observation::Directory),
+            ("build.sh/main", on_disk(&inside)),
+            ("elsewhere", Observation::Directory),
+        ],
+        &["", "elsewhere"],
+    );
+
+    let plan = plan(
+        &tree(&[("build.sh", &file("#!/bin/sh\n", true))]),
+        &manifest,
+        &observations,
+        DriftPolicy::Refuse,
+    );
+
+    assert_eq!(
+        action(&plan, "build.sh"),
+        &Action::Write {
+            entry: file("#!/bin/sh\n", true),
         }
     );
 }

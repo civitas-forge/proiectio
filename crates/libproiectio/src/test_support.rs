@@ -439,6 +439,19 @@ fn kind_of(node: &Node) -> &'static str {
 #[path = "test_support_tests.rs"]
 mod tests;
 
+// Writes a file at `path`, whose name is not UTF-8, and says whether it is
+// there. Some hosts refuse such a name outright — APFS on macOS enforces
+// UTF-8 — and a test that turns on one has nothing to do there. Linux takes
+// it, and is where those tests do their work, so a failure to plant it there
+// is a failure rather than a silent skip that would pass on nothing.
+pub(crate) fn plant(path: &std::path::Path) -> bool {
+    match fs::write(path, b"unnameable") {
+        Ok(()) => true,
+        Err(_) if !cfg!(target_os = "linux") => false,
+        Err(e) => panic!("planting a name that is not UTF-8 at {path:?}: {e}"),
+    }
+}
+
 // The refused paths alone.
 pub(crate) fn paths_of(refused: &Refused) -> BTreeSet<Utf8PathBuf> {
     refused.paths().keys().cloned().collect()

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camino::Utf8PathBuf;
 
@@ -9,6 +9,10 @@ fn every_variant() -> Vec<Error> {
     let refusal = |kind: RefusalKind| -> Error {
         let refusal = match kind {
             RefusalKind::Drift => Refusal::Drift,
+            RefusalKind::DirectoryInTheWay => Refusal::DirectoryInTheWay {
+                holding: BTreeMap::from([(Utf8PathBuf::from("bin/tool/note.md"), BTreeSet::new())]),
+                unreadable: BTreeSet::new(),
+            },
             RefusalKind::Foreign => Refusal::Foreign,
             RefusalKind::Containment => Refusal::Containment,
             RefusalKind::TreeConflict => Refusal::TreeConflict {
@@ -34,6 +38,7 @@ fn every_variant() -> Vec<Error> {
         RefusalKind::TreeConflict,
         RefusalKind::Foreign,
         RefusalKind::Drift,
+        RefusalKind::DirectoryInTheWay,
         RefusalKind::OwnerConflict,
         RefusalKind::ExternalTarget,
         RefusalKind::InvalidTarget,
@@ -282,7 +287,7 @@ fn refusals_exit_2_and_failures_exit_1() {
         .map(|error| exit_code(Err(error)))
         .collect();
 
-    let (refusals, failures) = (8, EVERY_KIND.len() - 1);
+    let (refusals, failures) = (9, EVERY_KIND.len() - 1);
     assert_eq!(codes.len(), refusals + failures);
     assert!(codes[..refusals].iter().all(|&code| code == 2));
     assert!(codes[refusals..].iter().all(|&code| code == 1));
@@ -625,7 +630,7 @@ fn every_variant_serializes_under_a_kind_of_its_own() {
         })
         .collect();
 
-    let refusals = 8;
+    let refusals = 9;
     assert!(kinds[..refusals].iter().all(|kind| kind == "refused"));
 
     // Not a count of the list against itself: the kinds the list produces
