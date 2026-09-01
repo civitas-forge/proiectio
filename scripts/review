@@ -12,7 +12,7 @@ proposes, and never lands anything. Five verbs:
 
 Every backend returns the same review envelope. `run --post-to-pr N` also sends
 each one to that pull request under the backend's own GitHub App, so a pull
-request carries one distinct author per reviewer rather than three sets of
+request carries one distinct author per reviewer rather than every reviewer's
 findings under whoever ran this. The file is written first and kept whatever
 the post does: the verdict is the deliverable, posting it is a convenience.
 
@@ -413,7 +413,8 @@ rather than inventing a line number to fill the field.
 #: reviewer reports on the patch as if it were part of the change, and its `+`/`-`
 #: lines grep as though they were source. Being inside the checkout keeps each
 #: ask with the tree it belongs to: agy is rooted there by `--add-dir` and can
-#: reach nothing else, while codex and grok are read-only, not read-confined.
+#: reach nothing else, while codex, grok and claude are read-only, not
+#: read-confined.
 REVIEW_SUBDIR = ".review"
 DIFF_RELPATH = Path(REVIEW_SUBDIR) / "diff.patch"
 
@@ -2653,7 +2654,99 @@ class Grok(Reviewer):
         return usage or None
 
 
-REVIEWERS: dict[str, Reviewer] = {r.name: r for r in (Codex(), Antigravity(), Grok())}
+class Claude(Reviewer):
+    """`claude -p` with native structured output.
+
+    The verdict comes back under `structured_output` in the result envelope.
+    The prompt goes in on stdin, which has no size ceiling. Only the read-only
+    built-in tools are offered and no settings file is loaded, so the runner's
+    hooks, MCP servers and permission rules do not reach the review, and
+    headless mode never has a permission to prompt for. Memory files still
+    load: the reviewed tree's CLAUDE.md and the runner's own `~/.claude/CLAUDE.md`
+    are read the way they would be in any session.
+    """
+
+    name = "claude"
+    binary = "claude"
+    models = ("claude-opus-5", "claude-sonnet-5", "claude-fable-5-1")
+    default_model = "claude-opus-5"
+    #: The built-in tools offered, every one of them read-only. Spelled once so
+    #: the flag and the diagnosis that names them cannot drift apart.
+    TOOLS = ("Read", "Grep", "Glob")
+
+    def argv(self, ask: Ask, prompt_path: Path, schema_path: Path) -> list[str]:
+        effort = ["--effort", ask.effort] if ask.effort else []
+        return [
+            self.binary,
+            "--print",
+            "--model", ask.model,
+            *effort,
+            "--output-format", "json",
+            *(["--json-schema", json.dumps(ask.schema)] if ask.schema else []),
+            "--tools", ",".join(self.TOOLS),
+            "--setting-sources", "",
+            "--strict-mcp-config",
+            "--disable-slash-commands",
+            "--no-session-persistence",
+        ]
+
+    def stdin(self, ask: Ask, prompt_path: Path) -> str | None:
+        return prompt_path.read_text()
+
+    def _envelope(self, run: Run) -> dict | None:
+        return extract_json(run.spoken_stdout,
+                            lambda v: isinstance(v, dict) and v.get("type") == "result")
+
+    def verdict(self, run: Run, ask: Ask) -> object:
+        envelope = self._envelope(run)
+        if envelope is None:
+            return run.spoken
+        structured = envelope.get("structured_output")
+        return structured if structured is not None else str(envelope.get("result", ""))
+
+    def refusal(self, run: Run) -> str | None:
+        envelope = self._envelope(run)
+        if envelope is None:
+            for line in run.spoken.splitlines():
+                if line.startswith("Error:") or "Not logged in" in line:
+                    return line.strip()
+            return None
+        subtype = envelope.get("subtype")
+        said = str(envelope.get("result") or "").strip()
+        if subtype != "success":
+            return f"ended the session {subtype}: {said}".strip(": ")
+        if envelope.get("is_error"):
+            return f"reported an error: {said}".strip(": ")
+        denied = envelope.get("permission_denials") or []
+        if denied:
+            return (f"was refused {len(denied)} tool call(s) it asked for — headless "
+                    f"mode cannot prompt, and only {', '.join(self.TOOLS)} are offered")
+        return None
+
+    def usage(self, run: Run) -> dict | None:
+        envelope = self._envelope(run)
+        if not envelope:
+            return None
+        counted = envelope.get("usage") or {}
+        usage = {key: counted[key] for key in (
+            "input_tokens", "output_tokens",
+            "cache_read_input_tokens", "cache_creation_input_tokens",
+        ) if key in counted}
+        if usage:
+            # The per-kind counters are what the envelope carries; the tally
+            # the stderr line reports is their sum, and it survives a retry
+            # because `merge_usage` adds numbers.
+            usage["total_tokens"] = sum(usage.values())
+        if "total_cost_usd" in envelope:
+            usage["cost_usd"] = envelope["total_cost_usd"]
+        if "num_turns" in envelope:
+            usage["turns"] = envelope["num_turns"]
+        return usage or None
+
+
+REVIEWERS: dict[str, Reviewer] = {
+    r.name: r for r in (Codex(), Antigravity(), Grok(), Claude())
+}
 
 
 # ---------------------------------------------------------------------------
