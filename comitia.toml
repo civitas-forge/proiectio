@@ -1,0 +1,38 @@
+# The review loop this repository runs under.
+#
+# Each reviewer id denotes one reviewer across rounds. Its backend, model,
+# brief, options, and reviewer application are copied into every new plan.
+
+round_cap = 6
+minor_only_break = true
+review_timeout = 2700
+auto_ready = false
+
+[severity_map]
+critical = "major"
+major = "major"
+minor = "minor"
+nit = "minor"
+
+[[reviewers]]
+id = "codex"
+backend = "codex"
+model = "gpt-5.6-sol"
+effort = "high"
+brief = "Report correctness defects, interface defects, and contradictions introduced by the complete change."
+reviewer_app = "adr-codex-review"
+
+[[reviewers]]
+id = "agy"
+backend = "agy"
+model = "gemini-3.1-pro-high"
+brief = "Report correctness defects, interface defects, and contradictions introduced by the complete change."
+reviewer_app = "adr-agy-review"
+
+[[reviewers]]
+id = "grok"
+backend = "grok"
+model = "grok-4.5"
+effort = "high"
+brief = "Report correctness defects, interface defects, and contradictions introduced by the complete change."
+reviewer_app = "adr-grok-review"
