@@ -51,26 +51,24 @@ Proiectio Design
 
     Each in-scope path in the union of the manifest and the directory
     gets one state; status reports them all except the unrecorded
-    directories. A caller may prune path-component names on the
-    Projection. Matching applies at every depth, so `.git` omits both
+    directories. A caller may configure the Projection to prune named
+    path components at every depth. Pruning `.git` omits both
     `.git/config` and `vendor/project/.git/config`, while `.github`
-    remains in scope. The walk does not stat, enter, classify or report
-    a pruned path. Desired and removal paths that enter one refuse as
-    Containment, and loading a manifest that records one is an error.
-    An in-target state directory must remain in scope; configuring a
-    prune set that contains one of its components is an error.
-    Proiectio supplies no default component: the caller owns the policy,
-    and an ignore file cannot define it because callers may deliberately
-    project into ignored paths.
+    remains in scope. Proiectio does not observe, classify or report a
+    pruned path. Desired and removal paths that enter one refuse as
+    Containment, and a manifest that records one is invalid. A prune set
+    also cannot contain a component of an in-target state directory.
+    Proiectio supplies no default components; the caller chooses them
+    independently of ignore files.
 
     The desired tree enters only when plan compares this classification
     against it to choose actions. A non-UTF-8 entry on disk can never
     match a desired or a recorded path, so it stays outside the table —
     never overwritten, never removed, and a
     directory holding one is never pruned.
-    A directory holding a pruned child is likewise never treated as
-    empty: the child remains outside the report, while the incomplete
-    inventory prevents a plan from replacing or removing its parent.
+    A directory holding a pruned child is never treated as empty: the
+    child remains outside the report, while the incomplete inventory
+    prevents a plan from replacing or removing its parent.
 
     One state per path:
 

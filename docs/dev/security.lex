@@ -59,19 +59,12 @@ Security Model
     case-insensitive, extension or not. All judged lexically, so a
     tree gets the same verdict on every host.
 
-    The invoker may narrow that destination further by naming path
-    components the Projection prunes. A desired or removal path that
-    enters one is refused as Containment. Observation checks a name
-    before stat or open, and apply checks each ancestry component again,
-    so neither stage reads through the pruned directory. Link-target
-    grading cannot prove a target that enters one remains inside the
-    destination; the refusing policy therefore grades it external. The
-    external-target permission writes the pointer without entering the
-    pruned path. A containing directory is marked incomplete when the
-    walk skips a pruned child, so no plan removes or replaces that parent
-    on the assumption that the unobserved child is absent. A prune set
-    that overlaps an in-target state directory is rejected. A refusal may
-    state that pruned contents exist, but it does not name their paths.
+    The invoker may narrow the destination by pruning named path
+    components. Proiectio does not observe or write through a pruned
+    component, and it refuses a desired or removal path that enters one.
+    A symlink target inside one is graded external. Skipping a pruned
+    child also prevents removal or replacement of its containing
+    directory based on an incomplete inventory.
 
     Normalization alone does not close the hole. A projected symlink
     "logs -> /etc" followed by a projected file "logs/x" is a write

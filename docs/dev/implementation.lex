@@ -107,24 +107,18 @@ Implementation Guidelines
       one link twice ends outside, as a loop does.
 
     The component-prune set applies in all three stages. Observe checks
-    the entry name before stat or open and never adds that path to its
-    snapshot. Decide refuses desired keys, named removals and resolved
-    removal landings that enter a pruned component. Act checks the set
-    again while it walks each action's live ancestry, so a recorded
-    symlink cannot redirect a stale plan into a pruned directory. The
-    Projection also validates every loaded manifest before observation
-    or a write pass begins; a recorded key inside a pruned component is
-    an operation error rather than a Missing row. Configuration rejects
-    a prune set that overlaps an in-target state directory, since the
-    Projection must still read and write that directory.
+    each entry name before stat or open. Decide refuses desired keys,
+    named removals and resolved removal destinations that enter a
+    pruned component. Act checks each action's live ancestry, preventing
+    a recorded symlink from redirecting a stale plan into a pruned
+    directory. Before observation or writing, the Projection rejects a
+    manifest key inside a pruned component. Configuration also rejects
+    a prune set that overlaps an in-target state directory.
 
-    Skipping a pruned entry records only that its containing directory
-    was not inventoried completely. Decide uses that fact when judging a
-    directory replacement: it refuses rather than claiming the directory
-    will be empty after managed descendants are removed. The pruned entry
-    itself never enters the observation or the refusal. The refusal carries
-    only that pruned contents exist, so callers receive the reason without
-    receiving a path outside the projection scope.
+    Skipping an entry marks its containing directory incomplete without
+    recording the pruned path. Decide then refuses to replace or remove
+    that directory. The refusal reports that pruned contents exist but
+    does not name them.
 
     What a restart earns depends on the action, and the three answers
     differ:
