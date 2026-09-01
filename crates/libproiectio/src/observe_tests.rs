@@ -46,6 +46,24 @@ fn observed_wanting(
         .paths
 }
 
+fn observed_pruning(
+    fixture: &Fixture,
+    pruned_components: &[&str],
+) -> BTreeMap<Utf8PathBuf, Observation> {
+    let pruned_components = pruned_components
+        .iter()
+        .map(|component| (*component).to_owned())
+        .collect();
+    observe_scoped(
+        &dest(fixture),
+        &Manifest::new(),
+        &BlockMarkers::new(),
+        &pruned_components,
+    )
+    .expect("observe succeeds")
+    .paths
+}
+
 #[test]
 fn sha256_hex_matches_the_published_test_vectors() {
     assert_eq!(
@@ -189,6 +207,26 @@ fn symlinked_directory_is_never_entered() {
     ));
     assert!(!paths.contains_key(Utf8Path::new("alias/inner.txt")));
     assert!(paths.contains_key(Utf8Path::new("real/inner.txt")));
+}
+
+#[test]
+fn a_pruned_component_is_not_observed_at_any_depth() {
+    let fixture = Tree::new()
+        .file(".git/config", "root metadata")
+        .file("vendor/project/.git/config", "nested metadata")
+        .file("vendor/project/src/lib.rs", "pub fn live() {}")
+        .file(".github/workflows/ci.yml", "jobs: {}")
+        .materialize();
+
+    let paths = observed_pruning(&fixture, &[".git"]);
+
+    assert!(
+        paths
+            .keys()
+            .all(|path| !path.components().any(|c| c.as_str() == ".git"))
+    );
+    assert!(paths.contains_key(Utf8Path::new("vendor/project/src/lib.rs")));
+    assert!(paths.contains_key(Utf8Path::new(".github/workflows/ci.yml")));
 }
 
 #[test]

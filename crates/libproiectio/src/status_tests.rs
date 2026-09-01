@@ -76,6 +76,43 @@ fn without_a_state_directory_everything_on_disk_is_foreign() {
 }
 
 #[test]
+fn status_omits_pruned_components_at_every_depth() {
+    let dest = Tree::new()
+        .file(".git/config", "root metadata")
+        .file("vendor/project/.git/config", "nested metadata")
+        .file("vendor/project/src/lib.rs", "pub fn live() {}")
+        .file(".github/workflows/ci.yml", "jobs: {}")
+        .materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(dest.root(), state.root())
+        .with_pruned_components([".git"])
+        .expect("a path component");
+
+    assert_eq!(
+        states(&projection.status().expect("status")),
+        vec![
+            (".github/workflows/ci.yml", PathState::Foreign),
+            ("vendor/project/src/lib.rs", PathState::Foreign),
+        ]
+    );
+}
+
+#[test]
+fn dot_git_is_observed_when_the_caller_prunes_nothing() {
+    let dest = Tree::new().file(".git/config", "metadata").materialize();
+    let state = Tree::new().materialize();
+
+    assert_eq!(
+        states(
+            &projection(dest.root(), state.root())
+                .status()
+                .expect("status")
+        ),
+        vec![(".git/config", PathState::Foreign)]
+    );
+}
+
+#[test]
 fn reports_one_state_per_path_of_the_union() {
     let dest = Tree::new().materialize();
     let state = Tree::new().materialize();

@@ -72,6 +72,58 @@ fn relative_paths_resolve_against_the_current_directory() {
 }
 
 #[test]
+fn a_projection_starts_with_no_pruned_components() {
+    let projection = projection("/srv/site", None).expect("a projection");
+
+    assert!(projection.pruned_components().is_empty());
+}
+
+#[test]
+fn pruned_components_are_deduplicated_and_sorted() {
+    let projection = projection("/srv/site", None)
+        .expect("a projection")
+        .with_pruned_components(["vendor", ".git", "vendor"])
+        .expect("path components");
+
+    assert_eq!(
+        projection
+            .pruned_components()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec![".git", "vendor"]
+    );
+}
+
+#[test]
+fn setting_pruned_components_replaces_the_previous_set() {
+    let projection = projection("/srv/site", None)
+        .expect("a projection")
+        .with_pruned_components([".git", "vendor"])
+        .expect("path components")
+        .with_pruned_components(["cache"])
+        .expect("path components");
+
+    assert_eq!(
+        projection.pruned_components(),
+        &std::collections::BTreeSet::from(["cache".to_owned()])
+    );
+}
+
+#[test]
+fn a_pruned_name_must_be_one_path_component() {
+    for component in ["", ".", "..", "a/b", "nul\0byte"] {
+        assert!(matches!(
+            projection("/srv/site", None)
+                .expect("a projection")
+                .with_pruned_components([component])
+                .unwrap_err(),
+            Error::InvalidPrunedComponent { component: rejected } if rejected == component
+        ));
+    }
+}
+
+#[test]
 fn a_state_directory_states_whether_it_is_there() {
     use crate::test_support::Tree;
 

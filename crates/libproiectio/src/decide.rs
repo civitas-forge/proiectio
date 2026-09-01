@@ -48,7 +48,7 @@ pub(crate) fn classify(
 ) -> Status {
     let mut rows = BTreeMap::new();
     for (path, observation) in &observations.paths {
-        if in_state(path, state_prefix) {
+        if in_state(path, state_prefix) || observations.is_pruned(path) {
             continue;
         }
         let recorded = manifest.entries.get(path);
@@ -66,7 +66,7 @@ pub(crate) fn classify(
         );
     }
     for (path, recorded) in &manifest.entries {
-        if in_state(path, state_prefix) {
+        if in_state(path, state_prefix) || observations.is_pruned(path) {
             continue;
         }
         rows.entry(path.clone()).or_insert_with(|| Row {
@@ -205,7 +205,10 @@ pub(crate) fn decide_removal(
             let mut refused: BTreeMap<Utf8PathBuf, Action> = BTreeMap::new();
             for request in requested {
                 match contained_normalize(request) {
-                    Some(normalized) if !overlaps_state(&normalized, state_prefix) => {
+                    Some(normalized)
+                        if !overlaps_state(&normalized, state_prefix)
+                            && !observations.is_pruned(&normalized) =>
+                    {
                         admitted.insert(normalized);
                     }
                     _ => {
@@ -292,7 +295,7 @@ fn plan_actions(
             continue;
         };
         named.insert(normalized.clone());
-        if overlaps_state(&normalized, state_prefix) {
+        if overlaps_state(&normalized, state_prefix) || observations.is_pruned(&normalized) {
             actions.insert(key.clone(), refuse(Refusal::Containment { through: None }));
             continue;
         }
@@ -351,7 +354,7 @@ fn plan_actions(
         {
             continue;
         }
-        if overlaps_state(path, state_prefix) || !contained(path) {
+        if overlaps_state(path, state_prefix) || observations.is_pruned(path) || !contained(path) {
             actions.insert(path.clone(), refuse(Refusal::Containment { through: None }));
             continue;
         }
@@ -363,12 +366,17 @@ fn plan_actions(
         } else {
             match walked_ancestry(path, manifest, observations, &BTreeSet::new(), false) {
                 Err(refusal) => (refuse(refusal), None),
-                Ok(Some(landing)) if overlaps_state(&landing.at, state_prefix) => (
-                    refuse(Refusal::Containment {
-                        through: landing.through,
-                    }),
-                    None,
-                ),
+                Ok(Some(landing))
+                    if overlaps_state(&landing.at, state_prefix)
+                        || observations.is_pruned(&landing.at) =>
+                {
+                    (
+                        refuse(Refusal::Containment {
+                            through: landing.through,
+                        }),
+                        None,
+                    )
+                }
                 Ok(landing) => {
                     let at = match landing {
                         Some(landing) if landing.at != *path => {
@@ -781,6 +789,9 @@ fn planned_hop(
     path: &Utf8Path,
     vacated: &BTreeSet<Utf8PathBuf>,
 ) -> Hop {
+    if observations.is_pruned(path) {
+        return Hop::Unresolvable;
+    }
     match admitted.get(path) {
         Some(Entry::Symlink { target }) => return Hop::Link(target.clone()),
         Some(Entry::File { .. } | Entry::Block { .. }) => return Hop::Terminal,

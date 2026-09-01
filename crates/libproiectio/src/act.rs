@@ -96,13 +96,24 @@ pub(crate) fn save_manifest(state: &StateDir, manifest: &Manifest) -> Result<()>
 /// manifest into `state`, reporting what each action did. Nothing is
 /// written when the plan cannot be honored whole ([`validate`]); a run
 /// stopped midway aborts with the rows it applied first ([`Aborted`]).
+#[cfg(test)]
 pub(crate) fn apply(
     dest: &Dir,
     state: &StateDir,
     manifest: &Manifest,
     plan: &Plan,
 ) -> std::result::Result<ApplyReport, Box<Aborted>> {
-    if let Err(error) = validate(manifest, plan) {
+    apply_scoped(dest, state, manifest, plan, &BTreeSet::new())
+}
+
+pub(crate) fn apply_scoped(
+    dest: &Dir,
+    state: &StateDir,
+    manifest: &Manifest,
+    plan: &Plan,
+    pruned_components: &BTreeSet<String>,
+) -> std::result::Result<ApplyReport, Box<Aborted>> {
+    if let Err(error) = validate(manifest, plan, pruned_components) {
         return Err(Box::new(Aborted {
             stopped: Stopped::Applying(error),
             applied: ApplyReport {
@@ -115,7 +126,14 @@ pub(crate) fn apply(
     let snapshot = manifest;
     let mut manifest = manifest.clone();
     let mut rows = BTreeMap::new();
-    let stopped = match run(dest, snapshot, &mut manifest, plan, &mut rows) {
+    let stopped = match run(
+        dest,
+        snapshot,
+        &mut manifest,
+        plan,
+        pruned_components,
+        &mut rows,
+    ) {
         Ok(()) => save_manifest(state, &manifest)
             .err()
             .map(Stopped::Recording),
@@ -142,7 +160,14 @@ pub(crate) fn apply(
 /// The up-front whole-plan check behind [`apply`]'s "nothing is written"
 /// promise, reducing every refusal by [`Refused::aggregate`]; a too-deep
 /// destination is reported only when nothing refused.
-fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
+fn validate(manifest: &Manifest, plan: &Plan, pruned_components: &BTreeSet<String>) -> Result<()> {
+    if let Some(path) = manifest
+        .entries
+        .keys()
+        .find(|path| crate::is_pruned(path, pruned_components))
+    {
+        return Err(Error::ManifestPathPruned { path: path.clone() });
+    }
     let mut refused: Vec<(Utf8PathBuf, Refusal, Origin)> = plan
         .refused()
         .iter()
@@ -168,6 +193,10 @@ fn validate(manifest: &Manifest, plan: &Plan) -> Result<()> {
                 refuse(Refusal::Containment { through: None });
                 continue;
             }
+        }
+        if crate::is_pruned(path, pruned_components) {
+            refuse(Refusal::Containment { through: None });
+            continue;
         }
         if matches!(action, Action::NotRecorded) {
             continue;
@@ -294,6 +323,7 @@ fn run(
     snapshot: &Manifest,
     manifest: &mut Manifest,
     plan: &Plan,
+    pruned_components: &BTreeSet<String>,
     rows: &mut BTreeMap<Utf8PathBuf, Row<ApplyOutcome>>,
 ) -> Result<()> {
     let mut removed_dirs_candidates: BTreeSet<Utf8PathBuf> = BTreeSet::new();
@@ -305,7 +335,7 @@ fn run(
         if matches!(action, Action::OverwriteDirectory { .. }) {
             let recorded = manifest.entries.get(path).cloned();
             let vacated = acting_on(plan, path, || {
-                remove_directory(dest, manifest, snapshot, path, action)
+                remove_directory(dest, manifest, snapshot, path, action, pruned_components)
             })?;
             prune_above(&vacated, &mut removed_dirs_candidates);
             manifest.entries.remove(path);
@@ -320,7 +350,7 @@ fn run(
         if matches!(action, Action::RemoveDirectory) {
             let recorded = manifest.entries.get(path).cloned();
             let vacated = acting_on(plan, path, || {
-                remove_directory(dest, manifest, snapshot, path, action)
+                remove_directory(dest, manifest, snapshot, path, action, pruned_components)
             })?;
             prune_above(&vacated, &mut removed_dirs_candidates);
             manifest.entries.remove(path);
@@ -340,12 +370,13 @@ fn run(
                     .get(path)
                     .is_some_and(|recorded| recorded.kind.is_block())
                 {
-                    remove_block(dest, manifest, snapshot, path, action)?;
+                    remove_block(dest, manifest, snapshot, path, action, pruned_components)?;
                 } else {
                     // With the walk's own ancestry hand-deleted there is no
                     // resolved location; prune from the action key instead.
-                    let vacated = remove(dest, manifest, snapshot, path, action)?
-                        .unwrap_or_else(|| path.clone());
+                    let vacated =
+                        remove(dest, manifest, snapshot, path, action, pruned_components)?
+                            .unwrap_or_else(|| path.clone());
                     prune_above(&vacated, &mut removed_dirs_candidates);
                 }
                 Ok(())
@@ -368,7 +399,7 @@ fn run(
             );
         }
     }
-    prune(dest, manifest, &removed_dirs_candidates)?;
+    prune(dest, manifest, &removed_dirs_candidates, pruned_components)?;
     let mut links: Vec<(&Utf8PathBuf, &Action)> = Vec::new();
     let mut unpublished: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     for (path, action) in &plan.actions {
@@ -390,6 +421,11 @@ fn run(
             _ => {}
         }
     }
+    let link_context = LinkContext {
+        plan,
+        unpublished: &unpublished,
+        pruned_components,
+    };
     for (path, action) in &plan.actions {
         match action {
             Action::Remove { .. } | Action::RemoveDirectory | Action::Refuse { .. } => {}
@@ -402,7 +438,9 @@ fn run(
                 ..
             } => {}
             Action::Write { entry } if matches!(entry, Entry::Block { .. }) => {
-                let outcome = acting_on(plan, path, || write_block(dest, manifest, path, entry))?;
+                let outcome = acting_on(plan, path, || {
+                    write_block(dest, manifest, path, entry, pruned_components)
+                })?;
                 record(manifest, path, entry, &plan.owner);
                 rows.insert(
                     path.clone(),
@@ -413,7 +451,7 @@ fn run(
                 entry, expected, ..
             } if matches!(entry, Entry::Block { .. }) => {
                 acting_on(plan, path, || {
-                    overwrite_block(dest, manifest, path, entry, expected)
+                    overwrite_block(dest, manifest, path, entry, expected, pruned_components)
                 })?;
                 record(manifest, path, entry, &plan.owner);
                 rows.insert(
@@ -423,7 +461,7 @@ fn run(
             }
             Action::Write { entry } => {
                 acting_on(plan, path, || {
-                    write(dest, manifest, path, entry, true, plan, &unpublished)
+                    write(dest, manifest, path, entry, true, link_context)
                 })?;
                 record(manifest, path, entry, &plan.owner);
                 rows.insert(
@@ -435,8 +473,8 @@ fn run(
                 entry, expected, ..
             } => {
                 acting_on(plan, path, || {
-                    check_expected(dest, manifest, path, expected)?;
-                    write(dest, manifest, path, entry, false, plan, &unpublished)
+                    check_expected(dest, manifest, path, expected, pruned_components)?;
+                    write(dest, manifest, path, entry, false, link_context)
                 })?;
                 record(manifest, path, entry, &plan.owner);
                 rows.insert(
@@ -446,7 +484,7 @@ fn run(
             }
             Action::OverwriteDirectory { entry } => {
                 acting_on(plan, path, || {
-                    write(dest, manifest, path, entry, true, plan, &unpublished)
+                    write(dest, manifest, path, entry, true, link_context)
                 })?;
                 record(manifest, path, entry, &plan.owner);
                 rows.insert(
@@ -456,7 +494,7 @@ fn run(
             }
             Action::Skip { entry, expected } => {
                 acting_on(plan, path, || {
-                    check_expected(dest, manifest, path, expected)
+                    check_expected(dest, manifest, path, expected, pruned_components)
                 })?;
                 skip(manifest, path, expected, &plan.owner);
                 rows.insert(
@@ -495,7 +533,15 @@ fn run(
             }
         }
     }
-    settle_links(dest, manifest, plan, rows, links, unpublished)
+    settle_links(
+        dest,
+        manifest,
+        plan,
+        rows,
+        links,
+        unpublished,
+        pruned_components,
+    )
 }
 
 fn skip(manifest: &mut Manifest, path: &Utf8Path, expected: &NodeSignature, owner: &str) {
@@ -577,6 +623,7 @@ fn settle_links(
     rows: &mut BTreeMap<Utf8PathBuf, Row<ApplyOutcome>>,
     links: Vec<(&Utf8PathBuf, &Action)>,
     mut unpublished: BTreeSet<Utf8PathBuf>,
+    pruned_components: &BTreeSet<String>,
 ) -> Result<()> {
     let (mut pending, skips): (Vec<_>, Vec<_>) = links
         .into_iter()
@@ -594,9 +641,20 @@ fn settle_links(
             };
             let written = acting_on(plan, path, || {
                 if let Action::Overwrite { expected, .. } = action {
-                    check_expected(dest, manifest, path, expected)?;
+                    check_expected(dest, manifest, path, expected, pruned_components)?;
                 }
-                write(dest, manifest, path, entry, fresh, plan, &unpublished)
+                write(
+                    dest,
+                    manifest,
+                    path,
+                    entry,
+                    fresh,
+                    LinkContext {
+                        plan,
+                        unpublished: &unpublished,
+                        pruned_components,
+                    },
+                )
             })?;
             match written {
                 Written::Published => {
@@ -634,8 +692,8 @@ fn settle_links(
             unreachable!("only skips are left here");
         };
         acting_on(plan, path, || {
-            check_expected(dest, manifest, path, expected)?;
-            regrade_recorded_link(dest, manifest, plan, path)
+            check_expected(dest, manifest, path, expected, pruned_components)?;
+            regrade_recorded_link(dest, manifest, plan, path, pruned_components)
         })?;
         skip(manifest, path, expected, &plan.owner);
         rows.insert(
@@ -653,6 +711,7 @@ fn regrade_recorded_link(
     manifest: &Manifest,
     plan: &Plan,
     path: &Utf8Path,
+    pruned_components: &BTreeSet<String>,
 ) -> Result<()> {
     if plan.external_targets == ExternalTargetPolicy::Allow {
         return Ok(());
@@ -662,7 +721,7 @@ fn regrade_recorded_link(
         leaf,
         resolved_parent,
         ..
-    }) = verified_parent(dest, manifest, path, false)?
+    }) = verified_parent(dest, manifest, path, false, pruned_components)?
     else {
         return Err(drift(path));
     };
@@ -674,7 +733,17 @@ fn regrade_recorded_link(
     let Ok(target) = std::str::from_utf8(bytes) else {
         return Err(containment(path));
     };
-    if link_settles(dest, plan, &BTreeSet::new(), &resolved_parent, target)? {
+    let unpublished = BTreeSet::new();
+    if link_settles(
+        dest,
+        LinkContext {
+            plan,
+            unpublished: &unpublished,
+            pruned_components,
+        },
+        &resolved_parent,
+        target,
+    )? {
         return Ok(());
     }
     Err(refuse(
@@ -695,12 +764,13 @@ fn remove(
     snapshot: &Manifest,
     path: &Utf8Path,
     acting: &Action,
+    pruned_components: &BTreeSet<String>,
 ) -> Result<Option<Utf8PathBuf>> {
     let Action::Remove { expected } = acting else {
         unreachable!("dispatched on a removal")
     };
     let expected = expected.as_ref();
-    let Some(walked) = verified_parent(dest, manifest, path, false)? else {
+    let Some(walked) = verified_parent(dest, manifest, path, false, pruned_components)? else {
         return match expected {
             Some(_) => Err(drift(path)),
             None => Ok(None),
@@ -737,9 +807,10 @@ fn remove_directory(
     snapshot: &Manifest,
     path: &Utf8Path,
     acting: &Action,
+    pruned_components: &BTreeSet<String>,
 ) -> Result<Utf8PathBuf> {
     use std::io::ErrorKind;
-    let Some(walked) = verified_parent(dest, manifest, path, false)? else {
+    let Some(walked) = verified_parent(dest, manifest, path, false, pruned_components)? else {
         return Err(drift(path));
     };
     held_landing(snapshot, path, &walked.landing(), acting)?;
@@ -776,10 +847,16 @@ fn prune_above(vacated: &Utf8Path, candidates: &mut BTreeSet<Utf8PathBuf>) {
 /// Prunes directories emptied by this run's removals, deepest first. A
 /// directory still holding anything is kept, not an error; so is one
 /// already gone or no longer a directory.
-fn prune(dest: &Dir, manifest: &Manifest, candidates: &BTreeSet<Utf8PathBuf>) -> Result<()> {
+fn prune(
+    dest: &Dir,
+    manifest: &Manifest,
+    candidates: &BTreeSet<Utf8PathBuf>,
+    pruned_components: &BTreeSet<String>,
+) -> Result<()> {
     use std::io::ErrorKind;
     for path in candidates.iter().rev() {
-        let Some(Walked { parent, leaf, .. }) = verified_parent(dest, manifest, path, false)?
+        let Some(Walked { parent, leaf, .. }) =
+            verified_parent(dest, manifest, path, false, pruned_components)?
         else {
             continue;
         };
@@ -799,21 +876,27 @@ fn prune(dest: &Dir, manifest: &Manifest, candidates: &BTreeSet<Utf8PathBuf>) ->
 /// Publishes a planned entry over `path`'s leaf in one rename inside the
 /// verified parent, and only where the walk came out at the action key.
 /// `fresh` marks an [`Action::Write`], whose target must still be absent.
+#[derive(Clone, Copy)]
+struct LinkContext<'a> {
+    plan: &'a Plan,
+    unpublished: &'a BTreeSet<Utf8PathBuf>,
+    pruned_components: &'a BTreeSet<String>,
+}
+
 fn write(
     dest: &Dir,
     manifest: &Manifest,
     path: &Utf8Path,
     entry: &Entry,
     fresh: bool,
-    plan: &Plan,
-    unpublished: &BTreeSet<Utf8PathBuf>,
+    link_context: LinkContext<'_>,
 ) -> Result<Written> {
     let Some(Walked {
         parent,
         leaf,
         resolved_parent,
         through,
-    }) = verified_parent(dest, manifest, path, true)?
+    }) = verified_parent(dest, manifest, path, true, link_context.pruned_components)?
     else {
         unreachable!("a creating walk opens or creates every ancestor");
     };
@@ -837,7 +920,7 @@ fn write(
             executable,
         } => persist(&parent, &leaf, path, contents, *executable)?,
         Entry::Symlink { target } => {
-            if !link_settles(dest, plan, unpublished, &resolved_parent, target)? {
+            if !link_settles(dest, link_context, &resolved_parent, target)? {
                 return Ok(Written::Held);
             }
             publish_link(&parent, &leaf, path, target)?;
@@ -895,13 +978,14 @@ fn read_block_container(
     dest: &Dir,
     manifest: &Manifest,
     path: &Utf8Path,
+    pruned_components: &BTreeSet<String>,
 ) -> Result<Option<OpenContainer>> {
     let Some(Walked {
         parent,
         leaf,
         resolved_parent,
         through,
-    }) = verified_parent(dest, manifest, path, false)?
+    }) = verified_parent(dest, manifest, path, false, pruned_components)?
     else {
         return Ok(None);
     };
@@ -944,6 +1028,7 @@ fn write_block(
     manifest: &Manifest,
     path: &Utf8Path,
     entry: &Entry,
+    pruned_components: &BTreeSet<String>,
 ) -> Result<ApplyOutcome> {
     let Entry::Block {
         body,
@@ -953,7 +1038,7 @@ fn write_block(
     else {
         unreachable!("dispatched on a block entry");
     };
-    let Some(container) = read_block_container(dest, manifest, path)? else {
+    let Some(container) = read_block_container(dest, manifest, path, pruned_components)? else {
         return Err(block_refusal(path, BlockFault::ContainerMissing));
     };
     at_action_key(path, &container.landing, container.through.as_deref())?;
@@ -1009,6 +1094,7 @@ fn overwrite_block(
     path: &Utf8Path,
     entry: &Entry,
     expected: &NodeSignature,
+    pruned_components: &BTreeSet<String>,
 ) -> Result<()> {
     let Entry::Block {
         body,
@@ -1026,7 +1112,7 @@ fn overwrite_block(
     else {
         unreachable!("validate pairs a block entry with a block signature");
     };
-    let Some(container) = read_block_container(dest, manifest, path)? else {
+    let Some(container) = read_block_container(dest, manifest, path, pruned_components)? else {
         return Err(drift(path));
     };
     at_action_key(path, &container.landing, container.through.as_deref())?;
@@ -1068,6 +1154,7 @@ fn remove_block(
     snapshot: &Manifest,
     path: &Utf8Path,
     acting: &Action,
+    pruned_components: &BTreeSet<String>,
 ) -> Result<()> {
     let Action::Remove { expected } = acting else {
         unreachable!("dispatched on a removal")
@@ -1081,7 +1168,7 @@ fn remove_block(
     let Some((marker, placement)) = block::block_kind(&kind) else {
         unreachable!("dispatched on a block record, and validate pairs it with a block signature");
     };
-    let Some(container) = read_block_container(dest, manifest, path)? else {
+    let Some(container) = read_block_container(dest, manifest, path, pruned_components)? else {
         return if expected.is_some() {
             Err(drift(path))
         } else {
@@ -1129,18 +1216,17 @@ fn block_refusal(path: &Utf8Path, fault: BlockFault) -> Error {
 /// the link and asks again.
 fn link_settles(
     dest: &Dir,
-    plan: &Plan,
-    unpublished: &BTreeSet<Utf8PathBuf>,
+    context: LinkContext<'_>,
     parent: &Utf8Path,
     target: &str,
 ) -> Result<bool> {
-    if plan.external_targets == ExternalTargetPolicy::Allow {
+    if context.plan.external_targets == ExternalTargetPolicy::Allow {
         return Ok(true);
     }
     let mut waiting = false;
     let landing = contained_target_chain(parent, target, |hop| {
-        waiting |= unpublished.contains(hop);
-        hop_on_disk(dest, hop)
+        waiting |= context.unpublished.contains(hop);
+        hop_on_disk(dest, hop, context.pruned_components)
     })?;
     Ok(!waiting && landing.is_some())
 }
@@ -1148,7 +1234,10 @@ fn link_settles(
 /// What stands at one destination-relative path on disk, for
 /// [`link_settles`]'s chain resolution. Only a symlink continues a chain;
 /// a non-UTF-8 target and a symlinked ancestor are [`Unresolvable`](Hop::Unresolvable).
-fn hop_on_disk(dest: &Dir, path: &Utf8Path) -> Result<Hop> {
+fn hop_on_disk(dest: &Dir, path: &Utf8Path, pruned_components: &BTreeSet<String>) -> Result<Hop> {
+    if crate::is_pruned(path, pruned_components) {
+        return Ok(Hop::Unresolvable);
+    }
     let mut components: VecDeque<String> = path
         .components()
         .map(|component| component.as_str().to_owned())
@@ -1278,8 +1367,11 @@ fn check_expected(
     manifest: &Manifest,
     path: &Utf8Path,
     expected: &NodeSignature,
+    pruned_components: &BTreeSet<String>,
 ) -> Result<()> {
-    let Some(Walked { parent, leaf, .. }) = verified_parent(dest, manifest, path, false)? else {
+    let Some(Walked { parent, leaf, .. }) =
+        verified_parent(dest, manifest, path, false, pruned_components)?
+    else {
         return Err(drift(path));
     };
     check_leaf(&parent, &leaf, path, expected)
@@ -1384,6 +1476,7 @@ fn verified_parent(
     manifest: &Manifest,
     path: &Utf8Path,
     create: bool,
+    pruned_components: &BTreeSet<String>,
 ) -> Result<Option<Walked>> {
     let mut components: VecDeque<String> = path
         .components()
@@ -1398,6 +1491,12 @@ fn verified_parent(
     let mut visited: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     while let Some(component) = components.pop_front() {
         let here = prefix.join(&component);
+        if pruned_components.contains(&component) {
+            return Err(match through.as_deref() {
+                Some(link) => containment_through(path, link),
+                None => containment(path),
+            });
+        }
         if create && here.components().count() > MAX_WALK_DEPTH {
             return Err(Error::DestinationTooDeep {
                 path: here,

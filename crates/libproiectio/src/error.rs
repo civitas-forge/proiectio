@@ -91,6 +91,8 @@ pub enum Error {
         found: u32,
         supported: u32,
     },
+    #[error("manifest records {path}, which enters a pruned path component")]
+    ManifestPathPruned { path: Utf8PathBuf },
     /// Acquisition is try-lock, so a contended lock reports this immediately.
     #[error("state lock {path} is held by another writer")]
     LockHeld { path: Utf8PathBuf },
@@ -106,6 +108,8 @@ pub enum Error {
          state files would classify as foreign"
     )]
     StateDirIsTarget { path: Utf8PathBuf },
+    #[error("pruned component {component:?} is not one path component")]
+    InvalidPrunedComponent { component: String },
     #[error("mapping {path} is not valid: {source}")]
     MappingFormat {
         path: Utf8PathBuf,

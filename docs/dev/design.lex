@@ -49,8 +49,18 @@ Proiectio Design
     enforces it.
 2. Classification and Apply
 
-    Each path in the union of the manifest and the directory gets one
-    state; status reports them all except the unrecorded directories.
+    Each in-scope path in the union of the manifest and the directory
+    gets one state; status reports them all except the unrecorded
+    directories. A caller may prune path-component names on the
+    Projection. Matching applies at every depth, so `.git` omits both
+    `.git/config` and `vendor/project/.git/config`, while `.github`
+    remains in scope. The walk does not stat, enter, classify or report
+    a pruned path. Desired and removal paths that enter one refuse as
+    Containment, and loading a manifest that records one is an error.
+    Proiectio supplies no default component: the caller owns the policy,
+    and an ignore file cannot define it because callers may deliberately
+    project into ignored paths.
+
     The desired tree enters only when plan compares this classification
     against it to choose actions. A non-UTF-8 entry on disk can never
     match a desired or a recorded path, so it stays outside the table —
@@ -159,8 +169,11 @@ Proiectio Design
         pub enum RemovalScope<'a> { Everything, Paths(&'a BTreeSet<Utf8PathBuf>) }
         pub enum Origin { Caller, Mapping, Tree, Archive, Files }
 
-        pub struct Projection { target: Utf8PathBuf, state_dir: Utf8PathBuf }
+        pub struct Projection { target, state_dir, pruned_components }
         impl Projection {
+        pub fn with_pruned_components<I, S>(self, components: I)
+        -> Result<Self>;
+        pub fn pruned_components(&self) -> &BTreeSet<String>;
         // Reads: no lock, nothing written.
         pub fn status(&self) -> Result<Status>;
         pub fn manifest(&self) -> Result<Manifest>;

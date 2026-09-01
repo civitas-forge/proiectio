@@ -2652,6 +2652,55 @@ fn a_recorded_symlink_ancestor_with_an_external_target_refuses_containment() {
 }
 
 #[test]
+fn apply_rechecks_a_recorded_link_that_now_resolves_into_a_pruned_component() {
+    let (dest, state) = fixtures();
+    Tree::new()
+        .dir(".git")
+        .symlink("logs", ".git")
+        .write_under(dest.root());
+    let mut manifest = Manifest::new();
+    manifest.entries.insert(
+        "logs".into(),
+        recorded(EntryKind::Symlink, sha256_hex(b".git"), &["own"]),
+    );
+    let plan = Plan {
+        dropped: BTreeSet::new(),
+        owner: "own".to_owned(),
+        origins: BTreeMap::new(),
+        external_targets: ExternalTargetPolicy::Refuse,
+        actions: BTreeMap::from([(
+            "logs/x.txt".into(),
+            Action::Write {
+                entry: Entry::File {
+                    contents: b"x".to_vec(),
+                    executable: false,
+                },
+            },
+        )]),
+    };
+    let pruned = BTreeSet::from([".git".to_owned()]);
+
+    let aborted = apply_scoped(
+        &dir_at(dest.root()),
+        &state_at(state.root()),
+        &manifest,
+        &plan,
+        &pruned,
+    )
+    .expect_err("the live ancestry enters a pruned component");
+
+    match aborted.stopped {
+        Stopped::Applying(Error::Refused(refused))
+            if refused.kind() == RefusalKind::Containment =>
+        {
+            assert_eq!(paths_of(&refused), BTreeSet::from(["logs/x.txt".into()]));
+        }
+        other => panic!("expected Containment, got {other:?}"),
+    }
+    assert!(!dest.path(".git/x.txt").exists());
+}
+
+#[test]
 fn an_owned_link_cycle_refuses_instead_of_looping() {
     let (dest, state) = fixtures();
     Tree::new()

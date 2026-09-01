@@ -13,7 +13,8 @@ use crate::Origin;
 pub enum Refusal {
     /// The projection may not write the path — its spelling normalizes to
     /// nowhere inside the destination, it lies beneath a symlink that
-    /// outlives the plan, or it overlaps the state directory.
+    /// outlives the plan, it overlaps the state directory, or it enters a
+    /// path component the caller pruned from the projection.
     Containment {
         /// The ancestor symlink that put the path out of reach, where one
         /// did; `None` where the spelling itself is what containment

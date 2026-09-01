@@ -59,6 +59,16 @@ Security Model
     case-insensitive, extension or not. All judged lexically, so a
     tree gets the same verdict on every host.
 
+    The invoker may narrow that destination further by naming path
+    components the Projection prunes. A desired or removal path that
+    enters one is refused as Containment. Observation checks a name
+    before stat or open, and apply checks each ancestry component again,
+    so neither stage reads through the pruned directory. Link-target
+    grading cannot prove a target that enters one remains inside the
+    destination; the refusing policy therefore grades it external. The
+    external-target permission writes the pointer without entering the
+    pruned path.
+
     Normalization alone does not close the hole. A projected symlink
     "logs -> /etc" followed by a projected file "logs/x" is a write
     to /etc/x — the zip-slip pattern, with the traversal smuggled
