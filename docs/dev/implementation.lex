@@ -122,7 +122,9 @@ Implementation Guidelines
     was not inventoried completely. Decide uses that fact when judging a
     directory replacement: it refuses rather than claiming the directory
     will be empty after managed descendants are removed. The pruned entry
-    itself never enters the observation or the refusal.
+    itself never enters the observation or the refusal. The refusal carries
+    only that pruned contents exist, so callers receive the reason without
+    receiving a path outside the projection scope.
 
     What a restart earns depends on the action, and the three answers
     differ:

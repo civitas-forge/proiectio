@@ -599,6 +599,7 @@ fn drifted_directory(
         return Some(refuse(Refusal::DirectoryInTheWay {
             holding,
             unreadable,
+            pruned: unobserved,
         }));
     }
     Some(match policy {
@@ -635,6 +636,7 @@ fn directory_in_the_way(
     (blocked || !emptied(path)).then_some(Refusal::DirectoryInTheWay {
         holding,
         unreadable,
+        pruned: unobserved,
     })
 }
 

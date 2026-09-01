@@ -422,6 +422,9 @@ fn detailing(kind: &str, payload: &JsonValue) -> Option<String> {
             if let Some(names) = payload.get("unreadable").and_then(|it| listed(it, ", ")) {
                 clauses.push(format!("holding names that are not UTF-8 in {names}"));
             }
+            if payload.get("pruned").and_then(JsonValue::as_bool) == Some(true) {
+                clauses.push("holding pruned contents".to_owned());
+            }
             (!clauses.is_empty()).then(|| format!("({})", clauses.join(", and ")))
         }
         "ExternalTarget" => Some(format!("-> {}", verbatim(string("target")?))),

@@ -56,6 +56,9 @@ pub enum Refusal {
         /// The directory itself, or ones beneath it, holding a name that is
         /// not UTF-8 — nothing may conclude such a directory empties.
         unreadable: BTreeSet<Utf8PathBuf>,
+        /// Whether the directory or one beneath it holds pruned contents.
+        /// Their paths stay outside the report.
+        pruned: bool,
     },
     /// The desired entry — bytes, kind, or executable bit — differs from what
     /// another owner holds at this path.
@@ -168,6 +171,7 @@ impl Refusal {
             Refusal::DirectoryInTheWay {
                 holding,
                 unreadable,
+                pruned,
             } => {
                 let mut clauses = Vec::new();
                 if !holding.is_empty() {
@@ -181,6 +185,9 @@ impl Refusal {
                         "holding names that are not UTF-8 in {}",
                         join(unreadable.iter().map(|path| path.as_str()), ", ")
                     ));
+                }
+                if *pruned {
+                    clauses.push("holding pruned contents".to_owned());
                 }
                 if clauses.is_empty() {
                     return Ok(());

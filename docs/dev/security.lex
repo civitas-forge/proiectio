@@ -70,7 +70,8 @@ Security Model
     pruned path. A containing directory is marked incomplete when the
     walk skips a pruned child, so no plan removes or replaces that parent
     on the assumption that the unobserved child is absent. A prune set
-    that overlaps an in-target state directory is rejected.
+    that overlaps an in-target state directory is rejected. A refusal may
+    state that pruned contents exist, but it does not name their paths.
 
     Normalization alone does not close the hole. A projected symlink
     "logs -> /etc" followed by a projected file "logs/x" is a write

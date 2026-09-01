@@ -599,6 +599,7 @@ fn a_desired_path_over_an_empty_foreign_directory_refuses() {
             refusal: Refusal::DirectoryInTheWay {
                 holding: BTreeMap::new(),
                 unreadable: BTreeSet::new(),
+                pruned: false,
             },
         }
     );
@@ -2580,6 +2581,7 @@ fn a_node_nothing_records_holds_the_directory_and_the_refusal_names_it() {
             refusal: Refusal::DirectoryInTheWay {
                 holding: BTreeMap::from([("build.sh/notes.md".into(), BTreeSet::new())]),
                 unreadable: BTreeSet::new(),
+                pruned: false,
             },
         }
     );
@@ -2615,6 +2617,7 @@ fn another_owners_record_beneath_holds_the_directory_and_names_the_owner() {
                     BTreeSet::from(["other".to_owned()]),
                 )]),
                 unreadable: BTreeSet::new(),
+                pruned: false,
             },
         }
     );
@@ -2643,6 +2646,7 @@ fn an_empty_directory_nested_in_the_scaffolding_holds_it() {
             refusal: Refusal::DirectoryInTheWay {
                 holding: BTreeMap::from([("build.sh/scratch".into(), BTreeSet::new())]),
                 unreadable: BTreeSet::new(),
+                pruned: false,
             },
         }
     );
@@ -2679,6 +2683,7 @@ fn a_block_beneath_the_directory_holds_it_because_its_container_survives() {
                     BTreeSet::from([OWNER.to_owned()]),
                 )]),
                 unreadable: BTreeSet::new(),
+                pruned: false,
             },
         }
     );
@@ -2797,6 +2802,7 @@ fn drift_to_a_directory_holding_anything_refuses_under_either_policy() {
     let refusal = Refusal::DirectoryInTheWay {
         holding: BTreeMap::from([("a/inside".into(), BTreeSet::new())]),
         unreadable: BTreeSet::new(),
+        pruned: false,
     };
 
     for policy in [DriftPolicy::Refuse, DriftPolicy::Overwrite] {
@@ -2847,6 +2853,7 @@ fn a_drifted_directory_names_what_holds_it_rather_than_the_directory_between() {
             refusal: Refusal::DirectoryInTheWay {
                 holding: BTreeMap::from([("a/sub/note.md".into(), BTreeSet::new())]),
                 unreadable: BTreeSet::new(),
+                pruned: false,
             },
         }
     );
@@ -2976,6 +2983,7 @@ fn a_name_the_walk_cannot_read_keeps_the_directory_from_clearing() {
             refusal: Refusal::DirectoryInTheWay {
                 holding: BTreeMap::new(),
                 unreadable: BTreeSet::from(["build.sh".into()]),
+                pruned: false,
             },
         }
     );
@@ -3007,6 +3015,7 @@ fn a_name_the_walk_cannot_read_below_the_directory_holds_it_too() {
             refusal: Refusal::DirectoryInTheWay {
                 holding: BTreeMap::new(),
                 unreadable: BTreeSet::from(["build.sh/nested".into()]),
+                pruned: false,
             },
         }
     );
@@ -3020,6 +3029,7 @@ fn a_name_the_walk_cannot_read_refuses_the_drifted_directory_under_either_policy
         refusal: Refusal::DirectoryInTheWay {
             holding: BTreeMap::new(),
             unreadable: BTreeSet::from(["a".into()]),
+            pruned: false,
         },
     };
 

@@ -140,8 +140,13 @@ fn a_pruned_child_keeps_a_drifted_directory_from_looking_empty() {
     assert!(matches!(
         plan.plan.actions[Utf8Path::new("cache")],
         Action::Refuse {
-            refusal: Refusal::DirectoryInTheWay { .. }
+            refusal: Refusal::DirectoryInTheWay {
+                ref holding,
+                ref unreadable,
+                pruned: true,
+            }
         }
+            if holding.is_empty() && unreadable.is_empty()
     ));
     assert_eq!(
         fs::read(dest.path("cache/.git/config")).expect("pruned child remains"),
@@ -179,8 +184,13 @@ fn a_pruned_child_keeps_a_scaffolding_parent_from_being_replaced() {
     assert!(matches!(
         plan.plan.actions[Utf8Path::new("cache")],
         Action::Refuse {
-            refusal: Refusal::DirectoryInTheWay { .. }
+            refusal: Refusal::DirectoryInTheWay {
+                ref holding,
+                ref unreadable,
+                pruned: true,
+            }
         }
+            if holding.is_empty() && unreadable.is_empty()
     ));
     assert_eq!(
         fs::read(dest.path("cache/.git/config")).expect("pruned child remains"),

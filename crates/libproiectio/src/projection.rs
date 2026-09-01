@@ -76,15 +76,16 @@ impl Projection {
             }
             pruned.insert(component.to_owned());
         }
-        if let Some(state_prefix) = self.state_prefix()
-            && let Some(component) = state_prefix
+        if let Some(state_prefix) = self.state_prefix() {
+            if let Some(component) = state_prefix
                 .components()
                 .find(|component| pruned.contains(component.as_str()))
-        {
-            return Err(Error::StateDirPruned {
-                path: self.state_dir.clone(),
-                component: component.as_str().to_owned(),
-            });
+            {
+                return Err(Error::StateDirPruned {
+                    path: self.state_dir.clone(),
+                    component: component.as_str().to_owned(),
+                });
+            }
         }
         self.pruned_components = pruned;
         Ok(self)
