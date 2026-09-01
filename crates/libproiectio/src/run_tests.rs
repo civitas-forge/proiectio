@@ -4,10 +4,11 @@ use std::fs;
 use camino::{Utf8Path, Utf8PathBuf};
 
 use super::*;
-use crate::test_support::{Fixture, Tree, assert_tree, origins_of};
+use crate::test_support::{Fixture, Tree, assert_tree, origins_of, state_at};
 use crate::{
-    Action, ApplyOutcome, Desired, Entry, Error, IoRole, LOCK_FILE_NAME, MANIFEST_FILE_NAME,
-    Manifest, Origin, PathState, Refusal, RefusalKind, RemovalScope, Stopped,
+    Action, ApplyOutcome, Desired, Entry, Error, ExternalTargetPolicy, IoRole, LOCK_FILE_NAME,
+    MANIFEST_FILE_NAME, Manifest, ManifestEntry, Origin, PathState, Refusal, RefusalKind,
+    RemovalScope, Stopped, save_manifest, sha256_hex,
 };
 
 fn projection(dest: &Fixture, state: &Utf8Path) -> Projection {
@@ -65,6 +66,284 @@ fn a_run_projects_a_tree_and_records_it() {
             .rows
             .values()
             .any(|row| row.verdict == PathState::Clean)
+    );
+}
+
+#[test]
+fn a_run_refuses_desired_paths_that_enter_pruned_components() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(&dest, state.root())
+        .with_pruned_components([".git"])
+        .expect("a path component");
+    let tree = Tree::new()
+        .file(".git/config", "root metadata")
+        .file("vendor/project/.git/config", "nested metadata")
+        .file(".github/workflows/ci.yml", "jobs: {}")
+        .file("src/lib.rs", "pub fn live() {}");
+
+    let mut run = projection.begin().expect("begin");
+    let plan = run
+        .plan("harness", &desired(&tree), PlanOptions::default())
+        .expect("plan");
+
+    for path in [".git/config", "vendor/project/.git/config"] {
+        assert!(matches!(
+            plan.actions[Utf8Path::new(path)],
+            Action::Refuse {
+                refusal: Refusal::Containment { through: None }
+            }
+        ));
+    }
+    assert!(matches!(
+        plan.actions[Utf8Path::new(".github/workflows/ci.yml")],
+        Action::Write { .. }
+    ));
+
+    let stopped = run.apply().expect_err("a refusal applies nothing");
+    assert!(matches!(
+        stopped.stopped,
+        Stopped::Applying(Error::Refused(_))
+    ));
+    assert_tree(dest.root(), &Tree::new());
+}
+
+#[test]
+fn a_pruned_child_keeps_a_drifted_directory_from_looking_empty() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(&dest, state.root())
+        .with_pruned_components([".git"])
+        .expect("a path component");
+    let wanted = Tree::new().file("cache", "managed");
+
+    let mut run = projection.begin().expect("begin");
+    run.plan("harness", &desired(&wanted), PlanOptions::default())
+        .expect("plan initial file");
+    run.apply().expect("apply initial file");
+
+    fs::remove_file(dest.path("cache")).expect("remove the managed file");
+    fs::create_dir_all(dest.path("cache/.git")).expect("make pruned directory");
+    fs::write(dest.path("cache/.git/config"), "metadata").expect("write pruned child");
+
+    let plan = projection
+        .plan(
+            "harness",
+            &desired(&wanted),
+            PlanOptions {
+                drift: DriftPolicy::Overwrite,
+                ..PlanOptions::default()
+            },
+        )
+        .expect("plan drift overwrite");
+
+    assert!(matches!(
+        plan.plan.actions[Utf8Path::new("cache")],
+        Action::Refuse {
+            refusal: Refusal::DirectoryInTheWay {
+                ref holding,
+                ref unreadable,
+                pruned: true,
+            }
+        }
+            if holding.is_empty() && unreadable.is_empty()
+    ));
+    assert_eq!(
+        fs::read(dest.path("cache/.git/config")).expect("pruned child remains"),
+        b"metadata"
+    );
+}
+
+#[test]
+fn a_pruned_child_keeps_a_scaffolding_parent_from_being_replaced() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(&dest, state.root())
+        .with_pruned_components([".git"])
+        .expect("a path component");
+
+    let mut run = projection.begin().expect("begin");
+    run.plan(
+        "harness",
+        &desired(&Tree::new().file("cache/old", "managed")),
+        PlanOptions::default(),
+    )
+    .expect("plan initial tree");
+    run.apply().expect("apply initial tree");
+    fs::create_dir_all(dest.path("cache/.git")).expect("make pruned directory");
+    fs::write(dest.path("cache/.git/config"), "metadata").expect("write pruned child");
+
+    let plan = projection
+        .plan(
+            "harness",
+            &desired(&Tree::new().file("cache", "replacement")),
+            PlanOptions::default(),
+        )
+        .expect("plan parent replacement");
+
+    assert!(matches!(
+        plan.plan.actions[Utf8Path::new("cache")],
+        Action::Refuse {
+            refusal: Refusal::DirectoryInTheWay {
+                ref holding,
+                ref unreadable,
+                pruned: true,
+            }
+        }
+            if holding.is_empty() && unreadable.is_empty()
+    ));
+    assert_eq!(
+        fs::read(dest.path("cache/.git/config")).expect("pruned child remains"),
+        b"metadata"
+    );
+}
+
+#[test]
+fn a_manifest_entry_inside_a_pruned_component_is_an_error() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let unscoped = projection(&dest, state.root());
+    let tree = Tree::new().file("vendor/project/.git/config", "metadata");
+
+    let mut run = unscoped.begin().expect("begin unscoped");
+    run.plan("harness", &desired(&tree), PlanOptions::default())
+        .expect("plan unscoped");
+    run.apply().expect("apply unscoped");
+
+    let scoped = projection(&dest, state.root())
+        .with_pruned_components([".git"])
+        .expect("a path component");
+    for error in [
+        scoped.manifest().expect_err("manifest is outside scope"),
+        scoped.status().expect_err("status cannot classify it"),
+        scoped.begin().expect_err("a run cannot load it"),
+    ] {
+        assert!(matches!(
+            error,
+            Error::ManifestPathPruned { path }
+                if path == Utf8Path::new("vendor/project/.git/config")
+        ));
+    }
+}
+
+#[test]
+fn a_removal_that_resolves_through_a_recorded_link_into_a_pruned_component_refuses() {
+    let dest = Tree::new()
+        .file(".git/config", "metadata")
+        .symlink("alias", ".git")
+        .materialize();
+    let state = Tree::new().materialize();
+    let owners = BTreeSet::from(["harness".to_owned()]);
+    let manifest = Manifest {
+        version: crate::MANIFEST_VERSION,
+        entries: BTreeMap::from([
+            (
+                Utf8PathBuf::from("alias"),
+                ManifestEntry {
+                    kind: crate::EntryKind::Symlink,
+                    hash: sha256_hex(b".git"),
+                    executable: false,
+                    owners: owners.clone(),
+                },
+            ),
+            (
+                Utf8PathBuf::from("alias/config"),
+                ManifestEntry {
+                    kind: crate::EntryKind::File,
+                    hash: sha256_hex(b"metadata"),
+                    executable: false,
+                    owners,
+                },
+            ),
+        ]),
+    };
+    save_manifest(&state_at(state.root()), &manifest).expect("seed manifest");
+    let projection = projection(&dest, state.root())
+        .with_pruned_components([".git"])
+        .expect("a path component");
+
+    let mut run = projection.begin().expect("begin");
+    let plan = run
+        .plan_removal("harness", RemovalScope::Everything, DriftPolicy::Refuse)
+        .expect("plan removal");
+    let action = &plan.actions[Utf8Path::new("alias/config")];
+    assert!(
+        matches!(
+            action,
+            Action::Refuse {
+                refusal: Refusal::Containment {
+                    through: Some(link)
+                }
+            } if link == Utf8Path::new("alias")
+        ),
+        "got {action:?}"
+    );
+
+    run.apply().expect_err("a refusal applies nothing");
+    assert_eq!(
+        fs::read(dest.path(".git/config")).expect("metadata stays"),
+        b"metadata"
+    );
+}
+
+#[test]
+fn a_named_removal_path_inside_a_pruned_component_refuses() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(&dest, state.root())
+        .with_pruned_components([".git"])
+        .expect("a path component");
+    let requested = BTreeSet::from([Utf8PathBuf::from(".git/config")]);
+
+    let plan = projection
+        .plan_removal(
+            "harness",
+            RemovalScope::Paths(&requested),
+            DriftPolicy::Refuse,
+        )
+        .expect("plan removal");
+
+    assert!(matches!(
+        plan.plan.actions[Utf8Path::new(".git/config")],
+        Action::Refuse {
+            refusal: Refusal::Containment { through: None }
+        }
+    ));
+}
+
+#[test]
+fn a_link_target_inside_a_pruned_component_needs_the_external_target_permission() {
+    let dest = Tree::new().file(".git/config", "metadata").materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(&dest, state.root())
+        .with_pruned_components([".git"])
+        .expect("a path component");
+    let tree = Tree::new().symlink("git-config", ".git/config");
+
+    let refused = projection
+        .plan("harness", &desired(&tree), PlanOptions::default())
+        .expect("plan");
+    assert!(matches!(
+        refused.plan.actions[Utf8Path::new("git-config")],
+        Action::Refuse {
+            refusal: Refusal::ExternalTarget { .. }
+        }
+    ));
+
+    let mut run = projection.begin().expect("begin");
+    run.plan(
+        "harness",
+        &desired(&tree),
+        PlanOptions {
+            external_targets: ExternalTargetPolicy::Allow,
+            ..PlanOptions::default()
+        },
+    )
+    .expect("plan with permission");
+    run.apply().expect("write the pointer");
+    assert_eq!(
+        fs::read_link(dest.path("git-config")).expect("read link target"),
+        std::path::Path::new(".git/config")
     );
 }
 

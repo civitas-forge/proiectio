@@ -231,14 +231,17 @@ fn a_directory_refusal_reads_the_same_from_the_view_and_from_the_library() {
         Refusal::DirectoryInTheWay {
             holding: BTreeMap::from([held("build.sh/notes.md")]),
             unreadable: BTreeSet::new(),
+            pruned: false,
         },
         Refusal::DirectoryInTheWay {
             holding: BTreeMap::new(),
             unreadable: BTreeSet::from([Utf8PathBuf::from("build.sh")]),
+            pruned: false,
         },
         Refusal::DirectoryInTheWay {
             holding: BTreeMap::from([held("build.sh/notes.md")]),
             unreadable: BTreeSet::from([Utf8PathBuf::from("build.sh/nested")]),
+            pruned: true,
         },
     ] {
         let from_library = Refused::one(
@@ -342,6 +345,7 @@ fn a_refused_row_renders_the_payload_its_refusal_carries() {
                     ),
                 ]),
                 unreadable: BTreeSet::new(),
+                pruned: false,
             },
             "(directory in the way) (holding build.sh/notes.md, \
              build.sh/theirs (held by base+site), which --force does not remove)",
@@ -350,6 +354,7 @@ fn a_refused_row_renders_the_payload_its_refusal_carries() {
             Refusal::DirectoryInTheWay {
                 holding: BTreeMap::new(),
                 unreadable: BTreeSet::new(),
+                pruned: false,
             },
             "(directory in the way)",
         ),
@@ -357,6 +362,7 @@ fn a_refused_row_renders_the_payload_its_refusal_carries() {
             Refusal::DirectoryInTheWay {
                 holding: BTreeMap::new(),
                 unreadable: BTreeSet::from([Utf8PathBuf::from("build.sh/nested")]),
+                pruned: false,
             },
             "(directory in the way) (holding names that are not UTF-8 in build.sh/nested)",
         ),
@@ -367,9 +373,18 @@ fn a_refused_row_renders_the_payload_its_refusal_carries() {
                     BTreeSet::new(),
                 )]),
                 unreadable: BTreeSet::from([Utf8PathBuf::from("build.sh")]),
+                pruned: false,
             },
             "(directory in the way) (holding build.sh/notes.md, which --force does not remove, \
              and holding names that are not UTF-8 in build.sh)",
+        ),
+        (
+            Refusal::DirectoryInTheWay {
+                holding: BTreeMap::new(),
+                unreadable: BTreeSet::new(),
+                pruned: true,
+            },
+            "(directory in the way) (holding pruned contents)",
         ),
         (
             Refusal::ExternalTarget {

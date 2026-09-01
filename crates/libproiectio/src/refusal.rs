@@ -13,7 +13,8 @@ use crate::Origin;
 pub enum Refusal {
     /// The projection may not write the path — its spelling normalizes to
     /// nowhere inside the destination, it lies beneath a symlink that
-    /// outlives the plan, or it overlaps the state directory.
+    /// outlives the plan, it overlaps the state directory, or it enters a
+    /// path component the caller pruned from the projection.
     Containment {
         /// The ancestor symlink that put the path out of reach, where one
         /// did; `None` where the spelling itself is what containment
@@ -55,6 +56,9 @@ pub enum Refusal {
         /// The directory itself, or ones beneath it, holding a name that is
         /// not UTF-8 — nothing may conclude such a directory empties.
         unreadable: BTreeSet<Utf8PathBuf>,
+        /// Whether the directory or one beneath it holds pruned contents.
+        /// Their paths stay outside the report.
+        pruned: bool,
     },
     /// The desired entry — bytes, kind, or executable bit — differs from what
     /// another owner holds at this path.
@@ -167,6 +171,7 @@ impl Refusal {
             Refusal::DirectoryInTheWay {
                 holding,
                 unreadable,
+                pruned,
             } => {
                 let mut clauses = Vec::new();
                 if !holding.is_empty() {
@@ -180,6 +185,9 @@ impl Refusal {
                         "holding names that are not UTF-8 in {}",
                         join(unreadable.iter().map(|path| path.as_str()), ", ")
                     ));
+                }
+                if *pruned {
+                    clauses.push("holding pruned contents".to_owned());
                 }
                 if clauses.is_empty() {
                     return Ok(());

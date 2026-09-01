@@ -23,6 +23,7 @@ fn one_of_each() -> Vec<(Utf8PathBuf, Refusal, Origin)> {
                     ),
                 ]),
                 unreadable: BTreeSet::new(),
+                pruned: false,
             },
             Origin::Caller,
         ),
@@ -279,6 +280,7 @@ fn a_directory_message_states_what_it_holds_and_what_it_could_not_read() {
             Refusal::DirectoryInTheWay {
                 holding,
                 unreadable: unreadable.iter().map(|s| path(s)).collect(),
+                pruned: false,
             },
             Origin::Caller,
         )
@@ -299,6 +301,27 @@ fn a_directory_message_states_what_it_holds_and_what_it_could_not_read() {
          build.sh (holding build.sh/notes.md, which --force does not remove, \
          and holding names that are not UTF-8 in build.sh/nested)"
     );
+}
+
+#[test]
+fn a_directory_message_states_that_pruned_contents_hold_it_without_naming_them() {
+    let message = Refused::one(
+        path("build.sh"),
+        Refusal::DirectoryInTheWay {
+            holding: BTreeMap::new(),
+            unreadable: BTreeSet::new(),
+            pruned: true,
+        },
+        Origin::Caller,
+    )
+    .to_string();
+
+    assert_eq!(
+        message,
+        "refusing directories the plan can neither replace nor remove: \
+         build.sh (holding pruned contents)"
+    );
+    assert!(!message.contains(".git"));
 }
 
 #[test]

@@ -59,6 +59,13 @@ Security Model
     case-insensitive, extension or not. All judged lexically, so a
     tree gets the same verdict on every host.
 
+    The invoker may narrow the destination by pruning named path
+    components. Proiectio does not observe or write through a pruned
+    component, and it refuses a desired or removal path that enters one.
+    A symlink target inside one is graded external. Skipping a pruned
+    child also prevents removal or replacement of its containing
+    directory based on an incomplete inventory.
+
     Normalization alone does not close the hole. A projected symlink
     "logs -> /etc" followed by a projected file "logs/x" is a write
     to /etc/x — the zip-slip pattern, with the traversal smuggled

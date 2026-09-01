@@ -55,6 +55,17 @@ pub(crate) struct Observations {
     /// like every other path, which makes the destination root the empty
     /// path. Nothing may conclude such a directory empties.
     pub unreadable: BTreeSet<Utf8PathBuf>,
+    /// Every directory whose inventory deliberately stops at a pruned child.
+    /// The child itself remains absent from the observation, while planning
+    /// can still avoid concluding that the containing directory is empty.
+    pub unobserved: BTreeSet<Utf8PathBuf>,
+    pub pruned_components: BTreeSet<String>,
+}
+
+impl Observations {
+    pub(crate) fn is_pruned(&self, path: &Utf8Path) -> bool {
+        crate::is_pruned(path, &self.pruned_components)
+    }
 }
 
 /// What one path looked like on disk, with lstat semantics: a symlink is
@@ -177,8 +188,9 @@ pub(crate) fn block_markers(desired: &crate::Desired) -> BlockMarkers {
 
 /// Walks the union of the destination directory and the manifest and
 /// snapshots what is on disk into [`Observations`], reading everything
-/// through the capability handle `dest`. The projection's own state subtree
-/// is not excluded here.
+/// through the capability handle `dest`. A component in `pruned_components`
+/// is skipped before metadata is read, at every depth. The projection's own
+/// state subtree is not excluded here.
 ///
 /// cap-std has no read-only handle type, so "this stage writes nothing"
 /// (`docs/dev/implementation.lex` §1) is a discipline the walk keeps and its
@@ -189,13 +201,34 @@ pub(crate) fn block_markers(desired: &crate::Desired) -> BlockMarkers {
 /// read is an [`Error::Io`] at the path relative to the destination (`.` for
 /// the destination itself); nesting past [`MAX_WALK_DEPTH`] is
 /// [`Error::DestinationTooDeep`].
+#[cfg(test)]
 pub(crate) fn observe(
     dest: &Dir,
     manifest: &Manifest,
     wanted: &BlockMarkers,
 ) -> Result<Observations> {
-    let mut into = Observations::default();
-    walk(dest, Utf8Path::new(""), 0, manifest, wanted, &mut into)?;
+    observe_scoped(dest, manifest, wanted, &BTreeSet::new())
+}
+
+pub(crate) fn observe_scoped(
+    dest: &Dir,
+    manifest: &Manifest,
+    wanted: &BlockMarkers,
+    pruned_components: &BTreeSet<String>,
+) -> Result<Observations> {
+    let mut into = Observations {
+        pruned_components: pruned_components.clone(),
+        ..Observations::default()
+    };
+    walk(
+        dest,
+        Utf8Path::new(""),
+        0,
+        manifest,
+        wanted,
+        pruned_components,
+        &mut into,
+    )?;
     for path in manifest.entries.keys() {
         into.paths
             .entry(path.clone())
@@ -283,6 +316,11 @@ pub(crate) fn walked_ancestry(
     let mut visited: BTreeSet<Utf8PathBuf> = BTreeSet::new();
     while let Some(component) = components.pop_front() {
         let here = prefix.join(&component);
+        if observations.is_pruned(&here) {
+            return Err(Refusal::Containment {
+                through: through.clone(),
+            });
+        }
         let standing = if vacated.contains(&here) {
             None
         } else {
@@ -379,6 +417,7 @@ fn walk(
     depth: usize,
     manifest: &Manifest,
     wanted: &BlockMarkers,
+    pruned_components: &BTreeSet<String>,
     into: &mut Observations,
 ) -> Result<()> {
     let dir_path = if prefix.as_str().is_empty() {
@@ -401,6 +440,10 @@ fn walk(
             into.unreadable.insert(prefix.to_owned());
             continue;
         };
+        if pruned_components.contains(name.as_str()) {
+            into.unobserved.insert(prefix.to_owned());
+            continue;
+        }
         let rel = prefix.join(&name);
         let meta = entry.metadata().map_err(io_error(&rel))?;
         let file_type = meta.file_type();
@@ -419,7 +462,15 @@ fn walk(
         } else if file_type.is_dir() {
             let sub = entry.open_dir().map_err(io_error(&rel))?;
             into.paths.insert(rel.clone(), Observation::Directory);
-            walk(&sub, &rel, depth + 1, manifest, wanted, into)?;
+            walk(
+                &sub,
+                &rel,
+                depth + 1,
+                manifest,
+                wanted,
+                pruned_components,
+                into,
+            )?;
             continue;
         } else if file_type.is_file() {
             let recorded = manifest.entries.get(&rel);

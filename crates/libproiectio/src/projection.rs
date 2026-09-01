@@ -1,5 +1,6 @@
 use camino::{Utf8Path, Utf8PathBuf};
 
+use std::collections::BTreeSet;
 use std::io::ErrorKind::NotFound;
 
 use cap_std::ambient_authority;
@@ -8,7 +9,7 @@ use cap_std::fs_utf8::Dir;
 use crate::{
     BlockMarkers, Desired, DriftPolicy, Error, IoRole, Manifest, Plan, PlanOptions, PlannedAction,
     RemovalScope, Report, Result, StateDir, Status, absolutize, block_markers, decide,
-    decide_removal, load_manifest, observe, require_owner, status,
+    decide_removal, load_manifest, observe_scoped, require_owner, status,
 };
 
 const DEFAULT_STATE_DIR: &str = ".proiectio";
@@ -20,10 +21,13 @@ const DEFAULT_STATE_DIR: &str = ".proiectio";
 /// `state_dir` may lie inside `target` as a proper subdirectory: that
 /// subtree is excluded from classification, and a desired path overlapping
 /// it refuses as [`Containment`](crate::Refusal::Containment).
+/// [`with_pruned_components`](Projection::with_pruned_components) lets the
+/// caller exclude component names at every depth, with no default exclusions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Projection {
     target: Utf8PathBuf,
     state_dir: Utf8PathBuf,
+    pruned_components: BTreeSet<String>,
 }
 
 impl Projection {
@@ -38,7 +42,59 @@ impl Projection {
         if state_dir == target {
             return Err(Error::StateDirIsTarget { path: target });
         }
-        Ok(Projection { target, state_dir })
+        Ok(Projection {
+            target,
+            state_dir,
+            pruned_components: BTreeSet::new(),
+        })
+    }
+
+    /// Sets the path-component names that this projection never enters.
+    ///
+    /// Matching is component-wise at every depth: pruning `.git` excludes
+    /// both `.git/config` and `vendor/project/.git/config`, without excluding
+    /// `.github/workflows`. Pruned paths are not observed or reported, and a
+    /// plan refuses any desired or removal path that enters one. The manifest
+    /// may not record a path inside one.
+    ///
+    /// A component is one non-empty Unix filename other than `.` or `..`;
+    /// `/` and NUL are not allowed. An in-target state directory may not enter
+    /// a pruned component. Calling this method replaces the previous set.
+    /// [`Projection::new`] starts with an empty set.
+    pub fn with_pruned_components<I, S>(mut self, components: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut pruned = BTreeSet::new();
+        for component in components {
+            let component = component.as_ref();
+            if !valid_pruned_component(component) {
+                return Err(Error::InvalidPrunedComponent {
+                    component: component.to_owned(),
+                });
+            }
+            pruned.insert(component.to_owned());
+        }
+        if let Some(state_prefix) = self.state_prefix() {
+            if let Some(component) = state_prefix
+                .components()
+                .find(|component| pruned.contains(component.as_str()))
+            {
+                return Err(Error::StateDirPruned {
+                    path: self.state_dir.clone(),
+                    component: component.as_str().to_owned(),
+                });
+            }
+        }
+        self.pruned_components = pruned;
+        Ok(self)
+    }
+
+    /// The path-component names this projection never enters, in lexical
+    /// order. An empty set means the whole destination is observed.
+    pub fn pruned_components(&self) -> &BTreeSet<String> {
+        &self.pruned_components
     }
 
     /// The directory the projection writes into.
@@ -60,17 +116,46 @@ impl Projection {
             _ => None,
         }
     }
+
+    pub(crate) fn validate_manifest_scope(&self, manifest: Manifest) -> Result<Manifest> {
+        if let Some(path) = manifest
+            .entries
+            .keys()
+            .find(|path| is_pruned(path, &self.pruned_components))
+        {
+            return Err(Error::ManifestPathPruned { path: path.clone() });
+        }
+        Ok(manifest)
+    }
+}
+
+pub(crate) fn is_pruned(path: &Utf8Path, pruned_components: &BTreeSet<String>) -> bool {
+    path.components()
+        .any(|component| pruned_components.contains(component.as_str()))
+}
+
+fn valid_pruned_component(component: &str) -> bool {
+    !component.is_empty()
+        && component != "."
+        && component != ".."
+        && !component.contains('/')
+        && !component.contains('\0')
 }
 
 /// The reads: each call opens the destination and the recorded state, takes
 /// no lock, and drops both handles before it returns.
 impl Projection {
-    /// The [`Status`] of the destination, with nothing written. A missing
-    /// state directory or manifest reads as the empty [`Manifest`].
+    /// The [`Status`] of the in-scope destination, with nothing written. A
+    /// missing state directory or manifest reads as the empty [`Manifest`].
     pub fn status(&self) -> Result<Status> {
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
-        let observations = observe(&dest, &manifest, &BlockMarkers::new())?;
+        let observations = observe_scoped(
+            &dest,
+            &manifest,
+            &BlockMarkers::new(),
+            &self.pruned_components,
+        )?;
         Ok(status(&manifest, &observations, self.state_prefix()))
     }
 
@@ -94,7 +179,7 @@ impl Projection {
     /// [`Manifest`].
     pub fn manifest(&self) -> Result<Manifest> {
         match self.open_state(None) {
-            Some(state) => load_manifest(&state?),
+            Some(state) => self.validate_manifest_scope(load_manifest(&state?)?),
             None => Ok(Manifest::new()),
         }
     }
@@ -106,7 +191,7 @@ impl Projection {
     /// manifest.
     fn manifest_under(&self, dest: &Dir) -> Result<Manifest> {
         match self.open_state(Some(dest)) {
-            Some(state) => load_manifest(&state?),
+            Some(state) => self.validate_manifest_scope(load_manifest(&state?)?),
             None => Ok(Manifest::new()),
         }
     }
@@ -121,7 +206,12 @@ impl Projection {
         require_owner(owner)?;
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
-        let observations = observe(&dest, &manifest, &block_markers(desired))?;
+        let observations = observe_scoped(
+            &dest,
+            &manifest,
+            &block_markers(desired),
+            &self.pruned_components,
+        )?;
         let plan = decide(
             owner,
             desired,
@@ -145,7 +235,12 @@ impl Projection {
         require_owner(owner)?;
         let dest = self.open_target()?;
         let manifest = self.manifest_under(&dest)?;
-        let observations = observe(&dest, &manifest, &BlockMarkers::new())?;
+        let observations = observe_scoped(
+            &dest,
+            &manifest,
+            &BlockMarkers::new(),
+            &self.pruned_components,
+        )?;
         let plan = decide_removal(
             owner,
             scope,

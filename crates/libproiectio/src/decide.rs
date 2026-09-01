@@ -205,7 +205,10 @@ pub(crate) fn decide_removal(
             let mut refused: BTreeMap<Utf8PathBuf, Action> = BTreeMap::new();
             for request in requested {
                 match contained_normalize(request) {
-                    Some(normalized) if !overlaps_state(&normalized, state_prefix) => {
+                    Some(normalized)
+                        if !overlaps_state(&normalized, state_prefix)
+                            && !observations.is_pruned(&normalized) =>
+                    {
                         admitted.insert(normalized);
                     }
                     _ => {
@@ -292,7 +295,7 @@ fn plan_actions(
             continue;
         };
         named.insert(normalized.clone());
-        if overlaps_state(&normalized, state_prefix) {
+        if overlaps_state(&normalized, state_prefix) || observations.is_pruned(&normalized) {
             actions.insert(key.clone(), refuse(Refusal::Containment { through: None }));
             continue;
         }
@@ -588,13 +591,15 @@ fn drifted_directory(
     // Nothing beneath a drifted directory is recorded at that location, so
     // everything standing there holds it.
     let unreadable = unreadable_beneath(path, observations);
+    let unobserved = has_unobserved_beneath(path, observations);
     let (held, holding) = holding_beneath(path, manifest, observations, |node, _| {
         unreadable.contains(node)
     });
-    if held || !unreadable.is_empty() {
+    if held || !unreadable.is_empty() || unobserved {
         return Some(refuse(Refusal::DirectoryInTheWay {
             holding,
             unreadable,
+            pruned: unobserved,
         }));
     }
     Some(match policy {
@@ -619,6 +624,7 @@ fn directory_in_the_way(
             .any(|node| node.starts_with(directory) && node != directory)
     };
     let unreadable = unreadable_beneath(path, observations);
+    let unobserved = has_unobserved_beneath(path, observations);
     let (held, holding) = holding_beneath(path, manifest, observations, |node, observation| {
         unreadable.contains(node)
             || match observation {
@@ -626,10 +632,11 @@ fn directory_in_the_way(
                 _ => vacated.contains(node),
             }
     });
-    let blocked = held || !unreadable.is_empty();
+    let blocked = held || !unreadable.is_empty() || unobserved;
     (blocked || !emptied(path)).then_some(Refusal::DirectoryInTheWay {
         holding,
         unreadable,
+        pruned: unobserved,
     })
 }
 
@@ -667,6 +674,16 @@ fn unreadable_beneath(path: &Utf8Path, observations: &Observations) -> BTreeSet<
         .filter(|directory| directory.starts_with(path))
         .cloned()
         .collect()
+}
+
+/// Whether the directory at `path` or one beneath it has an inventory that
+/// stops at a pruned child. The child stays outside the report, but its
+/// containing directory cannot be treated as empty.
+fn has_unobserved_beneath(path: &Utf8Path, observations: &Observations) -> bool {
+    observations
+        .unobserved
+        .iter()
+        .any(|directory| directory.starts_with(path))
 }
 
 /// Every node the walk saw beneath `path`, at any depth. A recorded path the
@@ -781,6 +798,9 @@ fn planned_hop(
     path: &Utf8Path,
     vacated: &BTreeSet<Utf8PathBuf>,
 ) -> Hop {
+    if observations.is_pruned(path) {
+        return Hop::Unresolvable;
+    }
     match admitted.get(path) {
         Some(Entry::Symlink { target }) => return Hop::Link(target.clone()),
         Some(Entry::File { .. } | Entry::Block { .. }) => return Hop::Terminal,

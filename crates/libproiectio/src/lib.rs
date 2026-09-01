@@ -7,6 +7,8 @@
 //! [`Projection::status`], [`Projection::manifest`], [`Projection::plan`] and
 //! [`Projection::plan_removal`] read without locking; [`Projection::begin`]
 //! returns the [`Run`] that holds the single-writer guard and applies.
+//! [`Projection::with_pruned_components`] prevents observation and writes below
+//! caller-chosen component names; no names are pruned by default.
 //!
 //! A caller computes the desired tree of [`Entry`] values itself, or builds
 //! one with [`load_mapping`], [`load_tree`], [`load_archive`], or

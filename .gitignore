@@ -2,3 +2,4 @@
 target/
 review-round*/
 .claude
+.interprex.toml

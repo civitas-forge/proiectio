@@ -11,10 +11,11 @@ Implementation Guidelines
     hashing what is on disk to detect drift. So the engine is three
     stages, not two:
 
-    - observe: read-only I/O. Walk the destination, hash every file
-      it can name — it never sees the desired tree, so it cannot
-      know which paths decide will compare — snapshot into plain
-      data.
+    - observe: read-only I/O. Walk the destination, except below the
+      path-component names the Projection prunes, and hash every
+      in-scope file it can name — it never sees the desired tree, so
+      it cannot know which paths decide will compare — snapshot into
+      plain data.
     - decide: pure. (desired, manifest, observations) -> Plan,
       deterministic, no file system. All the interesting logic —
       classification, drift, containment, orphans — lives here.
@@ -104,6 +105,20 @@ Implementation Guidelines
       Restarts carry a visited set, and meeting any link twice
       refuses rather than resolving further: a chain that walks
       one link twice ends outside, as a loop does.
+
+    The component-prune set applies in all three stages. Observe checks
+    each entry name before stat or open. Decide refuses desired keys,
+    named removals and resolved removal destinations that enter a
+    pruned component. Act checks each action's live ancestry, preventing
+    a recorded symlink from redirecting a stale plan into a pruned
+    directory. Before observation or writing, the Projection rejects a
+    manifest key inside a pruned component. Configuration also rejects
+    a prune set that overlaps an in-target state directory.
+
+    Skipping an entry marks its containing directory incomplete without
+    recording the pruned path. Decide then refuses to replace or remove
+    that directory. The refusal reports that pruned contents exist but
+    does not name them.
 
     What a restart earns depends on the action, and the three answers
     differ:

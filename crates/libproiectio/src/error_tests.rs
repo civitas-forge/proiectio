@@ -12,6 +12,7 @@ fn every_variant() -> Vec<Error> {
             RefusalKind::DirectoryInTheWay => Refusal::DirectoryInTheWay {
                 holding: BTreeMap::from([(Utf8PathBuf::from("bin/tool/note.md"), BTreeSet::new())]),
                 unreadable: BTreeSet::new(),
+                pruned: false,
             },
             RefusalKind::Foreign => Refusal::Foreign,
             RefusalKind::Containment => Refusal::Containment { through: None },
@@ -68,6 +69,9 @@ fn every_variant() -> Vec<Error> {
             found: 9,
             supported: crate::MANIFEST_VERSION,
         },
+        Error::ManifestPathPruned {
+            path: Utf8PathBuf::from("vendor/.git/config"),
+        },
         Error::LockHeld {
             path: Utf8PathBuf::from("/srv/site/.proiectio/proiectio.lock"),
         },
@@ -79,6 +83,13 @@ fn every_variant() -> Vec<Error> {
         },
         Error::StateDirIsTarget {
             path: Utf8PathBuf::from("/srv/site"),
+        },
+        Error::StateDirPruned {
+            path: Utf8PathBuf::from("/srv/site/.proiectio"),
+            component: ".proiectio".to_owned(),
+        },
+        Error::InvalidPrunedComponent {
+            component: "not/one".to_owned(),
         },
         Error::MappingFormat {
             path: Utf8PathBuf::from("deploy.toml"),
@@ -197,15 +208,18 @@ fn every_variant() -> Vec<Error> {
 // counted off the list — a count taken from the list can only agree with
 // itself. The refusals all serialize as `refused`, so this is one tag
 // shorter than the list is long.
-const EVERY_KIND: [&str; 35] = [
+const EVERY_KIND: [&str; 38] = [
     "refused",
     "io",
     "manifest_format",
     "manifest_version",
+    "manifest_path_pruned",
     "lock_held",
     "current_directory",
     "path_not_utf8",
     "state_dir_is_target",
+    "state_dir_pruned",
+    "invalid_pruned_component",
     "mapping_format",
     "mapping_is_directory",
     "mapping_version",
@@ -243,10 +257,13 @@ fn is_named_above(error: &Error) -> bool {
         | Error::Io { .. }
         | Error::ManifestFormat { .. }
         | Error::ManifestVersion { .. }
+        | Error::ManifestPathPruned { .. }
         | Error::LockHeld { .. }
         | Error::CurrentDirectory { .. }
         | Error::PathNotUtf8 { .. }
         | Error::StateDirIsTarget { .. }
+        | Error::StateDirPruned { .. }
+        | Error::InvalidPrunedComponent { .. }
         | Error::MappingFormat { .. }
         | Error::MappingIsDirectory { .. }
         | Error::MappingVersion { .. }

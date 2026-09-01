@@ -4,8 +4,8 @@ use cap_std::fs_utf8::Dir;
 
 use crate::{
     Aborted, ApplyReport, BlockMarkers, Desired, DriftPolicy, Manifest, Plan, PlanOptions,
-    Projection, RemovalScope, Report, Result, StateDir, StateLock, apply, block_markers, decide,
-    decide_removal, load_manifest, observe, require_owner,
+    Projection, RemovalScope, Report, Result, StateDir, StateLock, apply_scoped, block_markers,
+    decide, decide_removal, load_manifest, observe_scoped, require_owner,
 };
 
 /// One write pass over a projection, holding the single-writer guard from
@@ -33,7 +33,7 @@ impl Projection {
         let dest = self.open_target()?;
         let state = self.open_or_create_state(&dest)?;
         let lock = StateLock::acquire(&state)?;
-        let manifest = load_manifest(&state)?;
+        let manifest = self.validate_manifest_scope(load_manifest(&state)?)?;
         Ok(Run {
             projection: self.clone(),
             dest,
@@ -77,7 +77,12 @@ impl Run {
     pub fn plan(&mut self, owner: &str, desired: &Desired, options: PlanOptions) -> Result<&Plan> {
         self.plan = None;
         require_owner(owner)?;
-        let observations = observe(&self.dest, &self.manifest, &block_markers(desired))?;
+        let observations = observe_scoped(
+            &self.dest,
+            &self.manifest,
+            &block_markers(desired),
+            self.projection.pruned_components(),
+        )?;
         self.plan = Some(decide(
             owner,
             desired,
@@ -101,7 +106,12 @@ impl Run {
     ) -> Result<&Plan> {
         self.plan = None;
         require_owner(owner)?;
-        let observations = observe(&self.dest, &self.manifest, &BlockMarkers::new())?;
+        let observations = observe_scoped(
+            &self.dest,
+            &self.manifest,
+            &BlockMarkers::new(),
+            self.projection.pruned_components(),
+        )?;
         self.plan = Some(decide_removal(
             owner,
             scope,
@@ -162,7 +172,13 @@ impl Run {
                 manifest: self.manifest,
             });
         };
-        apply(&self.dest, &self.state, &self.manifest, plan)
+        apply_scoped(
+            &self.dest,
+            &self.state,
+            &self.manifest,
+            plan,
+            self.projection.pruned_components(),
+        )
     }
 }
 

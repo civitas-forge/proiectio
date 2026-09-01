@@ -49,13 +49,26 @@ Proiectio Design
     enforces it.
 2. Classification and Apply
 
-    Each path in the union of the manifest and the directory gets one
-    state; status reports them all except the unrecorded directories.
+    Each in-scope path in the union of the manifest and the directory
+    gets one state; status reports them all except the unrecorded
+    directories. A caller may configure the Projection to prune named
+    path components at every depth. Pruning `.git` omits both
+    `.git/config` and `vendor/project/.git/config`, while `.github`
+    remains in scope. Proiectio does not observe, classify or report a
+    pruned path. Desired and removal paths that enter one refuse as
+    Containment, and a manifest that records one is invalid. A prune set
+    also cannot contain a component of an in-target state directory.
+    Proiectio supplies no default components; the caller chooses them
+    independently of ignore files.
+
     The desired tree enters only when plan compares this classification
     against it to choose actions. A non-UTF-8 entry on disk can never
     match a desired or a recorded path, so it stays outside the table —
     never overwritten, never removed, and a
     directory holding one is never pruned.
+    A directory holding a pruned child is never treated as empty: the
+    child remains outside the report, while the incomplete inventory
+    prevents a plan from replacing or removing its parent.
 
     One state per path:
 
@@ -159,8 +172,11 @@ Proiectio Design
         pub enum RemovalScope<'a> { Everything, Paths(&'a BTreeSet<Utf8PathBuf>) }
         pub enum Origin { Caller, Mapping, Tree, Archive, Files }
 
-        pub struct Projection { target: Utf8PathBuf, state_dir: Utf8PathBuf }
+        pub struct Projection { target, state_dir, pruned_components }
         impl Projection {
+        pub fn with_pruned_components<I, S>(self, components: I)
+        -> Result<Self>;
+        pub fn pruned_components(&self) -> &BTreeSet<String>;
         // Reads: no lock, nothing written.
         pub fn status(&self) -> Result<Status>;
         pub fn manifest(&self) -> Result<Manifest>;
