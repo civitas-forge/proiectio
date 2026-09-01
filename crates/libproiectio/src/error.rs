@@ -108,6 +108,13 @@ pub enum Error {
          state files would classify as foreign"
     )]
     StateDirIsTarget { path: Utf8PathBuf },
+    #[error(
+        "state directory {path} enters pruned component {component:?}: the projection must be able to read and write its state"
+    )]
+    StateDirPruned {
+        path: Utf8PathBuf,
+        component: String,
+    },
     #[error("pruned component {component:?} is not one path component")]
     InvalidPrunedComponent { component: String },
     #[error("mapping {path} is not valid: {source}")]

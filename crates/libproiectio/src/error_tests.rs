@@ -83,6 +83,10 @@ fn every_variant() -> Vec<Error> {
         Error::StateDirIsTarget {
             path: Utf8PathBuf::from("/srv/site"),
         },
+        Error::StateDirPruned {
+            path: Utf8PathBuf::from("/srv/site/.proiectio"),
+            component: ".proiectio".to_owned(),
+        },
         Error::InvalidPrunedComponent {
             component: "not/one".to_owned(),
         },
@@ -203,7 +207,7 @@ fn every_variant() -> Vec<Error> {
 // counted off the list — a count taken from the list can only agree with
 // itself. The refusals all serialize as `refused`, so this is one tag
 // shorter than the list is long.
-const EVERY_KIND: [&str; 37] = [
+const EVERY_KIND: [&str; 38] = [
     "refused",
     "io",
     "manifest_format",
@@ -213,6 +217,7 @@ const EVERY_KIND: [&str; 37] = [
     "current_directory",
     "path_not_utf8",
     "state_dir_is_target",
+    "state_dir_pruned",
     "invalid_pruned_component",
     "mapping_format",
     "mapping_is_directory",
@@ -256,6 +261,7 @@ fn is_named_above(error: &Error) -> bool {
         | Error::CurrentDirectory { .. }
         | Error::PathNotUtf8 { .. }
         | Error::StateDirIsTarget { .. }
+        | Error::StateDirPruned { .. }
         | Error::InvalidPrunedComponent { .. }
         | Error::MappingFormat { .. }
         | Error::MappingIsDirectory { .. }

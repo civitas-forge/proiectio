@@ -109,6 +109,86 @@ fn a_run_refuses_desired_paths_that_enter_pruned_components() {
 }
 
 #[test]
+fn a_pruned_child_keeps_a_drifted_directory_from_looking_empty() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(&dest, state.root())
+        .with_pruned_components([".git"])
+        .expect("a path component");
+    let wanted = Tree::new().file("cache", "managed");
+
+    let mut run = projection.begin().expect("begin");
+    run.plan("harness", &desired(&wanted), PlanOptions::default())
+        .expect("plan initial file");
+    run.apply().expect("apply initial file");
+
+    fs::remove_file(dest.path("cache")).expect("remove the managed file");
+    fs::create_dir_all(dest.path("cache/.git")).expect("make pruned directory");
+    fs::write(dest.path("cache/.git/config"), "metadata").expect("write pruned child");
+
+    let plan = projection
+        .plan(
+            "harness",
+            &desired(&wanted),
+            PlanOptions {
+                drift: DriftPolicy::Overwrite,
+                ..PlanOptions::default()
+            },
+        )
+        .expect("plan drift overwrite");
+
+    assert!(matches!(
+        plan.plan.actions[Utf8Path::new("cache")],
+        Action::Refuse {
+            refusal: Refusal::DirectoryInTheWay { .. }
+        }
+    ));
+    assert_eq!(
+        fs::read(dest.path("cache/.git/config")).expect("pruned child remains"),
+        b"metadata"
+    );
+}
+
+#[test]
+fn a_pruned_child_keeps_a_scaffolding_parent_from_being_replaced() {
+    let dest = Tree::new().materialize();
+    let state = Tree::new().materialize();
+    let projection = projection(&dest, state.root())
+        .with_pruned_components([".git"])
+        .expect("a path component");
+
+    let mut run = projection.begin().expect("begin");
+    run.plan(
+        "harness",
+        &desired(&Tree::new().file("cache/old", "managed")),
+        PlanOptions::default(),
+    )
+    .expect("plan initial tree");
+    run.apply().expect("apply initial tree");
+    fs::create_dir_all(dest.path("cache/.git")).expect("make pruned directory");
+    fs::write(dest.path("cache/.git/config"), "metadata").expect("write pruned child");
+
+    let plan = projection
+        .plan(
+            "harness",
+            &desired(&Tree::new().file("cache", "replacement")),
+            PlanOptions::default(),
+        )
+        .expect("plan parent replacement");
+
+    assert!(matches!(
+        plan.plan.actions[Utf8Path::new("cache")],
+        Action::Refuse {
+            refusal: Refusal::DirectoryInTheWay { .. }
+        }
+    ));
+    assert_eq!(
+        fs::read(dest.path("cache/.git/config")).expect("pruned child remains"),
+        b"metadata"
+    );
+}
+
+#[test]
 fn a_manifest_entry_inside_a_pruned_component_is_an_error() {
     let dest = Tree::new().materialize();
     let state = Tree::new().materialize();

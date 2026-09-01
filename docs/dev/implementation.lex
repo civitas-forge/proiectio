@@ -114,7 +114,15 @@ Implementation Guidelines
     symlink cannot redirect a stale plan into a pruned directory. The
     Projection also validates every loaded manifest before observation
     or a write pass begins; a recorded key inside a pruned component is
-    an operation error rather than a Missing row.
+    an operation error rather than a Missing row. Configuration rejects
+    a prune set that overlaps an in-target state directory, since the
+    Projection must still read and write that directory.
+
+    Skipping a pruned entry records only that its containing directory
+    was not inventoried completely. Decide uses that fact when judging a
+    directory replacement: it refuses rather than claiming the directory
+    will be empty after managed descendants are removed. The pruned entry
+    itself never enters the observation or the refusal.
 
     What a restart earns depends on the action, and the three answers
     differ:

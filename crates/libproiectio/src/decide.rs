@@ -48,7 +48,7 @@ pub(crate) fn classify(
 ) -> Status {
     let mut rows = BTreeMap::new();
     for (path, observation) in &observations.paths {
-        if in_state(path, state_prefix) || observations.is_pruned(path) {
+        if in_state(path, state_prefix) {
             continue;
         }
         let recorded = manifest.entries.get(path);
@@ -66,7 +66,7 @@ pub(crate) fn classify(
         );
     }
     for (path, recorded) in &manifest.entries {
-        if in_state(path, state_prefix) || observations.is_pruned(path) {
+        if in_state(path, state_prefix) {
             continue;
         }
         rows.entry(path.clone()).or_insert_with(|| Row {
@@ -354,7 +354,7 @@ fn plan_actions(
         {
             continue;
         }
-        if overlaps_state(path, state_prefix) || observations.is_pruned(path) || !contained(path) {
+        if overlaps_state(path, state_prefix) || !contained(path) {
             actions.insert(path.clone(), refuse(Refusal::Containment { through: None }));
             continue;
         }
@@ -366,17 +366,12 @@ fn plan_actions(
         } else {
             match walked_ancestry(path, manifest, observations, &BTreeSet::new(), false) {
                 Err(refusal) => (refuse(refusal), None),
-                Ok(Some(landing))
-                    if overlaps_state(&landing.at, state_prefix)
-                        || observations.is_pruned(&landing.at) =>
-                {
-                    (
-                        refuse(Refusal::Containment {
-                            through: landing.through,
-                        }),
-                        None,
-                    )
-                }
+                Ok(Some(landing)) if overlaps_state(&landing.at, state_prefix) => (
+                    refuse(Refusal::Containment {
+                        through: landing.through,
+                    }),
+                    None,
+                ),
                 Ok(landing) => {
                     let at = match landing {
                         Some(landing) if landing.at != *path => {
@@ -596,10 +591,11 @@ fn drifted_directory(
     // Nothing beneath a drifted directory is recorded at that location, so
     // everything standing there holds it.
     let unreadable = unreadable_beneath(path, observations);
+    let unobserved = has_unobserved_beneath(path, observations);
     let (held, holding) = holding_beneath(path, manifest, observations, |node, _| {
         unreadable.contains(node)
     });
-    if held || !unreadable.is_empty() {
+    if held || !unreadable.is_empty() || unobserved {
         return Some(refuse(Refusal::DirectoryInTheWay {
             holding,
             unreadable,
@@ -627,6 +623,7 @@ fn directory_in_the_way(
             .any(|node| node.starts_with(directory) && node != directory)
     };
     let unreadable = unreadable_beneath(path, observations);
+    let unobserved = has_unobserved_beneath(path, observations);
     let (held, holding) = holding_beneath(path, manifest, observations, |node, observation| {
         unreadable.contains(node)
             || match observation {
@@ -634,7 +631,7 @@ fn directory_in_the_way(
                 _ => vacated.contains(node),
             }
     });
-    let blocked = held || !unreadable.is_empty();
+    let blocked = held || !unreadable.is_empty() || unobserved;
     (blocked || !emptied(path)).then_some(Refusal::DirectoryInTheWay {
         holding,
         unreadable,
@@ -675,6 +672,16 @@ fn unreadable_beneath(path: &Utf8Path, observations: &Observations) -> BTreeSet<
         .filter(|directory| directory.starts_with(path))
         .cloned()
         .collect()
+}
+
+/// Whether the directory at `path` or one beneath it has an inventory that
+/// stops at a pruned child. The child stays outside the report, but its
+/// containing directory cannot be treated as empty.
+fn has_unobserved_beneath(path: &Utf8Path, observations: &Observations) -> bool {
+    observations
+        .unobserved
+        .iter()
+        .any(|directory| directory.starts_with(path))
 }
 
 /// Every node the walk saw beneath `path`, at any depth. A recorded path the

@@ -57,6 +57,8 @@ Proiectio Design
     remains in scope. The walk does not stat, enter, classify or report
     a pruned path. Desired and removal paths that enter one refuse as
     Containment, and loading a manifest that records one is an error.
+    An in-target state directory must remain in scope; configuring a
+    prune set that contains one of its components is an error.
     Proiectio supplies no default component: the caller owns the policy,
     and an ignore file cannot define it because callers may deliberately
     project into ignored paths.
@@ -66,6 +68,9 @@ Proiectio Design
     match a desired or a recorded path, so it stays outside the table —
     never overwritten, never removed, and a
     directory holding one is never pruned.
+    A directory holding a pruned child is likewise never treated as
+    empty: the child remains outside the report, while the incomplete
+    inventory prevents a plan from replacing or removing its parent.
 
     One state per path:
 

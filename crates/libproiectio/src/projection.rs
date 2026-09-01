@@ -58,8 +58,9 @@ impl Projection {
     /// may not record a path inside one.
     ///
     /// A component is one non-empty Unix filename other than `.` or `..`;
-    /// `/` and NUL are not allowed. Calling this method replaces the previous
-    /// set. [`Projection::new`] starts with an empty set.
+    /// `/` and NUL are not allowed. An in-target state directory may not enter
+    /// a pruned component. Calling this method replaces the previous set.
+    /// [`Projection::new`] starts with an empty set.
     pub fn with_pruned_components<I, S>(mut self, components: I) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
@@ -74,6 +75,16 @@ impl Projection {
                 });
             }
             pruned.insert(component.to_owned());
+        }
+        if let Some(state_prefix) = self.state_prefix()
+            && let Some(component) = state_prefix
+                .components()
+                .find(|component| pruned.contains(component.as_str()))
+        {
+            return Err(Error::StateDirPruned {
+                path: self.state_dir.clone(),
+                component: component.as_str().to_owned(),
+            });
         }
         self.pruned_components = pruned;
         Ok(self)

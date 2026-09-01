@@ -124,6 +124,32 @@ fn a_pruned_name_must_be_one_path_component() {
 }
 
 #[test]
+fn an_in_target_state_directory_cannot_enter_a_pruned_component() {
+    for (state_dir, component) in [
+        (None, ".proiectio"),
+        (Some("/srv/site/state/.git/data"), ".git"),
+    ] {
+        assert!(matches!(
+            projection("/srv/site", state_dir)
+                .expect("a projection")
+                .with_pruned_components([component])
+                .expect_err("state must remain in scope"),
+            Error::StateDirPruned { path, component: rejected }
+                if path == Utf8Path::new(state_dir.unwrap_or("/srv/site/.proiectio"))
+                    && rejected == component
+        ));
+    }
+}
+
+#[test]
+fn an_external_state_directory_may_share_a_pruned_component_name() {
+    projection("/srv/site", Some("/var/state/.git/proiectio"))
+        .expect("a projection")
+        .with_pruned_components([".git"])
+        .expect("only destination-relative components are pruned");
+}
+
+#[test]
 fn a_state_directory_states_whether_it_is_there() {
     use crate::test_support::Tree;
 

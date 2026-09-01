@@ -230,6 +230,34 @@ fn a_pruned_component_is_not_observed_at_any_depth() {
 }
 
 #[test]
+fn directories_containing_pruned_children_are_known_to_be_incomplete() {
+    let fixture = Tree::new()
+        .file(".git/config", "root metadata")
+        .file("cache/.git/config", "nested metadata")
+        .materialize();
+    let pruned = BTreeSet::from([".git".to_owned()]);
+
+    let observations = observe_scoped(
+        &dest(&fixture),
+        &Manifest::new(),
+        &BlockMarkers::new(),
+        &pruned,
+    )
+    .expect("observe succeeds");
+
+    assert_eq!(
+        observations.unobserved,
+        BTreeSet::from([Utf8PathBuf::new(), Utf8PathBuf::from("cache")])
+    );
+    assert!(
+        observations
+            .paths
+            .keys()
+            .all(|path| !path.ends_with(".git"))
+    );
+}
+
+#[test]
 fn recorded_path_beneath_a_symlinked_ancestor_observes_absent() {
     let fixture = Tree::new()
         .file("real/x.txt", "x")

@@ -67,7 +67,10 @@ Security Model
     grading cannot prove a target that enters one remains inside the
     destination; the refusing policy therefore grades it external. The
     external-target permission writes the pointer without entering the
-    pruned path.
+    pruned path. A containing directory is marked incomplete when the
+    walk skips a pruned child, so no plan removes or replaces that parent
+    on the assumption that the unobserved child is absent. A prune set
+    that overlaps an in-target state directory is rejected.
 
     Normalization alone does not close the hole. A projected symlink
     "logs -> /etc" followed by a projected file "logs/x" is a write

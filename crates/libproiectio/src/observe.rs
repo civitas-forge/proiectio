@@ -55,6 +55,10 @@ pub(crate) struct Observations {
     /// like every other path, which makes the destination root the empty
     /// path. Nothing may conclude such a directory empties.
     pub unreadable: BTreeSet<Utf8PathBuf>,
+    /// Every directory whose inventory deliberately stops at a pruned child.
+    /// The child itself remains absent from the observation, while planning
+    /// can still avoid concluding that the containing directory is empty.
+    pub unobserved: BTreeSet<Utf8PathBuf>,
     pub pruned_components: BTreeSet<String>,
 }
 
@@ -226,9 +230,6 @@ pub(crate) fn observe_scoped(
         &mut into,
     )?;
     for path in manifest.entries.keys() {
-        if into.is_pruned(path) {
-            continue;
-        }
         into.paths
             .entry(path.clone())
             .or_insert(Observation::Absent);
@@ -250,9 +251,6 @@ fn relocated_regions(
 ) -> Result<()> {
     let mut regions: BTreeMap<Utf8PathBuf, Observation> = BTreeMap::new();
     for (path, recorded) in &manifest.entries {
-        if into.is_pruned(path) {
-            continue;
-        }
         let Some((marker, placement)) = crate::block::block_kind(&recorded.kind) else {
             continue;
         };
@@ -261,9 +259,6 @@ fn relocated_regions(
             continue;
         };
         if landing.at == *path {
-            continue;
-        }
-        if into.is_pruned(&landing.at) {
             continue;
         }
         // A block record at the landing already had its region parsed, and
@@ -446,6 +441,7 @@ fn walk(
             continue;
         };
         if pruned_components.contains(name.as_str()) {
+            into.unobserved.insert(prefix.to_owned());
             continue;
         }
         let rel = prefix.join(&name);
