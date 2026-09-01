@@ -2659,15 +2659,20 @@ class Claude(Reviewer):
 
     The verdict comes back under `structured_output` in the result envelope.
     The prompt goes in on stdin, which has no size ceiling. Only the read-only
-    built-in tools are offered and no settings file is loaded, so nothing the
-    user's own Claude Code setup carries — hooks, MCP servers, permissions —
-    reaches the review, and headless mode never has a permission to prompt for.
+    built-in tools are offered and no settings file is loaded, so the runner's
+    hooks, MCP servers and permission rules do not reach the review, and
+    headless mode never has a permission to prompt for. Memory files still
+    load: the reviewed tree's CLAUDE.md and the runner's own `~/.claude/CLAUDE.md`
+    are read the way they would be in any session.
     """
 
     name = "claude"
     binary = "claude"
     models = ("claude-opus-5", "claude-sonnet-5", "claude-fable-5-1")
     default_model = "claude-opus-5"
+    #: The built-in tools offered, every one of them read-only. Spelled once so
+    #: the flag and the diagnosis that names them cannot drift apart.
+    TOOLS = ("Read", "Grep", "Glob")
 
     def argv(self, ask: Ask, prompt_path: Path, schema_path: Path) -> list[str]:
         effort = ["--effort", ask.effort] if ask.effort else []
@@ -2678,7 +2683,7 @@ class Claude(Reviewer):
             *effort,
             "--output-format", "json",
             *(["--json-schema", json.dumps(ask.schema)] if ask.schema else []),
-            "--tools", "Read,Grep,Glob",
+            "--tools", ",".join(self.TOOLS),
             "--setting-sources", "",
             "--strict-mcp-config",
             "--disable-slash-commands",
@@ -2706,13 +2711,16 @@ class Claude(Reviewer):
                 if line.startswith("Error:") or "Not logged in" in line:
                     return line.strip()
             return None
-        if envelope.get("is_error") or envelope.get("subtype") != "success":
-            said = str(envelope.get("result") or "").strip()
-            return f"ended the session {envelope.get('subtype')}: {said}".strip(": ")
+        subtype = envelope.get("subtype")
+        said = str(envelope.get("result") or "").strip()
+        if subtype != "success":
+            return f"ended the session {subtype}: {said}".strip(": ")
+        if envelope.get("is_error"):
+            return f"reported an error: {said}".strip(": ")
         denied = envelope.get("permission_denials") or []
         if denied:
             return (f"was refused {len(denied)} tool call(s) it asked for — headless "
-                    "mode cannot prompt, and only Read, Grep and Glob are offered")
+                    f"mode cannot prompt, and only {', '.join(self.TOOLS)} are offered")
         return None
 
     def usage(self, run: Run) -> dict | None:
@@ -2724,6 +2732,11 @@ class Claude(Reviewer):
             "input_tokens", "output_tokens",
             "cache_read_input_tokens", "cache_creation_input_tokens",
         ) if key in counted}
+        if usage:
+            # The per-kind counters are what the envelope carries; the tally
+            # the stderr line reports is their sum, and it survives a retry
+            # because `merge_usage` adds numbers.
+            usage["total_tokens"] = sum(usage.values())
         if "total_cost_usd" in envelope:
             usage["cost_usd"] = envelope["total_cost_usd"]
         if "num_turns" in envelope:
