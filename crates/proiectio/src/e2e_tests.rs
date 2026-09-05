@@ -4,7 +4,7 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use serde_json::Value as JsonValue;
 use serial_test::serial;
-use standout::OutputMode;
+use standout::cli::ExitStatus;
 use standout_test::TestResult;
 use tempfile::TempDir;
 
@@ -12,36 +12,29 @@ use crate::app;
 use crate::cli;
 use crate::exit;
 use crate::testing::{
-    assert_styles_resolved, assert_tags_declared, harness, manifest_of, modified, stated, tour,
-    utf8,
+    Mode, Under, assert_styles_resolved, assert_tags_declared, harness, manifest_of, modified,
+    stated, tour, utf8,
 };
 
 /// One invocation through the whole argv-to-output pipeline, under the
 /// rendered format the tour's transcripts are written in.
 fn run(dir: &TempDir, args: &[&str]) -> TestResult {
-    run_as(dir, OutputMode::Text, args)
+    run_as(dir, Mode::Plain, args)
 }
 
-fn run_as(dir: &TempDir, mode: OutputMode, args: &[&str]) -> TestResult {
-    run_over(dir, mode, &exit::Verdict::default(), args)
-}
-
-/// The same, over a verdict the caller keeps: a refused run renders its plan
-/// and leaves the refusal there rather than in the run's result.
-fn run_over(dir: &TempDir, mode: OutputMode, verdict: &exit::Verdict, args: &[&str]) -> TestResult {
+fn run_as(dir: &TempDir, mode: Mode, args: &[&str]) -> TestResult {
     let mut argv = vec!["proiectio"];
     argv.extend_from_slice(args);
-    harness(dir).output_mode(mode).run(
-        &app::build(verdict.clone()).expect("an app"),
-        cli::command(),
-        argv,
-    )
+    harness(dir)
+        .under(mode)
+        .run(&app::build().expect("an app"), cli::command(), argv)
 }
 
-/// The status the process leaves with: what emitting the run reports, over
-/// what the run recorded.
-fn leaving(result: &TestResult, verdict: &exit::Verdict) -> u8 {
-    verdict.over(exit::status(result.outcome()))
+/// The status the process leaves with. A refused run renders its plan and
+/// declares the refusal on its own output, so the status rides the outcome
+/// rather than a cell beside it; nothing matched is a failure.
+fn leaving(result: &TestResult) -> u8 {
+    result.exit_status().map_or(exit::FAILURE, ExitStatus::code)
 }
 
 /// What the destination holds, by name, at one level.
@@ -123,17 +116,15 @@ fn a_destination_is_projected_re_projected_refused_forced_and_cleared() {
         "drifted  bin/tool\nclean    config/settings.toml\nmissing  current\n"
     );
 
-    let verdict = exit::Verdict::default();
     let mut planned = source.to_vec();
     planned.push("--dry-run");
-    let dry = run_over(&dir, OutputMode::Text, &verdict, &planned);
-    assert_eq!(leaving(&dry, &verdict), exit::REFUSAL);
+    let dry = run_as(&dir, Mode::Plain, &planned);
+    assert_eq!(leaving(&dry), exit::REFUSAL);
     assert_eq!(dry.stdout(), refused_plan(&deploy));
     assert_eq!(dry.error(), None);
 
-    let real = exit::Verdict::default();
-    let refused = run_over(&dir, OutputMode::Text, &real, &source);
-    assert_eq!(leaving(&refused, &real), exit::REFUSAL);
+    let refused = run_as(&dir, Mode::Plain, &source);
+    assert_eq!(leaving(&refused), exit::REFUSAL);
     assert_eq!(refused.stdout(), refused_plan(&deploy));
     assert_eq!(refused.error(), None);
 
@@ -282,15 +273,13 @@ fn rm_of_a_drifted_path_refuses_until_force_lifts_the_policy() {
     run(&dir, &["write", deploy.as_str(), "--dest", dest.as_str()]).assert_success();
     std::fs::write(dest.join("bin/tool").as_std_path(), EDITED).expect("a local edit");
 
-    let verdict = exit::Verdict::default();
-    let refused = run_over(
+    let refused = run_as(
         &dir,
-        OutputMode::Text,
-        &verdict,
+        Mode::Plain,
         &["rm", "bin/tool", "--dest", dest.as_str()],
     );
 
-    assert_eq!(leaving(&refused, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&refused), exit::REFUSAL);
     assert_eq!(
         refused.stdout(),
         "would refuse     bin/tool  (drifted)\npass --force to touch them anyway, where the projection can still \
@@ -318,15 +307,13 @@ fn rm_refuses_a_path_that_leaves_the_destination() {
     let (dir, dest, deploy) = tour();
     run(&dir, &["write", deploy.as_str(), "--dest", dest.as_str()]).assert_success();
 
-    let verdict = exit::Verdict::default();
-    let result = run_over(
+    let result = run_as(
         &dir,
-        OutputMode::Text,
-        &verdict,
+        Mode::Plain,
         &["rm", "../outside", "--dest", dest.as_str()],
     );
 
-    assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&result), exit::REFUSAL);
     assert_eq!(
         result.stdout(),
         "would refuse     ../outside  (containment)\n"
@@ -340,16 +327,14 @@ fn a_dry_run_of_rm_reports_the_plan_and_removes_nothing() {
     let (dir, dest, deploy) = tour();
     run(&dir, &["write", deploy.as_str(), "--dest", dest.as_str()]).assert_success();
 
-    let verdict = exit::Verdict::default();
-    let result = run_over(
+    let result = run_as(
         &dir,
-        OutputMode::Text,
-        &verdict,
+        Mode::Plain,
         &["rm", "--dest", dest.as_str(), "--dry-run"],
     );
 
     result.assert_success();
-    assert_eq!(leaving(&result, &verdict), exit::OK);
+    assert_eq!(leaving(&result), exit::OK);
     assert_eq!(
         result.stdout(),
         "would remove     bin/tool              (exec)\n\
@@ -388,15 +373,13 @@ fn a_dry_run_of_rm_refuses_the_escaping_keys_the_real_run_refuses() {
     run(&dir, &["write", deploy.as_str(), "--dest", dest.as_str()]).assert_success();
     forge_manifest_keys(&dest, "bin/tool", &ESCAPING);
 
-    let verdict = exit::Verdict::default();
-    let dry = run_over(
+    let dry = run_as(
         &dir,
-        OutputMode::Text,
-        &verdict,
+        Mode::Plain,
         &["rm", "--dest", dest.as_str(), "--dry-run"],
     );
 
-    assert_eq!(leaving(&dry, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&dry), exit::REFUSAL);
     assert_eq!(
         dry.stdout(),
         "would refuse     /etc/passwd           (containment)\n\
@@ -406,15 +389,9 @@ fn a_dry_run_of_rm_refuses_the_escaping_keys_the_real_run_refuses() {
          would remove     current               -> releases/1.2.3\n"
     );
 
-    let real_verdict = exit::Verdict::default();
-    let real = run_over(
-        &dir,
-        OutputMode::Text,
-        &real_verdict,
-        &["rm", "--dest", dest.as_str()],
-    );
+    let real = run_as(&dir, Mode::Plain, &["rm", "--dest", dest.as_str()]);
 
-    assert_eq!(leaving(&real, &real_verdict), exit::REFUSAL);
+    assert_eq!(leaving(&real), exit::REFUSAL);
     assert_eq!(real.stdout(), dry.stdout());
     assert_eq!(real.error(), None);
     // Neither run touched the destination: the real one refuses whole.
@@ -441,23 +418,15 @@ fn rm_beneath_a_hand_made_link_refuses_on_the_dry_run_and_the_real_one() {
     std::os::unix::fs::symlink("real/missing", dest.join("logs").as_std_path())
         .expect("a hand-made link stands where it was");
 
-    let dry_verdict = exit::Verdict::default();
-    let dry = run_over(
+    let dry = run_as(
         &dir,
-        OutputMode::Text,
-        &dry_verdict,
+        Mode::Plain,
         &["rm", "--dest", dest.as_str(), "--dry-run"],
     );
-    let real_verdict = exit::Verdict::default();
-    let real = run_over(
-        &dir,
-        OutputMode::Text,
-        &real_verdict,
-        &["rm", "--dest", dest.as_str()],
-    );
+    let real = run_as(&dir, Mode::Plain, &["rm", "--dest", dest.as_str()]);
 
-    assert_eq!(leaving(&dry, &dry_verdict), exit::REFUSAL);
-    assert_eq!(leaving(&real, &real_verdict), exit::REFUSAL);
+    assert_eq!(leaving(&dry), exit::REFUSAL);
+    assert_eq!(leaving(&real), exit::REFUSAL);
     assert_eq!(
         dry.stdout(),
         "would refuse     logs/deep/file.txt  (containment) (below the symlink logs)\n"
@@ -530,7 +499,7 @@ fn rm_of_a_path_the_owner_never_recorded_says_so_and_still_succeeds() {
 
     let json = run_as(
         &dir,
-        OutputMode::Json,
+        Mode::Json,
         &["rm", "typo.txt", "--dest", dest.as_str()],
     );
     json.assert_success();
@@ -580,7 +549,7 @@ fn rm_of_a_path_another_owner_holds_reports_it_and_leaves_it_alone() {
 
     let json = run_as(
         &dir,
-        OutputMode::Json,
+        Mode::Json,
         &[
             "rm",
             "config/settings.toml",
@@ -605,10 +574,9 @@ fn a_refused_dry_run_of_rm_renders_the_whole_plan() {
     std::fs::write(dest.join("bin/tool").as_std_path(), EDITED).expect("a local edit");
     let argv = ["rm", "--dest", dest.as_str(), "--dry-run"];
 
-    let verdict = exit::Verdict::default();
-    let result = run_over(&dir, OutputMode::Text, &verdict, &argv);
+    let result = run_as(&dir, Mode::Plain, &argv);
 
-    assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&result), exit::REFUSAL);
     assert_eq!(
         result.stdout(),
         "would refuse     bin/tool              (drifted)\n\
@@ -620,10 +588,9 @@ fn a_refused_dry_run_of_rm_renders_the_whole_plan() {
     assert_eq!(result.error(), None);
     assert!(dest.join("bin/tool").exists());
 
-    let structured = exit::Verdict::default();
-    let json = run_over(&dir, OutputMode::Json, &structured, &argv);
+    let json = run_as(&dir, Mode::Json, &argv);
 
-    assert_eq!(leaving(&json, &structured), exit::REFUSAL);
+    assert_eq!(leaving(&json), exit::REFUSAL);
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
     assert_eq!(
         stated(&value["rows"], "bin/tool")["verdict"]["Refuse"]["refusal"],
@@ -655,10 +622,10 @@ fn rm_publishes_the_librarys_own_rows() {
 
     let dry = run_as(
         &dir,
-        OutputMode::Json,
+        Mode::Json,
         &["rm", "--dest", dest.as_str(), "--dry-run"],
     );
-    let applied = run_as(&dir, OutputMode::Json, &["rm", "--dest", dest.as_str()]);
+    let applied = run_as(&dir, Mode::Json, &["rm", "--dest", dest.as_str()]);
 
     dry.assert_success();
     applied.assert_success();
@@ -681,11 +648,11 @@ fn rm_names_only_styles_the_stylesheet_declares_and_the_theme_resolves() {
     run(&dir, &["write", deploy.as_str(), "--dest", dest.as_str()]).assert_success();
     let argv = ["rm", "--dest", dest.as_str(), "--dry-run"];
 
-    let debug = run_as(&dir, OutputMode::TermDebug, &argv);
+    let debug = run_as(&dir, Mode::Debug, &argv);
     debug.assert_success();
     assert_tags_declared("rm", debug.stdout());
 
-    let term = run_as(&dir, OutputMode::Term, &argv);
+    let term = run_as(&dir, Mode::Ansi, &argv);
     term.assert_success();
     assert_styles_resolved("rm", term.stdout());
 }
@@ -815,10 +782,9 @@ fn rm_refuses_where_a_recorded_link_resolves_onto_another_owners_node() {
     for extra in [vec!["--dry-run"], vec![]] {
         let mut argv = vec!["rm", "--dest", dest.as_str(), "--owner", "o"];
         argv.extend(extra);
-        let verdict = exit::Verdict::default();
-        let result = run_over(&dir, OutputMode::Text, &verdict, &argv);
+        let result = run_as(&dir, Mode::Plain, &argv);
 
-        assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
+        assert_eq!(leaving(&result), exit::REFUSAL);
         assert_eq!(result.stdout(), format!("{REFUSED_LANDING}\n"), "{argv:?}");
         assert_eq!(
             std::fs::read(dest.join("real/x.txt").as_std_path()).expect("the node p records"),

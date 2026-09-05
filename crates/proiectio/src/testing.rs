@@ -6,21 +6,57 @@ use std::collections::{BTreeMap, BTreeSet};
 use camino::{Utf8Path, Utf8PathBuf};
 use libproiectio::{Desired, Entry, Manifest, PlanOptions, Projection};
 use serde_json::Value as JsonValue;
-use standout::{ColorMode, DEFAULT_MISSING_STYLE_INDICATOR as MISSING, Theme};
+use standout::{
+    ColorMode, ColorPolicy, DEFAULT_MISSING_STYLE_INDICATOR as MISSING, Representation, Theme,
+};
 use standout_test::TestHarness;
 use tempfile::TempDir;
 
 pub(crate) const OWNER: &str = "default";
 
 /// Isolates the config scopes, which resolve under the platform config
-/// directory, inside a directory the test owns.
+/// directory, inside a directory the test owns. The harness defaults to
+/// non-terminal, non-color-capable streams, so this is already the plain
+/// rendered text the transcripts are written in.
 pub(crate) fn harness(dir: &TempDir) -> TestHarness {
     let home = dir.path().to_str().expect("a usable path");
     TestHarness::new()
-        .no_color()
         .cwd(dir.path())
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home)
+}
+
+/// What one `--output` value used to name. Standout 12 splits "what is
+/// produced" from "does it carry color" into a [`Representation`] and a
+/// [`ColorPolicy`], and has no type naming the pair on purpose, so the suite
+/// keeps its own and one seam applying it to a harness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// Rendered text with no escapes, which was `--output text`.
+    Plain,
+    /// Rendered text carrying escapes, which was `--output term`.
+    Ansi,
+    /// The diagnostic view of the template's style tags.
+    Debug,
+    Json,
+    Csv,
+}
+
+pub(crate) trait Under {
+    /// The harness under `mode`, whichever half of the pair it names.
+    fn under(self, mode: Mode) -> Self;
+}
+
+impl Under for TestHarness {
+    fn under(self, mode: Mode) -> Self {
+        match mode {
+            Mode::Plain => self.color(ColorPolicy::Never),
+            Mode::Ansi => self.color(ColorPolicy::Always),
+            Mode::Debug => self.output_mode(Representation::TermDebug),
+            Mode::Json => self.output_mode(Representation::Json),
+            Mode::Csv => self.output_mode(Representation::Csv),
+        }
+    }
 }
 
 pub(crate) fn utf8(dir: &TempDir) -> Utf8PathBuf {

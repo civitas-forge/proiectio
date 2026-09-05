@@ -2,7 +2,7 @@
 
 use camino::Utf8PathBuf;
 use clapfig::error::ClapfigError;
-use clapfig::runtime::{LeafType, Shape};
+use clapfig::runtime::Shape;
 use clapfig::{Clapfig, ConfigAction, Schema, SearchPath, TypedBuilder, UnknownKeyDecision};
 use libproiectio::{Error, IoRole, OWNER_RULE, names_an_owner};
 use serde::{Deserialize, Serialize};
@@ -152,27 +152,6 @@ pub(crate) fn declared_keys() -> Vec<String> {
     match ProiectioConfig::shape() {
         Shape::Object(schema) => schema.fields.into_iter().map(|field| field.name).collect(),
         _ => panic!("the configuration is an object of named keys"),
-    }
-}
-
-pub(crate) fn leaf_type(key: &str) -> Option<LeafType> {
-    let segments: Vec<&str> = key.split('.').collect();
-    leaf_type_in(&ProiectioConfig::shape(), &segments)
-}
-
-/// Walks `shape` the way clapfig's own `doc_for_shape` walks it. A segment
-/// that lands on an array or a tagged union has no single leaf type, and the
-/// value keeps clapfig's spelling.
-fn leaf_type_in(shape: &Shape, segments: &[&str]) -> Option<LeafType> {
-    match shape {
-        Shape::Leaf(leaf) if segments.is_empty() => Some(leaf.ty.clone()),
-        Shape::Object(schema) => {
-            let (name, rest) = segments.split_first()?;
-            let field = schema.fields.iter().find(|field| field.name == *name)?;
-            leaf_type_in(&field.field, rest)
-        }
-        Shape::Map(map) => leaf_type_in(&map.item, segments.split_first()?.1),
-        _ => None,
     }
 }
 

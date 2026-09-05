@@ -3,35 +3,43 @@ use super::*;
 use std::rc::Rc;
 
 use libproiectio::PathState;
-use standout_dispatch::Extensions;
+use standout::WarningBuffer;
+use standout::cli::AppFailure;
+use standout::dispatch::Extensions;
 use tempfile::TempDir;
 
 use crate::testing::{OWNER, classified, projected, utf8};
 
-/// A context carrying the two cells a run writes to: the verdict the shell
-/// reads the exit status back from, so a typed call can be asked what status
-/// the run leaves with, and the `--force` a rendered run reads its hint off.
-fn context(verdict: &exit::Verdict) -> CommandContext {
+/// A context carrying what a run reads and writes beside its arguments: the
+/// `--force` a rendered run reads its hint off, and the buffer `ctx.warn`
+/// pushes to, which the framework hands a real run and a test reads back.
+fn context() -> CommandContext {
+    let (ctx, _) = warned_context();
+    ctx
+}
+
+fn warned_context() -> (CommandContext, WarningBuffer) {
     let mut state = Extensions::new();
-    state.insert(verdict.clone());
     state.insert(Forced::default());
-    CommandContext::new(vec!["status".to_owned()], Rc::new(state))
+    let mut ctx = CommandContext::new(vec!["status".to_owned()], Rc::new(state));
+    let warnings = WarningBuffer::new();
+    ctx.extensions.insert(warnings.clone());
+    (ctx, warnings)
 }
 
 /// The status one classification leaves the process with, and the warnings it
-/// wrote about the run. The collector is a thread-local the test harness
-/// drains per run, and each test owns its own thread.
+/// wrote about the run. The status rides the handler's own output now, so the
+/// typed call answers for it without a cell beside it.
 fn checked(dest: &Utf8Path, state_dir: Option<&Utf8Path>, check: bool) -> (u8, Vec<String>) {
-    let _ = standout::warnings::drain_warnings();
-    let verdict = exit::Verdict::default();
-    status(
+    let (ctx, warnings) = warned_context();
+    let stated = status(
         dest.to_string(),
         state_dir.map(Utf8Path::to_string),
         check,
-        &context(&verdict),
+        &ctx,
     )
     .expect("a status");
-    (verdict.over(exit::OK), standout::warnings::drain_warnings())
+    (stated.exit_status().code(), warnings.take())
 }
 
 /// The adapter, called as the typed function the `#[handler]` macro
@@ -42,13 +50,9 @@ fn the_two_options_become_the_projection_the_library_classifies() {
     let dest = utf8(&dir);
     classified(&dest);
 
-    let Output::Render(report) = status(
-        dest.to_string(),
-        None,
-        false,
-        &context(&exit::Verdict::default()),
-    )
-    .expect("a status") else {
+    let Output::Render(report) =
+        status(dest.to_string(), None, false, &context()).expect("a status")
+    else {
         panic!("expected rendered data");
     };
 
@@ -78,7 +82,7 @@ fn a_state_directory_outside_the_destination_still_names_the_manifest() {
         dest.to_string(),
         Some(dest.join(".proiectio").to_string()),
         false,
-        &context(&exit::Verdict::default()),
+        &context(),
     )
     .expect("a status") else {
         panic!("expected rendered data");
@@ -190,7 +194,7 @@ fn the_default_state_directory_being_absent_is_neither_a_warning_nor_a_refusal()
 /// warnings it wrote about the run. Naming the owner keeps the run off the
 /// machine's configuration.
 fn removal(dest: &Utf8Path, state_dir: Option<&Utf8Path>, dry_run: bool) -> Vec<String> {
-    let _ = standout::warnings::drain_warnings();
+    let (ctx, warnings) = warned_context();
     rm(
         dest.to_string(),
         state_dir.map(Utf8Path::to_string),
@@ -198,10 +202,10 @@ fn removal(dest: &Utf8Path, state_dir: Option<&Utf8Path>, dry_run: bool) -> Vec<
         Some(OWNER.to_owned()),
         dry_run,
         false,
-        &context(&exit::Verdict::default()),
+        &ctx,
     )
     .expect("a removal");
-    standout::warnings::drain_warnings()
+    warnings.take()
 }
 
 /// A `--state-dir` the filesystem does not have reads as the empty manifest;
@@ -242,9 +246,9 @@ fn rm_over_the_default_state_directory_warns_about_nothing() {
 /// whole report.
 #[test]
 fn a_removal_that_cannot_open_the_destination_does_not_warn() {
-    let _ = standout::warnings::drain_warnings();
     let dir = TempDir::new().expect("a temporary directory");
     let absent = utf8(&dir).join("absent");
+    let (ctx, warnings) = warned_context();
 
     let Err(error) = rm(
         absent.to_string(),
@@ -253,17 +257,15 @@ fn a_removal_that_cannot_open_the_destination_does_not_warn() {
         Some(OWNER.to_owned()),
         false,
         false,
-        &context(&exit::Verdict::default()),
+        &ctx,
     ) else {
         panic!("a removal over a destination that is not there reported a run");
     };
-    let external = error
-        .downcast::<standout::cli::ExternalFailure>()
-        .expect("an external failure");
+    let failure = error.downcast::<AppFailure>().expect("an app failure");
 
-    assert_eq!(external.exit_status().code(), exit::FAILURE);
+    assert_eq!(failure.exit_status().code(), exit::FAILURE);
     assert!(
-        standout::warnings::drain_warnings().is_empty(),
+        warnings.take().is_empty(),
         "a removal that opened nothing warned about the state directory"
     );
 }
@@ -275,40 +277,31 @@ fn a_destination_that_is_not_there_fails_with_status_one() {
     let dir = TempDir::new().expect("a temporary directory");
     let absent = utf8(&dir).join("absent");
 
-    let error = status(
-        absent.to_string(),
-        None,
-        false,
-        &context(&exit::Verdict::default()),
-    )
-    .expect_err("an operational failure");
-    let external = error
-        .downcast::<standout::cli::ExternalFailure>()
-        .expect("an external failure");
+    let error =
+        status(absent.to_string(), None, false, &context()).expect_err("an operational failure");
+    let failure = error.downcast::<AppFailure>().expect("an app failure");
 
-    assert_eq!(external.exit_status().code(), exit::FAILURE);
+    assert_eq!(failure.exit_status().code(), exit::FAILURE);
 }
 
 #[test]
 fn a_destination_that_is_not_there_warns_about_no_state_directory() {
-    let _ = standout::warnings::drain_warnings();
     let dir = TempDir::new().expect("a temporary directory");
     let absent = utf8(&dir).join("absent");
+    let (ctx, warnings) = warned_context();
 
     let error = status(
         absent.to_string(),
         Some(absent.join("no-such-state").to_string()),
         true,
-        &context(&exit::Verdict::default()),
+        &ctx,
     )
     .expect_err("an operational failure");
-    let external = error
-        .downcast::<standout::cli::ExternalFailure>()
-        .expect("an external failure");
+    let failure = error.downcast::<AppFailure>().expect("an app failure");
 
-    assert_eq!(external.exit_status().code(), exit::FAILURE);
+    assert_eq!(failure.exit_status().code(), exit::FAILURE);
     assert!(
-        standout::warnings::drain_warnings().is_empty(),
+        warnings.take().is_empty(),
         "a run that classified nothing warned about the state directory"
     );
 }
@@ -320,16 +313,9 @@ fn a_state_directory_that_is_the_destination_fails_with_status_one() {
     let dir = TempDir::new().expect("a temporary directory");
     let dest = utf8(&dir);
 
-    let error = status(
-        dest.to_string(),
-        Some(dest.to_string()),
-        false,
-        &context(&exit::Verdict::default()),
-    )
-    .expect_err("a refused state directory");
-    let external = error
-        .downcast::<standout::cli::ExternalFailure>()
-        .expect("an external failure");
+    let error = status(dest.to_string(), Some(dest.to_string()), false, &context())
+        .expect_err("a refused state directory");
+    let failure = error.downcast::<AppFailure>().expect("an app failure");
 
-    assert_eq!(external.exit_status().code(), exit::FAILURE);
+    assert_eq!(failure.exit_status().code(), exit::FAILURE);
 }

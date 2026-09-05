@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use camino::Utf8PathBuf;
 use clapfig::ConfigResult;
-use clapfig::runtime::LeafType;
+use clapfig::value::Value;
 use libproiectio::Error;
 use serde::Serialize;
 
@@ -65,7 +65,7 @@ impl ConfigView {
     ) -> Result<Self, Error> {
         Ok(match result {
             ConfigResult::Listing { entries, .. } => {
-                let entries: Vec<(String, String)> = entries
+                let entries: Vec<(String, Value)> = entries
                     .into_iter()
                     .filter(|(key, _)| !settings::is_comment_key(key))
                     .collect();
@@ -77,7 +77,10 @@ impl ConfigView {
                         .join("\n"),
                     entries: entries
                         .into_iter()
-                        .map(|(key, value)| ConfigEntryView { key, value })
+                        .map(|(key, value)| ConfigEntryView {
+                            key,
+                            value: stated(&value),
+                        })
                         .collect(),
                 }
             }
@@ -86,14 +89,14 @@ impl ConfigView {
             } => Self::KeyValue {
                 rendered: documented(&key, &value, &doc),
                 key,
-                value,
+                value: stated(&value),
                 doc,
             },
             // Clapfig's set creates the file it persists to, so a `ValueSet`
             // in hand is the write itself; only an unset can come back from a
             // file that was never there.
             ConfigResult::ValueSet { key, value, .. } => Self::ValueSet {
-                rendered: assignment(&key, &value),
+                rendered: assignment(&key, &Value::String(value.clone())),
                 key,
                 value,
                 path: edit()?.path,
@@ -115,7 +118,7 @@ impl ConfigView {
     }
 }
 
-fn documented(key: &str, value: &str, doc: &[String]) -> String {
+fn documented(key: &str, value: &Value, doc: &[String]) -> String {
     doc.iter()
         .map(|line| format!("# {line}"))
         .chain(std::iter::once(assignment(key, value)))
@@ -123,30 +126,22 @@ fn documented(key: &str, value: &str, doc: &[String]) -> String {
         .join("\n")
 }
 
-/// One line of the config file the reader can paste back into it: clapfig
-/// spells both halves for a human to read, which leaves a string value that
-/// needs quotes bare, and a key a bare TOML key cannot carry unquoted.
-fn assignment(key: &str, value: &str) -> String {
-    format!("{} = {}", dotted(key), spelled(key, value))
+/// One line of the config file the reader can paste back into it. Clapfig
+/// carries a typed value now, whose `Display` is the TOML notation for it —
+/// a string quoted, everything else bare — so the only half left to spell is
+/// the key, which a bare TOML key cannot always carry unquoted.
+fn assignment(key: &str, value: &Value) -> String {
+    format!("{} = {value}", dotted(key))
 }
 
-/// The value as a document spells it. A scoped listing carries keys the
-/// schema does not declare, which clapfig has already stringified; one that
-/// parses as a value keeps its spelling, one that does not is the string it
-/// can only have been. A string that reads as another type — `"true"` — is
-/// unrecoverable for an undeclared key.
-fn spelled(key: &str, value: &str) -> String {
-    let quoted = || toml::Value::from(value).to_string();
-    match settings::leaf_type(key) {
-        Some(LeafType::String) => quoted(),
-        Some(_) => value.to_owned(),
-        None if parses_as_value(value) => value.to_owned(),
-        None => quoted(),
+/// The value as a document states it rather than as a file spells it: a
+/// string is itself, so a reader of the serialized document gets the value
+/// and not its quoting, and everything else is its own notation.
+fn stated(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
     }
-}
-
-fn parses_as_value(value: &str) -> bool {
-    format!("v = {value}").parse::<toml::Table>().is_ok()
 }
 
 /// The key as a document spells it: one segment per dot, each quoted where a

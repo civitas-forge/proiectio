@@ -14,7 +14,7 @@ use libproiectio::{
 };
 use serde_json::Value as JsonValue;
 use serial_test::serial;
-use standout::OutputMode;
+use standout::cli::ExitStatus;
 use standout::cli::{CommandContext, Output};
 use standout::handler;
 use tempfile::TempDir;
@@ -22,25 +22,20 @@ use tempfile::TempDir;
 use crate::cli;
 use crate::exit;
 use crate::testing::{
-    appledouble_tarball, assert_styles_resolved, assert_tags_declared, classified, dot_tarball,
-    flat_tarball, harness, manifest_of, modified, published, row, skeleton, stated, tarball, tour,
-    utf8,
+    Mode, Under, appledouble_tarball, assert_styles_resolved, assert_tags_declared, classified,
+    dot_tarball, flat_tarball, harness, manifest_of, modified, published, row, skeleton, stated,
+    tarball, tour, utf8,
 };
 
 fn app() -> App {
-    over(&exit::Verdict::default())
+    build().expect("an app")
 }
 
-/// The app over a verdict the test keeps: a refused run renders its plan and
-/// leaves the refusal there rather than in the run's result.
-fn over(verdict: &exit::Verdict) -> App {
-    build(verdict.clone()).expect("an app")
-}
-
-/// The status the process leaves with: what emitting the run reports, over
-/// what the run recorded.
-fn leaving(result: &standout_test::TestResult, verdict: &exit::Verdict) -> u8 {
-    verdict.over(exit::status(result.outcome()))
+/// The status the process leaves with. A refused run renders its plan and
+/// declares the refusal on its own output, so the status rides the outcome
+/// rather than a cell beside it; nothing matched is a failure.
+fn leaving(result: &standout_test::TestResult) -> u8 {
+    result.exit_status().map_or(exit::FAILURE, ExitStatus::code)
 }
 
 /// The library's own report of a destination, for the document `--output json`
@@ -117,7 +112,7 @@ fn status_is_the_librarys_own_status_document() {
     let (dir, dest) = classified_dir();
     let expected = serde_json::to_value(library_status(&dest)).expect("a serialized status");
 
-    let result = harness(&dir).output_mode(OutputMode::Json).run(
+    let result = harness(&dir).under(Mode::Json).run(
         &app(),
         cli::command(),
         ["proiectio", "status", "--dest", dest.as_str()],
@@ -146,10 +141,10 @@ fn status_states_where_a_recorded_link_points() {
     let status = ["proiectio", "status", "--dest", dest.as_str()];
 
     let json = harness(&dir)
-        .output_mode(OutputMode::Json)
+        .under(Mode::Json)
         .run(&app(), cli::command(), status);
     let csv = harness(&dir)
-        .output_mode(OutputMode::Csv)
+        .under(Mode::Csv)
         .run(&app(), cli::command(), status);
 
     json.assert_success();
@@ -167,8 +162,8 @@ fn status_states_where_a_recorded_link_points() {
     );
 }
 
-/// A destination holding `a/b` and `a_b` — two paths one XML element name
-/// cannot tell apart.
+/// A destination holding `a/b` and `a_b` — two paths that differ only where
+/// a flattened key would have joined them.
 fn colliding_dir() -> (TempDir, Utf8PathBuf) {
     let dir = TempDir::new().expect("a temporary directory");
     let dest = utf8(&dir);
@@ -180,37 +175,16 @@ fn colliding_dir() -> (TempDir, Utf8PathBuf) {
 
 #[test]
 #[serial]
-fn xml_carries_paths_as_values_and_keeps_every_row() {
-    let (dir, dest) = colliding_dir();
-
-    let result = harness(&dir).output_mode(OutputMode::Xml).run(
-        &app(),
-        cli::command(),
-        ["proiectio", "status", "--dest", dest.as_str()],
-    );
-
-    result.assert_success();
-    assert_eq!(
-        result.stdout().trim(),
-        "<data>\
-         <rows><path>a/b</path><verdict>Foreign</verdict><facts/></rows>\
-         <rows><path>a_b</path><verdict>Foreign</verdict><facts/></rows>\
-         </data>"
-    );
-}
-
-#[test]
-#[serial]
 fn csv_writes_one_row_per_path_under_the_same_header() {
     let (colliding, colliding_dest) = colliding_dir();
     let (classified, classified_dest) = classified_dir();
 
-    let foreign = harness(&colliding).output_mode(OutputMode::Csv).run(
+    let foreign = harness(&colliding).under(Mode::Csv).run(
         &app(),
         cli::command(),
         ["proiectio", "status", "--dest", colliding_dest.as_str()],
     );
-    let recorded = harness(&classified).output_mode(OutputMode::Csv).run(
+    let recorded = harness(&classified).under(Mode::Csv).run(
         &app(),
         cli::command(),
         ["proiectio", "status", "--dest", classified_dest.as_str()],
@@ -240,12 +214,12 @@ fn a_write_pass_writes_one_csv_record_per_path_under_the_same_header() {
     let header = "path,verdict,detail,shape,executable,target,owners,origin,phase\n";
     let named = format!("\"{{\"\"Mapping\"\":{{\"\"path\"\":\"\"{deploy}\"\"}}}}\"");
 
-    let planned = harness(&dir).output_mode(OutputMode::Csv).run(
+    let planned = harness(&dir).under(Mode::Csv).run(
         &app(),
         cli::command(),
         write_argv(&[deploy.as_str(), "--dry-run"], &dest),
     );
-    let applied = harness(&dir).output_mode(OutputMode::Csv).run(
+    let applied = harness(&dir).under(Mode::Csv).run(
         &app(),
         cli::command(),
         write_argv(&[deploy.as_str()], &dest),
@@ -285,7 +259,7 @@ fn a_removal_writes_its_records_under_the_header_a_write_writes() {
         )
         .assert_success();
 
-    let removed = harness(&dir).output_mode(OutputMode::Csv).run(
+    let removed = harness(&dir).under(Mode::Csv).run(
         &app(),
         cli::command(),
         ["proiectio", "rm", "--dest", dest.as_str()],
@@ -323,13 +297,13 @@ fn status_names_only_styles_the_stylesheet_declares_and_the_theme_resolves() {
     let argv = ["proiectio", "status", "--dest", dest.as_str()];
 
     let debug = harness(&dir)
-        .output_mode(OutputMode::TermDebug)
+        .under(Mode::Debug)
         .run(&app(), cli::command(), argv);
     debug.assert_success();
     assert_tags_declared("status", debug.stdout());
 
     let term = harness(&dir)
-        .output_mode(OutputMode::Term)
+        .under(Mode::Ansi)
         .run(&app(), cli::command(), argv);
     term.assert_success();
     assert_styles_resolved("status", term.stdout());
@@ -340,11 +314,10 @@ fn status_names_only_styles_the_stylesheet_declares_and_the_theme_resolves() {
 fn config_list_reports_the_compiled_default() {
     let dir = TempDir::new().expect("a temporary directory");
 
-    let result = harness(&dir).output_mode(OutputMode::Json).run(
-        &app(),
-        cli::command(),
-        ["proiectio", "conf", "list"],
-    );
+    let result =
+        harness(&dir)
+            .under(Mode::Json)
+            .run(&app(), cli::command(), ["proiectio", "conf", "list"]);
 
     result.assert_success();
     let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
@@ -390,8 +363,8 @@ fn refusing_app() -> App {
         .styles(embed_styles!("src/styles"))
         .default_theme("proiectio")
         .template_engine(Box::new(engine()))
-        .command_with("status", refusing__handler, |cfg| {
-            cfg.template("status.jinja")
+        .command_with("status", refusing_Handler, |cfg| {
+            cfg.template_name("status")
         })
         .expect("a command")
         .build()
@@ -423,23 +396,23 @@ fn every_outcome_pins_the_status_the_process_exits_with() {
             "a command line clap rejects",
             app,
             &["status", "--nope"],
-            exit::FAILURE,
+            exit::USAGE,
         ),
         ("a refusal", refusing_app, &["status"], exit::REFUSAL),
     ];
 
-    for mode in [OutputMode::Text, OutputMode::Json] {
+    for mode in [Mode::Plain, Mode::Json] {
         for (case, built, args, expected) in rows {
             let (dir, _) = classified_dir();
             let mut argv = vec!["proiectio"];
             argv.extend_from_slice(args);
 
             let result = harness(&dir)
-                .output_mode(mode)
+                .under(mode)
                 .run(&built(), cli::command(), argv);
 
             assert_eq!(
-                exit::status(result.outcome()),
+                leaving(&result),
                 expected,
                 "`proiectio {}` under {mode:?}, in the {case} case",
                 args.join(" ")
@@ -452,7 +425,6 @@ fn every_outcome_pins_the_status_the_process_exits_with() {
 #[serial]
 fn check_leaves_the_report_alone_and_spends_the_refusal_status_on_it() {
     let (dir, dest) = classified_dir();
-    let verdict = exit::Verdict::default();
 
     let plain = harness(&dir).run(
         &app(),
@@ -460,13 +432,13 @@ fn check_leaves_the_report_alone_and_spends_the_refusal_status_on_it() {
         ["proiectio", "status", "--dest", dest.as_str()],
     );
     let checking = harness(&dir).run(
-        &over(&verdict),
+        &app(),
         cli::command(),
         ["proiectio", "status", "--dest", dest.as_str(), "--check"],
     );
 
-    assert_eq!(exit::status(plain.outcome()), exit::OK);
-    assert_eq!(leaving(&checking, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&plain), exit::OK);
+    assert_eq!(leaving(&checking), exit::REFUSAL);
     assert_eq!(checking.stdout(), plain.stdout());
     assert_eq!(checking.error(), None);
 }
@@ -477,15 +449,14 @@ fn check_passes_a_destination_that_matches_its_manifest() {
     let dir = TempDir::new().expect("a temporary directory");
     let dest = utf8(&dir);
     crate::testing::projected(&dest);
-    let verdict = exit::Verdict::default();
 
     let result = harness(&dir).run(
-        &over(&verdict),
+        &app(),
         cli::command(),
         ["proiectio", "status", "--dest", dest.as_str(), "--check"],
     );
 
-    assert_eq!(leaving(&result, &verdict), exit::OK);
+    assert_eq!(leaving(&result), exit::OK);
     result.assert_stdout_contains("clean    bin/tool");
 }
 
@@ -510,12 +481,11 @@ fn a_state_directory_that_is_not_there_warns_and_fails_a_check() {
         "state dir {absent} does not exist; treating manifest as empty"
     ));
 
-    let verdict = exit::Verdict::default();
     let mut checking = argv.to_vec();
     checking.push("--check");
-    let checked = harness(&dir).run(&over(&verdict), cli::command(), checking);
+    let checked = harness(&dir).run(&app(), cli::command(), checking);
 
-    assert_eq!(leaving(&checked, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&checked), exit::REFUSAL);
 }
 
 #[test]
@@ -523,10 +493,9 @@ fn a_state_directory_that_is_not_there_warns_and_fails_a_check() {
 fn check_fails_an_absent_state_directory_even_where_the_report_is_empty() {
     let dir = TempDir::new().expect("a temporary directory");
     let dest = utf8(&dir);
-    let verdict = exit::Verdict::default();
 
     let result = harness(&dir).run(
-        &over(&verdict),
+        &app(),
         cli::command(),
         [
             "proiectio",
@@ -540,7 +509,7 @@ fn check_fails_an_absent_state_directory_even_where_the_report_is_empty() {
     );
 
     assert_eq!(result.stdout(), "");
-    assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&result), exit::REFUSAL);
 }
 
 #[test]
@@ -548,16 +517,15 @@ fn check_fails_an_absent_state_directory_even_where_the_report_is_empty() {
 fn the_default_state_directory_being_absent_warns_about_nothing_and_passes_a_check() {
     let dir = TempDir::new().expect("a temporary directory");
     let dest = utf8(&dir);
-    let verdict = exit::Verdict::default();
 
     let result = harness(&dir).run(
-        &over(&verdict),
+        &app(),
         cli::command(),
         ["proiectio", "status", "--dest", dest.as_str(), "--check"],
     );
 
     assert_eq!(result.stdout(), "");
-    assert_eq!(leaving(&result, &verdict), exit::OK);
+    assert_eq!(leaving(&result), exit::OK);
     assert!(result.warnings().is_empty(), "{:?}", result.warnings());
 }
 
@@ -577,13 +545,13 @@ fn a_path_spelled_like_a_style_tag_renders_as_itself() {
     text.assert_stdout_contains(&format!("foreign  {FILE}"));
 
     let term = harness(&dir)
-        .output_mode(OutputMode::Term)
+        .under(Mode::Ansi)
         .run(&app(), cli::command(), argv);
     term.assert_success();
     term.assert_stdout_contains(FILE);
 
     let json = harness(&dir)
-        .output_mode(OutputMode::Json)
+        .under(Mode::Json)
         .run(&app(), cli::command(), argv);
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
@@ -600,7 +568,7 @@ fn a_path_spelled_like_an_unknown_tag_renders_as_itself() {
     std::fs::create_dir(dest.join(DIRECTORY)).expect("a stray directory");
     std::fs::write(dest.join(DIRECTORY).join("y"), b"not ours\n").expect("a stray file");
 
-    let result = harness(&dir).output_mode(OutputMode::Term).run(
+    let result = harness(&dir).under(Mode::Ansi).run(
         &app(),
         cli::command(),
         ["proiectio", "status", "--dest", dest.as_str()],
@@ -624,7 +592,7 @@ fn a_config_value_spelled_like_a_style_tag_renders_as_itself() {
     text.assert_stdout_contains(&format!("set owner = \"{SPELLED}\""));
 
     let json = harness(&dir)
-        .output_mode(OutputMode::Json)
+        .under(Mode::Json)
         .run(&app(), cli::command(), argv);
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
@@ -684,7 +652,7 @@ fn a_persisted_value_names_the_file_it_was_written_to() {
     let set = ["proiectio", "conf", "set", "owner", "site"];
 
     let json = harness(&dir)
-        .output_mode(OutputMode::Json)
+        .under(Mode::Json)
         .run(&app(), cli::command(), set);
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
@@ -710,7 +678,7 @@ fn an_unset_with_no_file_to_edit_names_no_written_file() {
     let argv = ["proiectio", "conf", "unset", "owner"];
 
     let json = harness(&dir)
-        .output_mode(OutputMode::Json)
+        .under(Mode::Json)
         .run(&app(), cli::command(), argv);
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
@@ -728,7 +696,7 @@ fn an_unset_with_no_file_to_edit_names_no_written_file() {
     text.assert_stdout_contains(&format!("no file at {path}"));
 
     let debug = harness(&dir)
-        .output_mode(OutputMode::TermDebug)
+        .under(Mode::Debug)
         .run(&app(), cli::command(), argv);
     debug.assert_success();
     assert_tags_declared("an unset with no file", debug.stdout());
@@ -745,7 +713,7 @@ fn unsetting_a_key_the_schema_does_not_declare_fails_as_setting_one_does() {
     ] {
         let result = harness(&dir).run(&app(), cli::command(), argv.clone());
 
-        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        assert_eq!(leaving(&result), exit::FAILURE, "{argv:?}");
         assert!(
             result
                 .error()
@@ -761,7 +729,7 @@ fn unsetting_a_key_the_schema_does_not_declare_fails_as_setting_one_does() {
 #[serial]
 fn a_comment_key_the_schema_allowlists_loads_and_is_not_a_setting() {
     let dir = TempDir::new().expect("a temporary directory");
-    let json = harness(&dir).output_mode(OutputMode::Json).run(
+    let json = harness(&dir).under(Mode::Json).run(
         &app(),
         cli::command(),
         ["proiectio", "conf", "set", "owner", "site"],
@@ -814,7 +782,7 @@ fn the_emitted_schema_allowlists_the_comment_keys_the_loader_accepts() {
 #[serial]
 fn a_comment_table_is_left_out_of_the_scope_that_reads_the_file_itself() {
     let dir = TempDir::new().expect("a temporary directory");
-    let json = harness(&dir).output_mode(OutputMode::Json).run(
+    let json = harness(&dir).under(Mode::Json).run(
         &app(),
         cli::command(),
         ["proiectio", "conf", "set", "owner", "site"],
@@ -864,7 +832,7 @@ fn the_edit_commands_agree_on_which_wrong_argument_they_report_first() {
     ] {
         let result = harness(&dir).run(&app(), cli::command(), argv.clone());
 
-        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        assert_eq!(leaving(&result), exit::FAILURE, "{argv:?}");
         let error = result.error().unwrap_or_default();
         assert!(
             error.contains("Key not found: onwer"),
@@ -877,7 +845,7 @@ fn the_edit_commands_agree_on_which_wrong_argument_they_report_first() {
 #[serial]
 fn a_comment_key_is_not_one_the_reading_commands_answer_for() {
     let dir = TempDir::new().expect("a temporary directory");
-    let json = harness(&dir).output_mode(OutputMode::Json).run(
+    let json = harness(&dir).under(Mode::Json).run(
         &app(),
         cli::command(),
         ["proiectio", "conf", "set", "owner", "site"],
@@ -893,7 +861,7 @@ fn a_comment_key_is_not_one_the_reading_commands_answer_for() {
     ] {
         let result = harness(&dir).run(&app(), cli::command(), argv.clone());
 
-        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        assert_eq!(leaving(&result), exit::FAILURE, "{argv:?}");
         assert!(
             result
                 .error()
@@ -909,7 +877,7 @@ fn a_comment_key_is_not_one_the_reading_commands_answer_for() {
 #[serial]
 fn a_listed_key_a_bare_toml_key_cannot_carry_is_quoted() {
     let dir = TempDir::new().expect("a temporary directory");
-    let json = harness(&dir).output_mode(OutputMode::Json).run(
+    let json = harness(&dir).under(Mode::Json).run(
         &app(),
         cli::command(),
         ["proiectio", "conf", "set", "owner", "site"],
@@ -954,7 +922,7 @@ fn a_scope_the_builder_does_not_register_is_refused_by_name() {
     ] {
         let result = harness(&dir).run(&app(), cli::command(), argv.clone());
 
-        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        assert_eq!(leaving(&result), exit::FAILURE, "{argv:?}");
         let error = result.error().unwrap_or_default();
         assert!(
             error.contains("Unknown scope 'local'") && error.contains("user"),
@@ -967,7 +935,7 @@ fn a_scope_the_builder_does_not_register_is_refused_by_name() {
 /// `--output json`.
 fn rendered_field<'a>(dir: &TempDir, argv: impl IntoIterator<Item = &'a str>) -> String {
     let result = harness(dir)
-        .output_mode(OutputMode::Json)
+        .under(Mode::Json)
         .run(&app(), cli::command(), argv);
     result.assert_success();
     let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
@@ -994,7 +962,7 @@ fn an_argument_that_is_not_utf8_is_rejected_rather_than_panicking() {
 
     let result = harness(&dir).run(&app(), cli::command(), argv);
 
-    assert_eq!(exit::status(result.outcome()), exit::FAILURE);
+    assert_eq!(leaving(&result), exit::USAGE);
 }
 
 #[test]
@@ -1060,7 +1028,7 @@ fn a_path_carrying_control_characters_renders_as_visible_escapes() {
     assert_eq!(stdout.lines().count(), ROWS, "{stdout:?}");
 
     let term = harness(&dir)
-        .output_mode(OutputMode::Term)
+        .under(Mode::Ansi)
         .run(&app(), cli::command(), argv);
     term.assert_success();
     term.assert_stdout_contains(r"\u{1b}[31mred");
@@ -1068,7 +1036,7 @@ fn a_path_carrying_control_characters_renders_as_visible_escapes() {
     assert_eq!(term.stdout().lines().count(), ROWS, "{:?}", term.stdout());
 
     let json = harness(&dir)
-        .output_mode(OutputMode::Json)
+        .under(Mode::Json)
         .run(&app(), cli::command(), argv);
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
@@ -1094,7 +1062,7 @@ fn a_config_value_carrying_an_escape_sequence_renders_as_itself() {
     );
 
     let json = harness(&dir)
-        .output_mode(OutputMode::Json)
+        .under(Mode::Json)
         .run(&app(), cli::command(), argv);
     json.assert_success();
     let value: JsonValue = serde_json::from_str(json.stdout()).expect("a JSON document");
@@ -1121,7 +1089,7 @@ fn a_config_file_path_that_is_not_utf8_is_rejected_before_anything_is_written() 
 
     let result = harness(&dir).run(&app(), cli::command(), argv);
 
-    assert_eq!(exit::status(result.outcome()), exit::FAILURE);
+    assert_eq!(leaving(&result), exit::USAGE);
     assert_eq!(
         std::fs::read_dir(dir.path())
             .expect("the temporary directory")
@@ -1212,7 +1180,7 @@ fn write_falls_back_to_the_configured_owner() {
 /// The file the `user` scope persists to, learned the way an operator learns
 /// it: `config set` reports the path it wrote.
 fn user_config_file(dir: &TempDir) -> Utf8PathBuf {
-    let json = harness(dir).output_mode(OutputMode::Json).run(
+    let json = harness(dir).under(Mode::Json).run(
         &app(),
         cli::command(),
         ["proiectio", "conf", "set", "owner", "site"],
@@ -1236,7 +1204,7 @@ fn config_set_refuses_an_owner_that_names_nothing() {
             ["proiectio", "conf", "set", "owner", value],
         );
 
-        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{value:?}");
+        assert_eq!(leaving(&result), exit::FAILURE, "{value:?}");
         assert!(
             result
                 .error()
@@ -1265,7 +1233,7 @@ fn a_configured_owner_that_names_nothing_stops_a_run() {
     for argv in [write, remove] {
         let result = harness(&dir).run(&app(), cli::command(), argv.clone());
 
-        assert_eq!(exit::status(result.outcome()), exit::FAILURE, "{argv:?}");
+        assert_eq!(leaving(&result), exit::FAILURE, "{argv:?}");
         assert!(
             result
                 .error()
@@ -1290,7 +1258,7 @@ fn an_owner_the_environment_leaves_empty_stops_a_run() {
         write_argv(&[deploy.as_str()], &dest),
     );
 
-    assert_eq!(exit::status(result.outcome()), exit::FAILURE);
+    assert_eq!(leaving(&result), exit::FAILURE);
     assert!(
         result
             .error()
@@ -1432,7 +1400,7 @@ fn a_strip_that_erases_every_member_fails_and_removes_nothing() {
         write_argv(&["--tree", archive.as_str(), "--strip", "1"], &dest),
     );
 
-    assert_eq!(exit::status(result.outcome()), exit::FAILURE);
+    assert_eq!(leaving(&result), exit::FAILURE);
     assert_eq!(manifest_of(&dest), before);
     assert!(dest.join("skeleton-1.2/top").exists());
 }
@@ -1449,7 +1417,7 @@ fn a_dropped_member_rides_the_librarys_own_report() {
         "origin": { "Archive": { "path": archive.as_str(), "via": null } },
     }]);
 
-    let planned = harness(&dir).output_mode(OutputMode::Json).run(
+    let planned = harness(&dir).under(Mode::Json).run(
         &app(),
         cli::command(),
         write_argv(
@@ -1465,7 +1433,7 @@ fn a_dropped_member_rides_the_librarys_own_report() {
     assert!(row(&value["rows"], "._skeleton-1.2").is_none());
     assert_eq!(value["dropped"], record);
 
-    let applied = harness(&dir).output_mode(OutputMode::Json).run(
+    let applied = harness(&dir).under(Mode::Json).run(
         &app(),
         cli::command(),
         write_argv(&["--tree", archive.as_str(), "--strip", "1"], &dest),
@@ -1578,15 +1546,14 @@ fn re_running_a_write_skips_every_path_and_keeps_their_mtimes() {
 fn a_dry_run_reports_the_plan_and_writes_nothing() {
     let (dir, dest, deploy) = tour();
 
-    let verdict = exit::Verdict::default();
     let result = harness(&dir).run(
-        &over(&verdict),
+        &app(),
         cli::command(),
         write_argv(&[deploy.as_str(), "--dry-run"], &dest),
     );
 
     result.assert_success();
-    assert_eq!(leaving(&result, &verdict), exit::OK);
+    assert_eq!(leaving(&result), exit::OK);
     assert_eq!(
         result.stdout(),
         "would write      bin/tool              (exec)\n\
@@ -1676,15 +1643,14 @@ fn refused_and_overwritten(dir: &TempDir, dest: &Utf8PathBuf, deploy: &Utf8PathB
 fn a_refused_dry_run_renders_the_whole_plan() {
     let (dir, dest, deploy) = tour();
     refused_and_overwritten(&dir, &dest, &deploy);
-    let verdict = exit::Verdict::default();
 
     let result = harness(&dir).run(
-        &over(&verdict),
+        &app(),
         cli::command(),
         write_argv(&[deploy.as_str(), "--dry-run"], &dest),
     );
 
-    assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&result), exit::REFUSAL);
     assert_eq!(
         result.stdout(),
         format!(
@@ -1707,15 +1673,14 @@ fn a_refused_dry_run_renders_the_whole_plan() {
 fn a_refused_dry_run_is_the_librarys_own_plan_document() {
     let (dir, dest, deploy) = tour();
     refused_and_overwritten(&dir, &dest, &deploy);
-    let verdict = exit::Verdict::default();
 
-    let result = harness(&dir).output_mode(OutputMode::Json).run(
-        &over(&verdict),
+    let result = harness(&dir).under(Mode::Json).run(
+        &app(),
         cli::command(),
         write_argv(&[deploy.as_str(), "--dry-run"], &dest),
     );
 
-    assert_eq!(leaving(&result, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&result), exit::REFUSAL);
     let value: JsonValue = serde_json::from_str(result.stdout()).expect("a JSON document");
     let planned = Projection::new(&dest, None)
         .expect("a projection")
@@ -1743,22 +1708,20 @@ fn a_refused_dry_run_is_the_librarys_own_plan_document() {
 fn a_refused_real_run_renders_the_document_its_dry_run_renders() {
     let (dir, dest, deploy) = tour();
     refused_and_overwritten(&dir, &dest, &deploy);
-    let real_verdict = exit::Verdict::default();
-    let dry_verdict = exit::Verdict::default();
 
-    let real = harness(&dir).output_mode(OutputMode::Json).run(
-        &over(&real_verdict),
+    let real = harness(&dir).under(Mode::Json).run(
+        &app(),
         cli::command(),
         write_argv(&[deploy.as_str()], &dest),
     );
-    let dry = harness(&dir).output_mode(OutputMode::Json).run(
-        &over(&dry_verdict),
+    let dry = harness(&dir).under(Mode::Json).run(
+        &app(),
         cli::command(),
         write_argv(&[deploy.as_str(), "--dry-run"], &dest),
     );
 
-    assert_eq!(leaving(&real, &real_verdict), exit::REFUSAL);
-    assert_eq!(leaving(&dry, &dry_verdict), exit::REFUSAL);
+    assert_eq!(leaving(&real), exit::REFUSAL);
+    assert_eq!(leaving(&dry), exit::REFUSAL);
     assert_eq!(real.error(), None);
     assert_eq!(real.stdout(), dry.stdout());
     let value: JsonValue = serde_json::from_str(real.stdout()).expect("a JSON document");
@@ -1781,26 +1744,21 @@ fn a_refused_rm_renders_the_document_its_dry_run_renders() {
     std::fs::write(dest.join("bin/tool"), b"#!/bin/sh\necho edited\n").expect("a local edit");
     let argv = ["proiectio", "rm", "--dest", dest.as_str()];
 
-    for mode in [OutputMode::Text, OutputMode::Json] {
-        let real_verdict = exit::Verdict::default();
-        let dry_verdict = exit::Verdict::default();
+    for mode in [Mode::Plain, Mode::Json] {
         let mut dry_argv = argv.to_vec();
         dry_argv.push("--dry-run");
 
-        let real = harness(&dir)
-            .output_mode(mode)
-            .run(&over(&real_verdict), cli::command(), argv);
-        let dry =
-            harness(&dir)
-                .output_mode(mode)
-                .run(&over(&dry_verdict), cli::command(), dry_argv);
+        let real = harness(&dir).under(mode).run(&app(), cli::command(), argv);
+        let dry = harness(&dir)
+            .under(mode)
+            .run(&app(), cli::command(), dry_argv);
 
-        assert_eq!(leaving(&real, &real_verdict), exit::REFUSAL, "{mode:?}");
-        assert_eq!(leaving(&dry, &dry_verdict), exit::REFUSAL, "{mode:?}");
+        assert_eq!(leaving(&real), exit::REFUSAL, "{mode:?}");
+        assert_eq!(leaving(&dry), exit::REFUSAL, "{mode:?}");
         assert_eq!(real.error(), None, "{mode:?}");
         assert_eq!(real.stdout(), dry.stdout(), "{mode:?}");
     }
-    let rendered = harness(&dir).run(&over(&exit::Verdict::default()), cli::command(), argv);
+    let rendered = harness(&dir).run(&app(), cli::command(), argv);
     assert_eq!(
         rendered.stdout(),
         "would refuse     bin/tool              (drifted)\n\
@@ -1867,7 +1825,7 @@ fn rm_over_an_unprojected_destination_warns_about_nothing() {
 /// applying run back to back, so the disk has to move mid-run. These stand-in
 /// handlers drive that seam over the app, template and verdict of every run.
 #[handler]
-fn mid_run(#[ctx] ctx: &CommandContext) -> Result<Output<views::RunView>> {
+fn mid_run() -> Result<Output<views::RunView>> {
     handlers::refusal_or_failure(
         libproiectio::Error::Refused(Refused::one(
             Utf8PathBuf::from("bin/tool"),
@@ -1878,7 +1836,6 @@ fn mid_run(#[ctx] ctx: &CommandContext) -> Result<Output<views::RunView>> {
         )),
         &Manifest::new(),
         BTreeSet::new(),
-        ctx,
     )
 }
 
@@ -1886,13 +1843,13 @@ fn mid_run(#[ctx] ctx: &CommandContext) -> Result<Output<views::RunView>> {
 #[handler]
 fn mid_run_forced(#[ctx] ctx: &CommandContext) -> Result<Output<views::RunView>> {
     ctx.app_state.get_required::<Forced>()?.record(true);
-    mid_run(ctx)
+    mid_run()
 }
 
 /// A run that applies rows and then meets a refusal — the disk moving under
 /// the apply is this test's; everything past it is the CLI's own.
 #[handler]
-fn moved_under(#[arg] dest: String, #[ctx] ctx: &CommandContext) -> Result<Output<views::RunView>> {
+fn moved_under(#[arg] dest: String) -> Result<Output<views::RunView>> {
     let dest = Utf8PathBuf::from(dest);
     let projection = Projection::new(&dest, None).expect("a projection");
     let mut run = projection.begin().expect("a run");
@@ -1907,13 +1864,13 @@ fn moved_under(#[arg] dest: String, #[ctx] ctx: &CommandContext) -> Result<Outpu
         .expect("a plan releasing the link and writing under it");
     std::os::unix::fs::symlink("real", dest.join("pivot").as_std_path())
         .expect("the released link reappears");
-    handlers::apply(run, ctx)
+    handlers::apply(run)
 }
 
 /// A run whose every action applies and whose manifest never reaches the
 /// state directory.
 #[handler]
-fn unrecorded(#[arg] dest: String, #[ctx] ctx: &CommandContext) -> Result<Output<views::RunView>> {
+fn unrecorded(#[arg] dest: String) -> Result<Output<views::RunView>> {
     let dest = Utf8PathBuf::from(dest);
     let projection = Projection::new(&dest, None).expect("a projection");
     let mut run = projection.begin().expect("a run");
@@ -1928,7 +1885,7 @@ fn unrecorded(#[arg] dest: String, #[ctx] ctx: &CommandContext) -> Result<Output
         .expect("a plan writing one path");
     std::fs::remove_dir_all(projection.state_dir().as_std_path())
         .expect("the state directory goes");
-    handlers::apply(run, ctx)
+    handlers::apply(run)
 }
 
 /// A run whose plan strips an archive and whose first action then refuses.
@@ -1936,7 +1893,6 @@ fn unrecorded(#[arg] dest: String, #[ctx] ctx: &CommandContext) -> Result<Output
 fn edited_under(
     #[arg] dest: String,
     #[arg] tree: Option<Utf8PathBuf>,
-    #[ctx] ctx: &CommandContext,
 ) -> Result<Output<views::RunView>> {
     let dest = Utf8PathBuf::from(dest);
     let archive = tree.expect("the archive to project");
@@ -1948,19 +1904,20 @@ fn edited_under(
         .expect("a plan skipping the member already on disk");
     std::fs::write(dest.join("top").as_std_path(), b"edited by hand\n")
         .expect("the projected file is edited under the run");
-    handlers::apply(run, ctx)
+    handlers::apply(run)
 }
 
 /// The app a stand-in handler runs under: this CLI's own templates, styles and
-/// context injection, with `write` bound to the handler named.
+/// context injection, with `write` bound to the handler named. The handler is
+/// the unit struct `#[handler]` generates beside the function, which is what
+/// `AppBuilder::command_with` takes.
 macro_rules! stand_in_app {
-    ($verdict:expr, $handler:path) => {{
+    ($handler:path) => {{
         // Mirrors `app::build`, `Forced` included: a stand-in handler runs
         // under the same state the real one does.
         let forced = Forced::default();
         let hints = forced.clone();
         App::builder()
-            .app_state($verdict.clone())
             .app_state(forced)
             .templates(templates())
             .styles(embed_styles!("src/styles"))
@@ -1973,31 +1930,34 @@ macro_rules! stand_in_app {
                     hints.get(),
                 ))
             })
-            .command_with("write", $handler, crate::app::run_command)
+            .command_with("write", $handler, |cfg| {
+                crate::app::run_projection(cfg.template_name("run"))
+                    .post_dispatch(crate::app::stated_on_stderr)
+            })
             .expect("a command")
             .build()
             .expect("an app")
     }};
 }
 
-fn mid_run_app(verdict: &exit::Verdict) -> App {
-    stand_in_app!(verdict, mid_run__handler)
+fn mid_run_app() -> App {
+    stand_in_app!(mid_run_Handler)
 }
 
-fn mid_run_forced_app(verdict: &exit::Verdict) -> App {
-    stand_in_app!(verdict, mid_run_forced__handler)
+fn mid_run_forced_app() -> App {
+    stand_in_app!(mid_run_forced_Handler)
 }
 
-fn moved_under_app(verdict: &exit::Verdict) -> App {
-    stand_in_app!(verdict, moved_under__handler)
+fn moved_under_app() -> App {
+    stand_in_app!(moved_under_Handler)
 }
 
-fn unrecorded_app(verdict: &exit::Verdict) -> App {
-    stand_in_app!(verdict, unrecorded__handler)
+fn unrecorded_app() -> App {
+    stand_in_app!(unrecorded_Handler)
 }
 
-fn edited_under_app(verdict: &exit::Verdict) -> App {
-    stand_in_app!(verdict, edited_under__handler)
+fn edited_under_app() -> App {
+    stand_in_app!(edited_under_Handler)
 }
 
 /// A destination already holding the archive's tree beside the archive: the
@@ -2023,14 +1983,13 @@ fn projected_archive() -> (TempDir, Utf8PathBuf, Utf8PathBuf) {
 fn a_refusal_before_the_first_action_states_the_members_strip_erased() {
     let (dir, dest, archive) = projected_archive();
 
-    let verdict = exit::Verdict::default();
-    let refused = harness(&dir).output_mode(OutputMode::Json).run(
-        &edited_under_app(&verdict),
+    let refused = harness(&dir).under(Mode::Json).run(
+        &edited_under_app(),
         cli::command(),
         write_argv(&["--tree", archive.as_str()], &dest),
     );
 
-    assert_eq!(leaving(&refused, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&refused), exit::REFUSAL);
     assert_eq!(refused.error(), None);
     let value: JsonValue = serde_json::from_str(refused.stdout()).expect("a JSON document");
     assert_eq!(
@@ -2046,14 +2005,13 @@ fn a_refusal_before_the_first_action_states_the_members_strip_erased() {
 fn a_refusal_before_the_first_action_prints_the_members_strip_erased() {
     let (dir, dest, archive) = projected_archive();
 
-    let verdict = exit::Verdict::default();
     let refused = harness(&dir).run(
-        &edited_under_app(&verdict),
+        &edited_under_app(),
         cli::command(),
         write_argv(&["--tree", archive.as_str()], &dest),
     );
 
-    assert_eq!(leaving(&refused, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&refused), exit::REFUSAL);
     assert_eq!(
         refused.stdout(),
         format!(
@@ -2073,14 +2031,13 @@ fn a_run_a_failure_stopped_renders_its_rows_and_the_failure() {
     let dest = utf8(&dir).join("dest");
     std::fs::create_dir(&dest).expect("a destination");
 
-    let verdict = exit::Verdict::default();
-    let structured = harness(&dir).output_mode(OutputMode::Json).run(
-        &unrecorded_app(&verdict),
+    let structured = harness(&dir).under(Mode::Json).run(
+        &unrecorded_app(),
         cli::command(),
         ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
     );
 
-    assert_eq!(leaving(&structured, &verdict), exit::FAILURE);
+    assert_eq!(leaving(&structured), exit::FAILURE);
     assert_eq!(structured.error(), None);
     let value: JsonValue = serde_json::from_str(structured.stdout()).expect("a JSON document");
     assert_eq!(value["phase"], "aborted");
@@ -2108,14 +2065,13 @@ fn a_run_a_failure_stopped_prints_its_rows_and_the_failure() {
     let dest = utf8(&dir).join("dest");
     std::fs::create_dir(&dest).expect("a destination");
 
-    let verdict = exit::Verdict::default();
     let rendered = harness(&dir).run(
-        &unrecorded_app(&verdict),
+        &unrecorded_app(),
         cli::command(),
         ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
     );
 
-    assert_eq!(leaving(&rendered, &verdict), exit::FAILURE);
+    assert_eq!(leaving(&rendered), exit::FAILURE);
     assert_eq!(rendered.error(), None);
     let printed = rendered.stdout();
     assert!(printed.starts_with("wrote      bin/tool\n"), "{printed}");
@@ -2136,14 +2092,13 @@ fn the_csv_a_run_that_could_not_record_writes_says_so_on_stderr() {
     let dest = utf8(&dir).join("dest");
     std::fs::create_dir(&dest).expect("a destination");
 
-    let verdict = exit::Verdict::default();
-    let projected = harness(&dir).output_mode(OutputMode::Csv).run(
-        &unrecorded_app(&verdict),
+    let projected = harness(&dir).under(Mode::Csv).run(
+        &unrecorded_app(),
         cli::command(),
         ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
     );
 
-    assert_eq!(leaving(&projected, &verdict), exit::FAILURE);
+    assert_eq!(leaving(&projected), exit::FAILURE);
     assert_eq!(projected.error(), None);
     assert_eq!(
         projected.stdout(),
@@ -2173,8 +2128,8 @@ fn the_csv_a_run_that_could_not_record_writes_says_so_on_stderr() {
     let elsewhere = TempDir::new().expect("a temporary directory");
     let other = utf8(&elsewhere).join("dest");
     std::fs::create_dir(&other).expect("a destination");
-    let structured = harness(&elsewhere).output_mode(OutputMode::Json).run(
-        &unrecorded_app(&verdict),
+    let structured = harness(&elsewhere).under(Mode::Json).run(
+        &unrecorded_app(),
         cli::command(),
         [
             "proiectio",
@@ -2235,16 +2190,15 @@ fn held_by_two() -> (TempDir, Utf8PathBuf) {
 fn a_run_that_stopped_part_way_states_the_rows_it_applied() {
     let (dir, dest) = held_by_two();
 
-    let verdict = exit::Verdict::default();
     let rendered = harness(&dir).run(
-        &moved_under_app(&verdict),
+        &moved_under_app(),
         cli::command(),
         // The clap command requires a source positional; this handler decides
         // the desired tree itself and never reads one.
         ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
     );
 
-    assert_eq!(leaving(&rendered, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&rendered), exit::REFUSAL);
     assert_eq!(rendered.error(), None);
     assert_eq!(
         rendered.stdout(),
@@ -2271,16 +2225,15 @@ fn a_run_that_stopped_part_way_states_the_rows_it_applied() {
 fn the_document_a_run_that_stopped_part_way_renders_is_not_a_plan() {
     let (dir, dest) = held_by_two();
 
-    let verdict = exit::Verdict::default();
-    let structured = harness(&dir).output_mode(OutputMode::Json).run(
-        &moved_under_app(&verdict),
+    let structured = harness(&dir).under(Mode::Json).run(
+        &moved_under_app(),
         cli::command(),
         // The clap command requires a source positional; this handler decides
         // the desired tree itself and never reads one.
         ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
     );
 
-    assert_eq!(leaving(&structured, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&structured), exit::REFUSAL);
     assert_eq!(structured.error(), None);
     let value: JsonValue = serde_json::from_str(structured.stdout()).expect("a JSON document");
     assert_eq!(value["phase"], "aborted");
@@ -2297,14 +2250,13 @@ fn the_document_a_run_that_stopped_part_way_renders_is_not_a_plan() {
 fn the_csv_a_run_that_stopped_part_way_writes_states_the_key_it_refused() {
     let (dir, dest) = held_by_two();
 
-    let verdict = exit::Verdict::default();
-    let projected = harness(&dir).output_mode(OutputMode::Csv).run(
-        &moved_under_app(&verdict),
+    let projected = harness(&dir).under(Mode::Csv).run(
+        &moved_under_app(),
         cli::command(),
         ["proiectio", "write", "unread.toml", "--dest", dest.as_str()],
     );
 
-    assert_eq!(leaving(&projected, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&projected), exit::REFUSAL);
     assert_eq!(projected.error(), None);
     assert_eq!(
         projected.stdout(),
@@ -2321,14 +2273,11 @@ fn the_csv_a_stopped_run_writes_says_on_stderr_how_far_the_run_got() {
     let (dir, dest) = held_by_two();
     let argv = ["proiectio", "write", "unread.toml", "--dest", dest.as_str()];
 
-    let verdict = exit::Verdict::default();
-    let projected = harness(&dir).output_mode(OutputMode::Csv).run(
-        &moved_under_app(&verdict),
-        cli::command(),
-        argv,
-    );
+    let projected = harness(&dir)
+        .under(Mode::Csv)
+        .run(&moved_under_app(), cli::command(), argv);
 
-    assert_eq!(leaving(&projected, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&projected), exit::REFUSAL);
     assert_eq!(projected.error(), None);
     assert_eq!(
         stated_on_stderr(&projected),
@@ -2337,7 +2286,7 @@ fn the_csv_a_stopped_run_writes_says_on_stderr_how_far_the_run_got() {
 
     let (dir, dest) = held_by_two();
     let argv = ["proiectio", "write", "unread.toml", "--dest", dest.as_str()];
-    let rendered = harness(&dir).run(&moved_under_app(&verdict), cli::command(), argv);
+    let rendered = harness(&dir).run(&moved_under_app(), cli::command(), argv);
 
     assert!(
         rendered
@@ -2359,14 +2308,13 @@ fn stated_on_stderr(result: &standout_test::TestResult) -> Vec<&str> {
 fn a_refusal_met_while_applying_renders_the_keys_the_error_names() {
     let (dir, _) = classified_dir();
 
-    let verdict = exit::Verdict::default();
     let rendered = harness(&dir).run(
-        &mid_run_app(&verdict),
+        &mid_run_app(),
         cli::command(),
         ["proiectio", "write", "map.toml"],
     );
 
-    assert_eq!(leaving(&rendered, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&rendered), exit::REFUSAL);
     assert_eq!(rendered.error(), None);
     assert_eq!(
         rendered.stdout(),
@@ -2381,14 +2329,13 @@ fn a_refusal_met_while_applying_renders_the_keys_the_error_names() {
 fn a_refusal_under_force_states_the_row_without_advising_the_flag() {
     let (dir, _) = classified_dir();
 
-    let verdict = exit::Verdict::default();
     let rendered = harness(&dir).run(
-        &mid_run_forced_app(&verdict),
+        &mid_run_forced_app(),
         cli::command(),
         ["proiectio", "write", "map.toml", "--force"],
     );
 
-    assert_eq!(leaving(&rendered, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&rendered), exit::REFUSAL);
     assert_eq!(rendered.error(), None);
     assert_eq!(
         rendered.stdout(),
@@ -2401,14 +2348,13 @@ fn a_refusal_under_force_states_the_row_without_advising_the_flag() {
 fn a_refusal_met_while_applying_is_the_document_a_refused_plan_is() {
     let (dir, _) = classified_dir();
 
-    let verdict = exit::Verdict::default();
-    let structured = harness(&dir).output_mode(OutputMode::Json).run(
-        &mid_run_app(&verdict),
+    let structured = harness(&dir).under(Mode::Json).run(
+        &mid_run_app(),
         cli::command(),
         ["proiectio", "write", "map.toml"],
     );
 
-    assert_eq!(leaving(&structured, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&structured), exit::REFUSAL);
     assert_eq!(structured.error(), None);
     let value: JsonValue = serde_json::from_str(structured.stdout()).expect("a JSON document");
     assert_eq!(
@@ -2435,10 +2381,9 @@ fn a_refused_row_names_only_styles_the_stylesheet_declares() {
     refused_and_overwritten(&dir, &dest, &deploy);
     let argv = write_argv(&[deploy.as_str(), "--dry-run"], &dest);
 
-    let debug =
-        harness(&dir)
-            .output_mode(OutputMode::TermDebug)
-            .run(&app(), cli::command(), argv.clone());
+    let debug = harness(&dir)
+        .under(Mode::Debug)
+        .run(&app(), cli::command(), argv.clone());
     assert_tags_declared("a refused plan", debug.stdout());
     assert!(
         debug.stdout().contains("[refused]would refuse[/refused]"),
@@ -2447,7 +2392,7 @@ fn a_refused_row_names_only_styles_the_stylesheet_declares() {
     );
 
     let term = harness(&dir)
-        .output_mode(OutputMode::Term)
+        .under(Mode::Ansi)
         .run(&app(), cli::command(), argv);
     assert_styles_resolved("a refused plan", term.stdout());
 }
@@ -2468,12 +2413,11 @@ fn a_drifted_path_refuses_on_a_dry_run_and_a_real_one_alike() {
     for extra in [vec![], vec!["--dry-run"]] {
         let mut source = vec![deploy.as_str()];
         source.extend_from_slice(&extra);
-        let verdict = exit::Verdict::default();
 
-        let result = harness(&dir).run(&over(&verdict), cli::command(), write_argv(&source, &dest));
+        let result = harness(&dir).run(&app(), cli::command(), write_argv(&source, &dest));
 
         assert_eq!(
-            leaving(&result, &verdict),
+            leaving(&result),
             exit::REFUSAL,
             "{extra:?}: {}",
             result.error().unwrap_or_default()
@@ -2588,12 +2532,12 @@ fn a_dry_run_release_row_carries_the_owners_the_real_run_reports() {
             .assert_success();
     }
 
-    let dry = harness(&dir).output_mode(OutputMode::Json).run(
+    let dry = harness(&dir).under(Mode::Json).run(
         &app(),
         cli::command(),
         write_argv(&[apart.as_str(), "--owner", "one", "--dry-run"], &dest),
     );
-    let applied = harness(&dir).output_mode(OutputMode::Json).run(
+    let applied = harness(&dir).under(Mode::Json).run(
         &app(),
         cli::command(),
         write_argv(&[apart.as_str(), "--owner", "one"], &dest),
@@ -2625,13 +2569,12 @@ fn an_external_symlink_target_refuses_until_the_invocation_allows_it() {
     )
     .expect("a mapping naming an external target");
 
-    let verdict = exit::Verdict::default();
     let refused = harness(&dir).run(
-        &over(&verdict),
+        &app(),
         cli::command(),
         write_argv(&[external.as_str()], &dest),
     );
-    assert_eq!(leaving(&refused, &verdict), exit::REFUSAL);
+    assert_eq!(leaving(&refused), exit::REFUSAL);
     refused.assert_stdout_contains(
         "would refuse     toolchain  (external target) -> /opt/toolchains/rust-1.80",
     );
@@ -2652,7 +2595,7 @@ fn an_external_symlink_target_refuses_until_the_invocation_allows_it() {
 fn a_dry_run_publishes_the_librarys_own_plan_report() {
     let (dir, dest, deploy) = tour();
 
-    let result = harness(&dir).output_mode(OutputMode::Json).run(
+    let result = harness(&dir).under(Mode::Json).run(
         &app(),
         cli::command(),
         write_argv(&[deploy.as_str(), "--dry-run"], &dest),
@@ -2684,7 +2627,7 @@ fn a_dry_run_publishes_the_librarys_own_plan_report() {
 fn a_real_run_publishes_the_librarys_own_apply_report() {
     let (dir, dest, deploy) = tour();
 
-    let result = harness(&dir).output_mode(OutputMode::Json).run(
+    let result = harness(&dir).under(Mode::Json).run(
         &app(),
         cli::command(),
         write_argv(&[deploy.as_str()], &dest),
@@ -2719,7 +2662,7 @@ fn a_directory_named_as_a_mapping_fails_rather_than_becoming_a_tree() {
         write_argv(&[skeleton.as_str()], &dest),
     );
 
-    assert_eq!(exit::status(result.outcome()), exit::FAILURE);
+    assert_eq!(leaving(&result), exit::FAILURE);
     assert!(!dest.join("top").exists());
 }
 
@@ -2736,8 +2679,8 @@ fn a_command_line_that_names_no_desired_tree_is_a_usage_error() {
         let result = harness(&dir).run(&app(), cli::command(), write_argv(&source, &dest));
 
         assert_eq!(
-            exit::status(result.outcome()),
-            exit::FAILURE,
+            leaving(&result),
+            exit::USAGE,
             "{source:?}: {}",
             result.error().unwrap_or_default()
         );
@@ -2750,14 +2693,13 @@ fn write_names_only_styles_the_stylesheet_declares_and_the_theme_resolves() {
     let (dir, dest, deploy) = tour();
     let argv = write_argv(&[deploy.as_str(), "--dry-run"], &dest);
 
-    let debug =
-        harness(&dir)
-            .output_mode(OutputMode::TermDebug)
-            .run(&app(), cli::command(), argv.clone());
+    let debug = harness(&dir)
+        .under(Mode::Debug)
+        .run(&app(), cli::command(), argv.clone());
     debug.assert_success();
     assert_tags_declared("write", debug.stdout());
 
-    let term = harness(&dir).output_mode(OutputMode::Term).run(
+    let term = harness(&dir).under(Mode::Ansi).run(
         &app(),
         cli::command(),
         write_argv(&[deploy.as_str()], &dest),
@@ -2794,10 +2736,9 @@ fn a_symlink_row_carries_the_style_of_its_verdict() {
     let (dir, dest, deploy) = tour();
     let argv = write_argv(&[deploy.as_str()], &dest);
 
-    let written =
-        harness(&dir)
-            .output_mode(OutputMode::TermDebug)
-            .run(&app(), cli::command(), argv.clone());
+    let written = harness(&dir)
+        .under(Mode::Debug)
+        .run(&app(), cli::command(), argv.clone());
     written.assert_success();
     assert!(
         written.stdout().contains("[linked]linked[/linked]"),
@@ -2806,7 +2747,7 @@ fn a_symlink_row_carries_the_style_of_its_verdict() {
     );
 
     let again = harness(&dir)
-        .output_mode(OutputMode::TermDebug)
+        .under(Mode::Debug)
         .run(&app(), cli::command(), argv);
     again.assert_success();
     assert!(
@@ -2847,7 +2788,7 @@ fn a_path_and_a_target_spelled_like_style_tags_render_as_themselves() {
     text.assert_stdout_contains(PATH);
     text.assert_stdout_contains(TARGET);
 
-    let term = harness(&dir).output_mode(OutputMode::Term).run(
+    let term = harness(&dir).under(Mode::Ansi).run(
         &app(),
         cli::command(),
         write_argv(&[spelled.as_str()], &dest),
@@ -2868,15 +2809,14 @@ const TIGHT: &str = "64";
 #[serial]
 fn a_write_past_the_size_bound_fails_naming_the_limit() {
     let (dir, dest, deploy) = tour();
-    let verdict = exit::Verdict::default();
 
     let result = harness(&dir).run(
-        &over(&verdict),
+        &app(),
         cli::command(),
         write_argv(&[deploy.as_str(), "--max-source-size", TIGHT], &dest),
     );
 
-    assert_eq!(leaving(&result, &verdict), exit::FAILURE);
+    assert_eq!(leaving(&result), exit::FAILURE);
     assert_eq!(result.stdout(), "");
     let error = result.error().unwrap_or_default();
     assert!(
@@ -2891,15 +2831,14 @@ fn a_write_past_the_size_bound_fails_naming_the_limit() {
 fn the_configured_size_bound_holds_a_write_with_no_flag() {
     let (dir, dest, deploy) = tour();
     set_size_bound(&dir, TIGHT);
-    let verdict = exit::Verdict::default();
 
     let result = harness(&dir).run(
-        &over(&verdict),
+        &app(),
         cli::command(),
         write_argv(&[deploy.as_str()], &dest),
     );
 
-    assert_eq!(leaving(&result, &verdict), exit::FAILURE);
+    assert_eq!(leaving(&result), exit::FAILURE);
     assert!(
         result
             .error()

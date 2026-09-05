@@ -11,7 +11,7 @@ use libproiectio::{
     PlanOptions, PlannedAction, Projection, RemovalScope, Report, Run, Status, Stopped, load_files,
     load_mapping, load_source,
 };
-use standout::cli::{CommandContext, Output};
+use standout::cli::{CommandContext, CommandContextInput, ExitStatus, Output};
 use standout::handler;
 
 use crate::app::Forced;
@@ -54,13 +54,13 @@ pub(crate) fn write(
         let planned = projection
             .plan(&owner, &desired, options)
             .map_err(exit::failure)?;
-        return planned_report(&planned.plan, planned.report(), ctx);
+        return Ok(planned_report(&planned.plan, planned.report()));
     }
     let mut run = projection.begin().map_err(exit::failure)?;
     run.plan(&owner, &desired, options)
         .map(|_| ())
         .map_err(exit::failure)?;
-    apply(run, ctx)
+    apply(run)
 }
 
 /// Removes what the manifest records, warning on stderr where the manifest
@@ -94,16 +94,16 @@ pub(crate) fn rm(
         let planned = projection
             .plan_removal(&owner, scope, drift)
             .map_err(exit::failure)?;
-        planned_report(&planned.plan, planned.report(), ctx)?
+        planned_report(&planned.plan, planned.report())
     } else {
         let mut run = projection.begin().map_err(exit::failure)?;
         run.plan_removal(&owner, scope, drift)
             .map(|_| ())
             .map_err(exit::failure)?;
-        apply(run, ctx)?
+        apply(run)?
     };
     if named_but_absent {
-        warn_absent_state_dir(&projection);
+        warn_absent_state_dir(ctx, &projection);
     }
     Ok(reported)
 }
@@ -121,8 +121,8 @@ fn named_state_dir_is_absent(
     }
 }
 
-fn warn_absent_state_dir(projection: &Projection) {
-    standout::warnings::push_warning(format!(
+fn warn_absent_state_dir(ctx: &CommandContext, projection: &Projection) {
+    ctx.warn(format!(
         "state dir {} does not exist; treating manifest as empty",
         projection.state_dir()
     ));
@@ -172,33 +172,29 @@ fn projection(dest: &str, state_dir: Option<&str>) -> Result<Projection, anyhow:
 
 /// Reports the whole plan, refused rows and all; a refusal records the exit
 /// status rather than replacing the report with a diagnostic.
-fn planned_report(
-    plan: &Plan,
-    report: Report<PlannedAction>,
-    ctx: &CommandContext,
-) -> Result<Output<RunView>, anyhow::Error> {
+fn planned_report(plan: &Plan, report: Report<PlannedAction>) -> Output<RunView> {
     let stated = PlannedRun {
         report,
         dropped: plan.dropped.clone(),
     };
     if plan.refusals().next().is_some() {
-        return refusal(RunView::Planned(stated), ctx);
+        return refusal(RunView::Planned(stated));
     }
-    Ok(Output::Render(RunView::Planned(stated)))
+    Output::Render(RunView::Planned(stated))
 }
 
 /// A real run acts unless something refuses: a plan carrying refusals writes
 /// nothing and reports itself, as a dry run of the same invocation would.
-pub(crate) fn apply(run: Run, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
+pub(crate) fn apply(run: Run) -> Result<Output<RunView>, anyhow::Error> {
     if let Some(plan) = run
         .planned()
         .filter(|plan| plan.refusals().next().is_some())
     {
-        return planned_report(plan, plan.report(run.manifest()), ctx);
+        return Ok(planned_report(plan, plan.report(run.manifest())));
     }
     match run.apply() {
         Ok(applied) => Ok(Output::Render(RunView::Applied(Box::new(applied.into())))),
-        Err(aborted) => stopped(aborted, ctx),
+        Err(aborted) => stopped(aborted),
     }
 }
 
@@ -208,23 +204,22 @@ pub(crate) fn apply(run: Run, ctx: &CommandContext) -> Result<Output<RunView>, a
 /// stopped it, under a document marked as stopped: this output must never
 /// claim a destination nobody touched, and dropping applied rows for a
 /// failure would claim it just as loudly.
-fn stopped(aborted: Box<Aborted>, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
+fn stopped(aborted: Box<Aborted>) -> Result<Output<RunView>, anyhow::Error> {
     let Aborted { stopped, applied } = *aborted;
     match stopped {
         Stopped::Applying(error) if applied.report.is_empty() => {
-            refusal_or_failure(error, &applied.manifest, applied.dropped, ctx)
+            refusal_or_failure(error, &applied.manifest, applied.dropped)
         }
         stopped => {
             let refused = match stopped.error() {
                 Error::Refused(refused) => refused_rows(refused, &applied.manifest),
                 _ => Report::default(),
             };
-            ctx.app_state
-                .get_required::<exit::Verdict>()?
-                .record(exit::of_error(stopped.error()));
+            let status = ExitStatus::from(exit::of_error(stopped.error()));
             Ok(Output::Render(RunView::Aborted(Box::new(AbortedRun::new(
                 applied, refused, &stopped,
-            )))))
+            ))))
+            .with_exit_status(status))
         }
     }
 }
@@ -240,24 +235,20 @@ pub(crate) fn refusal_or_failure(
     error: Error,
     manifest: &Manifest,
     dropped: BTreeSet<Dropped>,
-    ctx: &CommandContext,
 ) -> Result<Output<RunView>, anyhow::Error> {
     match error {
-        Error::Refused(refused) => refusal(
-            RunView::Planned(PlannedRun::refused(&refused, manifest, dropped)),
-            ctx,
-        ),
+        Error::Refused(refused) => Ok(refusal(RunView::Planned(PlannedRun::refused(
+            &refused, manifest, dropped,
+        )))),
         failure => Err(exit::failure(failure)),
     }
 }
 
-/// Renders the refusal's rows, recording exit status 2 though the run
-/// rendered rather than failed.
-fn refusal(stated: RunView, ctx: &CommandContext) -> Result<Output<RunView>, anyhow::Error> {
-    ctx.app_state
-        .get_required::<exit::Verdict>()?
-        .record(exit::REFUSAL);
-    Ok(Output::Render(stated))
+/// Renders the refusal's rows, declaring exit status 2 though the run
+/// rendered rather than failed: a refused plan is the whole point of the run,
+/// so the handler renders it and Standout spends the status on the process.
+fn refusal(stated: RunView) -> Output<RunView> {
+    Output::Render(stated).with_exit_status(ExitStatus::from(exit::REFUSAL))
 }
 
 fn desired(
@@ -288,14 +279,14 @@ pub(crate) fn status(
     let classified = projection.status().map_err(exit::failure)?;
     let named_but_absent = named_state_dir_is_absent(&projection, state_dir.as_deref())?;
     if named_but_absent {
-        warn_absent_state_dir(&projection);
+        warn_absent_state_dir(ctx, &projection);
     }
-    if check && (named_but_absent || !classified.is_clean()) {
-        ctx.app_state
-            .get_required::<exit::Verdict>()?
-            .record(exit::REFUSAL);
-    }
-    Ok(Output::Render(classified))
+    let refused = check && (named_but_absent || !classified.is_clean());
+    let stated = Output::Render(classified);
+    Ok(match refused {
+        true => stated.with_exit_status(ExitStatus::from(exit::REFUSAL)),
+        false => stated,
+    })
 }
 
 fn run_config(action: ConfigAction) -> Result<Output<ConfigView>, anyhow::Error> {
@@ -352,18 +343,22 @@ pub(crate) fn config_unset(
 #[handler]
 pub(crate) fn config_gen(
     #[arg] output: Option<Utf8PathBuf>,
+    #[flag] force: bool,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
     run_config(ConfigAction::Gen {
         output: output.map(Utf8PathBuf::into_std_path_buf),
+        force,
     })
 }
 
 #[handler]
 pub(crate) fn config_schema(
     #[arg] output: Option<Utf8PathBuf>,
+    #[flag] force: bool,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
     run_config(ConfigAction::Schema {
         output: output.map(Utf8PathBuf::into_std_path_buf),
+        force,
     })
 }
 
