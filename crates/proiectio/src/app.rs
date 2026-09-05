@@ -127,7 +127,7 @@ pub(crate) fn stated_on_stderr(
 ) -> Result<JsonValue, HookError> {
     if serializing(matches) {
         for stated in views::run_warnings(&document) {
-            ctx.warn(stated);
+            ctx.warn(crate::exit::warning(&stated));
         }
     }
     Ok(document)

@@ -2914,3 +2914,89 @@ fn set_size_bound(dir: &TempDir, bytes: &str) {
         )
         .assert_success();
 }
+
+/// Every registration reaches a clap subcommand, and every `#[handler]`
+/// parameter reads an argument its leaf declares. The command is built first:
+/// clap copies `--dest` and `--state-dir` into their subcommands only then,
+/// and `verify_command` looks a parameter up in the leaf alone.
+#[test]
+fn every_registration_reaches_the_command_line_that_declares_it() {
+    let mut command = cli::command();
+    command.build();
+
+    app().verify_command(&command).expect("a verified app");
+}
+
+/// The kebab-case name a variant registers under is the name clap declares,
+/// and the config group answers under the path it is registered by.
+#[test]
+#[serial]
+fn every_command_answers_under_the_name_the_shell_types() {
+    let (dir, dest) = classified_dir();
+    let paths: [&[&str]; 10] = [
+        &["write", "--help"],
+        &["rm", "--help"],
+        &["status"],
+        &["config"],
+        &["config", "list"],
+        &["config", "get", "owner"],
+        &["config", "gen"],
+        &["config", "schema"],
+        &["conf", "list"],
+        &["help"],
+    ];
+
+    for path in paths {
+        let mut argv = vec!["proiectio", "--dest", dest.as_str()];
+        argv.extend_from_slice(path);
+        let result = harness(&dir).run(&app(), cli::command(), argv);
+
+        result.assert_success();
+        assert!(!result.stdout().is_empty(), "{path:?} rendered nothing");
+    }
+}
+
+/// Standout owns the process edge now, and writes a warning and an error
+/// message as it is handed them, so what this CLI states about a run has to
+/// arrive stated: a path or a key an invocation named is data, and no
+/// character in it reaches the terminal as something it acts on.
+#[test]
+#[serial]
+fn what_this_cli_states_about_a_run_carries_no_control_character() {
+    const OSC: &str = "\u{1b}]0;pwned\u{7}";
+
+    let (dir, dest) = classified_dir();
+    let absent = dest.join(format!("no-such{OSC}state"));
+
+    let warned = harness(&dir).run(
+        &app(),
+        cli::command(),
+        [
+            "proiectio",
+            "status",
+            "--dest",
+            dest.as_str(),
+            "--state-dir",
+            absent.as_str(),
+        ],
+    );
+    let refused = harness(&dir).run(
+        &app(),
+        cli::command(),
+        ["proiectio", "config", "get", &format!("own{OSC}er")],
+    );
+
+    for (case, stated) in [
+        ("the warning", warned.warnings().join("\n")),
+        ("the error", refused.error().unwrap_or_default().to_owned()),
+    ] {
+        assert!(
+            stated.contains(r"\u{1b}]0;pwned\u{7}"),
+            "{case} dropped the escape: {stated:?}"
+        );
+        assert!(
+            !stated.chars().any(char::is_control),
+            "{case} reached the terminal as itself: {stated:?}"
+        );
+    }
+}

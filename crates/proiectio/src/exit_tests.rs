@@ -137,42 +137,81 @@ fn a_refusal_is_the_only_library_error_that_exits_two() {
     }
 }
 
-/// The seam Standout writes verbatim: an `AppFailure` pins both the status
-/// and the bytes, and the framework adds no prefix of its own.
+/// A refusal is the one status Standout would not choose for itself, so it
+/// goes through the seam that pins both the status and the bytes, and the
+/// framework adds no prefix of its own.
 #[test]
-fn a_library_failure_carries_its_status_and_message_to_the_shell() {
-    for error in [refused(), Error::StateDirIsTarget { path: path() }] {
-        let expected = of_error(&error);
-        let message = error.to_string();
-        let app = failure(error)
-            .downcast::<AppFailure>()
-            .expect("an app failure");
-        assert_eq!(app.exit_status().code(), expected);
-        assert_eq!(app.diagnostic(), format!("Error: {message}\n"));
-    }
+fn a_refusal_pins_its_status_and_its_message() {
+    let message = refused().to_string();
+
+    let app = failure(refused())
+        .downcast::<AppFailure>()
+        .expect("an app failure");
+
+    assert_eq!(app.exit_status().code(), REFUSAL);
+    assert_eq!(app.diagnostic(), format!("Error: {message}\n"));
+}
+
+/// An operational failure pins nothing: Standout already spends 1 on a
+/// handler error, frames the message itself, and keeps it off stderr under a
+/// structured encoding.
+#[test]
+fn an_operational_failure_leaves_the_status_and_the_framing_to_standout() {
+    let error = Error::StateDirIsTarget { path: path() };
+    let message = error.to_string();
+
+    let stated = failure(error);
+
+    assert!(
+        stated.downcast_ref::<AppFailure>().is_none(),
+        "an operational failure pinned a status: {stated}"
+    );
+    assert_eq!(stated.to_string(), message);
+    assert!(
+        stated.downcast_ref::<Stated>().is_some(),
+        "the escaped message carries the library error: {stated}"
+    );
 }
 
 /// A Unix filename may hold an escape sequence; it leaves as the characters
-/// it is, and the message ends exactly once, because Standout writes an
-/// `AppFailure`'s diagnostic byte for byte.
+/// it is, whichever of the two seams the error takes.
 #[test]
 fn a_diagnostic_carrying_control_characters_is_escaped_before_it_is_handed_over() {
     const OSC: &str = "\u{1b}]52;c;cGF5bG9hZA==\u{7}";
 
-    let app = failure(Error::DestinationTooDeep {
+    let deep = || Error::DestinationTooDeep {
         path: Utf8PathBuf::from(format!("/srv/{OSC}")),
         limit: 64,
-    })
-    .downcast::<AppFailure>()
-    .expect("an app failure");
+    };
+    let refused_deeply = || {
+        Error::Refused(Refused::one(
+            Utf8PathBuf::from(format!("bin/{OSC}")),
+            Refusal::Drift,
+            Origin::Caller,
+        ))
+    };
+    let cases = [
+        ("an operational failure", failure(deep()).to_string()),
+        (
+            "a refusal",
+            failure(refused_deeply())
+                .downcast::<AppFailure>()
+                .expect("an app failure")
+                .diagnostic()
+                .to_owned(),
+        ),
+    ];
 
-    let text = app.diagnostic();
-    assert!(text.contains(r"\u{1b}]52;c;cGF5bG9hZA==\u{7}"), "{text:?}");
-    assert_eq!(text.matches('\n').count(), 1, "{text:?}");
-    assert!(
-        !text.trim_end_matches('\n').chars().any(char::is_control),
-        "a control character reached the terminal: {text:?}"
-    );
+    for (case, text) in cases {
+        assert!(
+            text.contains(r"\u{1b}]52;c;cGF5bG9hZA==\u{7}"),
+            "{case}: {text:?}"
+        );
+        assert!(
+            !text.trim_end_matches('\n').chars().any(char::is_control),
+            "{case}: a control character reached the terminal: {text:?}"
+        );
+    }
 }
 
 /// A message this CLI spelled over several lines keeps them, and still ends

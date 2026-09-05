@@ -122,16 +122,16 @@ fn named_state_dir_is_absent(
 }
 
 fn warn_absent_state_dir(ctx: &CommandContext, projection: &Projection) {
-    ctx.warn(format!(
+    ctx.warn(exit::warning(&format!(
         "state dir {} does not exist; treating manifest as empty",
         projection.state_dir()
-    ));
+    )));
 }
 
 fn owner_or_configured(owner: Option<String>) -> Result<String, anyhow::Error> {
     match owner {
         Some(named) => Ok(named),
-        None => settings::require_owner(settings::builder().load()?.owner),
+        None => settings::require_owner(settings::builder().load().map_err(exit::stated)?.owner),
     }
 }
 
@@ -144,7 +144,7 @@ fn write_settings(
     let (owner, max_source_bytes) = match (owner, max_source_size) {
         (Some(owner), Some(bytes)) => (owner, bytes),
         (owner, max_source_size) => {
-            let configured = settings::builder().load()?;
+            let configured = settings::builder().load().map_err(exit::stated)?;
             let owner = match owner {
                 Some(named) => named,
                 None => settings::require_owner(configured.owner)?,
@@ -291,7 +291,7 @@ pub(crate) fn status(
 
 fn run_config(action: ConfigAction) -> Result<Output<ConfigView>, anyhow::Error> {
     settings::check_edit_path(&action).map_err(exit::failure)?;
-    let result = settings::builder().handle(&action)?;
+    let result = settings::builder().handle(&action).map_err(exit::stated)?;
     ConfigView::of(result, settings::persisted_edit)
         .map(Output::Render)
         .map_err(exit::failure)
@@ -316,7 +316,7 @@ pub(crate) fn config_get(
     #[arg] key: String,
     #[arg] scope: Option<String>,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
-    settings::require_key(&key)?;
+    settings::require_key(&key).map_err(exit::stated)?;
     run_config(ConfigAction::Get { key, scope })
 }
 
@@ -326,7 +326,7 @@ pub(crate) fn config_set(
     #[arg] value: String,
     #[arg] scope: Option<String>,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
-    settings::require_key(&key)?;
+    settings::require_key(&key).map_err(exit::stated)?;
     settings::require_value(&key, &value)?;
     run_config(ConfigAction::Set { key, value, scope })
 }
@@ -336,7 +336,7 @@ pub(crate) fn config_unset(
     #[arg] key: String,
     #[arg] scope: Option<String>,
 ) -> Result<Output<ConfigView>, anyhow::Error> {
-    settings::require_key(&key)?;
+    settings::require_key(&key).map_err(exit::stated)?;
     run_config(ConfigAction::Unset { key, scope })
 }
 

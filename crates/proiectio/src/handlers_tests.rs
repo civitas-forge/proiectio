@@ -18,6 +18,16 @@ fn context() -> CommandContext {
     ctx
 }
 
+/// An operational failure pins no status of its own, so Standout's 1 for a
+/// handler error is what the process leaves with.
+#[track_caller]
+fn unpinned(error: &anyhow::Error) {
+    assert!(
+        error.downcast_ref::<AppFailure>().is_none(),
+        "an operational failure pinned a status: {error}"
+    );
+}
+
 fn warned_context() -> (CommandContext, WarningBuffer) {
     let mut state = Extensions::new();
     state.insert(Forced::default());
@@ -261,9 +271,7 @@ fn a_removal_that_cannot_open_the_destination_does_not_warn() {
     ) else {
         panic!("a removal over a destination that is not there reported a run");
     };
-    let failure = error.downcast::<AppFailure>().expect("an app failure");
-
-    assert_eq!(failure.exit_status().code(), exit::FAILURE);
+    unpinned(&error);
     assert!(
         warnings.take().is_empty(),
         "a removal that opened nothing warned about the state directory"
@@ -279,9 +287,7 @@ fn a_destination_that_is_not_there_fails_with_status_one() {
 
     let error =
         status(absent.to_string(), None, false, &context()).expect_err("an operational failure");
-    let failure = error.downcast::<AppFailure>().expect("an app failure");
-
-    assert_eq!(failure.exit_status().code(), exit::FAILURE);
+    unpinned(&error);
 }
 
 #[test]
@@ -297,9 +303,7 @@ fn a_destination_that_is_not_there_warns_about_no_state_directory() {
         &ctx,
     )
     .expect_err("an operational failure");
-    let failure = error.downcast::<AppFailure>().expect("an app failure");
-
-    assert_eq!(failure.exit_status().code(), exit::FAILURE);
+    unpinned(&error);
     assert!(
         warnings.take().is_empty(),
         "a run that classified nothing warned about the state directory"
@@ -315,7 +319,5 @@ fn a_state_directory_that_is_the_destination_fails_with_status_one() {
 
     let error = status(dest.to_string(), Some(dest.to_string()), false, &context())
         .expect_err("a refused state directory");
-    let failure = error.downcast::<AppFailure>().expect("an app failure");
-
-    assert_eq!(failure.exit_status().code(), exit::FAILURE);
+    unpinned(&error);
 }

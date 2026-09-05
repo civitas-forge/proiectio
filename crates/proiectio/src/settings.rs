@@ -2,6 +2,7 @@
 
 use camino::Utf8PathBuf;
 use clapfig::error::ClapfigError;
+#[cfg(test)]
 use clapfig::runtime::Shape;
 use clapfig::{Clapfig, ConfigAction, Schema, SearchPath, TypedBuilder, UnknownKeyDecision};
 use libproiectio::{Error, IoRole, OWNER_RULE, names_an_owner};

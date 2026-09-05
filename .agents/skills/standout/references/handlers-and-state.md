@@ -63,8 +63,14 @@ filtering rules, and state transitions belong behind the library interface.
 - `Output::Render(data)` renders a template or serializes `data` in a structured mode.
 - `Output::Silent` completes without output.
 - `Output::Binary { data, filename }` returns bytes and a suggested filename.
+- `Output::Artifact(artifact)` hands Standout the bytes, the destination and the success report.
+- `Output::WithStatus { .. }`, built with `.with_exit_status(status)`, is any of the above plus the status the process leaves with. It is still a success; nothing becomes a diagnostic. This is the typed alternative to a `process::exit` after printing.
 
-Do not branch presentation in a handler. `CommandContext` contains `command_path`, `app_state`, and per-dispatch `extensions`; it deliberately does **not** contain `output_mode`.
+A failure that pins its own status and stderr bytes is `AppFailure::new(status, "verbatim stderr\n")`; `ExternalFailure` keeps its meaning for a status another program declared. A handler with a detail and a source position returns `Diagnostic::error(..).detail(..).range(..)`.
+
+Do not branch presentation in a handler. `CommandContext` contains `command_path`, `app_state`, and per-dispatch `extensions`; it deliberately does **not** contain the representation. It does carry `ctx.warn(message)`, which is where a framework-level warning goes now that there is no thread-local collector, and `ctx.input_sources()`, which a chain resolved in a handler needs (`chain.resolve_from(matches, ctx.input_sources())`).
+
+A command whose result accrues while it runs takes `results: &mut Results<E>`, calls `results.emit(event)?`, and returns `Summary::Render(..)`. Nothing else may reach stdout or stderr.
 
 ## State boundaries
 

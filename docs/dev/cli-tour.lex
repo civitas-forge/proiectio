@@ -77,10 +77,13 @@ The CLI
     act on — and writes nothing. Exit codes are the verdict, on dry
     and real runs alike, so CI can gate on either.
 
-    The three exit codes:
+    The three exit codes. A command line the parser rejects also
+    leaves with 2, which Standout fixes and offers no seam to move:
+    the two are told apart by what the run wrote, a refusal stating
+    its rows and a usage error stating the parser's prose.
 
         | 0 | applied, or nothing to do                                           |
-        | 1 | usage or I/O error                                                  |
+        | 1 | an I/O error                                                        |
         | 2 | refusal — drift, foreign file, containment, external symlink target |
 
     :: table header=0 ::

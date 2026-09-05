@@ -7,7 +7,7 @@ Choose the smallest boundary that covers the behavior:
 | Core | Validation, filtering, state transitions, persistence | Library interface |
 | Adapter | CLI-to-core mapping and returned view DTOs | Direct typed handler call |
 | Integration | clap through handler, hooks, and rendering | `standout_test::TestHarness` |
-| End to end | Real process, PTY, signals, build/link behavior | `assert_cmd`, `expectrl`, or `rexpect` |
+| End to end | Real process, PTY, signals, build/link behavior | `TestHarness::run_process` / `run_pty` |
 
 Test filtering, validation, state transitions, and persistence directly through
 the CLI-free library interface. With `#[handler]`, call the preserved typed
@@ -17,7 +17,7 @@ constructing `ArgMatches` for the generated wrapper.
 Use `TestHarness` when command registration, input/environment seams, templates, or output modes matter:
 
 ```rust
-use standout::OutputMode;
+use standout::Representation;
 use standout_test::{serial, TestHarness};
 
 #[test]
@@ -27,7 +27,7 @@ fn list_is_machine_readable() {
         .fixture("todos.txt", "buy milk\n")
         .env("TODO_FILE", "todos.txt")
         .terminal_width(80)
-        .output_mode(OutputMode::Json)
+        .output_mode(Representation::Json)
         .run(&app(), cli_command(), ["tdoo", "list"]);
 
     result.assert_success();
@@ -36,14 +36,27 @@ fn list_is_machine_readable() {
 }
 ```
 
-The harness can control env vars, cwd and tempdir fixtures, terminal width, TTY/color detection, stdin, clipboard, scripted prompts, and output mode. It returns assertions and accessors for handled text, errors, no-match, and binary outcomes. There is no dedicated silent accessor: `run_to_string` currently exposes silent output as an empty handled string, so the harness cannot distinguish it from intentionally empty text.
+The harness **injects** destination facts rather than detecting them. Defaults
+are non-terminal, non-color-capable streams, so output is plain without saying
+so; `.color(ColorPolicy::Always)` emits the real escapes a user sees and
+`.color_capable_terminal()` emulates a terminal under `Auto`. Set the facts a
+command reads with `.stdout_is_terminal(bool)`, `.terminal_width(n)`,
+`.icon_mode(...)` and `.color_scheme(...)`; a real terminal answers only in
+`run_process()` / `run_pty()`. Stdin, clipboard and prompts travel on
+`InputSources` through `.piped_stdin`, `.clipboard` and `.prompts`.
 
-Every test using `TestHarness` must use `#[serial]`: its seams mutate process-global state. Restoration occurs when the returned `TestResult` drops. Do not mix a harness run with manually installed detector or default-reader overrides in the same scope; those reset to library defaults, not prior custom overrides.
+`TestResult` distinguishes every outcome, `Silent` included, and adds
+`result()`/`results()` for the run's data whatever representation ran,
+`warnings()`, `diagnostic()`/`expect_diagnostic()` for the stdout document a
+structured failure writes, `unresolved_tag_names()`, `delivery()` and
+`assert_schema_snapshot(name)`.
 
-The harness cannot provide a real PTY, deliver signals, mock subprocesses launched by application code, or validate build/link integration. Keep those cases in a small end-to-end suite. Place subprocess calls behind an application-owned trait when unit tests need a fake.
+Only a test that sets env vars or cwd needs `#[serial]`: those are the remaining
+process-global seams. Destination facts and input sources are per-run values.
 
-Use JSON to assert returned shape, text/no-color for rendered strings, and
-terminal-debug for style tags. See `crates/standout-test/src/lib.rs`,
+Use JSON to assert returned shape, the default (or `ColorPolicy::Never`) for
+rendered strings, and `Representation::TermDebug` for style tags. Run the suite
+once under `STANDOUT_STRICT_STYLE_TAGS=1`. See `crates/standout-test/src/lib.rs`,
 `docs/topics/testing.md`,
 `crates/todo-example/todo-core/src/store.rs`, and
 `crates/todo-example/tdoo/src/app.rs`.

@@ -13,8 +13,10 @@ use standout::cli::Dispatch;
     long_about = "Projects files onto a directory.\n\n\
         Exit codes: 0 success, 1 error, 2 refused. A refusal (2) is a deliberate \
         safety \"no\" — drift, a foreign path, or a containment violation — and is \
-        distinct from an error (1). Where a refusal has an override, re-run with \
-        --force (drift) or --allow-external-targets (a symlink leaving the destination). \
+        distinct from an I/O error (1); a command line the parser rejects also \
+        leaves with 2, and states the parser's prose rather than rows. Where a \
+        refusal has an override, re-run with --force (drift) or \
+        --allow-external-targets (a symlink leaving the destination). \
         `status --check` spends the same 2 on what it classifies — a drifted, missing, or \
         foreign path — without acting on it."
 )]

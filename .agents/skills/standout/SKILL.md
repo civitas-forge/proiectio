@@ -19,12 +19,12 @@ into serializable CLI view models.
 
 ## Invariants
 
-- Do not print, render, or emit ANSI from handlers. Return `Output::Render(data)`, `Output::Silent`, or `Output::Binary { ... }`.
+- Do not print, render, or emit ANSI from handlers. Return `Output::Render(data)`, `Output::Silent`, `Output::Binary { ... }` or `Output::Artifact(..)`, and `.with_exit_status(..)` when the run declares the status the process leaves with.
 - Do not depend on Clap, Standout, `CommandContext`, `Output`, view DTOs,
   templates, styles, environment lookup, or app construction from a reusable
   library. Keep those in the CLI package.
 - Keep durable dependencies in app state and request-scoped values in context extensions.
-- Prefer structured output when an agent needs data, text output for stable rendered strings, and terminal-debug output for style-tag inspection.
+- Prefer structured output when an agent needs data, `--color never` for stable rendered strings, and `--output term-debug` for style-tag inspection.
 - Test library behavior through its own interface first. Test adapters through
   typed handler calls; use `TestHarness` for the in-process argv-to-output
   pipeline; spawn a process only for seams the harness cannot model.

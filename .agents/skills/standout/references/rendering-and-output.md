@@ -21,24 +21,26 @@ Keep templates in files and style semantic tags with CSS:
 .pending { color: yellow; }
 ```
 
-`embed_templates!` accepts `.jinja`, `.jinja2`, `.j2`, and `.txt`; runtime template loading additionally accepts `.stpl`. `embed_styles!` accepts CSS plus legacy YAML. A stylesheet filename supplies its theme name. Prefer CSS and MiniJinja for new application code.
+`embed_templates!` and runtime template loading accept `.jinja`, `.jinja2`, `.j2`, `.stpl` and `.txt`. `embed_styles!` accepts CSS plus legacy YAML. A stylesheet filename supplies its theme name, which `.default_theme(name)` has to select. Prefer CSS and MiniJinja for new application code.
 
-## Output modes
+## Representation and style
 
-The global `--output` flag chooses the view without changing handler data:
+"What is produced" and "does it carry color" are two settings. `--output` names a structured encoding only; with no `--output` the run renders the human template, which the flag cannot name. `--color` decides whether that rendered text carries escapes.
 
-| Mode | Result | Agent use |
+| `--output` | Result | Agent use |
 | --- | --- | --- |
-| `auto` | Template; ANSI only when supported | Normal user output |
-| `term` | Template with forced ANSI | Explicit colored output |
-| `text` | Template with tags stripped | Stable rendered assertions |
-| `term-debug` | Template with tags preserved | Inspect style placement |
-| `json`, `yaml`, `xml`, `csv` | Direct serialization; template skipped | Parse or assert on data |
+| *(absent)* | Template; color per `--color` | Normal user output |
+| `term-debug` | Template with style tags preserved | Inspect style placement |
+| `json`, `yaml`, `csv`, `ndjson` | Direct serialization; template skipped | Parse or assert on data |
 
-Unknown style tags gain a `?` marker in terminal mode, disappear in text mode, and remain literal in terminal-debug mode. Structured modes also skip injected template context.
+`term`, `text`, `auto` and `xml` are gone; passing one is a usage error. `--color always` is what `--output term` meant and `--color never` is what `--output text` meant. `csv` takes one flat record or an array of them; a nested value is a render error unless the command declares a `CsvProjection`. `ndjson` writes one compact JSON object per line.
 
-Prefer `--output json` plus a parser whenever an agent needs facts rather than presentation. Use `--output text` when the rendered wording matters. Do not scrape ANSI output.
+An unresolved style tag is a warning and an unstyled degrade, or a run failure under `strict_style_tags`. Structured modes skip injected template context.
 
-`--output-file-path=PATH` writes output to the file and suppresses duplicate stdout. Applications can rename or disable both output flags through `AppBuilder`.
+Prefer `--output json` plus a parser whenever an agent needs facts rather than presentation. Use `--color never` when the rendered wording matters. Do not scrape ANSI output.
 
-Read `crates/standout-render/src/output.rs`, `crates/standout-render/docs/topics/templating.md`, `crates/standout-render/docs/topics/styling-system.md`, and `docs/topics/output-modes.md` for the detailed surface. If prose says output mode is in `CommandContext`, follow the current Rust type instead: it is a render-layer concern.
+A failure under `json`, `yaml`, `csv` or `ndjson` is a diagnostic document on stdout, not prose on stderr. An `AppFailure` or `ExternalFailure` is the exception: it writes its verbatim bytes to stderr under every encoding and adds the document.
+
+`--output-file-path=PATH` writes output to the file and suppresses duplicate stdout. `--no-pager` suppresses the pager a `#[dispatch(pageable)]` command and every help page are otherwise eligible for, which `<APP>_PAGER` or `PAGER` names. Applications can rename or disable each injected flag through `AppBuilder` (`output_flag`, `color_flag`, `pager_flag`, `output_file_flag`, and the `no_*` forms).
+
+Read `crates/standout-render/src/output.rs`, `crates/standout-render/docs/topics/templating.md`, `crates/standout-render/docs/topics/styling-system.md`, and `docs/topics/output-modes.md` for the detailed surface. If prose says output mode is in `CommandContext`, follow the current Rust type instead: it is a render-layer concern, and a handler cannot branch on it.
