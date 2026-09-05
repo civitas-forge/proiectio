@@ -117,6 +117,18 @@ pub(crate) fn config_template<H>(config: CommandConfig<H>) -> CommandConfig<H> {
     config.template_name("config")
 }
 
+/// A listing states its keys under a field, and `get` states a doc comment as
+/// lines; both are arrays, which `--output csv` takes only through a
+/// projection naming the rows and the cells. The leaves that state one flat
+/// record need none.
+pub(crate) fn config_listing<H>(config: CommandConfig<H>) -> CommandConfig<H> {
+    config_template(config).structured_output_projection(views::config_listing_csv())
+}
+
+pub(crate) fn config_key_value<H>(config: CommandConfig<H>) -> CommandConfig<H> {
+    config_template(config).structured_output_projection(views::config_key_value_csv())
+}
+
 /// Pushes a stopped run's run-level facts as warnings, which Standout writes
 /// past the run's output — only for the modes that serialize the document; the
 /// template already lays these sentences out for rendered output.
@@ -185,13 +197,9 @@ pub(crate) fn build() -> Result<App> {
             Value::from_serialize(views::status_lines(context.data, context.ambiguous_width()))
         })
         .commands(Commands::dispatch_config())?
-        .command_with("config", handlers::config_root_Handler, config_template)?
-        .command_with(
-            "config.list",
-            handlers::config_list_Handler,
-            config_template,
-        )?
-        .command_with("config.get", handlers::config_get_Handler, config_template)?
+        .command_with("config", handlers::config_root_Handler, config_listing)?
+        .command_with("config.list", handlers::config_list_Handler, config_listing)?
+        .command_with("config.get", handlers::config_get_Handler, config_key_value)?
         .command_with("config.set", handlers::config_set_Handler, config_template)?
         .command_with(
             "config.unset",

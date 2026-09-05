@@ -3000,3 +3000,42 @@ fn what_this_cli_states_about_a_run_carries_no_control_character() {
         );
     }
 }
+
+/// `--output csv` takes one flat record or an array of them, so every command
+/// whose document nests an array needs a projection naming its rows. The
+/// header is the machine contract, so it is what this pins.
+#[test]
+#[serial]
+fn every_command_writes_csv_under_a_header_it_declares() {
+    let (dir, dest) = classified_dir();
+    let deploy = crate::testing::mapping(&utf8(&dir));
+    let cases: [(&[&str], &str); 6] = [
+        (&["status"], "path,verdict,shape,executable,target,owners"),
+        (
+            &["write", deploy.as_str(), "--owner", "site", "--dry-run"],
+            "path,verdict,detail,shape,executable,target,owners,origin,phase",
+        ),
+        (
+            &["rm", "--owner", "site", "--dry-run"],
+            "path,verdict,detail,shape,executable,target,owners,origin,phase",
+        ),
+        (&["config"], "key,value"),
+        (&["config", "list"], "key,value"),
+        (&["config", "get", "owner"], "key,value,doc"),
+    ];
+
+    for (path, header) in cases {
+        let mut argv = vec!["proiectio", "--dest", dest.as_str()];
+        argv.extend_from_slice(path);
+        let result = harness(&dir)
+            .under(Mode::Csv)
+            .run(&app(), cli::command(), argv);
+
+        assert_eq!(
+            result.stdout().lines().next(),
+            Some(header),
+            "{path:?} wrote {:?}",
+            result.stdout()
+        );
+    }
+}

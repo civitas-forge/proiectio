@@ -7,8 +7,11 @@ use clapfig::ConfigResult;
 use clapfig::value::Value;
 use libproiectio::Error;
 use serde::Serialize;
+use serde_json::Value as JsonValue;
+use standout::{CsvProjection, StructuredOutputProjection};
 
 use crate::settings::{self, Edit};
+use crate::views::cells;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ConfigEntryView {
@@ -115,6 +118,44 @@ impl ConfigView {
             ConfigResult::Schema(body) => Self::Schema { body },
             ConfigResult::SchemaWritten { path } => Self::SchemaWritten { path: utf8(path)? },
         })
+    }
+}
+
+/// The rows a listing writes under `--output csv`: one per configured key.
+/// Without a projection the entries sit under a field of one record, which
+/// CSV refuses rather than flattening to a column per entry.
+pub(crate) fn listing_csv() -> StructuredOutputProjection {
+    StructuredOutputProjection::csv(
+        CsvProjection::builder("entries")
+            .column(cells::column("key"))
+            .column(cells::column("value"))
+            .build(),
+    )
+}
+
+/// The one row `config get` writes, under the columns a listing writes, plus
+/// the key's doc comment as the lines the file carries it on. The doc is an
+/// array, which is what CSV refuses without this.
+pub(crate) fn key_value_csv() -> StructuredOutputProjection {
+    StructuredOutputProjection::csv(
+        CsvProjection::builder(".")
+            .column(cells::column("key"))
+            .column(cells::column("value"))
+            .derived_column(cells::header("doc"), |row, _| cells::cell(doc_lines(row)))
+            .build(),
+    )
+}
+
+fn doc_lines(row: &JsonValue) -> Option<String> {
+    let lines: Vec<&str> = row
+        .get("doc")?
+        .as_array()?
+        .iter()
+        .filter_map(JsonValue::as_str)
+        .collect();
+    match lines.is_empty() {
+        true => None,
+        false => Some(lines.join("\n")),
     }
 }
 
