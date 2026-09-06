@@ -1,25 +1,25 @@
 {#- One template for the whole config group: branches on the ConfigView tag.
     Every assignment line is the view's own, spelled as a line of the file. -#}
 {% if kind == "listing" -%}
-{{ rendered|verbatim_block }}
+{{ rendered }}
 {% elif kind == "key_value" -%}
-{{ rendered|verbatim_block }}
+{{ rendered }}
 {% elif kind == "value_set" -%}
-[ok]set[/ok] {{ rendered|verbatim_block }}
-[ok]wrote[/ok] {{ path|verbatim }}
+[ok]set[/ok] {{ rendered }}
+[ok]wrote[/ok] {{ path }}
 {% elif kind == "value_unset" -%}
-[ok]unset[/ok] [key]{{ key|verbatim }}[/key]
+[ok]unset[/ok] [key]{{ key }}[/key]
 {% if wrote -%}
-[ok]wrote[/ok] {{ path|verbatim }}
+[ok]wrote[/ok] {{ path }}
 {% else -%}
-[skipped]no file at[/skipped] {{ path|verbatim }}
+[skipped]no file at[/skipped] {{ path }}
 {% endif -%}
 {% elif kind == "template" -%}
-{{ body|verbatim_block }}
+{{ body }}
 {% elif kind == "template_written" -%}
-[ok]wrote[/ok] {{ path|verbatim }}
+[ok]wrote[/ok] {{ path }}
 {% elif kind == "schema" -%}
-{{ body|verbatim_block }}
+{{ body }}
 {% elif kind == "schema_written" -%}
-[ok]wrote[/ok] {{ path|verbatim }}
+[ok]wrote[/ok] {{ path }}
 {% endif -%}

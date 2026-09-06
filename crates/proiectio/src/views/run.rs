@@ -35,7 +35,6 @@ use standout::AmbiguousWidth;
 use standout::tabular::visible_width_with_policy;
 use standout::{CsvProjection, StructuredOutputProjection};
 
-use crate::app::verbatim;
 use crate::views::cells;
 use crate::views::pad;
 
@@ -345,15 +344,15 @@ fn origin_phrase(origin: Option<&JsonValue>, into: Option<&str>) -> Option<Strin
     let (kind, payload) = named(origin);
     let string = |field| payload?.get(field).and_then(JsonValue::as_str);
     let phrase = match kind {
-        "Mapping" => format!("from mapping {}", verbatim(string("path")?)),
-        "Tree" => format!("from tree {}", verbatim(string("path")?)),
+        "Mapping" => format!("from mapping {}", string("path")?),
+        "Tree" => format!("from tree {}", string("path")?),
         "Archive" => {
-            let mut phrase = format!("from archive {}", verbatim(string("path")?));
+            let mut phrase = format!("from archive {}", string("path")?);
             if let Some(prefix) = into {
-                phrase.push_str(&format!(" into {}", verbatim(prefix)));
+                phrase.push_str(&format!(" into {}", prefix));
             }
             if let Some(mapping) = string("via") {
-                phrase.push_str(&format!(", named by mapping {}", verbatim(mapping)));
+                phrase.push_str(&format!(", named by mapping {}", mapping));
             }
             phrase
         }
@@ -386,7 +385,7 @@ fn refusing(refusal: &JsonValue) -> String {
         "ExternalTarget" => "external target",
         "InvalidTarget" => "invalid target",
         "Block" => "block",
-        unknown => return format!("({})", verbatim(unknown)),
+        unknown => return format!("({})", unknown),
     };
     match payload.and_then(|payload| detailing(kind, payload)) {
         Some(detail) => format!("({spelled}) {detail}"),
@@ -399,15 +398,12 @@ fn refusing(refusal: &JsonValue) -> String {
 fn detailing(kind: &str, payload: &JsonValue) -> Option<String> {
     let string = |field| payload.get(field).and_then(JsonValue::as_str);
     match kind {
-        "Containment" => Some(format!(
-            "(below the symlink {})",
-            verbatim(string("through")?)
-        )),
+        "Containment" => Some(format!("(below the symlink {})", string("through")?)),
         "TreeConflict" => Some(format!("(with {})", listed(payload.get("paths")?, ", ")?)),
         "RecordedLanding" => Some(format!(
             "(through the symlink {}, onto {}, held by {})",
-            verbatim(string("through")?),
-            verbatim(string("at")?),
+            string("through")?,
+            string("at")?,
             listed(payload.get("owners")?, "+")?
         )),
         "OwnerConflict" => Some(format!(
@@ -427,11 +423,8 @@ fn detailing(kind: &str, payload: &JsonValue) -> Option<String> {
             }
             (!clauses.is_empty()).then(|| format!("({})", clauses.join(", and ")))
         }
-        "ExternalTarget" => Some(format!("-> {}", verbatim(string("target")?))),
-        "InvalidTarget" => Some(format!(
-            "-> {}",
-            verbatim(&format!("{:?}", string("target")?))
-        )),
+        "ExternalTarget" => Some(format!("-> {}", string("target")?)),
+        "InvalidTarget" => Some(format!("-> {:?}", string("target")?)),
         "Block" => Some(format!("({})", faulting(string("fault")?))),
         _ => None,
     }
@@ -489,7 +482,7 @@ fn faulting(name: &str) -> String {
     BLOCK_FAULTS
         .into_iter()
         .find(|fault| fault_name(*fault).as_deref() == Some(name))
-        .map_or_else(|| verbatim(name), |fault| fault.to_string())
+        .map_or_else(|| name.to_owned(), |fault| fault.to_string())
 }
 
 fn fault_name(fault: BlockFault) -> Option<String> {
@@ -504,8 +497,8 @@ fn holding(nodes: &JsonValue) -> Option<String> {
         .as_object()?
         .iter()
         .map(|(node, owners)| match listed(owners, "+") {
-            Some(owners) => format!("{} (held by {owners})", verbatim(node)),
-            None => verbatim(node),
+            Some(owners) => format!("{node} (held by {owners})"),
+            None => node.clone(),
         })
         .collect();
     (!items.is_empty()).then(|| items.join(", "))
@@ -515,8 +508,7 @@ fn listed(values: &JsonValue, separator: &str) -> Option<String> {
     let items: Vec<String> = values
         .as_array()?
         .iter()
-        .filter_map(JsonValue::as_str)
-        .map(verbatim)
+        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
         .collect();
     (!items.is_empty()).then(|| items.join(separator))
 }
@@ -604,7 +596,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth, forced: bool) -
     };
     let paths: Vec<(String, &JsonValue)> = rows
         .iter()
-        .filter_map(|row| Some((verbatim(row.get("path")?.as_str()?), row)))
+        .filter_map(|row| Some((row.get("path")?.as_str()?.to_owned(), row)))
         .collect();
     let dropped: Vec<(String, String)> = document
         .get("dropped")
@@ -614,7 +606,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth, forced: bool) -
                 .iter()
                 .filter_map(|record| {
                     let member = record.get("member").and_then(JsonValue::as_str)?;
-                    Some((verbatim(member), stripping(record)))
+                    Some((member.to_owned(), stripping(record)))
                 })
                 .collect()
         })
@@ -646,7 +638,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth, forced: bool) -
         let verdict = tensed(verdict, planning);
         let (style, verb) = match spelling(verdict, target.is_some()) {
             Some((style, verb)) => (style, verb.to_owned()),
-            None => ("unknown", verbatim(verdict)),
+            None => ("unknown", verdict.to_owned()),
         };
         if let Some(counted) = counted(verdict) {
             tally.count(counted);
@@ -677,7 +669,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth, forced: bool) -
             verb_pad: String::new(),
             verb: DROPPED.to_owned(),
             path_pad: pad(column, &member, width),
-            path: member,
+            path: super::one_line(&member),
             note: Some(note),
         });
     }
@@ -748,7 +740,7 @@ pub(crate) fn warnings(document: &JsonValue) -> Vec<String> {
 /// The stopped sentences for the rendered body — the same facts [`warnings`]
 /// states on stderr for structured modes.
 fn stopping(document: &JsonValue) -> Vec<String> {
-    stopped(document).map(verbatim).collect()
+    stopped(document).map(ToOwned::to_owned).collect()
 }
 
 fn stopped(document: &JsonValue) -> impl Iterator<Item = &str> {
@@ -781,8 +773,8 @@ fn stripping(record: &JsonValue) -> String {
 
 fn note(target: Option<&str>, qualifier: Option<&str>, executable: bool) -> Option<String> {
     match (target, qualifier) {
-        (Some(target), Some(qualifier)) => Some(format!("-> {}  {qualifier}", verbatim(target))),
-        (Some(target), None) => Some(format!("-> {}", verbatim(target))),
+        (Some(target), Some(qualifier)) => Some(format!("-> {}  {qualifier}", target)),
+        (Some(target), None) => Some(format!("-> {}", target)),
         (None, Some(qualifier)) => Some(qualifier.to_owned()),
         (None, None) => executable.then(|| "(exec)".to_owned()),
     }
