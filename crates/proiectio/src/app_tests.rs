@@ -2916,15 +2916,12 @@ fn set_size_bound(dir: &TempDir, bytes: &str) {
 }
 
 /// Every registration reaches a clap subcommand, and every `#[handler]`
-/// parameter reads an argument its leaf declares. The command is built first:
-/// clap copies `--dest` and `--state-dir` into their subcommands only then,
-/// and `verify_command` looks a parameter up in the leaf alone.
+/// parameter reads an argument its leaf declares.
 #[test]
 fn every_registration_reaches_the_command_line_that_declares_it() {
-    let mut command = cli::command();
-    command.build();
-
-    app().verify_command(&command).expect("a verified app");
+    app()
+        .verify_command(&cli::command())
+        .expect("a verified app");
 }
 
 /// The kebab-case name a variant registers under is the name clap declares,

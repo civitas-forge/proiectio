@@ -1980,9 +1980,9 @@ dependencies = [
 
 [[package]]
 name = "standout"
-version = "12.0.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4144491592c659de190bcb38d05c786b202dddef5a4ece81eba7194c256d9228"
+checksum = "368cf7019843f42d58ee2e918365b3b46f02f5395afa2ac5e102be598f57a66c"
 dependencies = [
  "anyhow",
  "clap",
@@ -2005,31 +2005,32 @@ dependencies = [
 
 [[package]]
 name = "standout-bbparser"
-version = "12.0.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2102e34f337b1478205d8c09ba87afbe337f4dbb0fbff2bcbb0984133c818f7e"
+checksum = "d11bb41caac5cb754ff514972b456736928e23654f8323c5ae3fb4b5713c4023"
 dependencies = [
  "console",
 ]
 
 [[package]]
 name = "standout-dispatch"
-version = "12.0.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5273b383cb41dcee8b4db53016b77d7e9066c941c640d5959171f8ac5287807c"
+checksum = "1ae50aaa508940f4f7258da61c0e43fd456930b04e3a1be6f671a6b6cf0be964"
 dependencies = [
  "anyhow",
  "clap",
  "serde",
  "serde_json",
+ "standout-types",
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "standout-input"
-version = "12.0.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eafdc4dee39a79367088a96b7d04b6ec75537ce8dd538ce00a307aa65eadd2d5"
+checksum = "a615552f888cb1f2ab323a3751c95f8065024eb907b95e59a9b857d3194029ee"
 dependencies = [
  "clap",
  "sha2 0.10.9",
@@ -2041,9 +2042,9 @@ dependencies = [
 
 [[package]]
 name = "standout-macros"
-version = "12.0.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f536682533214d3b1332daca558822e2679afdb944bc773df5e2c2ac558c42cf"
+checksum = "a5958d06ad9d367897850b5117136adf49a9b2cd294ab7457280dd829608f8dc"
 dependencies = [
  "heck",
  "proc-macro-crate 3.5.0",
@@ -2054,9 +2055,9 @@ dependencies = [
 
 [[package]]
 name = "standout-pipe"
-version = "12.0.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4f363475bdc11694bf47952ba4ced5f87ccd358881eccb12273a853975b4ba6"
+checksum = "7668e56ec49298eeb072c8df092ebe191ed396faf3117cc5b65cec0658cb2a31"
 dependencies = [
  "thiserror 2.0.20",
  "wait-timeout",
@@ -2064,9 +2065,9 @@ dependencies = [
 
 [[package]]
 name = "standout-render"
-version = "12.0.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7461edca0ff6fdabb8779b97c5d181b03f244d9853ce998841e314c5fd812efb"
+checksum = "b3e5c9df2852237fceb66665f73fb2337d25b942c159d01d9afae0a3aeb25387"
 dependencies = [
  "console",
  "cssparser",
@@ -2080,6 +2081,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "standout-bbparser",
+ "standout-types",
  "terminal_size",
  "thiserror 2.0.20",
  "unicode-width",
@@ -2087,9 +2089,9 @@ dependencies = [
 
 [[package]]
 name = "standout-seeker"
-version = "12.0.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9318157224f7c7ff36427effd5b6c5fd26b4ac05c4f317a06477b49b3cde519"
+checksum = "a85c5b57516881458ccb488e6fe47e2582f52f06004524c3de63c7d032c0ce4b"
 dependencies = [
  "regex",
  "thiserror 2.0.20",
@@ -2097,9 +2099,9 @@ dependencies = [
 
 [[package]]
 name = "standout-test"
-version = "12.0.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4b81b8ca9f20bee09fb061853edd85b6bd5d44d1c732c0c3cb2dcbe47041a88"
+checksum = "17753945faf022040b185f84d8eca287e6dc85c2c6649a51cc327fc4712dceb9"
 dependencies = [
  "clap",
  "console",
@@ -2111,6 +2113,12 @@ dependencies = [
  "standout-render",
  "tempfile",
 ]
+
+[[package]]
+name = "standout-types"
+version = "13.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d0bdb1386f0aa4d9ddf5f66d03ef668fd6b8db3744997fc952bd444a32bbf97"
 
 [[package]]
 name = "static_assertions"

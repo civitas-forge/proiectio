@@ -26,5 +26,11 @@ fn main() -> ExitCode {
     // warnings and any failure, and reports the status the process leaves
     // with — a refusal's included, which a handler declared on its output.
     let outcome = app.run_emitted(cli::command(), std::env::args_os());
+    // A run whose result could not be written reports the status alone, and
+    // the primary write is the one failure Standout does not put on stderr
+    // itself. The cause is already spelled into the error's own message.
+    if let Some(failure) = &outcome.final_write_failure {
+        let _ = writeln!(std::io::stderr().lock(), "Error: {failure}");
+    }
     ExitCode::from(outcome.status.code())
 }
