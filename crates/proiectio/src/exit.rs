@@ -72,7 +72,11 @@ where
 /// escape, and an OSC sequence a destination put in a name is shown rather
 /// than run. The line breaks a message spelled are its own layout.
 pub(crate) fn warning(message: &str) -> String {
-    crate::app::control_escaped_block(message)
+    message
+        .split('\n')
+        .map(|line| standout::escape_control_characters(line.to_owned()))
+        .collect::<Vec<String>>()
+        .join("\n")
 }
 
 /// An error stated as this CLI writes it, over the error itself as the source

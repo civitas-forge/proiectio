@@ -131,7 +131,7 @@ fn a_path_spelled_like_a_style_tag_reads_as_itself() {
         json!({ "[clean]/y": { "verdict": "Foreign", "facts": null } }),
     ));
 
-    assert_eq!(row.path, "\\[clean\\]/y");
+    assert_eq!(row.path, "[clean]/y");
 }
 
 /// A document with no rows prints nothing.

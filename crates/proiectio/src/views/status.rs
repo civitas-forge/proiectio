@@ -15,7 +15,6 @@ use standout::AmbiguousWidth;
 use standout::tabular::visible_width_with_policy;
 use standout::{CsvProjection, StructuredOutputProjection};
 
-use crate::app::verbatim;
 use crate::views::cells;
 use crate::views::pad;
 
@@ -48,7 +47,7 @@ fn spelling(verdict: &str) -> (&'static str, String) {
         "Drifted" => ("drifted", "drifted".to_owned()),
         "Missing" => ("missing", "missing".to_owned()),
         "Foreign" => ("foreign", "foreign".to_owned()),
-        unknown => ("unknown", verbatim(unknown)),
+        unknown => ("unknown", unknown.to_owned()),
     }
 }
 
@@ -72,7 +71,7 @@ pub(crate) fn lines(document: &JsonValue, width: AmbiguousWidth) -> StatusLines 
         .filter_map(|row| {
             let path = row.get("path")?.as_str()?;
             let (style, state) = spelling(verdict_name(row.get("verdict")));
-            Some((style, state, verbatim(path)))
+            Some((style, state, super::one_line(path)))
         })
         .collect();
     let states = spelled

@@ -218,7 +218,7 @@ fn a_diagnostic_carrying_control_characters_is_escaped_before_it_is_handed_over(
 /// exactly once.
 #[test]
 fn a_diagnostic_spelled_over_several_lines_keeps_them() {
-    let escaped = crate::app::control_escaped_block(
+    let escaped = crate::exit::warning(
         "error: unexpected argument '--nope' found\n\nUsage: proiectio status [OPTIONS]",
     );
 

@@ -362,7 +362,6 @@ fn refusing_app() -> App {
         .templates(templates())
         .styles(embed_styles!("src/styles"))
         .default_theme("proiectio")
-        .template_engine(Box::new(engine()))
         .command_with("status", refusing_Handler, |cfg| {
             cfg.template_name("status")
         })
@@ -963,45 +962,6 @@ fn an_argument_that_is_not_utf8_is_rejected_rather_than_panicking() {
     let result = harness(&dir).run(&app(), cli::command(), argv);
 
     assert_eq!(leaving(&result), exit::USAGE);
-}
-
-#[test]
-fn a_bracket_leaves_the_markup_pass_as_the_bracket_it_was() {
-    assert_eq!(verbatim("[clean]x[/clean]"), r"\[clean\]x\[/clean\]");
-    assert_eq!(verbatim("plain/path"), "plain/path");
-    assert_eq!(verbatim(r"C:\dir"), r"C:\dir");
-}
-
-#[test]
-fn a_control_character_leaves_as_an_escape_the_terminal_only_shows() {
-    assert_eq!(verbatim("\u{1b}[31mred"), r"\u{1b}\[31mred");
-    assert_eq!(verbatim("two\nlines"), r"two\nlines");
-    assert_eq!(verbatim("carriage\rreturn"), r"carriage\rreturn");
-    assert_eq!(
-        verbatim("bell\u{7}del\u{7f}csi\u{9b}"),
-        r"bell\u{7}del\u{7f}csi\u{9b}"
-    );
-
-    for code in (0..=0x1f_u32).chain(0x7f..=0x9f) {
-        let character = char::from_u32(code).expect("a control character");
-        let escaped = verbatim(&character.to_string());
-        assert!(
-            !escaped.chars().any(char::is_control),
-            "U+{code:04X} reached the terminal as itself: {escaped:?}"
-        );
-    }
-}
-
-#[test]
-fn a_rendered_block_keeps_its_lines_and_escapes_the_rest() {
-    assert_eq!(
-        verbatim_block("# owner\nowner = default\n"),
-        "# owner\nowner = default\n"
-    );
-    assert_eq!(
-        verbatim_block("owner = \u{1b}[31mred"),
-        r"owner = \u{1b}\[31mred"
-    );
 }
 
 #[test]
@@ -1922,13 +1882,13 @@ macro_rules! stand_in_app {
             .templates(templates())
             .styles(embed_styles!("src/styles"))
             .default_theme("proiectio")
-            .template_engine(Box::new(engine()))
             .context_fn("run", move |context: &RenderContext| {
-                Value::from_serialize(views::run_lines(
-                    context.data,
+                RenderData::from_serialize(views::run_lines(
+                    &context.data.to_json(),
                     context.ambiguous_width(),
                     hints.get(),
                 ))
+                .unwrap_or(RenderData::Null)
             })
             .command_with("write", $handler, |cfg| {
                 crate::app::run_projection(cfg.template_name("run"))

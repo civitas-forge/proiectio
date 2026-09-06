@@ -270,7 +270,7 @@ fn a_refused_row_names_the_refusal() {
         (json!("Drift"), "(drifted)"),
         (json!("Foreign"), "(foreign)"),
         (json!("Containment"), "(containment)"),
-        (json!("[wrote]"), "(\\[wrote\\])"),
+        (json!("[wrote]"), "([wrote])"),
     ] {
         let row = only(refused(&refusal));
 
@@ -396,7 +396,7 @@ fn a_refused_row_renders_the_payload_its_refusal_carries() {
             Refusal::ExternalTarget {
                 target: "[x]".to_owned(),
             },
-            "(external target) -> \\[x\\]",
+            "(external target) -> [x]",
         ),
         (
             Refusal::InvalidTarget {
@@ -459,7 +459,7 @@ fn every_block_fault_reads_as_the_message_the_library_spells() {
 fn an_unknown_block_fault_reads_as_its_own_name() {
     let row = only(refused(&json!({ "Block": { "fault": "[Pondered]" } })));
 
-    assert_eq!(row.note.as_deref(), Some("(block) (\\[Pondered\\])"));
+    assert_eq!(row.note.as_deref(), Some("(block) ([Pondered])"));
 }
 
 /// Matched over `Origin` itself, so an added source stops this compiling;
@@ -510,17 +510,14 @@ fn a_refused_rows_source_path_is_escaped() {
         },
     ));
 
-    assert_eq!(
-        row.note.as_deref(),
-        Some("(drifted) (from tree /srv/\\[x\\])")
-    );
+    assert_eq!(row.note.as_deref(), Some("(drifted) (from tree /srv/[x])"));
 }
 
 #[test]
 fn an_unknown_verdict_spelled_like_a_tag_is_escaped() {
     let row = only(planned(json!({ "one": file(json!("[wrote]")) })));
 
-    assert_eq!(row.verb, "\\[wrote\\]");
+    assert_eq!(row.verb, "[wrote]");
 }
 
 #[test]
@@ -558,7 +555,7 @@ fn a_drifted_link_states_its_target_and_why_it_would_be_overwritten() {
         "one": link(json!({ "Overwrite": { "reason": "ContentChanged" } }), "[x]"),
     })));
 
-    assert_eq!(row.note.as_deref(), Some("-> \\[x\\]  (content changed)"));
+    assert_eq!(row.note.as_deref(), Some("-> [x]  (content changed)"));
 }
 
 #[test]
@@ -576,7 +573,7 @@ fn the_path_column_pads_to_the_widest_path_in_display_width() {
     assert_eq!(
         widths,
         vec![
-            ("\\[a\\]".to_owned(), 3),
+            ("[a]".to_owned(), 3),
             ("\u{65e5}\u{672c}\u{8a9e}".to_owned(), 0),
         ]
     );

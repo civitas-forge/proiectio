@@ -23,3 +23,12 @@ pub(crate) use status::lines as status_lines;
 fn pad(column: usize, cell: &str, width: AmbiguousWidth) -> String {
     " ".repeat(column.saturating_sub(visible_width_with_policy(cell, width)))
 }
+
+// A path is displayed as one record, and Standout keeps newline and tab as
+// layout, so a filename carrying either would run into the rows beside it.
+pub(crate) fn one_line(text: &str) -> String {
+    if !text.contains(['\n', '\t']) {
+        return text.to_owned();
+    }
+    text.replace('\n', "\\n").replace('\t', "\\t")
+}
