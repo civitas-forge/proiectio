@@ -440,9 +440,9 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "clapfig"
-version = "0.23.0"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "679bf637575ab799d3aeba34e2ec021e179cc06726bfe62de13b5ac3caf68d77"
+checksum = "b95ff918fcca4aac6bf4bccf3548658558b372de2ef716b5eb6aa55f71dc661a"
 dependencies = [
  "clap",
  "clapfig-derive",
@@ -462,9 +462,9 @@ dependencies = [
 
 [[package]]
 name = "clapfig-derive"
-version = "0.23.0"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bc605b8bec02ff235645409512c32c03cbea2af35bfcf5b6caa87e64ed78311"
+checksum = "85750201971499a4c26433a385e86c41b37e4940456b320a93e1c516d87b195e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1502,6 +1502,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "proc-macro-crate"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
+dependencies = [
+ "toml_edit 0.25.13+spec-1.1.0",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1526,21 +1535,10 @@ dependencies = [
  "serde_json",
  "serial_test",
  "standout",
- "standout-dispatch",
  "standout-test",
  "tar",
  "tempfile",
  "toml 1.1.4+spec-1.1.0",
-]
-
-[[package]]
-name = "quick-xml"
-version = "0.36.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
-dependencies = [
- "memchr",
- "serde",
 ]
 
 [[package]]
@@ -1982,20 +1980,18 @@ dependencies = [
 
 [[package]]
 name = "standout"
-version = "8.1.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdca8b410c048955fa54dadbed20d27e3a36fc3e3cf135f1c762cb8f3f6b0e65"
+checksum = "368cf7019843f42d58ee2e918365b3b46f02f5395afa2ac5e102be598f57a66c"
 dependencies = [
  "anyhow",
  "clap",
+ "clapfig",
  "console",
- "csv",
  "deunicode",
  "minijinja",
- "quick-xml",
  "serde",
  "serde_json",
- "serde_yaml",
  "standout-bbparser",
  "standout-dispatch",
  "standout-input",
@@ -2009,34 +2005,34 @@ dependencies = [
 
 [[package]]
 name = "standout-bbparser"
-version = "8.1.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d14f41313ac7a079f1a1e4a32d515b16185a61a4953d8feb83b899b2f8f120fb"
+checksum = "d11bb41caac5cb754ff514972b456736928e23654f8323c5ae3fb4b5713c4023"
 dependencies = [
  "console",
 ]
 
 [[package]]
 name = "standout-dispatch"
-version = "8.1.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d18f5b214b9bcb98a0110ef259a48b5cc2c48f4e6b0fa4de6010f09f55cec745"
+checksum = "1ae50aaa508940f4f7258da61c0e43fd456930b04e3a1be6f671a6b6cf0be964"
 dependencies = [
  "anyhow",
  "clap",
  "serde",
  "serde_json",
+ "standout-types",
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "standout-input"
-version = "8.1.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d33264fd66477ae569e6ef420a35297bf2baa17ecdb7310a2bc219299ec6f72"
+checksum = "a615552f888cb1f2ab323a3751c95f8065024eb907b95e59a9b857d3194029ee"
 dependencies = [
  "clap",
- "once_cell",
  "sha2 0.10.9",
  "shell-words",
  "tempfile",
@@ -2046,10 +2042,12 @@ dependencies = [
 
 [[package]]
 name = "standout-macros"
-version = "8.1.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe8aed54bbc87e7f7a77f834145662fbd3a866a450ff11092fdeaebf375dae20"
+checksum = "a5958d06ad9d367897850b5117136adf49a9b2cd294ab7457280dd829608f8dc"
 dependencies = [
+ "heck",
+ "proc-macro-crate 3.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -2057,9 +2055,9 @@ dependencies = [
 
 [[package]]
 name = "standout-pipe"
-version = "8.1.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43ad46ef92d92b72edf5e128b5a991331fc96f1161b1ef086b44de1f93545b41"
+checksum = "7668e56ec49298eeb072c8df092ebe191ed396faf3117cc5b65cec0658cb2a31"
 dependencies = [
  "thiserror 2.0.20",
  "wait-timeout",
@@ -2067,9 +2065,9 @@ dependencies = [
 
 [[package]]
 name = "standout-render"
-version = "8.1.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ef4b7a1e8322fbe09a07880fe6f4c65ecc38315d8f771b4aa4f83958468d42d"
+checksum = "b3e5c9df2852237fceb66665f73fb2337d25b942c159d01d9afae0a3aeb25387"
 dependencies = [
  "console",
  "cssparser",
@@ -2079,11 +2077,11 @@ dependencies = [
  "east-asian-width",
  "minijinja",
  "once_cell",
- "quick-xml",
  "serde",
  "serde_json",
  "serde_yaml",
  "standout-bbparser",
+ "standout-types",
  "terminal_size",
  "thiserror 2.0.20",
  "unicode-width",
@@ -2091,9 +2089,9 @@ dependencies = [
 
 [[package]]
 name = "standout-seeker"
-version = "8.1.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa13f76ed16899512b6ac62806edd677cd73dfa85a05e88f4cbc84973ead3443"
+checksum = "a85c5b57516881458ccb488e6fe47e2582f52f06004524c3de63c7d032c0ce4b"
 dependencies = [
  "regex",
  "thiserror 2.0.20",
@@ -2101,17 +2099,26 @@ dependencies = [
 
 [[package]]
 name = "standout-test"
-version = "8.1.1"
+version = "13.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "936e604d290e03b7164530700e03ceee8783af429b80a3d43a9673f097c1cc27"
+checksum = "17753945faf022040b185f84d8eca287e6dc85c2c6649a51cc327fc4712dceb9"
 dependencies = [
  "clap",
+ "console",
+ "libc",
+ "serde_json",
  "serial_test",
  "standout",
  "standout-input",
  "standout-render",
  "tempfile",
 ]
+
+[[package]]
+name = "standout-types"
+version = "13.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d0bdb1386f0aa4d9ddf5f66d03ef668fd6b8db3744997fc952bd444a32bbf97"
 
 [[package]]
 name = "static_assertions"
@@ -2323,6 +2330,18 @@ dependencies = [
  "toml_datetime 0.6.11",
  "toml_write",
  "winnow 0.7.15",
+]
+
+[[package]]
+name = "toml_edit"
+version = "0.25.13+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6975367e4d2ef766d86af01ffad14b622fecc8d4357a998fbc4deb6e9bacaf9b"
+dependencies = [
+ "indexmap",
+ "toml_datetime 1.1.1+spec-1.1.0",
+ "toml_parser",
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -2856,6 +2875,9 @@ name = "winnow"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "winreg"
@@ -2998,7 +3020,7 @@ version = "3.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7131497b0f887e8061b430c530240063d33bf9455fa34438f388a245da69e0a5"
 dependencies = [
- "proc-macro-crate",
+ "proc-macro-crate 1.3.1",
  "proc-macro2",
  "quote",
  "regex",
@@ -3110,7 +3132,7 @@ version = "3.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37c24dc0bed72f5f90d1f8bb5b07228cbf63b3c6e9f82d82559d4bae666e7ed9"
 dependencies = [
- "proc-macro-crate",
+ "proc-macro-crate 1.3.1",
  "proc-macro2",
  "quote",
  "syn 1.0.109",

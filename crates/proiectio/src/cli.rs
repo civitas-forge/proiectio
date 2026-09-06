@@ -4,6 +4,7 @@ use camino::Utf8PathBuf;
 use clap::{CommandFactory, Parser, Subcommand};
 use clapfig::ConfigCommand;
 use libproiectio::{OWNER_RULE, names_an_owner};
+use standout::cli::Dispatch;
 
 #[derive(Parser)]
 #[command(
@@ -12,8 +13,10 @@ use libproiectio::{OWNER_RULE, names_an_owner};
     long_about = "Projects files onto a directory.\n\n\
         Exit codes: 0 success, 1 error, 2 refused. A refusal (2) is a deliberate \
         safety \"no\" — drift, a foreign path, or a containment violation — and is \
-        distinct from an error (1). Where a refusal has an override, re-run with \
-        --force (drift) or --allow-external-targets (a symlink leaving the destination). \
+        distinct from an I/O error (1); a command line the parser rejects also \
+        leaves with 2, and states the parser's prose rather than rows. Where a \
+        refusal has an override, re-run with --force (drift) or \
+        --allow-external-targets (a symlink leaving the destination). \
         `status --check` spends the same 2 on what it classifies — a drifted, missing, or \
         foreign path — without acting on it."
 )]
@@ -42,10 +45,20 @@ pub(crate) struct Cli {
     pub(crate) command: Commands,
 }
 
-#[derive(Subcommand)]
+/// The commands Standout dispatches. `config` is clapfig's own group, built
+/// in [`command`] and registered by path in [`crate::app`], so it has no
+/// variant here.
+#[derive(Subcommand, Dispatch)]
+#[dispatch(handlers = crate::handlers)]
 pub(crate) enum Commands {
     /// Projects a mapping file, loose files, or a tree onto the destination.
     #[command(long_about = WRITE_ABOUT)]
+    #[dispatch(
+        pure,
+        template_name = "run",
+        inputs = crate::app::run_projection,
+        post_dispatch = crate::app::stated_on_stderr
+    )]
     Write {
         /// A mapping file, or two or more files to project by basename.
         #[arg(
@@ -97,6 +110,12 @@ pub(crate) enum Commands {
 
     /// Removes what the manifest records under an owner: everything it
     /// holds, or the recorded paths named as positionals.
+    #[dispatch(
+        pure,
+        template_name = "run",
+        inputs = crate::app::run_projection,
+        post_dispatch = crate::app::stated_on_stderr
+    )]
     Rm {
         /// The recorded paths to remove; none names everything the owner
         /// holds.
@@ -127,6 +146,7 @@ pub(crate) enum Commands {
     /// unrecorded). Plain `status` exits 0 whatever the verdicts; --check
     /// exits 2 on anything but a clean destination, so a CI job can fail on
     /// drift without running a write.
+    #[dispatch(pure, inputs = crate::app::status_projection)]
     Status {
         /// Exit 2 unless every path is clean.
         ///

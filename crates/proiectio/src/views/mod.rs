@@ -10,6 +10,8 @@ mod run;
 mod status;
 
 pub(crate) use config::ConfigView;
+pub(crate) use config::key_value_csv as config_key_value_csv;
+pub(crate) use config::listing_csv as config_listing_csv;
 pub(crate) use run::csv as run_csv;
 pub(crate) use run::lines as run_lines;
 pub(crate) use run::warnings as run_warnings;

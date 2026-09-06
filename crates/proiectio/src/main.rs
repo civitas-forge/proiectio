@@ -15,14 +15,16 @@ use std::io::Write;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let verdict = exit::Verdict::default();
-    let app = match app::build(verdict.clone()) {
+    let app = match app::build() {
         Ok(app) => app,
         Err(error) => {
             let _ = writeln!(std::io::stderr().lock(), "Error: {error}");
             return ExitCode::from(exit::FAILURE);
         }
     };
-    let result = app.run_to_string(cli::command(), std::env::args_os());
-    ExitCode::from(verdict.over(exit::emit(&result)))
+    // `run_emitted` is `run` up to the exit: it writes the result, the
+    // warnings and any failure, and reports the status the process leaves
+    // with — a refusal's included, which a handler declared on its output.
+    let outcome = app.run_emitted(cli::command(), std::env::args_os());
+    ExitCode::from(outcome.status.code())
 }

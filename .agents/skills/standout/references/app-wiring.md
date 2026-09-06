@@ -14,13 +14,17 @@ let app = App::builder()
     .templates(embed_templates!("src/templates"))
     .styles(embed_styles!("src/styles"))
     .default_theme("todo")
-    .command_with("list", handlers::list__handler, |cfg| {
-        cfg.template("list.jinja")
+    .command_with("list", handlers::list_Handler, |cfg| {
+        cfg.template_name("shared")
     })?
     .build()?;
 ```
 
-Use `command_with` when a command needs an explicit template, hook, input chain, or pipe. A plain `.command(path, handler, template)` is the direct builder form. Dot-separated paths register nested commands.
+`AppBuilder::command_with` is the secondary path, for a command with no clap
+enum variant. It takes the `<name>_Handler` unit struct the `#[handler]` macro
+generates beside the function, not the `__handler` wrapper. Dot-separated paths
+register nested commands. A template name is only needed when the command does
+not render the template convention already names for it.
 
 ## Derive wiring
 
@@ -28,11 +32,11 @@ Prefer `#[derive(Dispatch)]` when clap variants map to handlers by convention:
 
 ```rust
 #[derive(clap::Subcommand, standout::cli::Dispatch)]
-#[dispatch(handlers = handlers)]
+#[dispatch(handlers = crate::handlers)]
 enum Commands {
     #[dispatch(pure)]
     List,
-    #[dispatch(pure, template = "add.jinja")]
+    #[dispatch(pure, template_name = "shared", inputs = crate::handlers::add_inputs)]
     Add,
 }
 
@@ -41,7 +45,17 @@ let app = App::builder()
     .build()?;
 ```
 
-By default, `List` maps to `handlers::list`. Mark a variant `#[dispatch(pure)]` when its function uses `#[handler]`; the derive then selects `handlers::list__handler`. Variant attributes also attach templates, hooks, nested dispatch, defaults, and pipes.
+By default, `List` maps to `handlers::list` and registers under its kebab-case
+name, so `ListUnits` is `list-units`. Mark a variant `#[dispatch(pure)]` when its
+function uses `#[handler]`; the derive then selects `handlers::list__handler`.
+Variant attributes also attach `template_name`, hooks, nested dispatch, defaults,
+pipes and `pageable`. Anything on `CommandConfig` with no key of its own — an
+input chain, a `CsvProjection`, a confirmation — goes in the function
+`#[dispatch(inputs = path)]` names, which receives and returns the whole
+`CommandConfig`.
+
+A variant holds one path per phase, and a phase registered both here and through
+`AppBuilder::hooks` is a configuration error at `build()`.
 
 ## Running and partial adoption
 
@@ -53,9 +67,25 @@ if !app.run(Cli::command(), std::env::args()) {
 }
 ```
 
-Use `run_to_string` when code needs rendered output, errors, binary bytes, or the unmatched `ArgMatches`. `CompletedRun` wraps the dispatch outcome plus framework warnings; match `result.into_outcome()` as `DispatchResult::{Handled, Binary, Silent, Error, NoMatch}` and include a wildcard because the enum is non-exhaustive.
+`run_emitted` is `run` up to the exit, returning a `ProcessOutcome` whose
+`status` is what the process should leave with. Use `run_with(cmd, args,
+TargetProperties::detect(), InputSources::from_process())` when code needs the
+outcome without writing either stream; it returns a `CompletedRun`, which wraps
+the dispatch outcome plus framework warnings. Match `result.into_outcome()` as
+`DispatchResult::{Handled, Binary, Artifact, Silent, Error, NoMatch}` and include
+a wildcard because the enum is non-exhaustive.
 
-Embedded resources are compile-time bundles; debug builds re-read the original source path when available. Explicit template names include their extension. Convention-based resolution uses the configured extension (`.j2` by default).
+Embedded resources are compile-time bundles; debug builds re-read the original
+source path when available. A template name carries no extension: the registry
+resolves it against `.jinja`, `.jinja2`, `.j2`, `.stpl` and `.txt`, in that
+priority order. With no name, the template is the registration path with `.`
+replaced by `/`.
+
+A theme comes from a stylesheet registry with a named default: `.styles(...)`
+together with `.default_theme(name)`. A registry with no `.default_theme` resolves
+to no theme at all, and `.styles(...)` beside `.theme(...)` is a `SetupError`.
+`AppBuilder::strict_style_tags(true)`, or `STANDOUT_STRICT_STYLE_TAGS=1`, turns an
+unresolved style tag from a warning into a run failure.
 
 Evidence: `crates/todo-example/tdoo/src/app.rs`,
 `crates/standout/src/cli/builder/`, and

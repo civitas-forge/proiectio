@@ -25,13 +25,15 @@ the owning crate's public types and integration tests before copying it.
 
 Common copied examples can target older APIs. Confirm these current contracts:
 
-- `App::run(...) -> bool`; it does not return `Option<ArgMatches>`. Use `run_to_string` and match `DispatchResult::NoMatch` on `into_outcome()` when fallback needs matches.
-- `CommandContext` has `command_path`, `app_state`, and `extensions`; no `output_mode` field.
+- `App::run(...) -> bool`; it does not return `Option<ArgMatches>`. Use `run_with(cmd, args, TargetProperties::detect(), InputSources::from_process())` and match `DispatchResult::NoMatch` on `into_outcome()` when fallback needs matches. `run_to_string` and `dispatch_from` are gone.
+- `CommandContext` has `command_path`, `app_state`, and `extensions`; no representation. `OutputMode` is two types now, `Representation` and `StyleMode`, with `ColorPolicy` as the input that decides the style mode.
 - Binary handler output is `Output::Binary { data, filename }`, not a tuple variant.
 - `#[handler]` preserves the typed function and generates `name__handler`; wire the wrapper and unit-test the original.
 - `#[derive(Dispatch)]` maps to `handlers::name`; add `#[dispatch(pure)]` for a `#[handler]`-generated wrapper.
-- `TestHarness` mutations are process-global; every harness test is serial.
-- Structured output bypasses templates, so template fixes cannot change JSON/YAML/XML/CSV.
+- `TestHarness` injects destination facts rather than detecting them; only a test that sets env or cwd is serial.
+- Structured output bypasses templates, so template fixes cannot change JSON/YAML/CSV/NDJSON. XML is gone.
+- `AppBuilder::command_with` takes the `<name>_Handler` unit struct; the `GroupBuilder` form the `Dispatch` derive uses takes the `__handler` fn.
+- JSON and YAML keys follow declaration order, so a `HashMap` in a view struct serializes differently between runs. Use a struct, `BTreeMap` or `IndexMap`.
 - Domain serialization and CLI structured output are separate interfaces. Map
   domain values into CLI-owned view DTOs rather than serializing persistence
   types directly.

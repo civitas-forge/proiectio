@@ -105,8 +105,8 @@ fn a_result_that_edited_no_file_never_resolves_one() {
     }
 }
 
-/// Clapfig spells a value for a human to read, which leaves a string needing
-/// quotes bare; what this CLI prints is a line of the config file.
+/// Clapfig carries a typed value, whose notation this CLI prints as a line
+/// of the config file.
 #[test]
 fn a_rendered_value_parses_as_the_toml_it_looks_like() {
     let awkward = r"a\b\[c]";
@@ -122,21 +122,23 @@ fn a_rendered_value_parses_as_the_toml_it_looks_like() {
     assert_eq!(parsed["owner"].as_str(), Some(awkward));
 }
 
-/// A scoped listing carries keys the schema does not name, already
-/// stringified; every line parses whatever the writer put there.
+/// A scoped listing carries keys the schema does not name, typed as the file
+/// spelled them; every line parses back as what the writer put there, a
+/// string that reads as another type included.
 #[test]
 fn a_line_for_a_key_the_schema_does_not_name_still_parses() {
     let listing = view(ConfigResult::Listing {
         entries: vec![
             ("a b".into(), "hello".into()),
-            ("count".into(), "12".into()),
-            ("flag".into(), "true".into()),
-            ("empty".into(), String::new()),
+            ("count".into(), 12i64.into()),
+            ("flag".into(), true.into()),
+            ("empty".into(), Value::String(String::new())),
+            ("worded".into(), "true".into()),
         ],
         rendered: String::new(),
     });
 
-    let ConfigView::Listing { rendered, .. } = &listing else {
+    let ConfigView::Listing { entries, rendered } = &listing else {
         panic!("a listing");
     };
     let parsed: toml::Table = rendered
@@ -146,6 +148,9 @@ fn a_line_for_a_key_the_schema_does_not_name_still_parses() {
     assert_eq!(parsed["empty"].as_str(), Some(""));
     assert_eq!(parsed["count"].as_integer(), Some(12));
     assert_eq!(parsed["flag"].as_bool(), Some(true));
+    assert_eq!(parsed["worded"].as_str(), Some("true"));
+    let stated: Vec<&str> = entries.iter().map(|entry| entry.value.as_str()).collect();
+    assert_eq!(stated, ["hello", "12", "true", "", "true"]);
 }
 
 /// A set that came back is a file clapfig created, so the view reads the write

@@ -109,8 +109,8 @@ $ echo $?
 | Exit | Meaning |
 | --- | --- |
 | 0 | applied, or nothing to do |
-| 1 | usage or I/O error |
-| 2 | refusal — a deliberate no: drift, a foreign path, a containment violation |
+| 1 | an I/O error |
+| 2 | refusal — a deliberate no: drift, a foreign path, a containment violation — or a command line the parser rejects |
 
 A refused path is a row like any other, and the run exits 2. `--dry-run` reports the same classification a real run would act on, and writes nothing.
 
@@ -164,7 +164,7 @@ removed    share/guide.txt
 
 ## Machine output
 
-`--output json|yaml|xml|csv` replaces the report with a machine-readable one, on every command.
+`--output json|yaml|csv|ndjson` replaces the report with a machine-readable one, on every command. Without it the run renders the human report; `--color auto|always|never` decides whether that report carries color.
 
 ```console
 $ proiectio write shared.toml --dest ./share-dest --owner two --output csv

@@ -7,11 +7,11 @@ use anyhow::Result;
 use clap::ArgMatches;
 use minijinja::Value;
 use serde_json::Value as JsonValue;
-use standout::cli::{App, CommandConfig, CommandContext, HookError};
+use standout::cli::{App, CommandConfig, CommandContext, CommandContextInput, HookError};
 use standout::context::RenderContext;
-use standout::{EmbeddedTemplates, MiniJinjaEngine, OutputMode, embed_styles, embed_templates};
+use standout::{EmbeddedTemplates, MiniJinjaEngine, embed_styles, embed_templates};
 
-use crate::exit::Verdict;
+use crate::cli::Commands;
 use crate::handlers;
 use crate::views;
 
@@ -19,9 +19,8 @@ use crate::views;
 ///
 /// The hint lines need it and the document cannot carry it: what a run
 /// serializes is the library's own report, and the drift policy is the
-/// command line's. So it reaches rendering the way [`Verdict`] does — a cell
-/// this composition root owns, the handler records into, and the `run`
-/// context function reads back.
+/// command line's. So it travels as app state — a cell this composition root
+/// owns, the handler records into, and the `run` context function reads back.
 #[derive(Clone, Default)]
 pub(crate) struct Forced(Rc<Cell<bool>>);
 
@@ -97,65 +96,64 @@ pub(crate) fn engine() -> MiniJinjaEngine {
     engine
 }
 
-/// How `write` and `rm` present one write pass. Both render one
-/// [`views::RunView`], so both are configured here rather than at each call.
-pub(crate) fn run_command<H>(config: CommandConfig<H>) -> CommandConfig<H> {
-    config
-        .template("run.jinja")
-        .structured_output_projection(views::run_csv())
-        .post_dispatch(stated_on_stderr)
+/// The rows `write` and `rm` write under `--output csv`. Both render one
+/// [`views::RunView`], so both name this from their `inputs` key; the rest of
+/// what the two share — the template and the post-dispatch hook — has a
+/// `#[dispatch]` key of its own on the variant.
+pub(crate) fn run_projection<H>(config: CommandConfig<H>) -> CommandConfig<H> {
+    config.structured_output_projection(views::run_csv())
 }
 
-/// Pushes a stopped run's run-level facts as warnings, which `main` drains to
-/// stderr — only for the modes that serialize the document; the template
-/// already lays these sentences out for rendered output.
-fn stated_on_stderr(
-    matches: &ArgMatches,
-    _ctx: &CommandContext,
+/// The rows `status` writes under `--output csv`.
+pub(crate) fn status_projection<H>(config: CommandConfig<H>) -> CommandConfig<H> {
+    config.structured_output_projection(views::status_csv())
+}
+
+/// The one entry every `config` leaf renders through: the group branches on
+/// the view's tag rather than on which leaf produced it, so convention's
+/// per-command name (`config/list`, `config/get`) would ask for seven copies
+/// of one template.
+pub(crate) fn config_template<H>(config: CommandConfig<H>) -> CommandConfig<H> {
+    config.template_name("config")
+}
+
+/// A listing states its keys under a field, and `get` states a doc comment as
+/// lines; both are arrays, which `--output csv` takes only through a
+/// projection naming the rows and the cells. The leaves that state one flat
+/// record need none.
+pub(crate) fn config_listing<H>(config: CommandConfig<H>) -> CommandConfig<H> {
+    config_template(config).structured_output_projection(views::config_listing_csv())
+}
+
+pub(crate) fn config_key_value<H>(config: CommandConfig<H>) -> CommandConfig<H> {
+    config_template(config).structured_output_projection(views::config_key_value_csv())
+}
+
+/// Pushes a stopped run's run-level facts as warnings, which Standout writes
+/// past the run's output — only for the modes that serialize the document; the
+/// template already lays these sentences out for rendered output.
+///
+/// The encoding comes from the context, which reports what the run resolved.
+pub(crate) fn stated_on_stderr(
+    _matches: &ArgMatches,
+    ctx: &CommandContext,
     document: JsonValue,
 ) -> Result<JsonValue, HookError> {
-    if serializing(matches) {
+    if ctx.representation().is_structured() {
         for stated in views::run_warnings(&document) {
-            standout::warnings::push_warning(stated);
+            ctx.warn(crate::exit::warning(&stated));
         }
     }
     Ok(document)
 }
 
-/// Whether `--output` named a mode that serializes the document. Read back
-/// off the parsed command line because a handler and its hooks are handed no
-/// other way to Standout's own argument; the aborted-run tests under
-/// `--output json`/`csv` hold this to the name Standout parses it under.
-fn serializing(matches: &ArgMatches) -> bool {
-    matches
-        .try_get_one::<String>(OUTPUT_MODE)
-        .ok()
-        .flatten()
-        .is_some_and(|named| mode(named).is_structured())
-}
-
-/// The argument Standout parses `--output` into.
-const OUTPUT_MODE: &str = "_output_mode";
-
-fn mode(named: &str) -> OutputMode {
-    match named {
-        "term" => OutputMode::Term,
-        "text" => OutputMode::Text,
-        "term-debug" => OutputMode::TermDebug,
-        "json" => OutputMode::Json,
-        "yaml" => OutputMode::Yaml,
-        "xml" => OutputMode::Xml,
-        "csv" => OutputMode::Csv,
-        _ => OutputMode::Auto,
-    }
-}
-
-pub(crate) fn build(verdict: Verdict) -> Result<App> {
+pub(crate) fn build() -> Result<App> {
     let forced = Forced::default();
     let hints = forced.clone();
     Ok(App::builder()
+        .name(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
-        .app_state(verdict)
+        .usage_exit_status(crate::exit::USAGE)
         .app_state(forced)
         .template_engine(Box::new(engine()))
         .templates(templates())
@@ -171,33 +169,22 @@ pub(crate) fn build(verdict: Verdict) -> Result<App> {
         .context_fn("status", |context: &RenderContext| {
             Value::from_serialize(views::status_lines(context.data, context.ambiguous_width()))
         })
-        .command_with("write", handlers::write__handler, run_command)?
-        .command_with("rm", handlers::rm__handler, run_command)?
-        .command_with("status", handlers::status__handler, |cfg| {
-            cfg.template("status.jinja")
-                .structured_output_projection(views::status_csv())
-        })?
-        .command_with("config", handlers::config_root__handler, |cfg| {
-            cfg.template("config.jinja")
-        })?
-        .command_with("config.list", handlers::config_list__handler, |cfg| {
-            cfg.template("config.jinja")
-        })?
-        .command_with("config.get", handlers::config_get__handler, |cfg| {
-            cfg.template("config.jinja")
-        })?
-        .command_with("config.set", handlers::config_set__handler, |cfg| {
-            cfg.template("config.jinja")
-        })?
-        .command_with("config.unset", handlers::config_unset__handler, |cfg| {
-            cfg.template("config.jinja")
-        })?
-        .command_with("config.gen", handlers::config_gen__handler, |cfg| {
-            cfg.template("config.jinja")
-        })?
-        .command_with("config.schema", handlers::config_schema__handler, |cfg| {
-            cfg.template("config.jinja")
-        })?
+        .commands(Commands::dispatch_config())?
+        .command_with("config", handlers::config_root_Handler, config_listing)?
+        .command_with("config.list", handlers::config_list_Handler, config_listing)?
+        .command_with("config.get", handlers::config_get_Handler, config_key_value)?
+        .command_with("config.set", handlers::config_set_Handler, config_template)?
+        .command_with(
+            "config.unset",
+            handlers::config_unset_Handler,
+            config_template,
+        )?
+        .command_with("config.gen", handlers::config_gen_Handler, config_template)?
+        .command_with(
+            "config.schema",
+            handlers::config_schema_Handler,
+            config_template,
+        )?
         .build()?)
 }
 

@@ -1,41 +1,28 @@
-//! The 0/1/2 exit contract, which `main` owns because Standout spends 2
-//! on a command line clap rejects and this CLI spends it on refusals.
-
-use std::cell::Cell;
-use std::io::{ErrorKind, Write};
-use std::rc::Rc;
+//! The 0/1/2 exit contract, which this module owns: 2 is a refusal, and a
+//! command line clap rejects leaves with 1 like any other run that could not
+//! act.
+//!
+//! Two seams carry it. A run that could not act fails with an [`AppFailure`],
+//! which pins both the status and the verbatim stderr bytes. A run that
+//! refused but still rendered its plan — the refusal *is* the output — keeps
+//! [`crate::handlers`]'s `Output::with_exit_status`, which leaves the outcome
+//! a success and changes only the status the process leaves with.
 
 use libproiectio::Error;
-use standout::cli::{ArtifactRun, ExternalFailure, RunError, RunErrorKind, RunResult};
+use standout::cli::AppFailure;
 
+/// Named for the contract rather than for a caller: Standout spends this one
+/// itself, so only the tests that pin the contract read it.
+#[cfg_attr(not(test), expect(dead_code, reason = "the tests pin the contract"))]
 pub(crate) const OK: u8 = 0;
 pub(crate) const FAILURE: u8 = 1;
 pub(crate) const REFUSAL: u8 = 2;
 
-/// The status a run that rendered its output nonetheless leaves with.
-///
-/// A Standout handler either renders and succeeds or fails with its output
-/// replaced by the diagnostic. A refused dry run is neither: the plan it
-/// refuses is the whole point of the run, so the handler renders it and
-/// records the refusal here, and `main` reads the cell back once the run has
-/// been written. The composition root owns one and the app holds a clone.
-#[derive(Clone, Default)]
-pub(crate) struct Verdict(Rc<Cell<u8>>);
-
-impl Verdict {
-    /// Records `status`, keeping whichever of it and the recorded one is
-    /// greater.
-    pub(crate) fn record(&self, status: u8) {
-        self.0.set(self.0.get().max(status));
-    }
-
-    /// The status the process leaves with, over what emitting the run
-    /// reported: a failed write still raises the run, and never lowers a
-    /// recorded refusal.
-    pub(crate) fn over(&self, emitted: u8) -> u8 {
-        emitted.max(self.0.get())
-    }
-}
+/// What a command line clap rejects leaves with, which is what a run that
+/// could not act leaves with: the invocation never named work to do. Standout
+/// 13 names it through `AppBuilder::usage_exit_status`, where 12 fixed it at
+/// 2 and offered no seam, so a refusal had to share the number.
+pub(crate) const USAGE: u8 = FAILURE;
 
 pub(crate) fn of_error(error: &Error) -> u8 {
     match error {
@@ -44,121 +31,80 @@ pub(crate) fn of_error(error: &Error) -> u8 {
     }
 }
 
+/// The library's error as this CLI hands it to Standout.
+///
+/// A message carries a filename, and a filename is data: every character a
+/// terminal acts on leaves as an escape, so an OSC sequence a destination put
+/// in a name is shown rather than run. Both arms carry [`Stated`], so the
+/// escaping is the same one whichever seam the error leaves by.
+///
+/// An operational failure is an ordinary handler error, which is what
+/// Standout already spends 1 on: it frames the message on stderr, or writes
+/// the diagnostic document to stdout and leaves stderr alone under a
+/// structured encoding. A refusal is the one status Standout would not choose
+/// for itself, so it goes through [`AppFailure`], which pins the status and
+/// the bytes; the cost is that those bytes reach stderr under every encoding.
 pub(crate) fn failure(error: Error) -> anyhow::Error {
     let status = of_error(&error);
-    let diagnostic = format!("Error: {error}");
-    match ExternalFailure::new(status, diagnostic) {
-        Ok(external) => anyhow::Error::new(external.with_source(error)),
-        Err(_) => anyhow::Error::new(error),
+    let stated = Stated::over(error);
+    if status != REFUSAL {
+        return anyhow::Error::new(stated);
+    }
+    match AppFailure::new(REFUSAL, format!("Error: {stated}\n")) {
+        Ok(app) => anyhow::Error::new(app.with_source(stated)),
+        Err(_) => anyhow::Error::new(stated),
     }
 }
 
-pub(crate) fn status(result: &RunResult) -> u8 {
-    match result {
-        RunResult::Error(error) => of_run_error(error),
-        RunResult::NoMatch(_) => FAILURE,
-        _ => OK,
-    }
+/// Every other error this CLI reports, on the same terms: a clapfig message
+/// quotes a key, a value or a path the invocation named, and those are data
+/// too.
+pub(crate) fn stated<E>(error: E) -> anyhow::Error
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    anyhow::Error::new(Stated::over(error))
 }
 
-fn of_run_error(error: &RunError) -> u8 {
-    match error.kind() {
-        RunErrorKind::External => error.exit_status().code(),
-        _ => FAILURE,
-    }
+/// A message this CLI writes about a run rather than as its output, as the
+/// bytes it writes. Standout owns the process edge, so what a message quotes
+/// has to arrive quoted: every character a terminal acts on leaves as an
+/// escape, and an OSC sequence a destination put in a name is shown rather
+/// than run. The line breaks a message spelled are its own layout.
+pub(crate) fn warning(message: &str) -> String {
+    crate::app::control_escaped_block(message)
 }
 
-const NO_COMMAND: &str = "Error: no command matched the command line\n";
-const UNSUPPORTED: &str = "Error: this build cannot write the output the run produced\n";
-
-/// Writes the completed run and reports the status the process leaves with: a
-/// reader that closed the stream is not a failure, any other write failure is.
-///
-/// `run_to_string` collects the framework's warnings instead of printing them,
-/// so this drains them to stderr after the run's own output.
-pub(crate) fn emit(result: &RunResult) -> u8 {
-    emit_to(
-        &mut std::io::stdout().lock(),
-        &mut std::io::stderr().lock(),
-        result,
-        &standout::warnings::take_captured_warnings(),
-    )
+/// An error stated as this CLI writes it, over the error itself as the source
+/// a reader of the chain still gets.
+#[derive(Debug)]
+pub(crate) struct Stated {
+    stated: String,
+    source: Box<dyn std::error::Error + Send + Sync + 'static>,
 }
 
-fn emit_to(
-    out: &mut impl Write,
-    err: &mut impl Write,
-    result: &RunResult,
-    warnings: &[String],
-) -> u8 {
-    let status = status(result);
-    // `RunResult` is `#[non_exhaustive]`, so the wildcard cannot be dropped;
-    // it reports a variant this build does not know how to write rather than
-    // dropping the output and exiting 0.
-    let written = match result {
-        RunResult::Handled(output) if output.is_empty() => Ok(()),
-        RunResult::Handled(output) => write(out, output.as_str()),
-        RunResult::Binary(bytes, _) => write_bytes(out, bytes),
-        RunResult::Artifact(run) => write_artifact(out, err, run),
-        RunResult::Silent => Ok(()),
-        RunResult::Error(error) => diagnostic(err, error.as_str()),
-        RunResult::NoMatch(_) => write(err, NO_COMMAND),
-        _ => {
-            let _ = write(err, UNSUPPORTED);
-            return status.max(FAILURE);
+impl Stated {
+    fn over<E>(error: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self {
+            stated: warning(&error.to_string()),
+            source: Box::new(error),
         }
     }
-    .and_then(|()| warn(err, warnings));
-    match written {
-        Ok(()) => status,
-        Err(error) if error.kind() == ErrorKind::BrokenPipe => status,
-        Err(_) => status.max(FAILURE),
+}
+
+impl std::fmt::Display for Stated {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.stated)
     }
 }
 
-/// Bytes the framework already wrote to a file are on disk; bytes bound for
-/// stdout still need this writer. The report follows on whichever of the two
-/// streams the bytes did not take, which is what Standout's own writer does.
-fn write_artifact(
-    out: &mut impl Write,
-    err: &mut impl Write,
-    run: &ArtifactRun,
-) -> std::io::Result<()> {
-    let to_stdout = run.destination().is_stdout();
-    if to_stdout {
-        write_bytes(out, run.bytes())?;
+impl std::error::Error for Stated {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
     }
-    match run.report().filter(|report| !report.is_empty()) {
-        Some(report) if to_stdout => diagnostic(err, report),
-        Some(report) => diagnostic(out, report),
-        None => Ok(()),
-    }
-}
-
-fn warn(err: &mut impl Write, warnings: &[String]) -> std::io::Result<()> {
-    for warning in warnings {
-        diagnostic(err, &format!("Warning: {warning}"))?;
-    }
-    Ok(())
-}
-
-/// What this CLI writes about a run rather than as its output. A message
-/// carries a filename, and a filename is data: every character a terminal acts
-/// on leaves as an escape, so an OSC sequence a destination put in a name is
-/// shown rather than run. The line breaks clap spelled are the message's own
-/// layout; the terminator is this CLI's, and there is exactly one.
-fn diagnostic(stream: &mut impl Write, text: &str) -> std::io::Result<()> {
-    let escaped = crate::app::control_escaped_block(text.trim_end_matches('\n'));
-    write(stream, &format!("{escaped}\n"))
-}
-
-fn write(stream: &mut impl Write, text: &str) -> std::io::Result<()> {
-    write_bytes(stream, text.as_bytes())
-}
-
-fn write_bytes(stream: &mut impl Write, bytes: &[u8]) -> std::io::Result<()> {
-    stream.write_all(bytes)?;
-    stream.flush()
 }
 
 #[cfg(test)]

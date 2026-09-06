@@ -150,58 +150,6 @@ fn a_comment_key_is_one_wherever_the_schema_allowlists_it() {
     assert!(!is_comment_key(""));
 }
 
-#[test]
-fn the_schemas_leaf_types_are_what_a_rendered_line_is_spelled_from() {
-    assert!(matches!(leaf_type("owner"), Some(LeafType::String)));
-    assert!(leaf_type("onwer").is_none());
-    assert!(leaf_type("owner.deeper").is_none());
-}
-
-/// A listing flattens a map's entries into dotted keys, so the walk drops
-/// the entry key and reads the item shape underneath it.
-#[test]
-fn a_key_under_a_map_resolves_to_the_item_shapes_leaf() {
-    let shape = Shape::Object(
-        RuntimeSchema::object("Demo")
-            .field("owner", Field::string())
-            .map_of(
-                "hosts",
-                RuntimeSchema::object("Host")
-                    .field("label", Field::string())
-                    .field("port", Field::integer()),
-            )
-            .build(),
-    );
-
-    let segments = |key: &'static str| key.split('.').collect::<Vec<_>>();
-    assert!(matches!(
-        leaf_type_in(&shape, &segments("hosts.a.label")),
-        Some(LeafType::String)
-    ));
-    assert!(matches!(
-        leaf_type_in(&shape, &segments("hosts.a.port")),
-        Some(LeafType::Integer { .. })
-    ));
-    assert!(leaf_type_in(&shape, &segments("hosts.a.nope")).is_none());
-    assert!(leaf_type_in(&shape, &segments("hosts")).is_none());
-}
-
-/// An optional field is a leaf carrying `optional`, not a shape wrapped around
-/// one, so the walk reaches its type the way it reaches a required field's.
-#[test]
-fn an_optional_field_resolves_to_the_leaf_type_it_wraps() {
-    let shape = Shape::Object(
-        RuntimeSchema::object("Demo")
-            .field("nickname", Field::string().optional())
-            .build(),
-    );
-
-    assert!(matches!(
-        leaf_type_in(&shape, &["nickname"]),
-        Some(LeafType::String)
-    ));
-}
-
 /// `require_key` asks whether the path resolves, not whether anyone
 /// documented it: an undocumented key is still a key.
 #[test]
