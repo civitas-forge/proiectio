@@ -98,6 +98,12 @@ impl ConfigView {
             // Clapfig's set creates the file it persists to, so a `ValueSet`
             // in hand is the write itself; only an unset can come back from a
             // file that was never there.
+            // `value` arrives as the string the command line carried:
+            // clapfig 0.26 stopped handing back the typed `Value` this used to
+            // render from, and neither its own `rendered` nor `display_entry`
+            // knows the leaf's type either. A non-string therefore confirms as
+            // a quoted string, which #155 fixes by reading the type off the
+            // schema.
             ConfigResult::ValueSet { key, value, .. } => Self::ValueSet {
                 rendered: assignment(&key, &Value::String(value.clone())),
                 key,

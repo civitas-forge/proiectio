@@ -9,7 +9,7 @@ use minijinja::Value;
 use serde_json::Value as JsonValue;
 use standout::cli::{App, CommandConfig, CommandContext, CommandContextInput, HookError};
 use standout::context::RenderContext;
-use standout::{EmbeddedTemplates, MiniJinjaEngine, Representation, embed_styles, embed_templates};
+use standout::{EmbeddedTemplates, MiniJinjaEngine, embed_styles, embed_templates};
 
 use crate::cli::Commands;
 use crate::handlers;
@@ -132,47 +132,19 @@ pub(crate) fn config_key_value<H>(config: CommandConfig<H>) -> CommandConfig<H> 
 /// Pushes a stopped run's run-level facts as warnings, which Standout writes
 /// past the run's output — only for the modes that serialize the document; the
 /// template already lays these sentences out for rendered output.
+///
+/// The encoding comes from the context, which reports what the run resolved.
 pub(crate) fn stated_on_stderr(
-    matches: &ArgMatches,
+    _matches: &ArgMatches,
     ctx: &CommandContext,
     document: JsonValue,
 ) -> Result<JsonValue, HookError> {
-    if serializing(matches) {
+    if ctx.representation().is_structured() {
         for stated in views::run_warnings(&document) {
             ctx.warn(crate::exit::warning(&stated));
         }
     }
     Ok(document)
-}
-
-/// Whether `--output` named a representation that serializes the document.
-/// Read back off the parsed command line because a handler and its hooks are
-/// handed no other way to Standout's own argument: the argument's id is
-/// documented but its type, its parser and `App::extract_output_mode`'s input
-/// are not reachable from a hook. The aborted-run tests under `--output
-/// json`/`csv` hold this to the name Standout parses it under.
-fn serializing(matches: &ArgMatches) -> bool {
-    matches
-        .try_get_one::<String>(OUTPUT_MODE)
-        .ok()
-        .flatten()
-        .is_some_and(|named| representation(named).is_structured())
-}
-
-/// The argument Standout parses `--output` into.
-const OUTPUT_MODE: &str = "_output_mode";
-
-/// `--output` names a structured encoding or the diagnostic `term-debug`;
-/// absent, the run renders the human template, which the flag cannot name.
-fn representation(named: &str) -> Representation {
-    match named {
-        "json" => Representation::Json,
-        "yaml" => Representation::Yaml,
-        "csv" => Representation::Csv,
-        "ndjson" => Representation::Ndjson,
-        "term-debug" => Representation::TermDebug,
-        _ => Representation::Human,
-    }
 }
 
 pub(crate) fn build() -> Result<App> {
@@ -181,6 +153,7 @@ pub(crate) fn build() -> Result<App> {
     Ok(App::builder()
         .name(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
+        .usage_exit_status(crate::exit::USAGE)
         .app_state(forced)
         .template_engine(Box::new(engine()))
         .templates(templates())

@@ -1,5 +1,6 @@
-//! The 0/1/2 exit contract, which this module owns because Standout spends 2
-//! on a command line clap rejects and this CLI spends it on refusals.
+//! The 0/1/2 exit contract, which this module owns: 2 is a refusal, and a
+//! command line clap rejects leaves with 1 like any other run that could not
+//! act.
 //!
 //! Two seams carry it. A run that could not act fails with an [`AppFailure`],
 //! which pins both the status and the verbatim stderr bytes. A run that
@@ -17,13 +18,11 @@ pub(crate) const OK: u8 = 0;
 pub(crate) const FAILURE: u8 = 1;
 pub(crate) const REFUSAL: u8 = 2;
 
-/// What a command line clap rejects leaves with. Standout fixes it at 2 and
-/// offers no seam to move it, so it is the number a refusal leaves with too;
-/// before 12 this CLI owned the process edge and spent 1 on it. A caller
-/// telling the two apart reads the output, where a refusal states its rows
-/// and a usage error states clap's prose.
-#[cfg_attr(not(test), expect(dead_code, reason = "the tests pin the contract"))]
-pub(crate) const USAGE: u8 = 2;
+/// What a command line clap rejects leaves with, which is what a run that
+/// could not act leaves with: the invocation never named work to do. Standout
+/// 13 names it through `AppBuilder::usage_exit_status`, where 12 fixed it at
+/// 2 and offered no seam, so a refusal had to share the number.
+pub(crate) const USAGE: u8 = FAILURE;
 
 pub(crate) fn of_error(error: &Error) -> u8 {
     match error {
